@@ -1,0 +1,3 @@
+[submodule "Mini-Agent"]
+	path = Mini-Agent
+	url = https://github.com/Zhangdong1977/Mini-Agent.git
