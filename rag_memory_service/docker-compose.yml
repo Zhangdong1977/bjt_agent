@@ -1,0 +1,36 @@
+# rag-memory Service - Docker Compose Configuration
+# 用于本地开发和测试
+
+version: '3.8'
+
+services:
+  rag-memory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-memory-service
+    ports:
+      - "3001:3001"
+    environment:
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY}
+      - PORT=3001
+      - DOCUMENTS_PATH=/app/knowledge_docs
+      - INDEX_PATH=/app/data/memory.sqlite
+      - LOG_LEVEL=info
+      - NODE_ENV=production
+    volumes:
+      # Mount documents directory (read-only for safety)
+      - ./knowledge_docs:/app/knowledge_docs:ro
+      # Persist index database
+      - rag-memory-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/api/health')"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  rag-memory-data:
+    driver: local

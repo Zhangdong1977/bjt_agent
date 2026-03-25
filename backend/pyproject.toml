@@ -1,0 +1,36 @@
+[project]
+name = "bid-review-agent-backend"
+version = "1.0.0"
+description = "Backend for Bid Review Agent System"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-multipart>=0.0.9",
+    "sse-starlette>=2.0.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=4.1.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "email-validator>=2.1.0",
+    "celery>=5.3.0",
+    "redis>=5.0.0",
+    "httpx>=0.27.0",
+    "pymupdf>=1.24.0",
+    "pdf2image>=1.17.0",
+    "python-docx>=1.1.0",
+    "python-dotenv>=1.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

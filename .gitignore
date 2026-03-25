@@ -1,0 +1,14 @@
+testdocuments/
+logs/
+.claude/
+workspace/
+__pycache__/
+*.pyc
+node_modules/
+.env
+.DS_Store
+*.swp
+*.swo
+*.log
+*.err
+Mini-Agent/

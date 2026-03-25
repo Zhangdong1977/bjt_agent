@@ -1,0 +1,60 @@
+{
+  "name": "rag-memory",
+  "version": "1.0.0",
+  "description": "Hybrid RAG memory system with vector + keyword search for TypeScript/Node.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "prepublishOnly": "npm run build",
+    "example:basic": "tsx examples/basic.ts",
+    "example:knowledge": "tsx examples/knowledge-base.ts"
+  },
+  "keywords": [
+    "rag",
+    "memory",
+    "vector-search",
+    "embeddings",
+    "semantic-search",
+    "knowledge-base",
+    "sqlite",
+    "bm25",
+    "hybrid-search",
+    "typescript"
+  ],
+  "author": "OpenClaw contributors",
+  "license": "MIT",
+  "dependencies": {
+    "chokidar": "^3.5.3",
+    "better-sqlite3": "^11.7.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.9",
+    "@types/node": "^20.11.16",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  },
+  "optionalDependencies": {
+    "node-llama-cpp": "^3.0.0",
+    "openai": "^4.0.0",
+    "@google/generative-ai": "^0.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openclaw/rag-memory"
+  },
+  "bugs": {
+    "url": "https://github.com/openclaw/rag-memory/issues"
+  },
+  "homepage": "https://github.com/openclaw/rag-memory#readme"
+}

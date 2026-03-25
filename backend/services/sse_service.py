@@ -1,0 +1,51 @@
+"""SSE (Server-Sent Events) service for real-time notifications."""
+
+import asyncio
+import json
+import logging
+from typing import AsyncGenerator
+
+import redis.asyncio as redis
+
+from backend.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+class SSEConnectionManager:
+    """Manages SSE connections for real-time updates."""
+
+    def __init__(self):
+        self._redis_client = None
+
+    def _get_redis(self):
+        """Get or create Redis client."""
+        if self._redis_client is None:
+            settings = get_settings()
+            self._redis_client = redis.from_url(settings.redis_url, decode_responses=True)
+        return self._redis_client
+
+    async def connect(self, task_id: str) -> AsyncGenerator[str, None]:
+        """Connect to SSE stream for a specific task.
+
+        Listens to Redis pubsub channel `task:{task_id}` and yields events.
+
+        Yields:
+            SSE-formatted event strings
+        """
+        r = self._get_redis()
+        pubsub = r.pubsub()
+        await pubsub.subscribe(f"task:{task_id}")
+
+        try:
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    data = message["data"]
+                    yield f"data: {data}\n\n"
+        finally:
+            await pubsub.unsubscribe(f"task:{task_id}")
+            await pubsub.close()
+
+
+# Global SSE manager instance
+sse_manager = SSEConnectionManager()
