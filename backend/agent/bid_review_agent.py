@@ -122,23 +122,32 @@ Output your findings in the specified JSON format for each finding.
         """Parse agent output into structured findings.
 
         Returns:
-            List of finding dictionaries.
+            List containing a single finding with the full markdown content.
         """
         # Get the last assistant message
-        findings = []
         for msg in reversed(self.messages):
             if msg.role == "assistant" and msg.content:
-                # Try to parse JSON from the response
-                import json
-                import re
+                # Return the markdown content as a single finding entry
+                return [{
+                    "requirement_key": "review_summary",
+                    "requirement_content": "投标文件审查结果汇总",
+                    "bid_content": None,
+                    "is_compliant": True,
+                    "severity": "minor",
+                    "location_page": None,
+                    "location_line": None,
+                    "suggestion": None,
+                    "explanation": msg.content,  # Store full Markdown
+                }]
 
-                # Look for JSON array in the content
-                json_match = re.search(r'\[.*\]', msg.content, re.DOTALL)
-                if json_match:
-                    try:
-                        findings = json.loads(json_match.group())
-                        break
-                    except json.JSONDecodeError:
-                        pass
-
-        return findings
+        return [{
+            "requirement_key": "review_empty",
+            "requirement_content": "未生成审查结果",
+            "bid_content": None,
+            "is_compliant": False,
+            "severity": "critical",
+            "location_page": None,
+            "location_line": None,
+            "suggestion": "请检查Agent运行状态",
+            "explanation": "Agent未返回任何审查结果",
+        }]

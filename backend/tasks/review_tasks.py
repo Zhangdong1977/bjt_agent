@@ -73,6 +73,7 @@ def run_review(self, task_id: str) -> dict:
                     task.status = "failed"
                     task.error_message = ERROR_PROJECT_NOT_FOUND
                     await db.flush()
+                    await db.commit()
                     _publish_event(task_id, "error", {"message": ERROR_PROJECT_NOT_FOUND})
                     return {"status": "error", "message": ERROR_PROJECT_NOT_FOUND}
 
@@ -89,6 +90,7 @@ def run_review(self, task_id: str) -> dict:
                     task.status = "failed"
                     task.error_message = ERROR_TENDER_NOT_FOUND
                     await db.flush()
+                    await db.commit()
                     _publish_event(task_id, "error", {"message": ERROR_TENDER_NOT_FOUND})
                     return {"status": "error", "message": ERROR_TENDER_NOT_FOUND}
 
@@ -96,6 +98,7 @@ def run_review(self, task_id: str) -> dict:
                     task.status = "failed"
                     task.error_message = ERROR_BID_NOT_FOUND
                     await db.flush()
+                    await db.commit()
                     _publish_event(task_id, "error", {"message": ERROR_BID_NOT_FOUND})
                     return {"status": "error", "message": ERROR_BID_NOT_FOUND}
 
@@ -116,6 +119,7 @@ def run_review(self, task_id: str) -> dict:
                 task.status = "completed"
                 task.completed_at = datetime.utcnow()
                 await db.flush()
+                await db.commit()
 
                 # Send completion event
                 _publish_event(task_id, "complete", {
@@ -134,6 +138,7 @@ def run_review(self, task_id: str) -> dict:
                 task.error_message = str(e)
                 task.completed_at = datetime.utcnow()
                 await db.flush()
+                await db.commit()
                 _publish_event(task_id, "error", {"message": str(e)})
                 return {"status": "error", "message": str(e)}
 
@@ -253,6 +258,7 @@ async def _run_agent_review(
         bid_doc_path=bid_path,
         user_id=user_id,
         event_callback=event_cb,
+        max_steps=100,
     )
 
     # Send starting event

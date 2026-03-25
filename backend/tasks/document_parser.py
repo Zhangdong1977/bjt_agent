@@ -82,11 +82,27 @@ def parse_document(self, document_id: str) -> dict:
     After text extraction, it optionally processes images with LLM understanding.
     """
     from backend.config import get_settings
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     settings = get_settings()
 
+    # Create a fresh engine and session factory for this task to avoid event loop issues
+    engine = create_async_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        pool_size=2,
+        max_overflow=5,
+    )
+    session_factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
+
     async def _parse():
-        async with async_session_factory() as db:
+        async with session_factory() as db:
             from sqlalchemy import select
 
             result = await db.execute(select(Document).where(Document.id == document_id))
@@ -106,14 +122,21 @@ def parse_document(self, document_id: str) -> dict:
                 return {"status": "error", "message": "File not found"}
 
             try:
-                return await _parse_document_internal(document, file_path, settings)
+                result = await _parse_document_internal(document, file_path, settings)
+                await db.commit()
+                return result
             except Exception as e:
                 document.status = "failed"
                 document.parse_error = str(e)
                 await db.flush()
+                await db.commit()
                 return {"status": "error", "message": str(e)}
 
-    return asyncio.run(_parse())
+    try:
+        return asyncio.run(_parse())
+    finally:
+        # Dispose the engine when done
+        asyncio.run(engine.dispose())
 
 
 async def _process_images_with_llm(images: list, api_key: str, api_base: str, model: str) -> list:

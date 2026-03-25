@@ -97,7 +97,15 @@ start_frontend() {
 stop_service() {
     local name=$1
     local pid=$(get_pid "$name")
+    local port=""
 
+    # Map service name to port for backend and frontend
+    case "$name" in
+        backend) port=8000 ;;
+        frontend) port=3000 ;;
+    esac
+
+    # Try PID-based stop first
     if [ -n "$pid" ] && is_running "$pid"; then
         log "Stopping $name (PID: $pid)..."
         kill "$pid" 2>/dev/null || true
@@ -113,10 +121,19 @@ stop_service() {
             warn "$name did not stop gracefully, force killing..."
             kill -9 "$pid" 2>/dev/null || true
         fi
-
-        remove_pid "$name"
-        log "$name stopped"
     fi
+
+    # Also kill by port to catch orphaned processes
+    if [ -n "$port" ]; then
+        local port_pid=$(lsof -ti :$port 2>/dev/null)
+        if [ -n "$port_pid" ]; then
+            log "Killing orphaned process on port $port (PID: $port_pid)..."
+            kill -9 "$port_pid" 2>/dev/null || true
+        fi
+    fi
+
+    remove_pid "$name"
+    log "$name stopped"
 }
 
 # Actions
