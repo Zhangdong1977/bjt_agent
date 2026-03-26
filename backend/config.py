@@ -25,16 +25,16 @@ class Settings(BaseSettings):
     api_prefix: str = "/api"
 
     # Security
-    secret_key: str = "your-secret-key-change-in-production"
+    secret_key: str = ""  # Must be set via environment variable
     algorithm: Literal["HS256", "HS512"] = "HS256"
     access_token_expire_minutes: int = 60 * 24  # 1 day
     refresh_token_expire_days: int = 7  # 7 days
 
     # Database
-    database_url: str = "postgresql+asyncpg://ssirs_user:y6+YufO6njlzxXiaNj6rA4xZaT3ofwT6@183.66.37.186:7004/bjt_agent"
+    database_url: str = ""  # Must be set via environment variable
 
     # Redis
-    redis_url: str = "redis://183.66.37.186:7005/0"
+    redis_url: str = ""  # Must be set via environment variable
 
     # RAG Memory Service
     rag_memory_service_url: str = "http://localhost:3001"
@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     workspace_dir: Path = Path("./workspace")
 
     # Celery
-    celery_broker_url: str = "redis://183.66.37.186:7005/0"
-    celery_result_backend: str = "redis://183.66.37.186:7005/0"
+    celery_broker_url: str = ""  # Must be set via environment variable
+    celery_result_backend: str = ""  # Must be set via environment variable
 
     # Proxy
     http_proxy: str = "http://127.0.0.1:7890"
