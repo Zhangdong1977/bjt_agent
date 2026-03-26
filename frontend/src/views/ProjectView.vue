@@ -3,13 +3,14 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { documentsApi } from '@/api/client'
-import type { DocumentContent, SSEEvent } from '@/types'
+import type { DocumentContent } from '@/types'
+import { ElMessage, ElScrollbar } from 'element-plus'
+import { Loading } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
 
-const uploading = ref(false)
 const projectId = computed(() => route.params.id as string)
 const tenderDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'tender'))
 const bidDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'bid'))
@@ -21,35 +22,9 @@ const docViewerContent = ref<DocumentContent | null>(null)
 const docViewerLoading = ref(false)
 const docViewerTitle = ref('')
 
-// Agent timeline state
-interface TimelineStep {
-  step_number: number
-  step_type: string
-  tool_name?: string
-  content: string
-  timestamp: Date
-}
-const agentSteps = ref<TimelineStep[]>([])
-
 onMounted(() => {
   projectStore.selectProject(projectId.value)
 })
-
-function handleTimelineEvent(event: SSEEvent) {
-  if (event.type === 'step' && event.step_number !== undefined) {
-    agentSteps.value.push({
-      step_number: event.step_number,
-      step_type: event.step_type || 'unknown',
-      tool_name: event.tool_name,
-      content: event.content || '',
-      timestamp: new Date(),
-    })
-  } else if (event.type === 'status' && event.status === 'running') {
-    if (projectStore.currentTask?.status !== 'running') {
-      agentSteps.value = []
-    }
-  }
-}
 
 function goBack() {
   router.push({ name: 'home' })
@@ -59,7 +34,12 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
-  await projectStore.uploadDocument(docType, file)
+  try {
+    await projectStore.uploadDocument(docType, file)
+    ElMessage.success(`${docType === 'tender' ? 'Tender' : 'Bid'} document uploaded successfully`)
+  } catch {
+    ElMessage.error(`Failed to upload ${docType === 'tender' ? 'tender' : 'bid'} document`)
+  }
 }
 
 async function handleViewDoc(documentId: string) {
@@ -94,24 +74,11 @@ async function handleDeleteDoc(docId: string) {
 }
 
 async function startReview() {
-  agentSteps.value = []
-  await projectStore.startReview()
-
-  if (projectStore.currentTask) {
-    const timelineSource = new EventSource(`/api/events/tasks/${projectStore.currentTask.id}/stream`)
-
-    timelineSource.onmessage = (event) => {
-      try {
-        const data: SSEEvent = JSON.parse(event.data)
-        handleTimelineEvent(data)
-      } catch (e) {
-        console.error('Failed to parse timeline event:', e)
-      }
-    }
-
-    timelineSource.onerror = () => {
-      timelineSource.close()
-    }
+  try {
+    await projectStore.startReview()
+    ElMessage.info('Review started, connecting to event stream...')
+  } catch {
+    ElMessage.error('Failed to start review')
   }
 }
 
@@ -185,16 +152,22 @@ function getSeverityClass(severity: string) {
               </button>
             </div>
             <div v-else class="upload-area">
+              <el-progress
+                v-if="projectStore.uploadProgress['tender']"
+                :percentage="projectStore.uploadProgress['tender'].percent"
+                :stroke-width="8"
+                :show-text="true"
+              />
               <input
+                v-else
                 type="file"
                 accept=".pdf,.docx,.doc"
                 :id="'tender-upload'"
                 class="file-input"
                 @change="handleUpload($event, 'tender')"
               />
-              <label for="tender-upload" class="upload-label">
-                <span v-if="uploading">Uploading...</span>
-                <span v-else>Click to upload PDF or Word</span>
+              <label v-if="!projectStore.uploadProgress['tender']" for="tender-upload" class="upload-label">
+                Click to upload PDF or Word
               </label>
             </div>
           </div>
@@ -225,16 +198,22 @@ function getSeverityClass(severity: string) {
               </button>
             </div>
             <div v-else class="upload-area">
+              <el-progress
+                v-if="projectStore.uploadProgress['bid']"
+                :percentage="projectStore.uploadProgress['bid'].percent"
+                :stroke-width="8"
+                :show-text="true"
+              />
               <input
+                v-else
                 type="file"
                 accept=".pdf,.docx,.doc"
                 :id="'bid-upload'"
                 class="file-input"
                 @change="handleUpload($event, 'bid')"
               />
-              <label for="bid-upload" class="upload-label">
-                <span v-if="uploading">Uploading...</span>
-                <span v-else>Click to upload PDF or Word</span>
+              <label v-if="!projectStore.uploadProgress['bid']" for="bid-upload" class="upload-label">
+                Click to upload PDF or Word
               </label>
             </div>
           </div>
@@ -272,26 +251,28 @@ function getSeverityClass(severity: string) {
         <!-- Agent Timeline -->
         <div v-if="projectStore.currentTask && projectStore.currentTask.status === 'running'" class="timeline">
           <h3>Agent Progress</h3>
-          <div class="timeline-steps">
-            <div
-              v-for="(step, index) in agentSteps"
-              :key="index"
-              :class="['timeline-step', `step-${step.step_type}`]"
-            >
-              <div class="step-indicator">
-                <span class="step-number">{{ step.step_number }}</span>
+          <el-scrollbar height="300px">
+            <div class="timeline-steps">
+              <div
+                v-for="(step, index) in projectStore.agentSteps"
+                :key="index"
+                :class="['timeline-step', `step-${step.step_type}`]"
+              >
+                <div class="step-indicator">
+                  <span class="step-number">{{ step.step_number }}</span>
+                </div>
+                <div class="step-content">
+                  <span class="step-type">
+                    {{ step.step_type === 'tool_call' ? `${step.tool_name || 'tool'}` : 'Thought' }}
+                  </span>
+                  <p class="step-text">{{ step.content }}</p>
+                </div>
               </div>
-              <div class="step-content">
-                <span class="step-type">
-                  {{ step.step_type === 'tool_call' ? `🔧 ${step.tool_name || 'tool'}` : '💭' }}
-                </span>
-                <p class="step-text">{{ step.content }}</p>
+              <div v-if="projectStore.agentSteps.length === 0" class="timeline-empty">
+                <el-icon class="is-loading"><Loading /></el-icon> Waiting for agent to start...
               </div>
             </div>
-            <div v-if="agentSteps.length === 0" class="timeline-empty">
-              Waiting for agent to start...
-            </div>
-          </div>
+          </el-scrollbar>
         </div>
       </section>
 

@@ -110,3 +110,10 @@ export interface SSEEvent {
   content?: string
   findings_count?: number
 }
+
+// Upload types
+export interface UploadProgress {
+  loaded: number
+  total: number
+  percent: number
+}

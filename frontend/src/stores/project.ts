@@ -1,7 +1,15 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { projectsApi, documentsApi, reviewApi } from '@/api/client'
-import type { Project, Document, ReviewTask, ReviewResponse, SSEEvent } from '@/types'
+import type { Project, Document, ReviewTask, ReviewResponse, SSEEvent, UploadProgress } from '@/types'
+
+export interface AgentStep {
+  step_number: number
+  step_type: string
+  tool_name?: string
+  content: string
+  timestamp: Date
+}
 
 export const useProjectStore = defineStore('project', () => {
   const projects = ref<Project[]>([])
@@ -12,6 +20,12 @@ export const useProjectStore = defineStore('project', () => {
   const loading = ref(false)
   const reviewLoading = ref(false)
   const sseEventSource = ref<EventSource | null>(null)
+
+  // Agent timeline steps
+  const agentSteps = ref<AgentStep[]>([])
+
+  // Upload progress state
+  const uploadProgress = ref<Record<string, UploadProgress>>({})
 
   async function fetchProjects() {
     loading.value = true
@@ -51,9 +65,22 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
-  async function uploadDocument(docType: 'tender' | 'bid', file: File) {
+  async function uploadDocument(
+    docType: 'tender' | 'bid',
+    file: File,
+    onProgress?: (progress: UploadProgress) => void
+  ) {
     if (!currentProject.value) return
-    const doc = await documentsApi.upload(currentProject.value.id, docType, file)
+    const doc = await documentsApi.upload(
+      currentProject.value.id,
+      docType,
+      file,
+      (progress) => {
+        uploadProgress.value[docType] = progress
+        onProgress?.(progress)
+      }
+    )
+    delete uploadProgress.value[docType]
     documents.value.push(doc)
     // Start polling for document status updates
     pollDocumentStatus(doc.id)
@@ -107,6 +134,7 @@ export const useProjectStore = defineStore('project', () => {
   async function startReview() {
     if (!currentProject.value) return
     reviewLoading.value = true
+    resetAgentSteps()
     try {
       currentTask.value = await reviewApi.start(currentProject.value.id)
       connectSSE(currentTask.value.id)
@@ -120,8 +148,25 @@ export const useProjectStore = defineStore('project', () => {
     reviewResults.value = await reviewApi.getResults(currentProject.value.id)
   }
 
+  // SSE reconnection state
+  let sseReconnectAttempts = 0
+  const MAX_RECONNECT_DELAY = 30000 // 30 seconds max
+  const BASE_RECONNECT_DELAY = 1000 // 1 second base
+  let sseReconnectTimeout: number | null = null
+  let currentSseTaskId: string | null = null
+
+  function getReconnectDelay(): number {
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (capped)
+    const delay = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, sseReconnectAttempts), MAX_RECONNECT_DELAY)
+    // Add jitter (0-500ms)
+    return delay + Math.random() * 500
+  }
+
   function connectSSE(taskId: string) {
     disconnectSSE()
+    currentSseTaskId = taskId
+    sseReconnectAttempts = 0
+
     sseEventSource.value = new EventSource(`/api/events/tasks/${taskId}/stream`)
 
     sseEventSource.value.onmessage = (event) => {
@@ -134,8 +179,27 @@ export const useProjectStore = defineStore('project', () => {
     }
 
     sseEventSource.value.onerror = () => {
-      console.error('SSE connection error')
-      disconnectSSE()
+      // If task is completed or failed, don't reconnect
+      if (currentTask.value?.status === 'completed' || currentTask.value?.status === 'failed') {
+        disconnectSSE()
+        return
+      }
+
+      // Exponential backoff reconnection
+      const delay = getReconnectDelay()
+      sseReconnectAttempts++
+
+      console.log(`SSE connection lost, reconnecting in ${Math.round(delay)}ms (attempt ${sseReconnectAttempts})`)
+
+      if (sseReconnectTimeout) {
+        clearTimeout(sseReconnectTimeout)
+      }
+
+      sseReconnectTimeout = window.setTimeout(() => {
+        if (currentSseTaskId && (currentTask.value?.status === 'running' || !currentTask.value)) {
+          connectSSE(currentSseTaskId)
+        }
+      }, delay)
     }
   }
 
@@ -144,6 +208,17 @@ export const useProjectStore = defineStore('project', () => {
       case 'status':
         if (currentTask.value) {
           currentTask.value.status = event.status as ReviewTask['status']
+        }
+        break
+      case 'step':
+        if (event.step_number !== undefined) {
+          agentSteps.value.push({
+            step_number: event.step_number,
+            step_type: event.step_type || 'unknown',
+            tool_name: event.tool_name,
+            content: event.content || '',
+            timestamp: new Date(),
+          })
         }
         break
       case 'complete':
@@ -163,11 +238,21 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
+  function resetAgentSteps() {
+    agentSteps.value = []
+  }
+
   function disconnectSSE() {
     if (sseEventSource.value) {
       sseEventSource.value.close()
       sseEventSource.value = null
     }
+    if (sseReconnectTimeout) {
+      clearTimeout(sseReconnectTimeout)
+      sseReconnectTimeout = null
+    }
+    currentSseTaskId = null
+    sseReconnectAttempts = 0
   }
 
   function $reset() {
@@ -176,6 +261,7 @@ export const useProjectStore = defineStore('project', () => {
     documents.value = []
     currentTask.value = null
     reviewResults.value = null
+    uploadProgress.value = {}
     disconnectSSE()
     // Clear all document polling intervals
     Object.values(documentPollIntervals).forEach(intervalId => clearInterval(intervalId))
@@ -197,6 +283,8 @@ export const useProjectStore = defineStore('project', () => {
     reviewResults,
     loading,
     reviewLoading,
+    agentSteps,
+    uploadProgress,
     fetchProjects,
     createProject,
     deleteProject,
@@ -206,6 +294,8 @@ export const useProjectStore = defineStore('project', () => {
     startReview,
     fetchReviewResults,
     handleSSEEvent,
+    resetAgentSteps,
+    connectSSE,
     disconnectSSE,
     clearDocumentPoll,
     $reset

@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     # Workspace
     workspace_dir: Path = Path("./workspace")
 
+    # File Upload
+    max_upload_size_mb: int = 50  # Maximum file upload size in MB
+    max_upload_size_bytes: int = 50 * 1024 * 1024  # Calculated bytes
+
+    # Rate Limiting
+    rate_limit_per_minute: int = 60  # Default rate limit per minute
+    rate_limit_auth_per_minute: int = 10  # Stricter limit for auth endpoints
+
     # Celery
     celery_broker_url: str = ""  # Must be set via environment variable
     celery_result_backend: str = ""  # Must be set via environment variable

@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 
@@ -17,13 +17,15 @@ from backend.api.deps import (
 from backend.config import get_settings
 from backend.models import User
 from backend.schemas.auth import Token, UserCreate, UserResponse, RefreshTokenRequest
+from backend.middleware.rate_limit import limiter
 
 settings = get_settings()
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(user_data: UserCreate, db: DBSession) -> User:
+@limiter.limit("10/minute")
+async def register(request: Request, user_data: UserCreate, db: DBSession) -> User:
     """Register a new user."""
     # Check if username exists
     result = await db.execute(select(User).where(User.username == user_data.username))
@@ -54,7 +56,8 @@ async def register(user_data: UserCreate, db: DBSession) -> User:
 
 
 @router.post("/login", response_model=Token)
-async def login(db: DBSession, form_data: OAuth2PasswordRequestForm = Depends()) -> Token:
+@limiter.limit("10/minute")
+async def login(request: Request, db: DBSession, form_data: OAuth2PasswordRequestForm = Depends()) -> Token:
     """Login and get access token."""
     # Find user by username
     result = await db.execute(select(User).where(User.username == form_data.username))

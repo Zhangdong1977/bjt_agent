@@ -11,6 +11,8 @@ from backend.config import get_settings
 from backend.models import init_db, close_db
 from backend.api import auth_router, projects_router, documents_router, review_router
 from backend.services.sse_service import sse_manager
+from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 settings = get_settings()
 
@@ -30,6 +32,10 @@ app = FastAPI(
     version=settings.app_version,
     lifespan=lifespan,
 )
+
+# Add rate limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 # CORS middleware
 app.add_middleware(

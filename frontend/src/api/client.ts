@@ -102,20 +102,62 @@ export const projectsApi = {
 }
 
 // Documents API
+export interface UploadProgress {
+  loaded: number
+  total: number
+  percent: number
+}
+
 export const documentsApi = {
   async list(projectId: string): Promise<Document[]> {
     const response = await apiClient.get(`/projects/${projectId}/documents`)
     return response.data.documents
   },
 
-  async upload(projectId: string, docType: 'tender' | 'bid', file: File): Promise<Document> {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('doc_type', docType)
-    const response = await apiClient.post(`/projects/${projectId}/documents`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+  async upload(
+    projectId: string,
+    docType: 'tender' | 'bid',
+    file: File,
+    onProgress?: (progress: UploadProgress) => void
+  ): Promise<Document> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('doc_type', docType)
+
+      xhr.open('POST', `${API_BASE}/projects/${projectId}/documents`)
+
+      const token = getAccessToken()
+      if (token) {
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      }
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && onProgress) {
+          onProgress({
+            loaded: event.loaded,
+            total: event.total,
+            percent: Math.round((event.loaded / event.total) * 100)
+          })
+        }
+      }
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText))
+          } catch {
+            reject(new Error('Invalid response'))
+          }
+        } else {
+          reject(new Error(`Upload failed with status ${xhr.status}`))
+        }
+      }
+
+      xhr.onerror = () => reject(new Error('Network error'))
+      xhr.send(formData)
     })
-    return response.data
   },
 
   async get(projectId: string, documentId: string): Promise<Document> {

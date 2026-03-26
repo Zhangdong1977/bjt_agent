@@ -81,6 +81,24 @@ async def upload_document(
             detail=f"Unsupported file type: {file_ext}. Supported: {', '.join(supported_extensions)}",
         )
 
+    # Validate file size - check content length without reading into memory
+    file.file.seek(0, 2)  # Seek to end
+    file_size = file.file.tell()
+    file.file.seek(0)  # Reset to beginning
+
+    if file_size == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty file is not allowed",
+        )
+
+    if file_size > settings.max_upload_size_bytes:
+        max_mb = settings.max_upload_size_mb
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File size ({file_size / (1024*1024):.2f} MB) exceeds maximum allowed size ({max_mb} MB)",
+        )
+
     # Create project directory
     project_dir = settings.workspace_path / str(current_user.id) / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
