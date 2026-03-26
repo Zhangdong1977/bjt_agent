@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { projectsApi, documentsApi, reviewApi } from '@/api/client'
+import { projectsApi, documentsApi, reviewApi, getAccessToken } from '@/api/client'
 import type { Project, Document, ReviewTask, ReviewResponse, SSEEvent, UploadProgress } from '@/types'
 
 export interface AgentStep {
@@ -167,7 +167,11 @@ export const useProjectStore = defineStore('project', () => {
     currentSseTaskId = taskId
     sseReconnectAttempts = 0
 
-    sseEventSource.value = new EventSource(`/api/events/tasks/${taskId}/stream`)
+    const token = getAccessToken()
+    const url = token
+      ? `/api/events/tasks/${taskId}/stream?token=${encodeURIComponent(token)}`
+      : `/api/events/tasks/${taskId}/stream`
+    sseEventSource.value = new EventSource(url)
 
     sseEventSource.value.onmessage = (event) => {
       try {

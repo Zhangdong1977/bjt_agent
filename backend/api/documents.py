@@ -4,7 +4,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, HTTPException, UploadFile, File, status, Query
 from sqlalchemy import select
 
 from backend.api.deps import DBSession, CurrentUser
@@ -54,8 +54,8 @@ async def list_documents(
 @router.post("", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     project_id: str,
-    doc_type: str,
     db: DBSession,
+    doc_type: str = Query(..., description="Document type: 'tender' or 'bid'"),
     file: UploadFile = File(...),
     current_user: CurrentUser = None,
 ) -> Document:

@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     workspace_dir: Path = Path("./workspace")
 
     # File Upload
-    max_upload_size_mb: int = 50  # Maximum file upload size in MB
-    max_upload_size_bytes: int = 50 * 1024 * 1024  # Calculated bytes
+    max_upload_size_mb: int = 250  # Maximum file upload size in MB (supports large documents like 投标文件.docx ~219MB)
+    max_upload_size_bytes: int = 250 * 1024 * 1024  # Calculated bytes
 
     # Rate Limiting
     rate_limit_per_minute: int = 60  # Default rate limit per minute

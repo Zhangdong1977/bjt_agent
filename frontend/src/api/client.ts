@@ -124,9 +124,8 @@ export const documentsApi = {
       const xhr = new XMLHttpRequest()
       const formData = new FormData()
       formData.append('file', file)
-      formData.append('doc_type', docType)
 
-      xhr.open('POST', `${API_BASE}/projects/${projectId}/documents`)
+      xhr.open('POST', `${API_BASE}/projects/${projectId}/documents?doc_type=${docType}`)
 
       const token = getAccessToken()
       if (token) {

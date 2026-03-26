@@ -52,7 +52,7 @@ export function getConfig(): ServiceConfig {
   const host = process.env.HOST || '0.0.0.0';
   const documentsPath = process.env.DOCUMENTS_PATH || path.join(process.cwd(), 'knowledge_docs');
   const indexPath = process.env.INDEX_PATH || path.join(process.cwd(), 'data', 'memory.sqlite');
-  const zhipuApiKey = process.env.ZHIPU_API_KEY || '';
+  const zhipuApiKey = process.env.MINI_AGENT_API_KEY || process.env.ZHIPU_API_KEY || '';
   const embeddingModel = process.env.EMBEDDING_MODEL || 'embedding-3';
   const logLevel = (process.env.LOG_LEVEL as ServiceConfig['logLevel']) || 'info';
   const maxSearchResults = parseInt(process.env.MAX_SEARCH_RESULTS || '50', 10);

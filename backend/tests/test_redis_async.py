@@ -29,7 +29,9 @@ class TestRedisPublishAsync:
         source = inspect.getsource(review_tasks._publish_event)
 
         # If using redis.from_url directly (sync) without thread pool, it's blocking
-        uses_direct_sync = "redis.from_url(" in source and "ThreadPoolExecutor" not in source
+        # Async redis (redis.asyncio) also uses redis.from_url but is non-blocking
+        uses_async_redis = "redis.asyncio" in source
+        uses_direct_sync = "redis.from_url(" in source and "ThreadPoolExecutor" not in source and not uses_async_redis
 
         assert not uses_direct_sync, \
             "_publish_event makes direct synchronous redis call without thread pool"

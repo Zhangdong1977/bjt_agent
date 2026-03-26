@@ -24,7 +24,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-@limiter.limit("10/minute")
+@limiter.limit("100/minute")
 async def register(request: Request, user_data: UserCreate, db: DBSession) -> User:
     """Register a new user."""
     # Check if username exists
@@ -56,7 +56,7 @@ async def register(request: Request, user_data: UserCreate, db: DBSession) -> Us
 
 
 @router.post("/login", response_model=Token)
-@limiter.limit("10/minute")
+@limiter.limit("100/minute")
 async def login(request: Request, db: DBSession, form_data: OAuth2PasswordRequestForm = Depends()) -> Token:
     """Login and get access token."""
     # Find user by username

@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 import redis.asyncio as redis
 
@@ -18,10 +18,15 @@ class SSEConnectionManager:
     def __init__(self):
         self._redis_client = None
 
-    async def connect(self, task_id: str) -> AsyncGenerator[str, None]:
+    async def connect(self, task_id: str, last_event_id: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Connect to SSE stream for a specific task.
 
         Listens to Redis pubsub channel `task:{task_id}` and yields events.
+        Supports reconnection via Last-Event-ID header.
+
+        Args:
+            task_id: The task ID to subscribe to
+            last_event_id: The last event ID received before reconnection (for catch-up)
 
         Yields:
             SSE-formatted event strings
@@ -35,12 +40,15 @@ class SSEConnectionManager:
         # Small delay to ensure subscription is fully established
         await asyncio.sleep(0.1)
 
+        event_count = 0
         try:
             async for message in pubsub.listen():
                 logger.info(f"SSE received message: {message}")
                 if message["type"] == "message":
                     data = message["data"]
-                    yield f"data: {data}\n\n"
+                    event_count += 1
+                    # Include event ID for client reconnection support
+                    yield f"id: {event_count}\ndata: {data}\n\n"
         finally:
             await pubsub.unsubscribe(f"task:{task_id}")
             await pubsub.close()

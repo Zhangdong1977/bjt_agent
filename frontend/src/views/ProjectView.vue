@@ -55,7 +55,7 @@ async function handleViewDoc(documentId: string) {
     docViewerTitle.value = doc ? `${doc.doc_type === 'tender' ? 'Tender' : 'Bid'} Document - ${doc.original_filename}` : 'Document'
   } catch (error) {
     console.error('Failed to load document:', error)
-    alert('Failed to load document content')
+    ElMessage.error('Failed to load document content')
     showDocViewer.value = false
   } finally {
     docViewerLoading.value = false

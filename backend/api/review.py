@@ -1,6 +1,8 @@
 """Review API routes."""
 
-from fastapi import APIRouter, HTTPException, status
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
@@ -250,6 +252,7 @@ async def get_review_task_results(
 async def stream_review_events(
     project_id: str,
     task_id: str,
+    request: Request,
     db: DBSession,
     current_user: CurrentUser,
 ):
@@ -257,6 +260,7 @@ async def stream_review_events(
 
     This endpoint provides real-time updates about the review task progress,
     including agent steps, progress updates, and completion status.
+    Supports reconnection via Last-Event-ID header.
     """
     # Verify user has access to the project
     await verify_project_ownership(project_id, current_user.id, db)
@@ -275,8 +279,11 @@ async def stream_review_events(
             detail="Task not found",
         )
 
+    # Extract Last-Event-ID header for reconnection support
+    last_event_id = request.headers.get("Last-Event-ID")
+
     async def event_generator():
-        async for event in sse_manager.connect(task_id):
+        async for event in sse_manager.connect(task_id, last_event_id):
             yield event
 
     return StreamingResponse(

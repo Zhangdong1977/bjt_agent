@@ -22,25 +22,29 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
     """Publish an event to Redis for SSE forwarding.
 
     This is called from Celery tasks to send real-time updates.
-    Uses thread pool to avoid blocking the event loop with sync redis.
+    Uses async redis client to avoid blocking.
     """
     try:
-        import redis
+        import redis.asyncio as redis
         from backend.config import get_settings
-        from concurrent.futures import ThreadPoolExecutor
 
         settings = get_settings()
         event = json.dumps({"type": event_type, "task_id": task_id, **data})
 
-        def _sync_publish():
+        async def _async_publish():
             r = redis.from_url(settings.redis_url)
-            return r.publish(f"task:{task_id}", event)
+            try:
+                result = await r.publish(f"task:{task_id}", event)
+                logger.info(f"Published event to task:{task_id}: type={event_type}, result={result}")
+            finally:
+                await r.aclose()
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_sync_publish)
-            result = future.result(timeout=5)
-
-        logger.info(f"Published event to task:{task_id}: type={event_type}, result={result}")
+        # Run async publish in a new event loop (Celery workers may not have one)
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_async_publish())
+        finally:
+            loop.close()
     except Exception as e:
         logger.warning(f"Failed to publish event to Redis: {e}")
 

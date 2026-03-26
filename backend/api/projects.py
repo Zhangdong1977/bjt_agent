@@ -107,3 +107,4 @@ async def delete_project(
             detail="Project not found",
         )
     await db.delete(project)
+    await db.flush()
