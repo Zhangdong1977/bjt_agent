@@ -8,8 +8,10 @@ node_modules/
 .env
 .DS_Store
 *.swp
+*.tsbuildinfo
 *.swo
 *.log
 *.err
 Mini-Agent/
 .worktrees/
+frontend/dist/
