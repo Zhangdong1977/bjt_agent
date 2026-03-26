@@ -1,6 +1,8 @@
 """Comparator tool for comparing bid content against tender requirements."""
 
 import json
+import re
+from typing import Optional
 
 from mini_agent.llm import LLMClient
 from mini_agent.schema import LLMProvider, Message
@@ -10,7 +12,7 @@ from backend.config import get_settings
 
 settings = get_settings()
 
-# Comparison prompt for LLM
+# Comparison prompt for LLM - enhanced with location extraction
 COMPARISON_PROMPT = """You are a professional tender/bid compliance analyst.
 
 Compare the following tender requirement against the bid document content and determine compliance.
@@ -30,12 +32,18 @@ Analyze whether the bid content satisfies the tender requirement. Consider:
 ## Output Format (JSON):
 {{
     "is_compliant": true/false,
-    "severity": "critical/major/minor" (only if non-compliant),
-    "explanation": "Brief explanation of your analysis",
-    "suggestion": "Specific suggestion for improvement if non-compliant"
+    "severity": "critical/major/minor" (only if non-compliant, default to "major"),
+    "explanation": "Brief explanation of your analysis (1-3 sentences)",
+    "suggestion": "Specific, actionable suggestion for improvement if non-compliant",
+    "location_page": null or integer (page number in bid document where relevant content was found),
+    "location_line": null or integer (line number in bid document where relevant content was found)
 }}
 
-Be precise and thorough in your analysis."""
+Notes:
+- If the requirement is met, set is_compliant=true and omit severity
+- If the requirement is NOT met, set is_compliant=false and specify severity
+- location_page/location_line are optional but help in locating findings in the original document
+- Be precise and thorough in your analysis"""
 
 
 class ComparatorTool(BaseTool):
@@ -58,7 +66,13 @@ class ComparatorTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Compare bid document content against a specific tender requirement. Input should be a JSON object with 'requirement', 'bid_content', and optional 'severity' (default 'major')."
+        return """Compare bid document content against a specific tender requirement.
+Input should be a JSON object with:
+- 'requirement': The tender requirement text
+- 'bid_content': The bid document content to compare (can include line numbers like "Line 5: content")
+- 'severity': Default severity if non-compliant ('critical', 'major', 'minor'), defaults to 'major'
+
+Returns structured comparison result with compliance status, severity, explanation, and location."""
 
     @property
     def parameters(self) -> dict:
@@ -71,7 +85,7 @@ class ComparatorTool(BaseTool):
                 },
                 "bid_content": {
                     "type": "string",
-                    "description": "The relevant bid document content",
+                    "description": "The relevant bid document content (can include line number hints)",
                 },
                 "severity": {
                     "type": "string",
@@ -82,6 +96,24 @@ class ComparatorTool(BaseTool):
             },
             "required": ["requirement", "bid_content"],
         }
+
+    def _extract_location_from_content(self, bid_content: str) -> tuple[Optional[int], Optional[int]]:
+        """Extract page and line numbers from bid content if present.
+
+        Looks for patterns like:
+        - "Line 23: content"
+        - "Page 5, Line 23: content"
+        - "line 23" anywhere in content
+
+        Returns (page, line) tuple.
+        """
+        page_match = re.search(r'Page\s*(\d+)', bid_content, re.IGNORECASE)
+        line_match = re.search(r'Line\s*(\d+)', bid_content, re.IGNORECASE)
+
+        page = int(page_match.group(1)) if page_match else None
+        line = int(line_match.group(1)) if line_match else None
+
+        return page, line
 
     async def execute(
         self,
@@ -100,6 +132,9 @@ class ComparatorTool(BaseTool):
             ToolResult with comparison result
         """
         try:
+            # Extract location hints from bid_content before processing
+            hint_page, hint_line = self._extract_location_from_content(bid_content)
+
             # If bid content is empty, automatically non-compliant
             if not bid_content or bid_content == "N/A":
                 result = {
@@ -107,6 +142,8 @@ class ComparatorTool(BaseTool):
                     "severity": "critical",
                     "explanation": "No bid content provided for this requirement.",
                     "suggestion": "Please provide relevant bid content addressing this requirement.",
+                    "location_page": None,
+                    "location_line": None,
                 }
             else:
                 # Use LLM for comparison
@@ -116,29 +153,17 @@ class ComparatorTool(BaseTool):
                 )
 
                 messages = [
-                    Message(role="system", content="You are a professional tender/bid compliance analyst. Output ONLY valid JSON."),
+                    Message(
+                        role="system",
+                        content="You are a professional tender/bid compliance analyst. Output ONLY valid JSON with all required fields.",
+                    ),
                     Message(role="user", content=prompt),
                 ]
 
                 response = await self._llm_client.generate(messages=messages)
 
                 # Parse LLM response
-                try:
-                    # Try to extract JSON from response
-                    content = response.content.strip()
-                    # Remove markdown code blocks if present
-                    if content.startswith("```"):
-                        lines = content.split("\n")
-                        content = "\n".join(lines[1:-1])
-                    result = json.loads(content)
-                except json.JSONDecodeError:
-                    # Fallback if JSON parsing fails
-                    result = {
-                        "is_compliant": False,
-                        "severity": severity,
-                        "explanation": f"LLM response parsing failed: {response.content[:200]}",
-                        "suggestion": "Please review the bid content manually.",
-                    }
+                result = self._parse_json_response(response.content, severity)
 
             # Ensure result has required fields
             if "is_compliant" not in result:
@@ -146,7 +171,13 @@ class ComparatorTool(BaseTool):
             if not result["is_compliant"] and "severity" not in result:
                 result["severity"] = severity
 
-            # Format output
+            # Use hint location if LLM didn't provide one
+            if result.get("location_page") is None and hint_page is not None:
+                result["location_page"] = hint_page
+            if result.get("location_line") is None and hint_line is not None:
+                result["location_line"] = hint_line
+
+            # Format output matching ReviewResult model
             formatted_result = {
                 "requirement": requirement,
                 "bid_content": bid_content if bid_content else "N/A",
@@ -154,6 +185,8 @@ class ComparatorTool(BaseTool):
                 "severity": result.get("severity") if not result.get("is_compliant", True) else None,
                 "explanation": result.get("explanation", ""),
                 "suggestion": result.get("suggestion", ""),
+                "location_page": result.get("location_page"),
+                "location_line": result.get("location_line"),
             }
 
             return ToolResult(
@@ -164,3 +197,45 @@ class ComparatorTool(BaseTool):
 
         except Exception as e:
             return ToolResult(success=False, content="", error=str(e))
+
+    def _parse_json_response(self, content: str, default_severity: str) -> dict:
+        """Parse JSON from LLM response with multiple fallback strategies.
+
+        Args:
+            content: Raw LLM response content
+            default_severity: Default severity if not provided
+
+        Returns:
+            Parsed result dict
+        """
+        # Try direct JSON parse first
+        try:
+            return json.loads(content.strip())
+        except json.JSONDecodeError:
+            pass
+
+        # Try to extract JSON from markdown code blocks
+        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # Try to find JSON object in the content
+        json_match = re.search(r'\{[^{}]*"[^}]+\}[^{}]*\}', content, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        # Last resort: try to extract key values manually
+        return {
+            "is_compliant": False,
+            "severity": default_severity,
+            "explanation": f"Failed to parse LLM response: {content[:200]}",
+            "suggestion": "Please review the bid content manually.",
+            "location_page": None,
+            "location_line": None,
+        }

@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import type { Document } from '@/types'
 
-const props = defineProps<{
+defineProps<{
   document: Document | null
   documentType: 'tender' | 'bid'
   label: string

@@ -213,29 +213,65 @@ async def _process_images_with_llm(images: list, api_key: str, api_base: str, mo
 
 
 async def _parse_pdf(file_path: Path) -> dict:
-    """Parse PDF file and extract text and images."""
+    """Parse PDF file and extract text and images.
+
+    Handles corrupted PDFs gracefully by catching exceptions.
+    """
     import fitz  # PyMuPDF
 
     text_parts = []
     images = []
     page_count = 0
 
-    doc = fitz.open(str(file_path))
-    page_count = len(doc)
+    try:
+        doc = fitz.open(str(file_path))
 
-    for page_num, page in enumerate(doc):
-        text_parts.append(page.get_text())
+        # Check if PDF is corrupted
+        if doc.is_closed or doc.is_encrypted:
+            raise ValueError(f"PDF is corrupted or encrypted: {file_path}")
 
-        # Extract images
-        for img_index, img in enumerate(page.get_images()):
-            xref = img[0]
-            base_image = doc.extract_image(xref)
-            image_bytes = base_image["image"]
-            image_ext = base_image["ext"]
-            image_filename = f"page_{page_num + 1}_img_{img_index + 1}.{image_ext}"
-            images.append({"filename": image_filename, "data": image_bytes})
+        page_count = len(doc)
 
-    doc.close()
+        # Limit page processing for very large documents
+        max_pages = 500
+        if page_count > max_pages:
+            logger.warning(f"PDF has {page_count} pages, limiting to first {max_pages}")
+            page_count = max_pages
+
+        for page_num, page in enumerate(doc):
+            if page_num >= max_pages:
+                break
+
+            try:
+                text_parts.append(page.get_text())
+            except Exception as e:
+                logger.warning(f"Failed to extract text from page {page_num + 1}: {e}")
+                text_parts.append(f"[Page {page_num + 1} text extraction failed]")
+
+            # Extract images
+            try:
+                for img_index, img in enumerate(page.get_images()):
+                    try:
+                        xref = img[0]
+                        base_image = doc.extract_image(xref)
+                        image_bytes = base_image["image"]
+                        image_ext = base_image["ext"]
+                        # Limit image size to 10MB
+                        if len(image_bytes) > 10 * 1024 * 1024:
+                            logger.warning(f"Skipping large image ({len(image_bytes)} bytes) on page {page_num + 1}")
+                            continue
+                        image_filename = f"page_{page_num + 1}_img_{img_index + 1}.{image_ext}"
+                        images.append({"filename": image_filename, "data": image_bytes})
+                    except Exception as e:
+                        logger.warning(f"Failed to extract image {img_index} from page {page_num + 1}: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to get images from page {page_num + 1}: {e}")
+
+        doc.close()
+
+    except Exception as e:
+        logger.error(f"Failed to parse PDF {file_path}: {e}")
+        raise ValueError(f"Failed to parse PDF: {e}")
 
     return {
         "text": "\n\n".join(text_parts),
@@ -245,24 +281,46 @@ async def _parse_pdf(file_path: Path) -> dict:
 
 
 async def _parse_docx(file_path: Path) -> dict:
-    """Parse DOCX file and extract text and images."""
+    """Parse DOCX file and extract text and images.
+
+    Handles corrupted documents gracefully by catching exceptions.
+    """
     from docx import Document as DocxDocument
 
-    doc = DocxDocument(str(file_path))
+    try:
+        doc = DocxDocument(str(file_path))
+    except Exception as e:
+        logger.error(f"Failed to open DOCX {file_path}: {e}")
+        raise ValueError(f"Failed to parse DOCX: {e}")
+
     text_parts = []
     images = []
 
-    for para in doc.paragraphs:
-        text_parts.append(para.text)
+    try:
+        for para in doc.paragraphs:
+            if para.text.strip():
+                text_parts.append(para.text)
+    except Exception as e:
+        logger.warning(f"Failed to extract paragraph text: {e}")
 
     # Extract inline images
-    for rel in doc.part.rels.values():
-        if "image" in rel.target_ref:
-            image = rel.target_part
-            image_bytes = image.blob
-            image_ext = image.content_type.split("/")[-1]
-            image_filename = f"image_{len(images) + 1}.{image_ext}"
-            images.append({"filename": image_filename, "data": image_bytes})
+    try:
+        for rel in doc.part.rels.values():
+            if "image" in rel.target_ref:
+                try:
+                    image = rel.target_part
+                    image_bytes = image.blob
+                    # Limit image size to 10MB
+                    if len(image_bytes) > 10 * 1024 * 1024:
+                        logger.warning(f"Skipping large image ({len(image_bytes)} bytes)")
+                        continue
+                    image_ext = image.content_type.split("/")[-1]
+                    image_filename = f"image_{len(images) + 1}.{image_ext}"
+                    images.append({"filename": image_filename, "data": image_bytes})
+                except Exception as e:
+                    logger.warning(f"Failed to extract image: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to extract images: {e}")
 
     return {
         "text": "\n\n".join(text_parts),

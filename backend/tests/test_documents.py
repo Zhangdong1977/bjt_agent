@@ -98,12 +98,10 @@ class TestDocumentUpload:
         project = await create_test_project(client, auth_headers, "Upload Test Project")
 
         files = {"file": ("test_tender.pdf", create_test_pdf(), "application/pdf")}
-        data = {"doc_type": "tender"}
 
         response = await client.post(
-            f"/api/projects/{project['id']}/documents",
+            f"/api/projects/{project['id']}/documents?doc_type=tender",
             files=files,
-            data=data,
             headers=auth_headers,
         )
 
@@ -120,12 +118,10 @@ class TestDocumentUpload:
         project = await create_test_project(client, auth_headers, "Upload DOCX Test")
 
         files = {"file": ("bid_proposal.docx", create_test_docx(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
-        data = {"doc_type": "bid"}
 
         response = await client.post(
-            f"/api/projects/{project['id']}/documents",
+            f"/api/projects/{project['id']}/documents?doc_type=bid",
             files=files,
-            data=data,
             headers=auth_headers,
         )
 
@@ -142,12 +138,10 @@ class TestDocumentUpload:
         # Create a text file
         txt_content = b"This is a plain text file"
         files = {"file": ("readme.txt", io.BytesIO(txt_content), "text/plain")}
-        data = {"doc_type": "tender"}
 
         response = await client.post(
-            f"/api/projects/{project['id']}/documents",
+            f"/api/projects/{project['id']}/documents?doc_type=tender",
             files=files,
-            data=data,
             headers=auth_headers,
         )
 
@@ -160,12 +154,10 @@ class TestDocumentUpload:
         project = await create_test_project(client, auth_headers, "Invalid DocType Test")
 
         files = {"file": ("test.pdf", create_test_pdf(), "application/pdf")}
-        data = {"doc_type": "invalid_type"}
 
         response = await client.post(
-            f"/api/projects/{project['id']}/documents",
+            f"/api/projects/{project['id']}/documents?doc_type=invalid_type",
             files=files,
-            data=data,
             headers=auth_headers,
         )
 
@@ -183,11 +175,9 @@ class TestDocumentList:
 
         # Upload a document
         files = {"file": ("tender.pdf", create_test_pdf(), "application/pdf")}
-        data = {"doc_type": "tender"}
         await client.post(
-            f"/api/projects/{project['id']}/documents",
+            f"/api/projects/{project['id']}/documents?doc_type=tender",
             files=files,
-            data=data,
             headers=auth_headers,
         )
 
@@ -212,11 +202,9 @@ class TestDocumentGet:
 
         # Upload a document
         files = {"file": ("tender.pdf", create_test_pdf(), "application/pdf")}
-        data = {"doc_type": "tender"}
         upload_response = await client.post(
-            f"/api/projects/{project['id']}/documents",
+            f"/api/projects/{project['id']}/documents?doc_type=tender",
             files=files,
-            data=data,
             headers=auth_headers,
         )
         doc_id = upload_response.json()["id"]
@@ -242,11 +230,9 @@ class TestDocumentContent:
 
         # Upload a document (status will be 'pending')
         files = {"file": ("tender.pdf", create_test_pdf(), "application/pdf")}
-        data = {"doc_type": "tender"}
         upload_response = await client.post(
-            f"/api/projects/{project['id']}/documents",
+            f"/api/projects/{project['id']}/documents?doc_type=tender",
             files=files,
-            data=data,
             headers=auth_headers,
         )
         doc_id = upload_response.json()["id"]
@@ -271,11 +257,9 @@ class TestDocumentDelete:
 
         # Upload a document
         files = {"file": ("tender.pdf", create_test_pdf(), "application/pdf")}
-        data = {"doc_type": "tender"}
         upload_response = await client.post(
-            f"/api/projects/{project['id']}/documents",
+            f"/api/projects/{project['id']}/documents?doc_type=tender",
             files=files,
-            data=data,
             headers=auth_headers,
         )
         doc_id = upload_response.json()["id"]

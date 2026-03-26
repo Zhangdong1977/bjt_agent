@@ -20,7 +20,13 @@ class RAGSearchTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Search enterprise knowledge base for relevant information. Input should be a JSON object with 'query' string and optional 'limit' (default 5)."
+        return """Search enterprise knowledge base for relevant policies, regulations, and historical cases.
+
+Input should be a JSON object with:
+- 'query': Search query string (required)
+- 'limit': Maximum number of results to return, defaults to 5
+
+Returns relevant knowledge base entries with source information."""
 
     @property
     def parameters(self) -> dict:
@@ -51,6 +57,14 @@ class RAGSearchTool(BaseTool):
             ToolResult with the search results
         """
         settings = get_settings()
+
+        if not settings.rag_memory_service_url:
+            return ToolResult(
+                success=False,
+                content="",
+                error="RAG memory service URL not configured",
+            )
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -61,24 +75,60 @@ class RAGSearchTool(BaseTool):
                 if response.status_code == 200:
                     data = response.json()
                     results = data.get("results", [])
-                    snippet = "\n".join([r.get("snippet", "") for r in results])
+
+                    if not results:
+                        return ToolResult(
+                            success=True,
+                            content="No relevant knowledge base entries found for this query.",
+                            data={"results": [], "query": query},
+                        )
+
+                    # Format results for better readability
+                    formatted_results = []
+                    for i, r in enumerate(results):
+                        source = r.get("source", "Unknown source")
+                        snippet = r.get("snippet", "")
+                        score = r.get("score", 0)
+                        formatted_results.append(
+                            f"[{i + 1}] Source: {source} (relevance: {score:.2f})\n"
+                            f"    Content: {snippet}"
+                        )
+
+                    content = "Knowledge Base Results:\n\n" + "\n\n".join(formatted_results)
+
                     return ToolResult(
                         success=True,
-                        content=snippet,
-                        data={"results": results},
+                        content=content,
+                        data={
+                            "results": results,
+                            "count": len(results),
+                            "query": query,
+                        },
+                    )
+                elif response.status_code == 404:
+                    return ToolResult(
+                        success=True,
+                        content="Knowledge base endpoint not found. Please check RAG service configuration.",
+                        data={"error": "endpoint_not_found"},
                     )
                 else:
                     return ToolResult(
                         success=False,
                         content="",
-                        error=f"RAG service error: {response.status_code}",
+                        error=f"RAG service error: {response.status_code} - {response.text[:200]}",
                     )
 
         except httpx.ConnectError:
             return ToolResult(
                 success=False,
                 content="",
-                error="Could not connect to RAG memory service",
+                error="Could not connect to RAG memory service. Please ensure the service is running.",
+            )
+        except httpx.TimeoutException:
+            return ToolResult(
+                success=False,
+                content="",
+                error="RAG memory service request timed out",
             )
         except Exception as e:
             return ToolResult(success=False, content="", error=str(e))

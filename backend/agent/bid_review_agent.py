@@ -4,8 +4,11 @@ This agent is responsible for comparing tender documents against bid documents
 and identifying non-compliant items.
 """
 
+import json
+import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Add Mini-Agent to path
 mini_agent_path = Path(__file__).parent.parent.parent / "Mini-Agent"
@@ -35,7 +38,7 @@ class BidReviewAgent(BaseAgent):
         bid_doc_path: str,
         user_id: str,
         event_callback=None,
-        **kwargs,
+        max_steps: int = 100,
     ):
         """Initialize the bid review agent.
 
@@ -45,12 +48,14 @@ class BidReviewAgent(BaseAgent):
             bid_doc_path: Path to the parsed bid document
             user_id: The user ID for workspace organization
             event_callback: Optional callback for SSE event publishing
+            max_steps: Maximum number of agent steps
         """
         self.project_id = project_id
         self.tender_doc_path = tender_doc_path
         self.bid_doc_path = bid_doc_path
         self.user_id = user_id
         self.event_callback = event_callback
+        self._findings: list[dict] = []
 
         # Initialize LLM client (MiniMax uses OpenAI protocol)
         llm_client = LLMClient(
@@ -77,7 +82,7 @@ class BidReviewAgent(BaseAgent):
             system_prompt=SYSTEM_PROMPT,
             tools=tools,
             workspace_dir=str(workspace_dir),
-            **kwargs,
+            max_steps=max_steps,
         )
 
     def _send_event(self, event_type: str, data: dict) -> None:
@@ -91,21 +96,20 @@ class BidReviewAgent(BaseAgent):
         Returns:
             List of findings with requirement, bid content, compliance status, etc.
         """
-        # Build the review task description
-        task = f"""Please review the bid document against the tender requirements.
+        # Build the review task description with clear expectations
+        task = f"""请审查投标文件相对于招标文件的不符合项。
 
-Tender Document: {self.tender_doc_path}
-Bid Document: {self.bid_doc_path}
+招标书路径: {self.tender_doc_path}
+投标书路径: {self.bid_doc_path}
 
-Follow the workflow in your system prompt to:
-1. Read and extract all requirements from the tender document
-2. Query the enterprise knowledge base for relevant policies
-3. Search the bid document for corresponding responses
-4. Compare each requirement against the bid response
-5. Identify non-compliant items with severity levels
+请严格按照系统提示中的工作流程执行：
+1. 读取并提取招标书中的所有要求
+2. 查询企业知识库获取相关政策
+3. 读取投标书内容
+4. 对每个招标要求与投标内容进行比对
+5. 识别不符合项并输出结构化的JSON格式结果
 
-Output your findings in the specified JSON format for each finding.
-"""
+重要：最终输出必须包含一个JSON数组，每项代表一个审查发现。"""
 
         self.add_user_message(task)
 
@@ -113,41 +117,129 @@ Output your findings in the specified JSON format for each finding.
         self._send_event("progress", {"message": "Starting agent review..."})
 
         # Run the agent
-        await self.run()
+        result = await self.run()
 
-        # Parse and return results
-        return self._parse_findings()
+        # Check if result contains structured findings
+        findings = self._extract_findings_from_messages()
 
-    def _parse_findings(self) -> list[dict]:
-        """Parse agent output into structured findings.
+        # If no structured findings, try to parse from result content
+        if not findings:
+            findings = self._parse_findings_from_text(result)
+
+        return findings
+
+    def _extract_findings_from_messages(self) -> list[dict]:
+        """Extract structured findings from agent message history.
 
         Returns:
-            List containing a single finding with the full markdown content.
+            List of structured findings if found, empty list otherwise.
         """
-        # Get the last assistant message
+        findings = []
+        requirement_counter = 1
+
         for msg in reversed(self.messages):
             if msg.role == "assistant" and msg.content:
-                # Return the markdown content as a single finding entry
-                return [{
-                    "requirement_key": "review_summary",
-                    "requirement_content": "投标文件审查结果汇总",
-                    "bid_content": None,
-                    "is_compliant": True,
-                    "severity": "minor",
-                    "location_page": None,
-                    "location_line": None,
-                    "suggestion": None,
-                    "explanation": msg.content,  # Store full Markdown
-                }]
+                # Try to parse JSON array from content
+                parsed = self._try_parse_json(msg.content)
+                if parsed and isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, dict) and "requirement_key" in item:
+                            findings.append(self._normalize_finding(item, requirement_counter))
+                            requirement_counter += 1
+                # Also check for single JSON object
+                elif parsed and isinstance(parsed, dict) and "requirement_key" in parsed:
+                    findings.append(self._normalize_finding(parsed, requirement_counter))
+                    requirement_counter += 1
 
+        return findings
+
+    def _normalize_finding(self, item: dict, counter: int) -> dict:
+        """Normalize a finding to match ReviewResult model.
+
+        Args:
+            item: Raw finding dict from agent
+            counter: Requirement counter for generating keys
+
+        Returns:
+            Normalized finding dict matching ReviewResult schema.
+        """
+        return {
+            "requirement_key": item.get("requirement_key", f"req_{counter:03d}"),
+            "requirement_content": item.get("requirement_content", item.get("requirement", "")),
+            "bid_content": item.get("bid_content"),
+            "is_compliant": item.get("is_compliant", True),
+            "severity": item.get("severity") if not item.get("is_compliant", True) else None,
+            "location_page": item.get("location_page"),
+            "location_line": item.get("location_line"),
+            "suggestion": item.get("suggestion"),
+            "explanation": item.get("explanation", ""),
+        }
+
+    def _try_parse_json(self, content: str) -> Optional[list | dict]:
+        """Try to parse JSON from content string.
+
+        Args:
+            content: Raw content string
+
+        Returns:
+            Parsed JSON object/array or None if parsing fails.
+        """
+        # Try direct parse
+        try:
+            return json.loads(content.strip())
+        except json.JSONDecodeError:
+            pass
+
+        # Try to extract JSON array from markdown
+        json_array_match = re.search(r'\[\s*\{.*\}\s*\]', content, re.DOTALL)
+        if json_array_match:
+            try:
+                return json.loads(json_array_match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        # Try to extract JSON object
+        json_obj_match = re.search(r'\{[^{}]*"[^}]+\}[^{}]*\}', content, re.DOTALL)
+        if json_obj_match:
+            try:
+                return json.loads(json_obj_match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    def _parse_findings_from_text(self, text: str) -> list[dict]:
+        """Parse findings from unstructured text.
+
+        Args:
+            text: Agent output text
+
+        Returns:
+            List with single summary finding containing full text.
+        """
+        # Check for common patterns indicating no issues found
+        if any(phrase in text.lower() for phrase in ["完全符合", "全部符合", "无不符合项", "符合所有要求"]):
+            return [{
+                "requirement_key": "review_pass",
+                "requirement_content": "投标文件审查通过",
+                "bid_content": None,
+                "is_compliant": True,
+                "severity": None,
+                "location_page": None,
+                "location_line": None,
+                "suggestion": None,
+                "explanation": "投标文件符合招标所有要求",
+            }]
+
+        # Return full text as summary
         return [{
-            "requirement_key": "review_empty",
-            "requirement_content": "未生成审查结果",
+            "requirement_key": "review_summary",
+            "requirement_content": "投标文件审查结果汇总",
             "bid_content": None,
-            "is_compliant": False,
-            "severity": "critical",
+            "is_compliant": True,
+            "severity": "minor",
             "location_page": None,
             "location_line": None,
-            "suggestion": "请检查Agent运行状态",
-            "explanation": "Agent未返回任何审查结果",
+            "suggestion": None,
+            "explanation": text,
         }]

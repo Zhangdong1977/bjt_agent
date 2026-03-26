@@ -106,6 +106,7 @@ export interface SSEEvent {
   message?: string
   step_number?: number
   step_type?: string
+  tool_name?: string
   content?: string
   findings_count?: number
 }

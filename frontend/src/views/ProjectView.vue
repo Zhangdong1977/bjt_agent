@@ -4,12 +4,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { documentsApi } from '@/api/client'
 import type { DocumentContent, SSEEvent } from '@/types'
-import ReviewTimeline from '@/components/ReviewTimeline.vue'
 
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
 
+const uploading = ref(false)
 const projectId = computed(() => route.params.id as string)
 const tenderDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'tender'))
 const bidDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'bid'))
@@ -30,7 +30,6 @@ interface TimelineStep {
   timestamp: Date
 }
 const agentSteps = ref<TimelineStep[]>([])
-const timelineRef = ref<InstanceType<typeof ReviewTimeline> | null>(null)
 
 onMounted(() => {
   projectStore.selectProject(projectId.value)
@@ -56,16 +55,10 @@ function goBack() {
   router.push({ name: 'home' })
 }
 
-function goToTimeline() {
-  router.push({ name: 'review-timeline', params: { id: projectId.value } })
-}
-
-function goToResults() {
-  router.push({ name: 'review-results', params: { id: projectId.value } })
-}
-
-async function handleUpload(file: File) {
-  const docType = file.name.toLowerCase().includes('tender') || file.name.toLowerCase().includes('bid') ? 'bid' : 'tender'
+async function handleUpload(event: Event, docType: 'tender' | 'bid') {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
   await projectStore.uploadDocument(docType, file)
 }
 
@@ -134,6 +127,19 @@ function getStatusClass(status: string) {
       return 'status-error'
     default:
       return 'status-pending'
+  }
+}
+
+function getSeverityClass(severity: string) {
+  switch (severity) {
+    case 'critical':
+      return 'severity-critical'
+    case 'major':
+      return 'severity-major'
+    case 'minor':
+      return 'severity-minor'
+    default:
+      return ''
   }
 }
 </script>
