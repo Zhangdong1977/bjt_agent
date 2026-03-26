@@ -55,11 +55,51 @@ export const useProjectStore = defineStore('project', () => {
     if (!currentProject.value) return
     const doc = await documentsApi.upload(currentProject.value.id, docType, file)
     documents.value.push(doc)
+    // Start polling for document status updates
+    pollDocumentStatus(doc.id)
     return doc
+  }
+
+  let documentPollIntervals: Record<string, number> = {}
+
+  async function pollDocumentStatus(documentId: string) {
+    if (!currentProject.value) return
+
+    const checkStatus = async () => {
+      try {
+        const updatedDoc = await documentsApi.get(currentProject.value!.id, documentId)
+        const index = documents.value.findIndex(d => d.id === documentId)
+        if (index !== -1) {
+          documents.value[index] = updatedDoc
+        }
+
+        // Stop polling if status is final
+        if (updatedDoc.status === 'parsed' || updatedDoc.status === 'failed') {
+          if (documentPollIntervals[documentId]) {
+            clearInterval(documentPollIntervals[documentId])
+            delete documentPollIntervals[documentId]
+          }
+        }
+      } catch (err) {
+        console.error('Failed to poll document status:', err)
+        // Stop polling on error
+        if (documentPollIntervals[documentId]) {
+          clearInterval(documentPollIntervals[documentId])
+          delete documentPollIntervals[documentId]
+        }
+      }
+    }
+
+    // Poll every 2 seconds
+    documentPollIntervals[documentId] = window.setInterval(checkStatus, 2000)
+    // Also check immediately
+    await checkStatus()
   }
 
   async function deleteDocument(documentId: string) {
     if (!currentProject.value) return
+    // Stop polling for this document
+    clearDocumentPoll(documentId)
     await documentsApi.delete(currentProject.value.id, documentId)
     documents.value = documents.value.filter(d => d.id !== documentId)
   }
@@ -137,6 +177,16 @@ export const useProjectStore = defineStore('project', () => {
     currentTask.value = null
     reviewResults.value = null
     disconnectSSE()
+    // Clear all document polling intervals
+    Object.values(documentPollIntervals).forEach(intervalId => clearInterval(intervalId))
+    documentPollIntervals = {}
+  }
+
+  function clearDocumentPoll(documentId: string) {
+    if (documentPollIntervals[documentId]) {
+      clearInterval(documentPollIntervals[documentId])
+      delete documentPollIntervals[documentId]
+    }
   }
 
   return {
@@ -157,6 +207,7 @@ export const useProjectStore = defineStore('project', () => {
     fetchReviewResults,
     handleSSEEvent,
     disconnectSSE,
+    clearDocumentPoll,
     $reset
   }
 })

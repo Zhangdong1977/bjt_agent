@@ -261,6 +261,20 @@ async def stream_review_events(
     # Verify user has access to the project
     await verify_project_ownership(project_id, current_user.id, db)
 
+    # Verify task exists and belongs to this project
+    result = await db.execute(
+        select(ReviewTask).where(
+            ReviewTask.id == task_id,
+            ReviewTask.project_id == project_id,
+        )
+    )
+    task = result.scalars().first()
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found",
+        )
+
     async def event_generator():
         async for event in sse_manager.connect(task_id):
             yield event

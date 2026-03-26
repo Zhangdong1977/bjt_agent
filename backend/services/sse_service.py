@@ -18,13 +18,6 @@ class SSEConnectionManager:
     def __init__(self):
         self._redis_client = None
 
-    def _get_redis(self):
-        """Get or create Redis client."""
-        if self._redis_client is None:
-            settings = get_settings()
-            self._redis_client = redis.from_url(settings.redis_url, decode_responses=True)
-        return self._redis_client
-
     async def connect(self, task_id: str) -> AsyncGenerator[str, None]:
         """Connect to SSE stream for a specific task.
 
@@ -33,18 +26,25 @@ class SSEConnectionManager:
         Yields:
             SSE-formatted event strings
         """
-        r = self._get_redis()
+        settings = get_settings()
+        r = redis.from_url(settings.redis_url, decode_responses=True)
         pubsub = r.pubsub()
         await pubsub.subscribe(f"task:{task_id}")
+        logger.info(f"SSE subscribed to channel: task:{task_id}")
+
+        # Small delay to ensure subscription is fully established
+        await asyncio.sleep(0.1)
 
         try:
             async for message in pubsub.listen():
+                logger.info(f"SSE received message: {message}")
                 if message["type"] == "message":
                     data = message["data"]
                     yield f"data: {data}\n\n"
         finally:
             await pubsub.unsubscribe(f"task:{task_id}")
             await pubsub.close()
+            await r.aclose()
 
 
 # Global SSE manager instance

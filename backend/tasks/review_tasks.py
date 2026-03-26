@@ -29,7 +29,8 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
         settings = get_settings()
         r = redis.from_url(settings.redis_url)
         event = json.dumps({"type": event_type, "task_id": task_id, **data})
-        r.publish(f"task:{task_id}", event)
+        result = r.publish(f"task:{task_id}", event)
+        logger.info(f"Published event to task:{task_id}: type={event_type}, result={result}")
     except Exception as e:
         logger.warning(f"Failed to publish event to Redis: {e}")
 
