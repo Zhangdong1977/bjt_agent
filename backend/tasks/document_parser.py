@@ -281,49 +281,60 @@ async def _parse_pdf(file_path: Path) -> dict:
 
 
 async def _parse_docx(file_path: Path) -> dict:
-    """Parse DOCX file and extract text and images.
+    """Parse DOCX file using LibreOffice in HTML mode.
 
-    Handles corrupted documents gracefully by catching exceptions.
+    Uses LibreOffice to convert DOCX to HTML, then parses the HTML structure
+    to generate structured Markdown with proper heading, list, and table
+    formatting.
+
+    Args:
+        file_path: Path to the DOCX file
+
+    Returns:
+        Dict with text (markdown), images, and page_count (None)
+
+    Raises:
+        ValueError: If LibreOffice conversion fails
     """
-    from docx import Document as DocxDocument
+    from backend.parsers import LibreOfficeConverter, html_to_markdown
 
-    try:
-        doc = DocxDocument(str(file_path))
-    except Exception as e:
-        logger.error(f"Failed to open DOCX {file_path}: {e}")
-        raise ValueError(f"Failed to parse DOCX: {e}")
+    file_size = file_path.stat().st_size
+    logger.info(f"LibreOffice HTML parsing: {file_path} ({file_size / (1024*1024):.2f}MB)")
 
-    text_parts = []
+    # Convert DOCX to HTML using the parser module
+    converter = LibreOfficeConverter()
+    result = await converter.convert(file_path)
+
+    html_content = result["text"]
+    images_dir = result["images_dir"]
+
+    logger.info(f"LibreOffice HTML conversion successful: {len(html_content)} characters")
+
+    # Convert HTML to structured Markdown
+    markdown_text = html_to_markdown(html_content, images_dir)
+    logger.info(f"HTML to Markdown conversion successful: {len(markdown_text)} characters")
+
+    # Extract images from the images directory
     images = []
-
-    try:
-        for para in doc.paragraphs:
-            if para.text.strip():
-                text_parts.append(para.text)
-    except Exception as e:
-        logger.warning(f"Failed to extract paragraph text: {e}")
-
-    # Extract inline images
-    try:
-        for rel in doc.part.rels.values():
-            if "image" in rel.target_ref:
+    if images_dir and images_dir.exists():
+        for img_path in images_dir.iterdir():
+            if img_path.is_file() and img_path.suffix.lower() in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"]:
                 try:
-                    image = rel.target_part
-                    image_bytes = image.blob
                     # Limit image size to 10MB
-                    if len(image_bytes) > 10 * 1024 * 1024:
-                        logger.warning(f"Skipping large image ({len(image_bytes)} bytes)")
+                    if img_path.stat().st_size > 10 * 1024 * 1024:
+                        logger.warning(f"Skipping large image ({img_path.stat().st_size} bytes): {img_path.name}")
                         continue
-                    image_ext = image.content_type.split("/")[-1]
-                    image_filename = f"image_{len(images) + 1}.{image_ext}"
-                    images.append({"filename": image_filename, "data": image_bytes})
+                    images.append({
+                        "filename": img_path.name,
+                        "data": img_path.read_bytes(),
+                    })
                 except Exception as e:
-                    logger.warning(f"Failed to extract image: {e}")
-    except Exception as e:
-        logger.warning(f"Failed to extract images: {e}")
+                    logger.warning(f"Failed to read image {img_path}: {e}")
+
+    logger.info(f"Extracted {len(images)} images from DOCX")
 
     return {
-        "text": "\n\n".join(text_parts),
+        "text": markdown_text,
         "images": images,
-        "page_count": None,  # DOCX doesn't have explicit pages
+        "page_count": None,
     }
