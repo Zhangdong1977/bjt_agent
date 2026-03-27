@@ -30,6 +30,7 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
 
         settings = get_settings()
         event = json.dumps({"type": event_type, "task_id": task_id, **data})
+        logger.info(f"Publishing event: {event}")
 
         r = redis.from_url(settings.redis_url)
         try:

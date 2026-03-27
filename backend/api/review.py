@@ -1,5 +1,6 @@
 """Review API routes."""
 
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -43,7 +44,7 @@ async def start_review(
     """Start a new review task for the project."""
     await verify_project_ownership(project_id, current_user.id, db)
 
-    # Check if there's already a running task
+    # Check if there's already a running task and auto-cancel stale tasks
     result = await db.execute(
         select(ReviewTask)
         .where(ReviewTask.project_id == project_id)
@@ -51,10 +52,11 @@ async def start_review(
     )
     existing_task = result.scalar_one_or_none()
     if existing_task:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A review task is already running for this project",
-        )
+        # Auto-cancel stale tasks from crashed workers - they can't complete
+        existing_task.status = "failed"
+        existing_task.error_message = "Task cancelled - stale task from previous crashed worker"
+        existing_task.completed_at = datetime.utcnow()
+        await db.flush()
 
     # Create new review task
     task = ReviewTask(

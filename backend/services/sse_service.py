@@ -37,8 +37,9 @@ class SSEConnectionManager:
         await pubsub.subscribe(f"task:{task_id}")
         logger.info(f"SSE subscribed to channel: task:{task_id}")
 
-        # Small delay to ensure subscription is fully established
-        await asyncio.sleep(0.1)
+        # Delay to ensure subscription is fully established before events arrive
+        # Celery task may publish events quickly after being queued
+        await asyncio.sleep(0.5)
 
         event_count = 0
         try:
@@ -47,6 +48,7 @@ class SSEConnectionManager:
                 if message["type"] == "message":
                     data = message["data"]
                     event_count += 1
+                    logger.info(f"SSE yielding event {event_count}: {data}")
                     # Include event ID for client reconnection support
                     yield f"id: {event_count}\ndata: {data}\n\n"
         finally:

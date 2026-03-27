@@ -176,13 +176,14 @@ export const useProjectStore = defineStore('project', () => {
     sseEventSource.value.onmessage = (event) => {
       try {
         const data: SSEEvent = JSON.parse(event.data)
+        console.log('SSE event received:', data)
         handleSSEEvent(data)
       } catch {
         console.error('Failed to parse SSE event')
       }
     }
 
-    sseEventSource.value.onerror = () => {
+    sseEventSource.value.onerror = (e) => {
       // If task is completed or failed, don't reconnect
       if (currentTask.value?.status === 'completed' || currentTask.value?.status === 'failed') {
         disconnectSSE()
@@ -193,7 +194,7 @@ export const useProjectStore = defineStore('project', () => {
       const delay = getReconnectDelay()
       sseReconnectAttempts++
 
-      console.log(`SSE connection lost, reconnecting in ${Math.round(delay)}ms (attempt ${sseReconnectAttempts})`)
+      console.error(`SSE connection error, reconnecting in ${Math.round(delay)}ms (attempt ${sseReconnectAttempts}):`, e)
 
       if (sseReconnectTimeout) {
         clearTimeout(sseReconnectTimeout)
