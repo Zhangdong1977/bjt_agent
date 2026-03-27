@@ -8,8 +8,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
     "@element-plus/icons-vue": "^2.3.0",
     "@vueuse/core": "^10.7.0",
+    "ant-design-vue": "^4.2.6",
     "axios": "^1.6.0",
     "element-plus": "^2.5.0",
     "pinia": "^2.1.0",
