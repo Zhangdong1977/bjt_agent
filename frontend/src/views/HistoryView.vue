@@ -24,10 +24,6 @@ const filteredProjects = computed(() => {
     )
   }
 
-  if (selectedStatus.value) {
-    projects = projects.filter(p => p.status === selectedStatus.value)
-  }
-
   return projects
 })
 
