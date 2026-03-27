@@ -8,7 +8,6 @@ const router = useRouter()
 const projectStore = useProjectStore()
 
 const searchText = ref('')
-const selectedStatus = ref<string | null>(null)
 
 onMounted(() => {
   projectStore.fetchProjects()
@@ -28,7 +27,7 @@ const filteredProjects = computed(() => {
 })
 
 function goToProject(projectId: string) {
-  router.push({ name: 'review-results', params: { id: projectId } })
+  router.push({ name: 'project', params: { id: projectId } })
 }
 
 async function deleteProject(projectId: string, event: Event) {
@@ -37,16 +36,6 @@ async function deleteProject(projectId: string, event: Event) {
     await projectStore.deleteProject(projectId)
     message.success('项目已删除')
   }
-}
-
-function getStatusColor(status: string) {
-  const colorMap: Record<string, string> = {
-    completed: 'success',
-    running: 'processing',
-    failed: 'error',
-    pending: 'default'
-  }
-  return colorMap[status] || 'default'
 }
 </script>
 
@@ -65,16 +54,6 @@ function getStatusColor(status: string) {
           style="width: 300px"
           allow-clear
         />
-        <a-select
-          v-model:value="selectedStatus"
-          placeholder="筛选状态"
-          style="width: 150px"
-          allow-clear
-        >
-          <a-select-option value="completed">已完成</a-select-option>
-          <a-select-option value="running">进行中</a-select-option>
-          <a-select-option value="failed">失败</a-select-option>
-        </a-select>
       </div>
     </a-card>
 
@@ -83,7 +62,7 @@ function getStatusColor(status: string) {
         :dataSource="filteredProjects"
         :columns="[
           { title: '项目名称', dataIndex: 'name', key: 'name' },
-          { title: '状态', dataIndex: 'status', key: 'status' },
+          { title: '描述', dataIndex: 'description', key: 'description' },
           { title: '创建时间', dataIndex: 'created_at', key: 'created_at' },
           { title: '操作', key: 'action' }
         ]"
@@ -96,17 +75,15 @@ function getStatusColor(status: string) {
               {{ record.name }}
             </a>
           </template>
-          <template v-else-if="column.key === 'status'">
-            <a-tag :color="getStatusColor(record.status)">
-              {{ record.status }}
-            </a-tag>
+          <template v-else-if="column.key === 'description'">
+            {{ record.description || '-' }}
           </template>
           <template v-else-if="column.key === 'created_at'">
             {{ new Date(record.created_at).toLocaleDateString() }}
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a @click="goToProject(record.id)">查看结果</a>
+              <a @click="goToProject(record.id)">查看详情</a>
               <a-divider type="vertical" />
               <a-popconfirm
                 title="确定要删除此项目吗？"

@@ -11,7 +11,7 @@ from starlette import status
 
 from backend.config import get_settings
 from backend.models import init_db, close_db
-from backend.api import auth_router, projects_router, documents_router, review_router
+from backend.api import auth_router, projects_router, documents_router, review_router, knowledge_router
 from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -53,6 +53,7 @@ app.include_router(auth_router, prefix=settings.api_prefix)
 app.include_router(projects_router, prefix=settings.api_prefix)
 app.include_router(documents_router, prefix=settings.api_prefix)
 app.include_router(review_router, prefix=settings.api_prefix)
+app.include_router(knowledge_router, prefix=settings.api_prefix)
 
 
 @app.get("/")
