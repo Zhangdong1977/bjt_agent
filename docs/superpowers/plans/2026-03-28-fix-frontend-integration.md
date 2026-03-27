@@ -440,6 +440,75 @@ git commit -m "chore: verify backend runs correctly"
 
 ---
 
+## Task 5: 系统联调测试 (测试团队执行)
+
+**测试工具**: Chrome DevTools (VNC远程桌面, DISPLAY=:2)
+
+**测试步骤**:
+
+### 5.1 启动服务
+```bash
+# 启动后端 (在backend目录)
+cd /home/openclaw/bjt_agent/backend
+conda activate ssirs
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# 启动前端 (在frontend目录)
+cd /home/openclaw/bjt_agent/frontend
+npm run dev
+```
+
+### 5.2 登录测试
+1. 打开Chrome浏览器 (DISPLAY=:2)
+2. 访问 `http://localhost:3000`
+3. 使用测试账号登录
+4. 验证登录成功，跳转到 `/home/check`
+
+### 5.3 标书检查模块测试
+1. 点击"标书检查"菜单
+2. 验证显示创建项目表单
+3. 输入项目名称，点击创建
+4. 验证跳转到项目详情页
+
+### 5.4 历史标书模块测试
+1. 点击"历史标书"菜单
+2. 验证显示项目列表
+3. 测试搜索功能
+4. 点击项目进入详情
+
+### 5.5 知识库模块测试
+1. 点击"知识库"菜单
+2. 验证显示上传区域
+3. 上传一个测试文档
+4. 验证文档出现在列表中
+5. 测试删除功能
+
+### 5.6 Chrome DevTools调试
+1. 打开DevTools (F12)
+2. Network标签: 检查API请求是否正确
+3. Console标签: 检查是否有JavaScript错误
+4. 验证API响应状态码
+
+**预期结果**:
+- [ ] 登录成功
+- [ ] 标书检查模块可创建项目
+- [ ] 历史标书模块可显示项目列表
+- [ ] 知识库模块可上传/删除文档
+- [ ] 所有API请求无404/500错误
+- [ ] Console无JavaScript错误
+
+---
+
+## 实施检查清单
+
+- [ ] Task 1: 后端知识库API创建
+- [ ] Task 2: HistoryView修复
+- [ ] Task 3: 前端构建验证
+- [ ] Task 4: 后端运行验证
+- [ ] Task 5: 系统联调测试 (测试团队)
+
+---
+
 ## 预期结果
 
 完成所有任务后:
@@ -447,3 +516,4 @@ git commit -m "chore: verify backend runs correctly"
 2. HistoryView不再有错误的状态过滤
 3. 前端构建通过
 4. 前后端可以正常通信
+5. 系统联调测试通过
