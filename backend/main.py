@@ -2,10 +2,12 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from starlette import status
 
 from backend.config import get_settings
 from backend.models import init_db, close_db
@@ -109,6 +111,44 @@ async def stream_task_events(task_id: str, token: str | None = None):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/api/tasks/cleanup-on-restart")
+async def cleanup_tasks_on_restart():
+    """Cleanup all pending/running tasks before service restart.
+
+    This endpoint is called by the bjt.sh script before restarting services.
+    It terminates all Celery tasks and marks them as failed.
+    """
+    from backend.celery_app import celery_app
+    from backend.models import async_session_factory, ReviewTask
+    from sqlalchemy import select
+
+    cleaned_count = 0
+
+    async with async_session_factory() as db:
+        # Get all pending/running tasks
+        result = await db.execute(
+            select(ReviewTask).where(ReviewTask.status.in_(["pending", "running"]))
+        )
+        tasks = result.scalars().all()
+
+        for task in tasks:
+            if task.celery_task_id:
+                try:
+                    # Revoke and terminate the Celery task
+                    celery_app.control.revoke(task.celery_task_id, terminate=True)
+                except Exception:
+                    pass  # Task may have already completed
+
+            task.status = "failed"
+            task.error_message = "Service restarting"
+            task.completed_at = datetime.utcnow()
+            cleaned_count += 1
+
+        await db.commit()
+
+    return {"cleaned_tasks": cleaned_count}
 
 
 if __name__ == "__main__":

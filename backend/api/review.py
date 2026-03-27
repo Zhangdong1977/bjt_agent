@@ -44,18 +44,19 @@ async def start_review(
     """Start a new review task for the project."""
     await verify_project_ownership(project_id, current_user.id, db)
 
-    # Check if there's already a running task and auto-cancel stale tasks
+    # Check if there are running tasks and auto-cancel stale tasks
     result = await db.execute(
         select(ReviewTask)
         .where(ReviewTask.project_id == project_id)
         .where(ReviewTask.status.in_(["pending", "running"]))
     )
-    existing_task = result.scalar_one_or_none()
-    if existing_task:
+    existing_tasks = result.scalars().all()
+    for existing_task in existing_tasks:
         # Auto-cancel stale tasks from crashed workers - they can't complete
         existing_task.status = "failed"
         existing_task.error_message = "Task cancelled - stale task from previous crashed worker"
         existing_task.completed_at = datetime.utcnow()
+    if existing_tasks:
         await db.flush()
 
     # Create new review task
@@ -69,7 +70,9 @@ async def start_review(
 
     # Trigger the review task via Celery
     from backend.tasks.review_tasks import run_review
-    run_review.delay(task.id)
+    celery_result = run_review.delay(task.id)
+    task.celery_task_id = celery_result.id
+    await db.flush()
 
     return task
 

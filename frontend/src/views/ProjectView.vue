@@ -249,13 +249,15 @@ function getSeverityClass(severity: string) {
         </p>
 
         <!-- Agent Timeline -->
-        <div v-if="projectStore.currentTask && projectStore.currentTask.status === 'running'" class="timeline">
-          <h3>Agent Progress</h3>
+        <div v-if="projectStore.currentTask && (projectStore.currentTask.status === 'running' || projectStore.currentTask.status === 'completed')" class="timeline">
+          <h3>{{ projectStore.currentTask.status === 'completed' ? 'Agent Steps (Completed)' : 'Agent Progress' }}</h3>
+          <!-- Debug info -->
+          <p style="font-size: 0.75rem; color: #999;">Debug: status={{ projectStore.currentTask.status }}, steps={{ projectStore.agentSteps.length }}</p>
           <el-scrollbar height="300px">
             <div class="timeline-steps">
               <div
-                v-for="(step, index) in projectStore.agentSteps"
-                :key="index"
+                v-for="step in projectStore.agentSteps"
+                :key="step.step_number"
                 :class="['timeline-step', `step-${step.step_type}`]"
               >
                 <div class="step-indicator">

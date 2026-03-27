@@ -1,37 +1,33 @@
-"""Tests for async Redis usage in Celery tasks."""
+"""Tests for Redis Streams usage in Celery tasks."""
 
 import pytest
 import inspect
 
 
-class TestRedisPublishAsync:
-    """Verify Redis publish is handled asynchronously."""
+class TestRedisStreamsPublish:
+    """Verify Redis Streams publish is handled correctly."""
 
-    def test_publish_event_uses_thread_pool_or_async(self):
-        """Check if _publish_event uses thread pool or async redis."""
+    def test_publish_event_uses_redis_streams(self):
+        """Check if _publish_event uses Redis Streams (XADD)."""
         from backend.tasks import review_tasks
 
         # Get the source code of _publish_event
         source = inspect.getsource(review_tasks._publish_event)
 
-        # Check for proper async patterns
-        uses_thread_pool = "ThreadPoolExecutor" in source
-        uses_async_redis = "redis.asyncio" in source or "from redis.asyncio" in source
+        # Check for Redis Streams patterns
+        uses_xadd = "XADD" in source
+        uses_eval = "eval" in source  # Lua script for atomicity
 
-        # Should use either thread pool or async redis
-        assert uses_thread_pool or uses_async_redis, \
-            "_publish_event should use ThreadPoolExecutor or async redis"
+        # Should use XADD with Lua script for atomicity
+        assert uses_xadd and uses_eval, \
+            "_publish_event should use XADD with Lua script for atomic stream operations"
 
-    def test_publish_event_no_direct_blocking_call(self):
-        """Verify _publish_event doesn't make direct blocking redis calls."""
+    def test_publish_event_uses_stream_key_pattern(self):
+        """Verify _publish_event uses the correct stream key pattern."""
         from backend.tasks import review_tasks
 
         source = inspect.getsource(review_tasks._publish_event)
 
-        # If using redis.from_url directly (sync) without thread pool, it's blocking
-        # Async redis (redis.asyncio) also uses redis.from_url but is non-blocking
-        uses_async_redis = "redis.asyncio" in source
-        uses_direct_sync = "redis.from_url(" in source and "ThreadPoolExecutor" not in source and not uses_async_redis
-
-        assert not uses_direct_sync, \
-            "_publish_event makes direct synchronous redis call without thread pool"
+        # Should use sse:stream:{task_id} pattern
+        assert "sse:stream:" in source, \
+            "_publish_event should use 'sse:stream:{task_id}' key pattern"

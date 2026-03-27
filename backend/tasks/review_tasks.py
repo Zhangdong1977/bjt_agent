@@ -11,6 +11,22 @@ from backend.models import async_session_factory, ReviewTask, ReviewResult, Agen
 
 logger = logging.getLogger(__name__)
 
+
+def run_async(coro):
+    """Helper to run async function in sync context.
+
+    Uses an existing event loop if available, otherwise creates a new one.
+    This pattern is safer for Celery workers than asyncio.run() which creates
+    and closes a new loop each time.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
+
+
 # Error message constants
 ERROR_TASK_NOT_FOUND = "Task not found"
 ERROR_PROJECT_NOT_FOUND = "Project not found"
@@ -18,28 +34,47 @@ ERROR_TENDER_NOT_FOUND = "Tender document not found"
 ERROR_BID_NOT_FOUND = "Bid document not found"
 
 
-def _publish_event(task_id: str, event_type: str, data: dict) -> None:
-    """Publish an event to Redis for SSE forwarding.
+def _get_stream_key(task_id: str) -> str:
+    """Get Redis Stream key for a task's SSE events.
 
-    This is called from Celery tasks to send real-time updates.
-    Uses synchronous redis client to avoid event loop conflicts.
+    Uses sse:stream:{task_id} pattern for Redis Streams.
+    """
+    return f"sse:stream:{task_id}"
+
+
+def _publish_event(task_id: str, event_type: str, data: dict) -> None:
+    """Publish an event to Redis Stream for SSE forwarding.
+
+    Uses Redis Streams for reliable message delivery with persistence.
+    XADD + Lua script ensures atomic stream operations.
     """
     try:
         import redis
         from backend.config import get_settings
 
         settings = get_settings()
+        stream_key = f"sse:stream:{task_id}"
         event = json.dumps({"type": event_type, "task_id": task_id, **data})
-        logger.info(f"Publishing event: {event}")
+        logger.info(f"Publishing event to stream: {stream_key} -> {event}")
 
         r = redis.from_url(settings.redis_url)
         try:
-            result = r.publish(f"task:{task_id}", event)
-            logger.info(f"Published event to task:{task_id}: type={event_type}, result={result}")
+            # Use Lua script for atomic XADD with TTL
+            # This ensures events are added atomically and expire after 1 hour
+            lua_script = """
+            local key = KEYS[1]
+            local data = ARGV[1]
+            local ttl = ARGV[2]
+            local msg_id = redis.call('XADD', key, 'MAXLEN', '~', '1000', '*', 'data', data)
+            redis.call('EXPIRE', key, ttl)
+            return msg_id
+            """
+            msg_id = r.eval(lua_script, 1, stream_key, event, 3600)  # 1 hour TTL
+            logger.info(f"Published event to stream: {stream_key}, msg_id={msg_id}")
         finally:
             r.close()
     except Exception as e:
-        logger.warning(f"Failed to publish event to Redis: {e}")
+        logger.warning(f"Failed to publish event to Redis Stream: {e}")
 
 
 @celery_app.task(bind=True, name="backend.tasks.review_tasks.run_review")
@@ -69,7 +104,7 @@ def run_review(self, task_id: str) -> dict:
                 task.started_at = datetime.utcnow()
                 await db.flush()
 
-                # Send SSE event
+                # Send SSE event (Redis Streams handles reliability - no sleep needed)
                 _publish_event(task_id, "status", {"status": "running"})
 
                 # Get project and documents
@@ -118,6 +153,7 @@ def run_review(self, task_id: str) -> dict:
 
                 # Store only non-compliant findings (ReviewResult is for non-compliance)
                 non_compliant_findings = [f for f in findings if not f.get("is_compliant", False)]
+                logger.info(f"Agent returned {len(findings)} findings, {len(non_compliant_findings)} non-compliant")
                 for finding_data in non_compliant_findings:
                     finding = ReviewResult(
                         task_id=task_id,
@@ -139,7 +175,7 @@ def run_review(self, task_id: str) -> dict:
                 return {
                     "status": "success",
                     "task_id": task_id,
-                    "findings_count": len(findings),
+                    "findings_count": len(non_compliant_findings),
                 }
 
             except Exception as e:
@@ -151,7 +187,7 @@ def run_review(self, task_id: str) -> dict:
                 _publish_event(task_id, "error", {"message": str(e)})
                 return {"status": "error", "message": str(e)}
 
-    return asyncio.run(_run())
+    return run_async(_run())
 
 
 def _record_agent_step(db, task_id: str, step_number: int, msg, event_cb) -> int:

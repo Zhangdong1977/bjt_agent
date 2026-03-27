@@ -247,11 +247,44 @@ do_stop() {
     stop_service "celery_parser"
     stop_service "celery_review"
 
+    # Cleanup Redis task data
+    cleanup_redis_celery
+
     echo ""
     log "========================================"
     log "  All services stopped!"
     log "========================================"
     echo ""
+}
+
+cleanup_redis_celery() {
+    log "Cleaning up Redis Celery task data..."
+
+    # Get Redis URL from environment or use default
+    local redis_url="${REDIS_URL:-redis://183.66.37.186:7005}"
+
+    # Parse Redis URL to get host and port
+    local redis_host=$(echo "$redis_url" | sed -E 's|redis://([^:]+):([0-9]+).*|\1|')
+    local redis_port=$(echo "$redis_url" | sed -E 's|redis://([^:]+):([0-9]+).*|\2|')
+
+    # Use redis-cli to flush Celery keys
+    # Celery keys are typically prefixed with: celery, celerybeat, stream:task:
+    redis-cli -h "$redis_host" -p "$redis_port" --no-auth-warning KEYS "celery*" 2>/dev/null | while read -r key; do
+        if [ -n "$key" ]; then
+            log "Deleting Redis key: $key"
+            redis-cli -h "$redis_host" -p "$redis_port" --no-auth-warning DEL "$key" 2>/dev/null || true
+        fi
+    done
+
+    # Clean up SSE stream keys (stream:task:*)
+    redis-cli -h "$redis_host" -p "$redis_port" --no-auth-warning KEYS "stream:task:*" 2>/dev/null | while read -r key; do
+        if [ -n "$key" ]; then
+            log "Deleting Redis stream key: $key"
+            redis-cli -h "$redis_host" -p "$redis_port" --no-auth-warning DEL "$key" 2>/dev/null || true
+        fi
+    done
+
+    log "Redis Celery task data cleanup completed"
 }
 
 do_status() {
@@ -343,6 +376,12 @@ do_restart() {
     check_conda_env "restart"
 
     log "Restarting services..."
+
+    # Cleanup tasks before stopping services
+    log "Cleaning up running tasks..."
+    curl -X POST "http://localhost:8000/api/tasks/cleanup-on-restart" 2>/dev/null || true
+    sleep 1
+
     do_stop
     sleep 2
     do_start

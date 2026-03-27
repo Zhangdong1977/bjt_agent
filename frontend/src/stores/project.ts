@@ -213,17 +213,32 @@ export const useProjectStore = defineStore('project', () => {
       case 'status':
         if (currentTask.value) {
           currentTask.value.status = event.status as ReviewTask['status']
+          console.log('[SSE] Status updated:', currentTask.value.status)
         }
         break
+      case 'progress':
+        // Progress events don't need special handling, just log for debugging
+        console.log('[SSE] Progress:', event.message)
+        break
       case 'step':
+        // Also update status to 'running' if we receive step events
+        // This handles the case where the initial status event was missed
+        // due to SSE connection being established before Celery task started
+        if (currentTask.value && currentTask.value.status === 'pending') {
+          currentTask.value.status = 'running'
+          console.log('[SSE] Status auto-updated to running from step event')
+        }
         if (event.step_number !== undefined) {
-          agentSteps.value.push({
+          // Force new array reference to trigger Vue reactivity
+          const newSteps = [...agentSteps.value, {
             step_number: event.step_number,
             step_type: event.step_type || 'unknown',
             tool_name: event.tool_name,
             content: event.content || '',
             timestamp: new Date(),
-          })
+          }]
+          agentSteps.value = newSteps
+          console.log('[SSE] Step added, total steps:', agentSteps.value.length)
         }
         break
       case 'complete':

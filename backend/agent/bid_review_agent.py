@@ -17,7 +17,7 @@ if mini_agent_path.exists() and str(mini_agent_path) not in sys.path:
 
 from mini_agent.agent import Agent as BaseAgent
 from mini_agent.llm import LLMClient
-from mini_agent.schema import LLMProvider
+from mini_agent.schema import LLMProvider, Message
 
 from backend.config import get_settings
 from backend.agent.tools.doc_search import DocSearchTool
@@ -91,7 +91,7 @@ class BidReviewAgent(BaseAgent):
             self.event_callback(event_type, data)
 
     async def run_review(self) -> list[dict]:
-        """Run the bid review process.
+        """Run the bid review process with real-time event emission.
 
         Returns:
             List of findings with requirement, bid content, compliance status, etc.
@@ -113,18 +113,101 @@ class BidReviewAgent(BaseAgent):
 
         self.add_user_message(task)
 
-        # Send event
+        # Send starting event
         self._send_event("progress", {"message": "Starting agent review..."})
+        self._send_event("step", {
+            "step_number": 1,
+            "step_type": "thought",
+            "content": "Initializing bid review agent...",
+        })
 
-        # Run the agent
-        result = await self.run()
+        step_number = 2
 
-        # Check if result contains structured findings
+        # Run the agent loop manually with event emission
+        tool_list = list(self.tools.values())
+
+        while len(self.messages) - 1 < self.max_steps:  # -1 for system message
+            # Check for cancellation
+            if self.cancel_event and self.cancel_event.is_set():
+                break
+
+            # Summarize if needed
+            await self._summarize_messages()
+
+            # Get LLM response
+            try:
+                response = await self.llm.generate(messages=self.messages, tools=tool_list)
+            except Exception as e:
+                self._send_event("error", {"message": f"LLM error: {str(e)}"})
+                break
+
+            # Add assistant message
+            assistant_msg = Message(
+                role="assistant",
+                content=response.content,
+                thinking=response.thinking,
+                tool_calls=response.tool_calls,
+            )
+            self.messages.append(assistant_msg)
+
+            # Emit step event
+            if response.content:
+                self._send_event("step", {
+                    "step_number": step_number,
+                    "step_type": "thought",
+                    "content": str(response.content)[:200],
+                })
+                step_number += 1
+
+            # Check if task is complete
+            if not response.tool_calls:
+                break
+
+            # Execute tools with event emission
+            for tool_call in response.tool_calls:
+                function_name = tool_call.function.name
+
+                # Emit tool call event
+                self._send_event("step", {
+                    "step_number": step_number,
+                    "step_type": "tool_call",
+                    "tool_name": function_name,
+                    "content": f"Calling {function_name}...",
+                })
+                step_number += 1
+
+                # Execute tool
+                if function_name in self.tools:
+                    try:
+                        result = await self.tools[function_name].execute(**tool_call.function.arguments)
+                        # Emit tool result event
+                        result_preview = str(result.content)[:100] if result.success else str(result.error)[:100]
+                        self._send_event("step", {
+                            "step_number": step_number,
+                            "step_type": "observation",
+                            "tool_name": function_name,
+                            "content": result_preview,
+                        })
+                        step_number += 1
+
+                        # Add tool message
+                        tool_msg = Message(
+                            role="tool",
+                            content=result.content if result.success else f"Error: {result.error}",
+                            tool_call_id=tool_call.id,
+                            name=function_name,
+                        )
+                        self.messages.append(tool_msg)
+                    except Exception as e:
+                        self._send_event("error", {"message": f"Tool {function_name} failed: {str(e)}"})
+                        break
+                else:
+                    self._send_event("error", {"message": f"Unknown tool: {function_name}"})
+
+        # Extract findings
         findings = self._extract_findings_from_messages()
-
-        # If no structured findings, try to parse from result content
         if not findings:
-            findings = self._parse_findings_from_text(result)
+            findings = self._parse_findings_from_text(self.messages[-1].content if self.messages else "")
 
         return findings
 

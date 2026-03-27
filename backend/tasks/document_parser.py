@@ -132,11 +132,13 @@ def parse_document(self, document_id: str) -> dict:
                 await db.commit()
                 return {"status": "error", "message": str(e)}
 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        return asyncio.run(_parse())
+        return loop.run_until_complete(_parse())
     finally:
-        # Dispose the engine when done
-        asyncio.run(engine.dispose())
+        loop.run_until_complete(engine.dispose())
+        loop.close()
 
 
 async def _process_images_with_llm(images: list, api_key: str, api_base: str, model: str) -> list:
