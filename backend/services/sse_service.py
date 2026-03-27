@@ -98,8 +98,10 @@ class SSEConnectionManager:
                     break
                 msg_id, data = item
                 event_count += 1
-                logger.info(f"SSE yielding event {event_count}: {str(data)[:100]}")
-                yield f"id: {msg_id}\ndata: {data}\n\n"
+                # data is a dict like {'data': '<json_string>'}, extract the JSON string
+                json_data = data.get('data', '') if isinstance(data, dict) else str(data)
+                logger.info(f"SSE yielding event {event_count}: {str(json_data)[:100]}")
+                yield f"id: {msg_id}\ndata: {json_data}\n\n"
                 last_id = msg_id
         except asyncio.CancelledError:
             logger.info("SSE connection cancelled")

@@ -178,8 +178,8 @@ export const useProjectStore = defineStore('project', () => {
         const data: SSEEvent = JSON.parse(event.data)
         console.log('SSE event received:', data)
         handleSSEEvent(data)
-      } catch {
-        console.error('Failed to parse SSE event')
+      } catch (err) {
+        console.error('Failed to parse SSE event:', err, 'Raw data:', event.data)
       }
     }
 
