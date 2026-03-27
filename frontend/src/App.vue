@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { RouterView } from 'vue-router'
+import { ConfigProvider } from 'ant-design-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
@@ -11,7 +12,9 @@ onMounted(() => {
 </script>
 
 <template>
-  <RouterView />
+  <ConfigProvider theme="{ token: { colorPrimary: '#6366f1' } }">
+    <RouterView />
+  </ConfigProvider>
 </template>
 
 <style>

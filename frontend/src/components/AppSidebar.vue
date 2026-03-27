@@ -1,0 +1,55 @@
+<script setup lang="ts">
+import { useRouter, useRoute } from 'vue-router'
+import { computed } from 'vue'
+import { FileSearch, History, Book } from '@ant-design/icons-vue'
+
+const router = useRouter()
+const route = useRoute()
+
+const menuItems = [
+  { key: '/home/check', label: '标书检查', icon: FileSearch },
+  { key: '/home/history', label: '历史标书', icon: History },
+  { key: '/home/knowledge', label: '知识库', icon: Book },
+]
+
+const selectedKey = computed(() => route.path)
+
+function navigate(path: string) {
+  router.push(path)
+}
+</script>
+
+<template>
+  <a-menu
+    v-model:selectedKeys="[selectedKey]"
+    mode="inline"
+    theme="light"
+    class="app-sidebar"
+    @click="({ key }) => navigate(key)"
+  >
+    <a-menu-item v-for="item in menuItems" :key="item.key">
+      <template #icon>
+        <component :is="item.icon" />
+      </template>
+      {{ item.label }}
+    </a-menu-item>
+  </a-menu>
+</template>
+
+<style scoped>
+.app-sidebar {
+  height: 100%;
+  background: #fafafa;
+  border-right: 1px solid #e8e8e8;
+}
+
+.app-sidebar :deep(.ant-menu-item) {
+  margin: 4px 8px;
+  border-radius: 8px;
+}
+
+.app-sidebar :deep(.ant-menu-item-selected) {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.1) 0%, transparent 100%);
+  border-left: 2px solid #6366f1;
+}
+</style>

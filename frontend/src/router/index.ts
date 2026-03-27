@@ -18,9 +18,33 @@ const router = createRouter({
     },
     {
       path: '/',
-      name: 'home',
-      component: () => import('@/views/HomeView.vue'),
-      meta: { requiresAuth: true }
+      redirect: '/home/check'
+    },
+    {
+      path: '/home',
+      component: () => import('@/components/AppLayout.vue'),
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          redirect: '/home/check'
+        },
+        {
+          path: 'check',
+          name: 'check',
+          component: () => import('@/views/CheckView.vue')
+        },
+        {
+          path: 'history',
+          name: 'history',
+          component: () => import('@/views/HistoryView.vue')
+        },
+        {
+          path: 'knowledge',
+          name: 'knowledge',
+          component: () => import('@/views/KnowledgeView.vue')
+        }
+      ]
     },
     {
       path: '/projects/:id',
