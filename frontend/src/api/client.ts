@@ -323,4 +323,15 @@ export function createSSEStream(taskId: string): EventSource {
   return new EventSource(url)
 }
 
+// Knowledge API
+export const knowledgeApi = {
+  listDocuments: () => apiClient.get('/api/knowledge/documents'),
+  deleteDocument: (id: string) => apiClient.delete(`/api/knowledge/documents/${id}`),
+  uploadDocument: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return apiClient.post('/api/knowledge/upload', formData)
+  }
+}
+
 export default apiClient
