@@ -12,7 +12,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <ConfigProvider theme="{ token: { colorPrimary: '#6366f1' } }">
+  <ConfigProvider :theme="{ token: { colorPrimary: '#6366f1' } }">
     <RouterView />
   </ConfigProvider>
 </template>
