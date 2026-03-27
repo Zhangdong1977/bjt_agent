@@ -264,7 +264,7 @@ class HTMLParser:
         current_section: Optional[ParsedSection] = None
         current_heading_level = 0
 
-        for element in self.soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "table"]):
+        for element in self.soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "table", "img"]):
             if element.name.startswith("h") and len(element.name) == 2:
                 level = int(element.name[1])
                 text = self._get_text_content(element)
@@ -285,14 +285,43 @@ class HTMLParser:
                         current_heading_level = level
 
             elif element.name == "p" and current_section is not None:
+                # Check for images inside the paragraph
+                imgs = element.find_all("img")
+                for img in imgs:
+                    img_obj = self._create_image_from_tag(img)
+                    if img_obj:
+                        current_section.images.append(img_obj)
+                # Also extract text content (without the img tags)
                 text = self._get_text_content(element)
                 if text.strip():
                     current_section.paragraphs.append(Paragraph(content=text))
+
+            elif element.name == "img" and current_section is not None:
+                # Standalone image (not inside a paragraph)
+                img_obj = self._create_image_from_tag(element)
+                if img_obj:
+                    current_section.images.append(img_obj)
 
         if current_section and current_section.title:
             sections.append(current_section)
 
         return sections
+
+    def _create_image_from_tag(self, img_tag: Tag) -> Optional[Image]:
+        """Create an Image object from an img tag."""
+        src = img_tag.get("src", "")
+        alt = img_tag.get("alt", "")
+        if not src:
+            return None
+
+        # Resolve relative paths if images_dir is provided
+        image_path = None
+        if self.images_dir and not src.startswith(("http://", "https://", "/")):
+            image_path = self.images_dir / src
+            if not image_path.exists():
+                image_path = None
+
+        return Image(src=src, alt=alt, path=image_path)
 
     def _get_text_content(self, tag: Tag) -> str:
         """Get text content from a tag, including nested tags."""

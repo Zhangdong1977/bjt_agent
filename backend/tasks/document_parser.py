@@ -296,6 +296,7 @@ async def _parse_docx(file_path: Path) -> dict:
     Raises:
         ValueError: If LibreOffice conversion fails
     """
+    import shutil
     from backend.parsers import LibreOfficeConverter, html_to_markdown
 
     file_size = file_path.stat().st_size
@@ -306,18 +307,33 @@ async def _parse_docx(file_path: Path) -> dict:
     result = await converter.convert(file_path)
 
     html_content = result["text"]
-    images_dir = result["images_dir"]
+    lo_images_dir = result["images_dir"]  # LibreOffice temp directory with extracted images
 
     logger.info(f"LibreOffice HTML conversion successful: {len(html_content)} characters")
 
+    # Determine the target images directory in workspace
+    workspace_images_dir = file_path.parent / f"{file_path.stem}_images"
+
+    # Copy images from LibreOffice temp directory to workspace
+    if lo_images_dir and lo_images_dir.exists():
+        workspace_images_dir.mkdir(parents=True, exist_ok=True)
+        for img_path in lo_images_dir.iterdir():
+            if img_path.is_file() and img_path.suffix.lower() in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"]:
+                dest_path = workspace_images_dir / img_path.name
+                if not dest_path.exists():
+                    shutil.copy2(img_path, dest_path)
+        logger.info(f"Copied images from {lo_images_dir} to {workspace_images_dir}")
+
     # Convert HTML to structured Markdown
-    markdown_text = html_to_markdown(html_content, images_dir)
+    # images_base_path is relative path from markdown file to images directory
+    images_base_path = f"{file_path.stem}_images"
+    markdown_text = html_to_markdown(html_content, workspace_images_dir, images_base_path)
     logger.info(f"HTML to Markdown conversion successful: {len(markdown_text)} characters")
 
-    # Extract images from the images directory
+    # Extract images from the workspace images directory
     images = []
-    if images_dir and images_dir.exists():
-        for img_path in images_dir.iterdir():
+    if workspace_images_dir.exists():
+        for img_path in workspace_images_dir.iterdir():
             if img_path.is_file() and img_path.suffix.lower() in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"]:
                 try:
                     # Limit image size to 10MB

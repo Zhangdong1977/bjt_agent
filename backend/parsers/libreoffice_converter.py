@@ -140,7 +140,36 @@ class LibreOfficeConverter:
             if images_dir_alt.exists():
                 images_dir = images_dir_alt
             else:
-                images_dir = None
+                # LibreOffice sometimes places images directly in output directory
+                # with names like {stem}_html_{hash}.{ext}
+                # Check if such images exist in the output directory itself
+                image_patterns = [
+                    f"{stem}_html_*.gif",
+                    f"{stem}_html_*.png",
+                    f"{stem}_html_*.jpg",
+                    f"{stem}_html_*.jpeg",
+                    f"{stem}_html_*.svg",
+                    f"{stem}_html_*.bmp",
+                    f"{stem}_files/*.gif",
+                    f"{stem}_files/*.png",
+                    f"{stem}_files/*.jpg",
+                    f"{stem}_files/*.jpeg",
+                    f"{stem}_files/*.svg",
+                    f"{stem}_files/*.bmp",
+                ]
+                found_images = []
+                for pattern in image_patterns:
+                    found_images.extend(output_dir.glob(pattern))
+                    if found_images:
+                        break
+
+                if found_images:
+                    # Images are directly in output_dir, use output_dir as images_dir
+                    images_dir = output_dir
+                    logger.info(f"Images found directly in output directory: {len(found_images)} files")
+                else:
+                    images_dir = None
+                    logger.warning(f"No images directory found for {stem}, checked patterns: {image_patterns}")
 
         return html_path, images_dir
 

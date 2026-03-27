@@ -198,7 +198,7 @@ def document_to_markdown(doc: ParsedDocument, images_base_path: Optional[str] = 
     return converter.convert_document(doc)
 
 
-def html_to_markdown(html: str, images_dir: Optional[Path] = None) -> str:
+def html_to_markdown(html: str, images_dir: Optional[Path] = None, images_base_path: Optional[str] = None) -> str:
     """Convert HTML string directly to Markdown.
 
     This is a convenience function that combines HTMLParser and MarkdownConverter.
@@ -206,6 +206,7 @@ def html_to_markdown(html: str, images_dir: Optional[Path] = None) -> str:
     Args:
         html: HTML content string
         images_dir: Optional directory for resolving image paths
+        images_base_path: Optional base path to use for image references in Markdown
 
     Returns:
         Markdown-formatted string
@@ -213,4 +214,4 @@ def html_to_markdown(html: str, images_dir: Optional[Path] = None) -> str:
     from .html_parser import parse_html
 
     doc = parse_html(html, images_dir)
-    return document_to_markdown(doc)
+    return document_to_markdown(doc, images_base_path)

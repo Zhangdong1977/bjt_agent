@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { authApi, setAccessToken, getAccessToken } from '@/api/client'
+import { authApi, getAccessToken, clearTokens } from '@/api/client'
 import type { User } from '@/types'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -19,7 +19,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       user.value = await authApi.getMe()
     } catch {
-      setAccessToken(null)
+      clearTokens()
     } finally {
       initialized.value = true
     }

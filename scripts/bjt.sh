@@ -21,6 +21,33 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# Conda environment check
+check_conda_env() {
+    local target_env="ssirs"
+    local current_env="${CONDA_DEFAULT_ENV:-}"
+
+    if [ "$current_env" != "$target_env" ]; then
+        warn "Not in conda environment '$target_env', attempting to activate..."
+
+        # Initialize conda and activate the environment
+        if command -v conda &> /dev/null; then
+            eval "$(conda shell.bash hook 2>/dev/null)" || true
+            conda activate "$target_env" 2>/dev/null || {
+                error "Failed to activate conda environment '$target_env'"
+                error "Please run: conda activate $target_env"
+                error "Then re-run this script: ./scripts/bjt.sh $1"
+                exit 1
+            }
+            log "Successfully activated conda environment '$target_env'"
+        else
+            error "Conda not found. Please install conda or activate '$target_env' environment manually."
+            exit 1
+        fi
+    else
+        log "Conda environment check passed: $target_env"
+    fi
+}
+
 log() {
     echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
 }
@@ -141,20 +168,33 @@ stop_service() {
         local port_pids=$(lsof -ti :$port 2>/dev/null)
         if [ -n "$port_pids" ]; then
             for p in $port_pids; do
+                # 跳过 VSCode Server 相关进程，避免中断远程连接
+                if [ -f "/proc/$p/cmdline" ] && grep -q "vscode" "/proc/$p/cmdline" 2>/dev/null; then
+                    continue
+                fi
                 log "Killing orphaned process on port $port (PID: $p)..."
                 kill -9 "$p" 2>/dev/null || true
             done
         fi
     fi
 
-    # Kill by celery pattern
+    # Kill by celery pattern (精确匹配，只杀Q队列worker)
     if [ -n "$celery_pattern" ]; then
-        local celery_pids=$(pgrep -f "$celery_pattern" 2>/dev/null)
-        if [ -n "$celery_pids" ]; then
-            for p in $celery_pids; do
-                log "Killing celery process (PID: $p)..."
-                kill -9 "$p" 2>/dev/null || true
-            done
+        # 使用精确模式: 匹配 "-A celery_app worker ... -Q <queuename>"
+        local queue_name=""
+        case "$celery_pattern" in
+            "celery.*review") queue_name="review" ;;
+            "celery.*parser") queue_name="parser" ;;
+        esac
+        if [ -n "$queue_name" ]; then
+            # 只杀监听特定队列的celery worker进程
+            local celery_pids=$(pgrep -af "celery.*-A.*celery_app.*-Q ${queue_name}" 2>/dev/null)
+            if [ -n "$celery_pids" ]; then
+                for p in $celery_pids; do
+                    log "Killing celery ${queue_name} worker (PID: $p)..."
+                    kill -9 "$p" 2>/dev/null || true
+                done
+            fi
         fi
     fi
 
@@ -164,6 +204,8 @@ stop_service() {
 
 # Actions
 do_start() {
+    check_conda_env "start"
+
     log "========================================"
     log "  Starting Bid Review Agent System"
     log "========================================"
@@ -298,6 +340,8 @@ do_status() {
 }
 
 do_restart() {
+    check_conda_env "restart"
+
     log "Restarting services..."
     do_stop
     sleep 2

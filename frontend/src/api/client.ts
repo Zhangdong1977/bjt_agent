@@ -24,6 +24,9 @@ const apiClient: AxiosInstance = axios.create({
 
 // Token management
 let accessToken: string | null = null
+let refreshToken: string | null = null
+let isRefreshing = false
+let refreshSubscribers: Array<(token: string) => void> = []
 
 export function setAccessToken(token: string | null) {
   accessToken = token
@@ -41,6 +44,63 @@ export function getAccessToken(): string | null {
   return accessToken
 }
 
+export function setRefreshToken(token: string | null) {
+  refreshToken = token
+  if (token) {
+    localStorage.setItem('refresh_token', token)
+  } else {
+    localStorage.removeItem('refresh_token')
+  }
+}
+
+export function getRefreshToken(): string | null {
+  if (!refreshToken) {
+    refreshToken = localStorage.getItem('refresh_token')
+  }
+  return refreshToken
+}
+
+export function clearTokens() {
+  accessToken = null
+  refreshToken = null
+  localStorage.removeItem('access_token')
+  localStorage.removeItem('refresh_token')
+}
+
+// Subscribe to token refresh
+function subscribeTokenRefresh(callback: (token: string) => void) {
+  refreshSubscribers.push(callback)
+}
+
+// Notify all subscribers of new token
+function onTokenRefreshed(newToken: string) {
+  refreshSubscribers.forEach(callback => callback(newToken))
+  refreshSubscribers = []
+}
+
+// Refresh access token using refresh token
+async function refreshAccessToken(): Promise<string | null> {
+  const currentRefreshToken = getRefreshToken()
+  if (!currentRefreshToken) {
+    return null
+  }
+
+  try {
+    const response = await axios.post(`${API_BASE}/auth/refresh`, {
+      refresh_token: currentRefreshToken
+    })
+    const tokenData = response.data as Token
+    setAccessToken(tokenData.access_token)
+    if (tokenData.refresh_token) {
+      setRefreshToken(tokenData.refresh_token)
+    }
+    return tokenData.access_token
+  } catch {
+    clearTokens()
+    return null
+  }
+}
+
 // Request interceptor to add auth token
 apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = getAccessToken()
@@ -49,6 +109,47 @@ apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   }
   return config
 })
+
+// Response interceptor to handle 401 errors (token expired)
+apiClient.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config
+
+    // Handle 401 - try token refresh
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      if (isRefreshing) {
+        // Already refreshing, wait for new token
+        return new Promise((resolve) => {
+          subscribeTokenRefresh((token: string) => {
+            originalRequest.headers.Authorization = `Bearer ${token}`
+            resolve(apiClient(originalRequest))
+          })
+        })
+      }
+
+      originalRequest._retry = true
+      isRefreshing = true
+
+      const newToken = await refreshAccessToken()
+      isRefreshing = false
+
+      if (newToken) {
+        onTokenRefreshed(newToken)
+        originalRequest.headers.Authorization = `Bearer ${newToken}`
+        return apiClient(originalRequest)
+      } else {
+        // Refresh failed - redirect to login
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login'
+        }
+        return Promise.reject(error)
+      }
+    }
+
+    return Promise.reject(error)
+  }
+)
 
 // Auth API
 export const authApi = {
@@ -66,11 +167,14 @@ export const authApi = {
     })
     const token = response.data as Token
     setAccessToken(token.access_token)
+    if (token.refresh_token) {
+      setRefreshToken(token.refresh_token)
+    }
     return token
   },
 
   async logout() {
-    setAccessToken(null)
+    clearTokens()
   },
 
   async getMe(): Promise<User> {
@@ -149,6 +253,9 @@ export const documentsApi = {
           } catch {
             reject(new Error('Invalid response'))
           }
+        } else if (xhr.status === 401) {
+          // Handle 401 for XHR upload - will trigger token refresh via interceptor
+          reject(new Error('Unauthorized - please login again'))
         } else {
           reject(new Error(`Upload failed with status ${xhr.status}`))
         }

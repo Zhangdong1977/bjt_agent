@@ -22,29 +22,21 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
     """Publish an event to Redis for SSE forwarding.
 
     This is called from Celery tasks to send real-time updates.
-    Uses async redis client to avoid blocking.
+    Uses synchronous redis client to avoid event loop conflicts.
     """
     try:
-        import redis.asyncio as redis
+        import redis
         from backend.config import get_settings
 
         settings = get_settings()
         event = json.dumps({"type": event_type, "task_id": task_id, **data})
 
-        async def _async_publish():
-            r = redis.from_url(settings.redis_url)
-            try:
-                result = await r.publish(f"task:{task_id}", event)
-                logger.info(f"Published event to task:{task_id}: type={event_type}, result={result}")
-            finally:
-                await r.aclose()
-
-        # Run async publish in a new event loop (Celery workers may not have one)
-        loop = asyncio.new_event_loop()
+        r = redis.from_url(settings.redis_url)
         try:
-            loop.run_until_complete(_async_publish())
+            result = r.publish(f"task:{task_id}", event)
+            logger.info(f"Published event to task:{task_id}: type={event_type}, result={result}")
         finally:
-            loop.close()
+            r.close()
     except Exception as e:
         logger.warning(f"Failed to publish event to Redis: {e}")
 
@@ -123,8 +115,9 @@ def run_review(self, task_id: str) -> dict:
                 # Run the agent review
                 findings = await _run_agent_review(task_id, tender_doc, bid_doc, db)
 
-                # Store findings
-                for finding_data in findings:
+                # Store only non-compliant findings (ReviewResult is for non-compliance)
+                non_compliant_findings = [f for f in findings if not f.get("is_compliant", False)]
+                for finding_data in non_compliant_findings:
                     finding = ReviewResult(
                         task_id=task_id,
                         **finding_data,
@@ -139,7 +132,7 @@ def run_review(self, task_id: str) -> dict:
                 # Send completion event
                 _publish_event(task_id, "complete", {
                     "status": "completed",
-                    "findings_count": len(findings),
+                    "findings_count": len(non_compliant_findings),
                 })
 
                 return {
