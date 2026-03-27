@@ -251,8 +251,6 @@ function getSeverityClass(severity: string) {
         <!-- Agent Timeline -->
         <div v-if="projectStore.currentTask && (projectStore.currentTask.status === 'running' || projectStore.currentTask.status === 'completed')" class="timeline">
           <h3>{{ projectStore.currentTask.status === 'completed' ? 'Agent Steps (Completed)' : 'Agent Progress' }}</h3>
-          <!-- Debug info -->
-          <p style="font-size: 0.75rem; color: #999;">Debug: status={{ projectStore.currentTask.status }}, steps={{ projectStore.agentSteps.length }}</p>
           <el-scrollbar height="300px">
             <div class="timeline-steps">
               <div
@@ -415,10 +413,10 @@ function getSeverityClass(severity: string) {
 }
 
 .section h2 {
-  color: #333;
+  color: #1e1b4b;
   margin-bottom: 1.5rem;
   padding-bottom: 0.5rem;
-  border-bottom: 2px solid #667eea;
+  border-bottom: 2px solid #6366f1;
 }
 
 .documents-grid {
@@ -472,14 +470,15 @@ function getSeverityClass(severity: string) {
 .upload-label {
   display: block;
   padding: 2rem;
-  border: 2px dashed #667eea;
+  border: 2px dashed #6366f1;
   border-radius: 8px;
-  color: #667eea;
+  color: #6366f1;
   cursor: pointer;
+  transition: background-color 0.2s ease;
 }
 
 .upload-label:hover {
-  background: #f8f8ff;
+  background: #f5f3ff;
 }
 
 .status {
@@ -514,20 +513,30 @@ function getSeverityClass(severity: string) {
 .view-btn, .delete-btn {
   padding: 0.5rem 1rem;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
   margin-top: 0.5rem;
   margin-right: 0.5rem;
+  transition: background-color 0.2s ease;
 }
 
 .view-btn {
-  background: #667eea;
+  background: #6366f1;
   color: white;
+  transition: background-color 0.2s ease;
+}
+
+.view-btn:hover {
+  background: #4f46e5;
 }
 
 .delete-btn {
   background: #e53e3e;
   color: white;
+}
+
+.delete-btn:hover {
+  background: #c53030;
 }
 
 .review-controls {
@@ -538,15 +547,25 @@ function getSeverityClass(severity: string) {
 
 .primary-btn {
   padding: 0.75rem 1.5rem;
-  background: #667eea;
+  background: #6366f1;
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
+  font-weight: 500;
+  transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+.primary-btn:hover {
+  background: #4f46e5;
+}
+
+.primary-btn:active {
+  transform: scale(0.98);
 }
 
 .primary-btn:disabled {
-  background: #ccc;
+  background: #d1d5db;
   cursor: not-allowed;
 }
 
@@ -635,7 +654,7 @@ function getSeverityClass(severity: string) {
 }
 
 .suggestion {
-  color: #667eea;
+  color: #6366f1;
 }
 
 /* Document Viewer Modal */
@@ -777,7 +796,7 @@ function getSeverityClass(severity: string) {
   width: 1.75rem;
   height: 1.75rem;
   border-radius: 50%;
-  background: #667eea;
+  background: #6366f1;
   color: white;
   display: flex;
   align-items: center;

@@ -145,8 +145,9 @@ function logout() {
 }
 
 .header h1 {
-  color: #667eea;
+  color: #6366f1;
   font-size: 1.5rem;
+  font-weight: 600;
 }
 
 .user-info {
@@ -160,8 +161,13 @@ function logout() {
   background: #e53e3e;
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.logout-btn:hover {
+  background: #c53030;
 }
 
 .content {
@@ -183,11 +189,21 @@ function logout() {
 
 .primary-btn {
   padding: 0.75rem 1.5rem;
-  background: #667eea;
+  background: #6366f1;
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
+  font-weight: 500;
+  transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+.primary-btn:hover {
+  background: #4f46e5;
+}
+
+.primary-btn:active {
+  transform: scale(0.98);
 }
 
 .primary-btn:hover {
@@ -210,16 +226,17 @@ function logout() {
   background: white;
   padding: 1.5rem;
   border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
   cursor: pointer;
-  transition: box-shadow 0.2s;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
 }
 
 .project-card:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
+  transform: translateY(-2px);
 }
 
 .project-info h3 {
@@ -243,9 +260,10 @@ function logout() {
   background: #e53e3e;
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: 0.85rem;
+  transition: background-color 0.2s ease;
 }
 
 .delete-btn:hover {
@@ -301,7 +319,8 @@ function logout() {
 .form-group input:focus,
 .form-group textarea:focus {
   outline: none;
-  border-color: #667eea;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
 
 .modal-actions {
@@ -314,8 +333,9 @@ function logout() {
 .modal-actions button {
   padding: 0.75rem 1.5rem;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
+  transition: background-color 0.2s ease;
 }
 
 .modal-actions button[type="button"] {
@@ -324,7 +344,11 @@ function logout() {
 }
 
 .modal-actions .primary-btn {
-  background: #667eea;
+  background: #6366f1;
   color: white;
+}
+
+.modal-actions .primary-btn:hover {
+  background: #4f46e5;
 }
 </style>

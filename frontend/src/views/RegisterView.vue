@@ -105,29 +105,30 @@ async function handleRegister() {
   justify-content: center;
   align-items: center;
   min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
 }
 
 .auth-card {
   background: white;
   padding: 2rem;
-  border-radius: 8px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.2);
   width: 100%;
   max-width: 400px;
 }
 
 h1 {
   text-align: center;
-  color: #667eea;
+  color: #6366f1;
   margin-bottom: 0.5rem;
+  font-size: 1.5rem;
 }
 
 h2 {
   text-align: center;
-  color: #333;
+  color: #1e1b4b;
   margin-bottom: 1.5rem;
-  font-weight: normal;
+  font-weight: 500;
 }
 
 .form-group {
@@ -150,19 +151,22 @@ input {
 
 input:focus {
   outline: none;
-  border-color: #667eea;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
 
 button {
   width: 100%;
   padding: 0.75rem;
-  background: #667eea;
+  background: #6366f1;
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   font-size: 1rem;
   cursor: pointer;
   margin-top: 1rem;
+  font-weight: 500;
+  transition: background-color 0.2s ease, transform 0.1s ease;
 }
 
 button:disabled {
@@ -171,7 +175,11 @@ button:disabled {
 }
 
 button:hover:not(:disabled) {
-  background: #5568d3;
+  background: #4f46e5;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 .error {
@@ -187,7 +195,12 @@ button:hover:not(:disabled) {
 }
 
 .switch-auth a {
-  color: #667eea;
+  color: #6366f1;
   text-decoration: none;
+  font-weight: 500;
+}
+
+.switch-auth a:hover {
+  text-decoration: underline;
 }
 </style>

@@ -81,7 +81,7 @@ onUnmounted(() => {
         </div>
         <div class="step-content">
           <span class="step-type">
-            {{ step.step_type === 'tool_call' ? `🔧 ${step.tool_name || 'tool'}` : '💭' }}
+            {{ step.step_type === 'tool_call' ? `${step.tool_name || 'tool'}` : 'Thought' }}
           </span>
           <p class="step-text">{{ step.content }}</p>
         </div>
@@ -125,7 +125,7 @@ onUnmounted(() => {
   width: 1.75rem;
   height: 1.75rem;
   border-radius: 50%;
-  background: #667eea;
+  background: #6366f1;
   color: white;
   display: flex;
   align-items: center;

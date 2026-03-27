@@ -133,14 +133,15 @@ async function handleUpload(event: Event) {
 .upload-label {
   display: block;
   padding: 2rem;
-  border: 2px dashed #667eea;
+  border: 2px dashed #6366f1;
   border-radius: 8px;
-  color: #667eea;
+  color: #6366f1;
   cursor: pointer;
+  transition: background-color 0.2s ease;
 }
 
 .upload-label:hover {
-  background: #f8f8ff;
+  background: #f5f3ff;
 }
 
 .status {
@@ -188,17 +189,19 @@ async function handleUpload(event: Event) {
 }
 
 .view-btn {
-  background: #667eea;
+  background: #6366f1;
   color: white;
+  transition: background-color 0.2s ease;
 }
 
 .delete-btn {
   background: #e53e3e;
   color: white;
+  transition: background-color 0.2s ease;
 }
 
 .view-btn:hover {
-  background: #5568d3;
+  background: #4f46e5;
 }
 
 .delete-btn:hover {
