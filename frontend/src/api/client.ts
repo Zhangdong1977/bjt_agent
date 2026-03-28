@@ -330,10 +330,57 @@ export function createSSEStream(taskId: string): EventSource {
 export const knowledgeApi = {
   listDocuments: () => apiClient.get('/knowledge/documents'),
   deleteDocument: (id: string) => apiClient.delete(`/knowledge/documents/${id}`),
-  uploadDocument: (file: File) => {
-    const formData = new FormData()
-    formData.append('file', file)
-    return apiClient.post('/knowledge/upload', formData)
+  uploadDocument(
+    file: File,
+    onProgress?: (progress: UploadProgress) => void
+  ): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      const formData = new FormData()
+      formData.append('file', file)
+
+      xhr.open('POST', `${API_BASE}/knowledge/upload`)
+
+      const token = getAccessToken()
+      if (token) {
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      }
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && onProgress) {
+          onProgress({
+            loaded: event.loaded,
+            total: event.total,
+            percent: Math.round((event.loaded / event.total) * 100)
+          })
+        }
+      }
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText))
+          } catch {
+            reject(new Error('Invalid response'))
+          }
+        } else if (xhr.status === 401) {
+          reject(new Error('Unauthorized - please login again'))
+        } else {
+          reject(new Error(`Upload failed with status ${xhr.status}`))
+        }
+      }
+
+      xhr.onerror = () => reject(new Error('Network error'))
+      xhr.send(formData)
+    })
+  },
+
+  ragSearch: (query: string, limit: number = 10) => {
+    return apiClient.post('/knowledge/rag-search', { query, limit })
+  },
+
+  getDocumentContent: (docId: string) => {
+    return apiClient.get(`/knowledge/documents/${docId}/content`)
   }
 }
 
