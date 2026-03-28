@@ -77,7 +77,7 @@ router.beforeEach(async (to, _from, next) => {
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     next({ name: 'login' })
   } else if (to.meta.guest && authStore.isAuthenticated) {
-    next({ name: 'home' })
+    next('/home/check')
   } else {
     next()
   }
