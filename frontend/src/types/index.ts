@@ -117,3 +117,23 @@ export interface UploadProgress {
   total: number
   percent: number
 }
+
+// RAG Search types
+export interface RAGSearchResult {
+  path: string
+  startLine: number
+  endLine: number
+  score: number
+  snippet: string
+}
+
+export interface RAGSearchResponse {
+  results: RAGSearchResult[]
+  queryTime: number
+  totalResults: number
+}
+
+export interface DocumentContentResponse {
+  content: string
+  filename: string
+}
