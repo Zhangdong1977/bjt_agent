@@ -1,23 +1,26 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from typing import List
+import asyncio
 import os
 import shutil
 from datetime import datetime
 from uuid import uuid4
 
+import httpx
+
 from .deps import get_current_user
+from backend.config import get_settings
 from models.user import User
 from schemas.knowledge import KnowledgeDocumentResponse, KnowledgeDocumentListResponse
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
-# 知识库存储路径
-KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "./workspace/knowledge")
+settings = get_settings()
 
 @router.get("/documents", response_model=KnowledgeDocumentListResponse)
 async def list_documents(current_user: User = Depends(get_current_user)):
     """获取当前用户的所有知识库文档"""
-    user_dir = os.path.join(KNOWLEDGE_BASE_DIR, current_user.id)
+    user_dir = os.path.join(settings.knowledge_base_path, current_user.id)
     if not os.path.exists(user_dir):
         return KnowledgeDocumentListResponse(documents=[], total=0)
 
@@ -43,7 +46,7 @@ async def upload_document(
     current_user: User = Depends(get_current_user)
 ):
     """上传知识库文档"""
-    user_dir = os.path.join(KNOWLEDGE_BASE_DIR, current_user.id)
+    user_dir = os.path.join(settings.knowledge_base_path, current_user.id)
     os.makedirs(user_dir, exist_ok=True)
 
     # 生成唯一文件名
@@ -55,6 +58,10 @@ async def upload_document(
         shutil.copyfileobj(file.file, buffer)
 
     stat = os.stat(file_path)
+
+    # 触发知识库同步（异步，不阻塞响应）
+    asyncio.create_task(sync_knowledge_base())
+
     return KnowledgeDocumentResponse(
         id=unique_filename,
         filename=file.filename,
@@ -70,7 +77,7 @@ async def delete_document(
     current_user: User = Depends(get_current_user)
 ):
     """删除知识库文档"""
-    user_dir = os.path.join(KNOWLEDGE_BASE_DIR, current_user.id)
+    user_dir = os.path.join(settings.knowledge_base_path, current_user.id)
     file_path = os.path.join(user_dir, document_id)
 
     if not os.path.exists(file_path):
@@ -89,7 +96,7 @@ async def preview_document(
     current_user: User = Depends(get_current_user)
 ):
     """预览知识库文档"""
-    user_dir = os.path.join(KNOWLEDGE_BASE_DIR, current_user.id)
+    user_dir = os.path.join(settings.knowledge_base_path, current_user.id)
     file_path = os.path.join(user_dir, document_id)
 
     if not os.path.exists(file_path):
@@ -107,3 +114,20 @@ async def preview_document(
     else:
         # 返回文件路径让前端处理
         return {"file_path": file_path, "filename": os.path.basename(file_path)}
+
+
+async def sync_knowledge_base() -> bool:
+    """Trigger rag_memory_service to sync knowledge base index."""
+    settings = get_settings()
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{settings.rag_memory_service_url}/api/sync",
+                json={"force": False}
+            )
+            return response.status_code == 200
+    except httpx.RequestError:
+        return False
+    except httpx.HTTPStatusError:
+        return False

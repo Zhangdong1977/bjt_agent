@@ -46,6 +46,14 @@ class Settings(BaseSettings):
 
     # Workspace
     workspace_dir: Path = Path("./workspace")
+    knowledge_base_dir: Path = Path("./workspace/knowledge")
+
+    @property
+    def knowledge_base_path(self) -> Path:
+        """Get absolute knowledge base path."""
+        if self.knowledge_base_dir.is_absolute():
+            return self.knowledge_base_dir
+        return Path(__file__).parent.parent / self.knowledge_base_dir
 
     # File Upload
     max_upload_size_mb: int = 250  # Maximum file upload size in MB (supports large documents like 投标文件.docx ~219MB)
