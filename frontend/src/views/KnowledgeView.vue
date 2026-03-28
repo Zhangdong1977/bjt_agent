@@ -57,7 +57,7 @@ async function deleteDoc(docId: string) {
 }
 
 async function previewDoc(doc: KnowledgeDoc) {
-  window.open(`/api/knowledge/${doc.id}/preview`, '_blank')
+  window.open(`/api/knowledge/documents/${doc.id}/preview`, '_blank')
 }
 </script>
 
