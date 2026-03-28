@@ -10,27 +10,27 @@ defineProps<{
   <div class="summary">
     <div class="summary-item">
       <span class="summary-value">{{ summary.total_requirements }}</span>
-      <span class="summary-label">Total</span>
+      <span class="summary-label">总计</span>
     </div>
     <div class="summary-item success">
       <span class="summary-value">{{ summary.compliant }}</span>
-      <span class="summary-label">Compliant</span>
+      <span class="summary-label">合规</span>
     </div>
     <div class="summary-item error">
       <span class="summary-value">{{ summary.non_compliant }}</span>
-      <span class="summary-label">Non-Compliant</span>
+      <span class="summary-label">不合规</span>
     </div>
     <div class="summary-item critical">
       <span class="summary-value">{{ summary.critical }}</span>
-      <span class="summary-label">Critical</span>
+      <span class="summary-label">严重</span>
     </div>
     <div class="summary-item major">
       <span class="summary-value">{{ summary.major }}</span>
-      <span class="summary-label">Major</span>
+      <span class="summary-label">主要</span>
     </div>
     <div class="summary-item minor">
       <span class="summary-value">{{ summary.minor }}</span>
-      <span class="summary-label">Minor</span>
+      <span class="summary-label">次要</span>
     </div>
   </div>
 </template>

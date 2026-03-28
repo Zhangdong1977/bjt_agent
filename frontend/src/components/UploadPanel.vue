@@ -48,12 +48,14 @@ async function handleUpload(event: Event) {
   <div class="document-card">
     <h3>{{ label }}</h3>
     <div v-if="document" class="document-info">
-      <p class="filename">{{ document.original_filename }}</p>
-      <span :class="['status', getStatusClass(document.status)]">
-        {{ document.status }}
-      </span>
+      <div class="doc-header">
+        <p class="filename">{{ document.original_filename }}</p>
+        <span :class="['status', getStatusClass(document.status)]">
+          {{ document.status }}
+        </span>
+      </div>
       <p v-if="document.page_count" class="doc-meta">
-        {{ document.page_count }} pages, {{ document.word_count }} words
+        {{ document.page_count }} 页, {{ document.word_count }} 字
       </p>
       <div class="button-group">
         <button
@@ -61,13 +63,13 @@ async function handleUpload(event: Event) {
           class="view-btn"
           @click="emit('view', document.id)"
         >
-          View Content
+          查看内容
         </button>
         <button
           class="delete-btn"
           @click="emit('delete', document.id)"
         >
-          Delete
+          删除
         </button>
       </div>
     </div>
@@ -80,8 +82,8 @@ async function handleUpload(event: Event) {
         @change="handleUpload"
       />
       <label :for="`${documentType}-upload`" class="upload-label">
-        <span v-if="uploading">Uploading...</span>
-        <span v-else>Click to upload PDF or Word</span>
+        <span v-if="uploading">上传中...</span>
+        <span v-else>点击上传 PDF 或 Word 文件</span>
       </label>
     </div>
   </div>
@@ -102,6 +104,13 @@ async function handleUpload(event: Event) {
 
 .document-info {
   text-align: left;
+}
+
+.doc-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 .filename {
@@ -150,7 +159,6 @@ async function handleUpload(event: Event) {
   border-radius: 4px;
   font-size: 0.8rem;
   font-weight: 500;
-  margin-top: 0.5rem;
 }
 
 .status-pending {

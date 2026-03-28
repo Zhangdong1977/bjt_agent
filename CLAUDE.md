@@ -62,21 +62,6 @@ npm run build    # Production build (requires vue-tsc type checking)
 
 The project uses `Mini-Agent` as a git submodule at `./Mini-Agent/`. It provides the base `Agent` class that `BidReviewAgent` extends. The submodule path is added to `sys.path` in `backend/agent/bid_review_agent.py`.
 
-## SSE Event Flow
-
-Real-time updates flow through Redis pub/sub:
-1. Celery task publishes events to `task:{task_id}` channel
-2. Backend SSE endpoint (`/api/events/tasks/{task_id}/stream`) subscribes
-3. Frontend EventSource receives events for timeline display
-
-## Document Storage
-
-Documents are stored in workspace directories:
-- `{workspace}/{user_id}/{project_id}/tender.pdf|md`
-- `{workspace}/{user_id}/{project_id}/bid.pdf|md`
-- Parsed content and images in corresponding `_parsed.md` and `_images/` paths
-
-
 ## Chrome DevTools Usage
 
 ### 进程管理注意事项
@@ -95,3 +80,5 @@ Claude Code 进程名包含 "chrome" 关键字，`pkill -f "chrome"` 会无差�
 Chrome DevTools 调试需在 VNC 远程桌面的 DISPLAY=:2 上运行，不要用headless模式。
 
 启动 Chrome 时使用 `DISPLAY=:2 google-chrome --remote-debugging-port=9222 ...` 确保运行在 VNC 的 DISPLAY=:2 上。
+
+### 请用中文和用户沟通

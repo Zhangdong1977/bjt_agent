@@ -12,11 +12,11 @@ defineProps<{
     <table>
       <thead>
         <tr>
-          <th>Severity</th>
-          <th>Status</th>
-          <th>Requirement</th>
-          <th>Bid Content</th>
-          <th>Suggestion</th>
+          <th>严重程度</th>
+          <th>状态</th>
+          <th>要求</th>
+          <th>应标内容</th>
+          <th>建议</th>
         </tr>
       </thead>
       <tbody>
@@ -30,11 +30,11 @@ defineProps<{
           </td>
           <td>
             <span :class="['compliance-badge', finding.is_compliant ? 'compliant' : 'non-compliant']">
-              {{ finding.is_compliant ? 'Compliant' : 'Non-Compliant' }}
+              {{ finding.is_compliant ? '合规' : '不合规' }}
             </span>
           </td>
           <td class="requirement-cell">{{ finding.requirement_content }}</td>
-          <td class="bid-content-cell">{{ finding.bid_content || 'N/A' }}</td>
+          <td class="bid-content-cell">{{ finding.bid_content || '无' }}</td>
           <td class="suggestion-cell">
             <template v-if="!finding.is_compliant && finding.suggestion">
               {{ finding.suggestion }}

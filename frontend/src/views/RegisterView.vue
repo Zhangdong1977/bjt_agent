@@ -16,12 +16,12 @@ async function handleRegister() {
   error.value = ''
 
   if (password.value !== confirmPassword.value) {
-    error.value = 'Passwords do not match'
+    error.value = '两次密码输入不一致'
     return
   }
 
   if (password.value.length < 6) {
-    error.value = 'Password must be at least 6 characters'
+    error.value = '密码长度至少为6个字符'
     return
   }
 
@@ -29,7 +29,7 @@ async function handleRegister() {
     await authStore.register(username.value, email.value, password.value)
     router.push({ name: 'home' })
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : 'Registration failed'
+    error.value = e instanceof Error ? e.message : '注册失败'
   }
 }
 </script>
@@ -37,12 +37,12 @@ async function handleRegister() {
 <template>
   <div class="auth-container">
     <div class="auth-card">
-      <h1>Bid Review Agent</h1>
-      <h2>Create Account</h2>
+      <h1>标书审查智能体</h1>
+      <h2>创建账号</h2>
 
       <form @submit.prevent="handleRegister">
         <div class="form-group">
-          <label for="username">Username</label>
+          <label for="username">用户名</label>
           <input
             id="username"
             v-model="username"
@@ -53,7 +53,7 @@ async function handleRegister() {
         </div>
 
         <div class="form-group">
-          <label for="email">Email</label>
+          <label for="email">邮箱</label>
           <input
             id="email"
             v-model="email"
@@ -64,7 +64,7 @@ async function handleRegister() {
         </div>
 
         <div class="form-group">
-          <label for="password">Password</label>
+          <label for="password">密码</label>
           <input
             id="password"
             v-model="password"
@@ -75,7 +75,7 @@ async function handleRegister() {
         </div>
 
         <div class="form-group">
-          <label for="confirmPassword">Confirm Password</label>
+          <label for="confirmPassword">确认密码</label>
           <input
             id="confirmPassword"
             v-model="confirmPassword"
@@ -88,12 +88,12 @@ async function handleRegister() {
         <div v-if="error" class="error">{{ error }}</div>
 
         <button type="submit" :disabled="authStore.loading">
-          {{ authStore.loading ? 'Creating account...' : 'Register' }}
+          {{ authStore.loading ? '创建中...' : '注册' }}
         </button>
       </form>
 
       <p class="switch-auth">
-        Already have an account? <router-link to="/login">Login</router-link>
+        已有账号？<router-link to="/login">登录</router-link>
       </p>
     </div>
   </div>

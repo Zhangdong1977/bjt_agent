@@ -36,9 +36,9 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
   if (!file) return
   try {
     await projectStore.uploadDocument(docType, file)
-    ElMessage.success(`${docType === 'tender' ? 'Tender' : 'Bid'} document uploaded successfully`)
+    ElMessage.success(`${docType === 'tender' ? '招标书' : '应标书'}上传成功`)
   } catch {
-    ElMessage.error(`Failed to upload ${docType === 'tender' ? 'tender' : 'bid'} document`)
+    ElMessage.error(`${docType === 'tender' ? '招标书' : '应标书'}上传失败`)
   }
 }
 
@@ -52,10 +52,10 @@ async function handleViewDoc(documentId: string) {
   try {
     docViewerContent.value = await documentsApi.getContent(projectStore.currentProject.id, documentId)
     const doc = projectStore.documents.find(d => d.id === documentId)
-    docViewerTitle.value = doc ? `${doc.doc_type === 'tender' ? 'Tender' : 'Bid'} Document - ${doc.original_filename}` : 'Document'
+    docViewerTitle.value = doc ? `${doc.doc_type === 'tender' ? '招标书' : '应标书'} - ${doc.original_filename}` : '文档'
   } catch (error) {
     console.error('Failed to load document:', error)
-    ElMessage.error('Failed to load document content')
+    ElMessage.error('加载文档内容失败')
     showDocViewer.value = false
   } finally {
     docViewerLoading.value = false
@@ -68,7 +68,7 @@ function closeDocViewer() {
 }
 
 async function handleDeleteDoc(docId: string) {
-  if (confirm('Are you sure you want to delete this document?')) {
+  if (confirm('确定要删除此文档吗？')) {
     await projectStore.deleteDocument(docId)
   }
 }
@@ -76,9 +76,9 @@ async function handleDeleteDoc(docId: string) {
 async function startReview() {
   try {
     await projectStore.startReview()
-    ElMessage.info('Review started, connecting to event stream...')
+    ElMessage.info('审查已启动，正在连接事件流...')
   } catch {
-    ElMessage.error('Failed to start review')
+    ElMessage.error('启动审查失败')
   }
 }
 
@@ -115,41 +115,48 @@ function getSeverityClass(severity: string) {
   <div class="project-view">
     <header class="header">
       <div class="header-left">
-        <button @click="goBack" class="back-btn">← Back</button>
-        <h1>{{ projectStore.currentProject?.name || 'Project' }}</h1>
+        <button @click="goBack" class="back-btn">← 返回</button>
+        <h1>{{ projectStore.currentProject?.name || '项目' }}</h1>
       </div>
     </header>
 
     <main class="content">
       <!-- Documents Section -->
       <section class="section">
-        <h2>Documents</h2>
+        <h2>文档</h2>
 
         <div class="documents-grid">
           <!-- Tender Document -->
           <div class="document-card">
-            <h3>Tender Document (招标书)</h3>
+            <h3>招标书</h3>
             <div v-if="tenderDoc" class="document-info">
-              <p class="filename">{{ tenderDoc.original_filename }}</p>
-              <span :class="['status', getStatusClass(tenderDoc.status)]">
-                {{ tenderDoc.status }}
-              </span>
-              <p v-if="tenderDoc.page_count" class="doc-meta">
-                {{ tenderDoc.page_count }} pages, {{ tenderDoc.word_count }} words
-              </p>
-              <button
-                v-if="tenderDoc.status === 'parsed'"
-                class="view-btn"
-                @click="handleViewDoc(tenderDoc.id)"
-              >
-                View Content
-              </button>
-              <button
-                class="delete-btn"
-                @click="handleDeleteDoc(tenderDoc.id)"
-              >
-                Delete
-              </button>
+              <div class="doc-header">
+                <div class="doc-icon">📄</div>
+                <div class="doc-main">
+                  <p class="filename">{{ tenderDoc.original_filename }}</p>
+                  <span :class="['status', getStatusClass(tenderDoc.status)]">
+                    {{ tenderDoc.status }}
+                  </span>
+                  <p v-if="tenderDoc.page_count" class="doc-meta">
+                    {{ tenderDoc.page_count }} 页, {{ tenderDoc.word_count }} 字
+                  </p>
+                </div>
+              </div>
+              <div class="doc-actions">
+                <button
+                  v-if="tenderDoc.status === 'parsed'"
+                  class="view-btn"
+                  @click="handleViewDoc(tenderDoc.id)"
+                >
+                  查看内容
+                </button>
+                <button
+                  class="delete-btn"
+                  @click="handleDeleteDoc(tenderDoc.id)"
+                >
+                  删除
+                </button>
+              </div>
             </div>
             <div v-else class="upload-area">
               <el-progress
@@ -167,35 +174,42 @@ function getSeverityClass(severity: string) {
                 @change="handleUpload($event, 'tender')"
               />
               <label v-if="!projectStore.uploadProgress['tender']" for="tender-upload" class="upload-label">
-                Click to upload PDF or Word
+                点击上传 PDF 或 Word 文件
               </label>
             </div>
           </div>
 
           <!-- Bid Document -->
           <div class="document-card">
-            <h3>Bid Document (应标书)</h3>
+            <h3>应标书</h3>
             <div v-if="bidDoc" class="document-info">
-              <p class="filename">{{ bidDoc.original_filename }}</p>
-              <span :class="['status', getStatusClass(bidDoc.status)]">
-                {{ bidDoc.status }}
-              </span>
-              <p v-if="bidDoc.page_count" class="doc-meta">
-                {{ bidDoc.page_count }} pages, {{ bidDoc.word_count }} words
-              </p>
-              <button
-                v-if="bidDoc.status === 'parsed'"
-                class="view-btn"
-                @click="handleViewDoc(bidDoc.id)"
-              >
-                View Content
-              </button>
-              <button
-                class="delete-btn"
-                @click="handleDeleteDoc(bidDoc.id)"
-              >
-                Delete
-              </button>
+              <div class="doc-header">
+                <div class="doc-icon">📄</div>
+                <div class="doc-main">
+                  <p class="filename">{{ bidDoc.original_filename }}</p>
+                  <span :class="['status', getStatusClass(bidDoc.status)]">
+                    {{ bidDoc.status }}
+                  </span>
+                  <p v-if="bidDoc.page_count" class="doc-meta">
+                    {{ bidDoc.page_count }} 页, {{ bidDoc.word_count }} 字
+                  </p>
+                </div>
+              </div>
+              <div class="doc-actions">
+                <button
+                  v-if="bidDoc.status === 'parsed'"
+                  class="view-btn"
+                  @click="handleViewDoc(bidDoc.id)"
+                >
+                  查看内容
+                </button>
+                <button
+                  class="delete-btn"
+                  @click="handleDeleteDoc(bidDoc.id)"
+                >
+                  删除
+                </button>
+              </div>
             </div>
             <div v-else class="upload-area">
               <el-progress
@@ -213,7 +227,7 @@ function getSeverityClass(severity: string) {
                 @change="handleUpload($event, 'bid')"
               />
               <label v-if="!projectStore.uploadProgress['bid']" for="bid-upload" class="upload-label">
-                Click to upload PDF or Word
+                点击上传 PDF 或 Word 文件
               </label>
             </div>
           </div>
@@ -222,7 +236,7 @@ function getSeverityClass(severity: string) {
 
       <!-- Review Section -->
       <section class="section">
-        <h2>Review</h2>
+        <h2>审查</h2>
 
         <div class="review-controls">
           <button
@@ -231,7 +245,7 @@ function getSeverityClass(severity: string) {
             :disabled="!canStartReview || projectStore.reviewLoading"
             @click="startReview"
           >
-            {{ projectStore.reviewLoading ? 'Starting...' : 'Start Review' }}
+            {{ projectStore.reviewLoading ? '启动中...' : '开始审查' }}
           </button>
 
           <div v-if="projectStore.currentTask" class="task-status">
@@ -245,12 +259,12 @@ function getSeverityClass(severity: string) {
         </div>
 
         <p v-if="!canStartReview && !tenderDoc && !bidDoc" class="hint">
-          Please upload both tender and bid documents to start the review.
+          请上传招标书和应标书以开始审查。
         </p>
 
         <!-- Agent Timeline -->
         <div v-if="projectStore.currentTask && (projectStore.currentTask.status === 'running' || projectStore.currentTask.status === 'completed')" class="timeline">
-          <h3>{{ projectStore.currentTask.status === 'completed' ? 'Agent Steps (Completed)' : 'Agent Progress' }}</h3>
+          <h3>{{ projectStore.currentTask.status === 'completed' ? '智能体步骤 (已完成)' : '智能体进度' }}</h3>
           <el-scrollbar height="300px">
             <div class="timeline-steps">
               <div
@@ -263,13 +277,13 @@ function getSeverityClass(severity: string) {
                 </div>
                 <div class="step-content">
                   <span class="step-type">
-                    {{ step.step_type === 'tool_call' ? `${step.tool_name || 'tool'}` : 'Thought' }}
+                    {{ step.step_type === 'tool_call' ? `${step.tool_name || '工具'}` : '思考' }}
                   </span>
                   <p class="step-text">{{ step.content }}</p>
                 </div>
               </div>
               <div v-if="projectStore.agentSteps.length === 0" class="timeline-empty">
-                <el-icon class="is-loading"><Loading /></el-icon> Waiting for agent to start...
+                <el-icon class="is-loading"><Loading /></el-icon> 等待智能体启动...
               </div>
             </div>
           </el-scrollbar>
@@ -278,32 +292,32 @@ function getSeverityClass(severity: string) {
 
       <!-- Results Section -->
       <section v-if="projectStore.reviewResults" class="section">
-        <h2>Review Results</h2>
+        <h2>审查结果</h2>
 
         <div class="summary">
           <div class="summary-item">
             <span class="summary-value">{{ projectStore.reviewResults.summary.total_requirements }}</span>
-            <span class="summary-label">Total</span>
+            <span class="summary-label">总计</span>
           </div>
           <div class="summary-item success">
             <span class="summary-value">{{ projectStore.reviewResults.summary.compliant }}</span>
-            <span class="summary-label">Compliant</span>
+            <span class="summary-label">合规</span>
           </div>
           <div class="summary-item error">
             <span class="summary-value">{{ projectStore.reviewResults.summary.non_compliant }}</span>
-            <span class="summary-label">Non-Compliant</span>
+            <span class="summary-label">不合规</span>
           </div>
           <div class="summary-item critical">
             <span class="summary-value">{{ projectStore.reviewResults.summary.critical }}</span>
-            <span class="summary-label">Critical</span>
+            <span class="summary-label">严重</span>
           </div>
           <div class="summary-item major">
             <span class="summary-value">{{ projectStore.reviewResults.summary.major }}</span>
-            <span class="summary-label">Major</span>
+            <span class="summary-label">主要</span>
           </div>
           <div class="summary-item minor">
             <span class="summary-value">{{ projectStore.reviewResults.summary.minor }}</span>
-            <span class="summary-label">Minor</span>
+            <span class="summary-label">次要</span>
           </div>
         </div>
 
@@ -318,15 +332,15 @@ function getSeverityClass(severity: string) {
                 {{ finding.severity }}
               </span>
               <span :class="['compliance-badge', finding.is_compliant ? 'compliant' : 'non-compliant']">
-                {{ finding.is_compliant ? 'Compliant' : 'Non-Compliant' }}
+                {{ finding.is_compliant ? '合规' : '不合规' }}
               </span>
             </div>
             <div class="finding-body">
-              <p class="requirement"><strong>Requirement:</strong> {{ finding.requirement_content }}</p>
-              <p class="bid-content"><strong>Bid Content:</strong> {{ finding.bid_content }}</p>
+              <p class="requirement"><strong>要求:</strong> {{ finding.requirement_content }}</p>
+              <p class="bid-content"><strong>应标内容:</strong> {{ finding.bid_content }}</p>
               <p v-if="finding.explanation" class="explanation">{{ finding.explanation }}</p>
               <p v-if="finding.suggestion && !finding.is_compliant" class="suggestion">
-                <strong>Suggestion:</strong> {{ finding.suggestion }}
+                <strong>建议:</strong> {{ finding.suggestion }}
               </p>
             </div>
           </div>
@@ -342,17 +356,17 @@ function getSeverityClass(severity: string) {
           <button @click="closeDocViewer" class="close-btn">×</button>
         </div>
         <div class="doc-viewer-body">
-          <div v-if="docViewerLoading" class="loading">Loading document...</div>
+          <div v-if="docViewerLoading" class="loading">正在加载文档...</div>
           <div v-else-if="docViewerContent" class="doc-content">
-            <pre class="markdown-content">{{ docViewerContent.md_content || 'No content available' }}</pre>
+            <pre class="markdown-content">{{ docViewerContent.md_content || '无内容' }}</pre>
             <div v-if="docViewerContent.images?.length" class="doc-images">
-              <h4>Images ({{ docViewerContent.images.length }})</h4>
+              <h4>图片 ({{ docViewerContent.images.length }})</h4>
               <div class="images-grid">
                 <img
                   v-for="(img, idx) in docViewerContent.images"
                   :key="idx"
                   :src="img"
-                  :alt="`Page image ${idx + 1}`"
+                  :alt="`页面图片 ${idx + 1}`"
                   class="doc-image"
                 />
               </div>
@@ -426,31 +440,70 @@ function getSeverityClass(severity: string) {
 }
 
 .document-card {
-  border: 2px dashed #ddd;
-  border-radius: 8px;
-  padding: 1.5rem;
-  text-align: center;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 1.25rem;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  transition: box-shadow 0.2s ease;
+}
+
+.document-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
 .document-card h3 {
-  color: #333;
+  color: #1e1b4b;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #f3f4f6;
 }
 
 .document-info {
   text-align: left;
 }
 
+.doc-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.doc-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  background: #f5f3ff;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+}
+
+.doc-main {
+  flex: 1;
+  min-width: 0;
+}
+
 .filename {
-  color: #333;
-  font-weight: 500;
+  color: #111827;
+  font-weight: 600;
+  font-size: 0.95rem;
   word-break: break-all;
+  margin: 0;
+  line-height: 1.3;
 }
 
 .doc-meta {
-  color: #666;
-  font-size: 0.9rem;
-  margin: 0.5rem 0;
+  color: #6b7280;
+  font-size: 0.8rem;
+  margin: 0.25rem 0 0 0;
 }
 
 .upload-area {
@@ -482,48 +535,54 @@ function getSeverityClass(severity: string) {
 }
 
 .status {
-  display: inline-block;
-  padding: 0.25rem 0.75rem;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: 500;
-  margin-top: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
 }
 
 .status-pending {
-  background: #ddd;
-  color: #666;
+  background: #f3f4f6;
+  color: #6b7280;
 }
 
 .status-running {
-  background: #f6e05e;
-  color: #744210;
+  background: #fef9c3;
+  color: #854d0e;
 }
 
 .status-success {
-  background: #68d391;
-  color: #22543d;
+  background: #dcfce7;
+  color: #166534;
 }
 
 .status-error {
-  background: #fc8181;
-  color: #742a2a;
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.doc-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
 }
 
 .view-btn, .delete-btn {
-  padding: 0.5rem 1rem;
+  flex: 1;
+  padding: 0.5rem 0.75rem;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
-  margin-top: 0.5rem;
-  margin-right: 0.5rem;
-  transition: background-color 0.2s ease;
+  font-size: 0.8rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
 }
 
 .view-btn {
   background: #6366f1;
   color: white;
-  transition: background-color 0.2s ease;
 }
 
 .view-btn:hover {
@@ -531,12 +590,13 @@ function getSeverityClass(severity: string) {
 }
 
 .delete-btn {
-  background: #e53e3e;
-  color: white;
+  background: #f3f4f6;
+  color: #6b7280;
 }
 
 .delete-btn:hover {
-  background: #c53030;
+  background: #fee2e2;
+  color: #dc2626;
 }
 
 .review-controls {

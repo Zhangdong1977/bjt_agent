@@ -32,14 +32,14 @@ function goBack() {
   <div class="review-timeline-view">
     <header class="header">
       <div class="header-left">
-        <button @click="goBack" class="back-btn">← Back</button>
-        <h1>Review Timeline: {{ projectStore.currentProject?.name }}</h1>
+        <button @click="goBack" class="back-btn">← 返回</button>
+        <h1>审查时间线: {{ projectStore.currentProject?.name }}</h1>
       </div>
     </header>
 
     <main class="content">
       <section class="section">
-        <h2>Agent Execution Timeline</h2>
+        <h2>智能体执行时间线</h2>
 
         <div v-if="projectStore.currentTask" class="task-info">
           <span :class="['status', `status-${projectStore.currentTask.status}`]">
@@ -57,7 +57,7 @@ function goBack() {
         />
 
         <div v-else class="no-task">
-          No active review task. Start a review from the project page.
+          暂无进行中的审查任务。请从项目页面开始审查。
         </div>
       </section>
     </main>

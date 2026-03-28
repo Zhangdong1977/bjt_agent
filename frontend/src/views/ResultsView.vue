@@ -31,30 +31,30 @@ function goToTimeline() {
   <div class="results-view">
     <header class="header">
       <div class="header-left">
-        <button @click="goBack" class="back-btn">← Back</button>
-        <h1>Review Results: {{ projectStore.currentProject?.name }}</h1>
+        <button @click="goBack" class="back-btn">← 返回</button>
+        <h1>审查结果: {{ projectStore.currentProject?.name }}</h1>
       </div>
       <button
         v-if="projectStore.currentTask"
         @click="goToTimeline"
         class="timeline-btn"
       >
-        View Timeline
+        查看时间线
       </button>
     </header>
 
     <main class="content">
       <section v-if="projectStore.reviewResults" class="section">
-        <h2>Summary</h2>
+        <h2>摘要</h2>
         <SummaryCard :summary="projectStore.reviewResults.summary" />
 
-        <h2>Findings</h2>
+        <h2>发现的问题</h2>
         <ResultsTable :findings="projectStore.reviewResults.findings" />
       </section>
 
       <div v-else class="no-results">
-        <p>No review results available.</p>
-        <p>Please run a review first from the project page.</p>
+        <p>暂无审查结果。</p>
+        <p>请从项目页面先运行审查。</p>
       </div>
     </main>
   </div>

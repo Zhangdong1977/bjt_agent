@@ -22,6 +22,7 @@ const router = createRouter({
     },
     {
       path: '/home',
+      name: 'home',
       component: () => import('@/components/AppLayout.vue'),
       meta: { requiresAuth: true },
       children: [

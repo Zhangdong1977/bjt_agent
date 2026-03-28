@@ -15,11 +15,24 @@ function getSeverityClass(severity: string) {
       return ''
   }
 }
+
+function getSeverityLabel(severity: string) {
+  switch (severity) {
+    case 'critical':
+      return '严重'
+    case 'major':
+      return '主要'
+    case 'minor':
+      return '次要'
+    default:
+      return severity
+  }
+}
 </script>
 
 <template>
   <span :class="['severity-badge', getSeverityClass(severity)]">
-    {{ severity }}
+    {{ getSeverityLabel(severity) }}
   </span>
 </template>
 

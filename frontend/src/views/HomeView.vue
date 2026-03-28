@@ -36,7 +36,7 @@ async function createProject() {
 
 async function deleteProject(projectId: string, event: Event) {
   event.stopPropagation()
-  if (confirm('Are you sure you want to delete this project?')) {
+  if (confirm('确定要删除此项目吗？')) {
     await projectStore.deleteProject(projectId)
   }
 }
@@ -51,25 +51,25 @@ function logout() {
 <template>
   <div class="home">
     <header class="header">
-      <h1>Bid Review Agent</h1>
+      <h1>标书审查智能体</h1>
       <div class="user-info">
         <span>{{ authStore.user?.username }}</span>
-        <button @click="logout" class="logout-btn">Logout</button>
+        <button @click="logout" class="logout-btn">退出</button>
       </div>
     </header>
 
     <main class="content">
       <div class="projects-header">
-        <h2>My Projects</h2>
+        <h2>我的项目</h2>
         <button @click="showCreateModal = true" class="primary-btn">
-          New Project
+          新建项目
         </button>
       </div>
 
-      <div v-if="projectStore.loading" class="loading">Loading...</div>
+      <div v-if="projectStore.loading" class="loading">加载中...</div>
 
       <div v-else-if="projectStore.projects.length === 0" class="empty-state">
-        <p>No projects yet. Create your first project to get started.</p>
+        <p>暂无项目。创建您的第一个项目开始吧。</p>
       </div>
 
       <div v-else class="projects-grid">
@@ -83,14 +83,14 @@ function logout() {
             <h3>{{ project.name }}</h3>
             <p v-if="project.description">{{ project.description }}</p>
             <span class="project-date">
-              Created {{ new Date(project.created_at).toLocaleDateString() }}
+              创建于 {{ new Date(project.created_at).toLocaleDateString() }}
             </span>
           </div>
           <button
             class="delete-btn"
             @click="deleteProject(project.id, $event)"
           >
-            Delete
+            删除
           </button>
         </div>
       </div>
@@ -99,30 +99,30 @@ function logout() {
     <!-- Create Project Modal -->
     <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
       <div class="modal">
-        <h3>Create New Project</h3>
+        <h3>创建新项目</h3>
         <form @submit.prevent="createProject">
           <div class="form-group">
-            <label for="projectName">Project Name</label>
+            <label for="projectName">项目名称</label>
             <input
               id="projectName"
               v-model="newProjectName"
               type="text"
               required
-              placeholder="e.g., Project Alpha"
+              placeholder="例如：项目A"
             />
           </div>
           <div class="form-group">
-            <label for="projectDesc">Description (optional)</label>
+            <label for="projectDesc">描述（可选）</label>
             <textarea
               id="projectDesc"
               v-model="newProjectDescription"
-              placeholder="Brief description of the project"
+              placeholder="项目简要描述"
               rows="3"
             ></textarea>
           </div>
           <div class="modal-actions">
-            <button type="button" @click="showCreateModal = false">Cancel</button>
-            <button type="submit" class="primary-btn">Create</button>
+            <button type="button" @click="showCreateModal = false">取消</button>
+            <button type="submit" class="primary-btn">创建</button>
           </div>
         </form>
       </div>

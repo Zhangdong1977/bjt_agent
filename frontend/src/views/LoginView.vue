@@ -16,7 +16,7 @@ async function handleLogin() {
     await authStore.login(username.value, password.value)
     router.push({ name: 'home' })
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : 'Login failed'
+    error.value = e instanceof Error ? e.message : '登录失败'
   }
 }
 </script>
@@ -24,12 +24,12 @@ async function handleLogin() {
 <template>
   <div class="auth-container">
     <div class="auth-card">
-      <h1>Bid Review Agent</h1>
-      <h2>Login</h2>
+      <h1>标书审查智能体</h1>
+      <h2>登录</h2>
 
       <form @submit.prevent="handleLogin">
         <div class="form-group">
-          <label for="username">Username</label>
+          <label for="username">用户名</label>
           <input
             id="username"
             v-model="username"
@@ -40,7 +40,7 @@ async function handleLogin() {
         </div>
 
         <div class="form-group">
-          <label for="password">Password</label>
+          <label for="password">密码</label>
           <input
             id="password"
             v-model="password"
@@ -53,12 +53,12 @@ async function handleLogin() {
         <div v-if="error" class="error">{{ error }}</div>
 
         <button type="submit" :disabled="authStore.loading">
-          {{ authStore.loading ? 'Logging in...' : 'Login' }}
+          {{ authStore.loading ? '登录中...' : '登录' }}
         </button>
       </form>
 
       <p class="switch-auth">
-        Don't have an account? <router-link to="/register">Register</router-link>
+        还没有账号？<router-link to="/register">注册</router-link>
       </p>
     </div>
   </div>

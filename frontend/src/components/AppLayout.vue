@@ -16,11 +16,11 @@ function logout() {
   <a-layout class="app-layout">
     <a-layout-header class="app-header">
       <div class="header-left">
-        <h1 class="logo">Bid Review Agent</h1>
+        <h1 class="logo">标书审查智能体</h1>
       </div>
       <div class="header-right">
         <span class="username">{{ authStore.user?.username }}</span>
-        <a-button type="text" danger @click="logout">Logout</a-button>
+        <a-button type="text" danger @click="logout">退出</a-button>
       </div>
     </a-layout-header>
     <a-layout>

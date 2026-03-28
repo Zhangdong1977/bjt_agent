@@ -78,7 +78,7 @@ onUnmounted(() => {
 
 <template>
   <div class="review-timeline">
-    <h3>Agent Progress</h3>
+    <h3>智能体进度</h3>
     <div class="timeline-container">
       <div
         v-for="(step, index) in steps"
@@ -109,7 +109,7 @@ onUnmounted(() => {
               <BulbOutlined v-else />
             </span>
             <span class="step-type">
-              {{ step.step_type === 'tool_call' ? `${step.tool_name || 'Tool'}` : step.step_type === 'observation' ? 'Observation' : 'Thought' }}
+              {{ step.step_type === 'tool_call' ? `${step.tool_name || '工具'}` : step.step_type === 'observation' ? '观察' : '思考' }}
             </span>
           </div>
           <p class="step-text">{{ step.content }}</p>
@@ -118,7 +118,7 @@ onUnmounted(() => {
 
       <div v-if="steps.length === 0" class="timeline-empty">
         <ClockCircleOutlined class="empty-icon" />
-        <span>Waiting for agent to start...</span>
+        <span>等待智能体启动...</span>
       </div>
     </div>
   </div>
