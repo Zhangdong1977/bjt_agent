@@ -8,6 +8,10 @@
 
 import { Router, Request, Response } from 'express';
 import { asyncHandler, createError } from '../middleware/errorHandler.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { parseDocument } from '../parsers/document_parser.js';
+import { getConfig } from '../config/index.js';
 
 // Import types from rag-memory
 import type { MemoryIndex, IndexStatus, SyncOptions } from 'rag-memory';
@@ -35,6 +39,75 @@ interface SyncResponseBody {
 }
 
 /**
+ * Convert DOCX/PDF files to Markdown before sync
+ */
+async function convertDocumentsToMarkdown(
+  documentsPath: string
+): Promise<{ converted: number; errors: string[] }> {
+  let converted = 0;
+  const errors: string[] = [];
+
+  async function walkDir(dir: string): Promise<void> {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walkDir(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+
+      const ext = path.extname(entry.name).toLowerCase();
+      if (ext === '.docx' || ext === '.pdf') {
+        const mdFileName = entry.name + '.md';
+        const mdFilePath = path.join(path.dirname(fullPath), mdFileName);
+
+        // Skip if already converted
+        try {
+          const mdStat = await fs.stat(mdFilePath);
+          const origStat = await fs.stat(fullPath);
+          if (mdStat.mtimeMs >= origStat.mtimeMs) {
+            console.log(`[sync] Skipping ${entry.name} (already converted)`);
+            continue;
+          }
+        } catch {
+          // Continue if md file doesn't exist
+        }
+
+        try {
+          console.log(`[sync] Converting ${entry.name} to Markdown...`);
+          const config = getConfig();
+          const result = await parseDocument(fullPath, {
+            apiKey: config.zhipuApiKey,
+          });
+
+          // Write as markdown with original filename in title
+          const markdown = `# ${result.fileName}\n\n${result.content}`;
+          await fs.writeFile(mdFilePath, markdown, 'utf-8');
+          converted++;
+          console.log(
+            `[sync] Converted ${entry.name} -> ${mdFileName} (${result.content.length} chars)`
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(`Failed to convert ${entry.name}: ${msg}`);
+          console.error(`[sync] Error converting ${entry.name}: ${msg}`);
+        }
+      }
+    }
+  }
+
+  try {
+    await walkDir(documentsPath);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    errors.push(`Walk error: ${msg}`);
+  }
+
+  return { converted, errors };
+}
+
+/**
  * POST /api/sync
  * Trigger index synchronization
  *
@@ -54,6 +127,14 @@ router.post(
     // Get status before sync for statistics tracking
     const statusBefore: IndexStatus = req.memory.status();
     const errors: string[] = [];
+
+    // Convert DOCX/PDF to Markdown before sync
+    const config = getConfig();
+    console.log(`[sync] Converting documents in ${config.documentsPath}...`);
+    const convertResult = await convertDocumentsToMarkdown(config.documentsPath);
+    if (convertResult.errors.length > 0) {
+      errors.push(...convertResult.errors);
+    }
 
     // Perform sync with progress tracking
     const startTime = Date.now();
