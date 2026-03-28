@@ -87,7 +87,17 @@ async def delete_document(
     if not file_path.startswith(os.path.abspath(user_dir)):
         raise HTTPException(status_code=403, detail="Access denied")
 
+    # 删除原始文件
     os.remove(file_path)
+
+    # 删除对应的 .md 转换文件（如果存在）
+    md_file_path = file_path + ".md"
+    if os.path.exists(md_file_path):
+        os.remove(md_file_path)
+
+    # 触发 RAG 同步（异步，不阻塞响应）
+    asyncio.create_task(sync_knowledge_base())
+
     return {"message": "Document deleted"}
 
 @router.get("/documents/{document_id}/preview")
