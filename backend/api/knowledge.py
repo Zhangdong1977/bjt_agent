@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Body
 from typing import List, Annotated
 import asyncio
 import os
@@ -145,6 +145,49 @@ async def preview_document(
     # 返回文件内容让浏览器直接显示
     from fastapi.responses import FileResponse
     return FileResponse(file_path)
+
+
+@router.get("/documents/{document_id}/content")
+async def get_document_content(
+    document_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """获取知识库文档的Markdown内容"""
+    user_dir = os.path.join(settings.knowledge_base_path, current_user.id)
+    file_path = os.path.join(user_dir, document_id)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # 安全检查：确保文件在用户目录下
+    if not file_path.startswith(os.path.abspath(user_dir)):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # 读取文件内容
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    return {"content": content, "filename": document_id}
+
+
+@router.post("/rag-search")
+async def rag_search(
+    query: str = Body(..., embed=True),
+    limit: int = 10,
+    current_user: User = Depends(get_current_user)
+):
+    """测试知识库RAG搜索"""
+    rag_settings = get_settings()
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{rag_settings.rag_memory_service_url}/api/search",
+                json={"query": query, "limit": limit}
+            )
+            return response.json()
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="RAG service unavailable")
 
 
 async def sync_knowledge_base() -> bool:
