@@ -27,7 +27,7 @@ onMounted(() => {
 })
 
 function goBack() {
-  router.push({ name: 'home' })
+  router.back()
 }
 
 async function handleUpload(event: Event, docType: 'tender' | 'bid') {

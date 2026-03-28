@@ -298,8 +298,11 @@ class BidReviewAgent(BaseAgent):
             text: Agent output text
 
         Returns:
-            List with single summary finding containing full text.
+            List of structured findings parsed from text.
         """
+        findings = []
+        requirement_counter = 1
+
         # Check for common patterns indicating no issues found
         if any(phrase in text.lower() for phrase in ["完全符合", "全部符合", "无不符合项", "符合所有要求"]):
             return [{
@@ -314,7 +317,113 @@ class BidReviewAgent(BaseAgent):
                 "explanation": "投标文件符合招标所有要求",
             }]
 
-        # Return full text as summary
+        # Try to extract structured findings from text patterns
+
+        # Pattern 1: Look for numbered items like "1. 要求: xxx" or "1. xxx"
+        numbered_items = re.findall(
+            r'(?:^|\n)\s*(?:\d+[.、)]\s*)(.+(?:\n(?!\s*(?:\d+[.、)]\s*)[^　\s]).*)*)',
+            text,
+            re.MULTILINE
+        )
+
+        # Pattern 2: Look for lines with compliance keywords
+        compliance_lines = []
+        for line in text.split('\n'):
+            line_lower = line.lower().strip()
+            if any(kw in line_lower for kw in ['符合', '不合规', '不满足', '违规', '缺失', '缺少', '未提供']):
+                compliance_lines.append(line.strip())
+
+        # Pattern 3: Extract JSON objects that may not have requirement_key
+        json_matches = re.findall(r'\{[^{}]*"[^"]+"\s*:[^}]+\}', text, re.DOTALL)
+        for json_str in json_matches:
+            try:
+                parsed = json.loads(json_str)
+                if isinstance(parsed, dict) and len(parsed) >= 2:
+                    # Normalize even without requirement_key
+                    normalized = self._normalize_finding(parsed, requirement_counter)
+                    findings.append(normalized)
+                    requirement_counter += 1
+            except json.JSONDecodeError:
+                continue
+
+        # Pattern 4: Look for severity patterns like "严重程度: critical" or "severity: major"
+        severity_patterns = re.findall(
+            r'(?:严重程度|severity|级别)\s*[:：]\s*(critical|major|minor|严重|一般|轻微)',
+            text,
+            re.IGNORECASE
+        )
+
+        # Pattern 5: Extract requirement-bid pairs
+        requirement_bid_pattern = re.findall(
+            r'(?:要求|需求|requirement)[:：]?\s*["\']?([^"\'\n]+)["\']?[^"]*(?:投标|bid|应标)[:：]?\s*["\']?([^"\'\n]+)["\']?',
+            text,
+            re.IGNORECASE | re.DOTALL
+        )
+
+        for req, bid in requirement_bid_pattern:
+            findings.append({
+                "requirement_key": f"req_{requirement_counter:03d}",
+                "requirement_content": req.strip(),
+                "bid_content": bid.strip() if bid else None,
+                "is_compliant": False,
+                "severity": "minor",
+                "location_page": None,
+                "location_line": None,
+                "suggestion": None,
+                "explanation": f"发现不符合项：要求 {req.strip()}",
+            })
+            requirement_counter += 1
+
+        # Pattern 6: Look for "is_compliant" or "compliant" patterns
+        compliant_pattern = re.findall(
+            r'(?:is_compliant|compliant|合规状态)\s*[:＝=]\s*(true|false|是|否|符合|不合规)',
+            text,
+            re.IGNORECASE
+        )
+
+        # Pattern 7: Try to extract lines that look like finding descriptions
+        # Look for lines containing both requirement-like and compliance-like content
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line or len(line) < 10:
+                continue
+
+            # Check if line contains a requirement indicator and compliance indicator
+            has_requirement = any(kw in line.lower() for kw in ['要求', '需求', '规格', '标准', '规定', '需要', '必须'])
+            has_compliance = any(kw in line.lower() for kw in ['符合', '不合规', '不满足', '缺失', '违规', '缺少', '未提供', '通过'])
+
+            if has_requirement or len(compliance_lines) > 0:
+                # This looks like a finding line
+                is_compliant = not any(kw in line.lower() for kw in ['不合规', '不满足', '缺失', '违规', '缺少', '未提供'])
+                severity = self._infer_severity(line)
+
+                findings.append({
+                    "requirement_key": f"req_{requirement_counter:03d}",
+                    "requirement_content": line[:200] if len(line) > 200 else line,
+                    "bid_content": None,
+                    "is_compliant": is_compliant,
+                    "severity": severity if not is_compliant else None,
+                    "location_page": None,
+                    "location_line": None,
+                    "suggestion": None,
+                    "explanation": line,
+                })
+                requirement_counter += 1
+
+        # Deduplicate findings by content
+        seen_content = set()
+        unique_findings = []
+        for f in findings:
+            content_key = f.get("requirement_content", "")[:50]
+            if content_key not in seen_content:
+                seen_content.add(content_key)
+                unique_findings.append(f)
+
+        # If we found structured findings, return them
+        if unique_findings:
+            return unique_findings[:20]  # Limit to 20 findings
+
+        # Fallback: return full text as summary
         return [{
             "requirement_key": "review_summary",
             "requirement_content": "投标文件审查结果汇总",
@@ -324,5 +433,33 @@ class BidReviewAgent(BaseAgent):
             "location_page": None,
             "location_line": None,
             "suggestion": None,
-            "explanation": text,
+            "explanation": text[:2000] if len(text) > 2000 else text,
         }]
+
+    def _infer_severity(self, text: str) -> Optional[str]:
+        """Infer severity from text content.
+
+        Args:
+            text: Text to analyze
+
+        Returns:
+            Severity level string or None.
+        """
+        text_lower = text.lower()
+
+        # Critical indicators
+        critical_keywords = ['严重', '关键', '致命', '重大', 'critical', 'fatal', 'major']
+        if any(kw in text_lower for kw in critical_keywords):
+            return "critical"
+
+        # Major indicators
+        major_keywords = ['重要', '较大', '主要', 'major', 'important', 'significant']
+        if any(kw in text_lower for kw in major_keywords):
+            return "major"
+
+        # Minor indicators
+        minor_keywords = ['轻微', '一般', '较小', '次要', 'minor', 'small', 'slight']
+        if any(kw in text_lower for kw in minor_keywords):
+            return "minor"
+
+        return "minor"  # Default to minor

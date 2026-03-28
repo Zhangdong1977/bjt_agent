@@ -57,7 +57,12 @@ async function deleteDoc(docId: string) {
 }
 
 async function previewDoc(doc: KnowledgeDoc) {
-  window.open(`/api/knowledge/documents/${doc.id}/preview`, '_blank')
+  const token = localStorage.getItem('access_token')
+  if (token) {
+    window.open(`/api/knowledge/documents/${doc.id}/preview?token=${encodeURIComponent(token)}`, '_blank')
+  } else {
+    message.error('未登录，无法预览文档')
+  }
 }
 </script>
 

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
-from typing import List
+from typing import List, Annotated
 import asyncio
 import os
 import shutil
@@ -7,11 +7,14 @@ from datetime import datetime
 from uuid import uuid4
 
 import httpx
+from jose import jwt as jose_jwt, JWTError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from .deps import get_current_user
+from .deps import get_current_user, get_db_session
 from backend.config import get_settings
-from models.user import User
+from backend.models import User
 from schemas.knowledge import KnowledgeDocumentResponse, KnowledgeDocumentListResponse
+from schemas.auth import TokenData
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
@@ -103,27 +106,45 @@ async def delete_document(
 @router.get("/documents/{document_id}/preview")
 async def preview_document(
     document_id: str,
-    current_user: User = Depends(get_current_user)
+    token: str = None,
+    db: AsyncSession = Depends(get_db_session)
 ):
-    """预览知识库文档"""
-    user_dir = os.path.join(settings.knowledge_base_path, current_user.id)
+    """预览知识库文档
+
+    Args:
+        document_id: 文档ID
+        token: 可选的认证token（用于直接浏览器访问）
+        db: 数据库会话
+    """
+    user = None
+    if token:
+        # Query param 方式验证 token
+        try:
+            payload = jose_jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+            user_id: str = payload.get("sub")
+            if user_id:
+                from sqlalchemy import select
+                result = await db.execute(select(User).where(User.id == user_id))
+                user = result.scalar_one_or_none()
+        except JWTError:
+            pass
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user_dir = os.path.join(settings.knowledge_base_path, user.id)
     file_path = os.path.join(user_dir, document_id)
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # 安全检查
+    # 安全检查：确保文件在用户目录下
     if not file_path.startswith(os.path.abspath(user_dir)):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # 对于图片直接返回，对于PDF返回路径（前端处理）
-    file_ext = os.path.splitext(file_path)[1].lower()
-    if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
-        from fastapi.responses import FileResponse
-        return FileResponse(file_path)
-    else:
-        # 返回文件路径让前端处理
-        return {"file_path": file_path, "filename": os.path.basename(file_path)}
+    # 返回文件内容让浏览器直接显示
+    from fastapi.responses import FileResponse
+    return FileResponse(file_path)
 
 
 async def sync_knowledge_base() -> bool:

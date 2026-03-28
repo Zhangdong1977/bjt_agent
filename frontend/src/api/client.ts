@@ -116,8 +116,11 @@ apiClient.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config
 
-    // Handle 401 - try token refresh
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // Skip token refresh for login requests (they return 401 for invalid creds)
+    const isLoginRequest = originalRequest.url?.includes('/auth/login')
+
+    // Handle 401 - try token refresh (skip for login requests)
+    if (error.response?.status === 401 && !originalRequest._retry && !isLoginRequest) {
       if (isRefreshing) {
         // Already refreshing, wait for new token
         return new Promise((resolve) => {
