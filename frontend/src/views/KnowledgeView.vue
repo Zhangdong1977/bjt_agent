@@ -25,7 +25,7 @@ async function fetchDocs() {
   loading.value = true
   try {
     const response = await knowledgeApi.listDocuments()
-    docs.value = response.data || []
+    docs.value = response.data.documents || []
   } catch {
     message.error('获取文档列表失败')
   } finally {
