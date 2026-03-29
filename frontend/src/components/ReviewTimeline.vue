@@ -237,8 +237,6 @@ onUnmounted(() => {
   flex: 1;
   padding: 0.75rem 1rem;
   border-radius: 6px;
-  background: #fff;
-  border-left: 4px solid;
   margin-bottom: 0.75rem;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
@@ -248,49 +246,85 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
+/* 渐变背景卡片 */
 .card-tool_call {
-  border-left-color: #fa8c16;
+  background: linear-gradient(135deg, rgb(249, 240, 255) 0%, rgb(253, 250, 255) 100%);
+  border-left: 4px solid rgb(211, 173, 247);
 }
 
 .card-observation {
-  border-left-color: #52c41a;
+  background: linear-gradient(135deg, rgb(246, 255, 250) 0%, rgb(250, 255, 252) 100%);
+  border-left: 4px solid rgb(183, 235, 200);
 }
 
 .card-thought {
-  border-left-color: #1890ff;
+  background: linear-gradient(135deg, rgb(240, 248, 255) 0%, rgb(245, 250, 255) 100%);
+  border-left: 4px solid rgb(187, 224, 255);
 }
 
+/* 头部样式 */
 .card-header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin-bottom: 0.5rem;
 }
 
-.step-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-}
-
-.icon-tool_call {
-  color: #fa8c16;
-}
-
-.icon-observation {
-  color: #52c41a;
-}
-
-.icon-thought {
-  color: #1890ff;
-}
-
-.step-type {
-  font-size: 0.85rem;
+.step-label {
   font-weight: 600;
-  color: #555;
+  color: #333;
+}
+
+.status-running {
+  margin-left: auto;
+}
+
+.duration {
+  color: rgb(153, 153, 153);
+  font-size: 0.85rem;
+}
+
+.timestamp {
+  color: rgb(153, 153, 153);
+  font-size: 0.85rem;
+}
+
+/* 折叠面板样式 */
+.tool-collapse {
+  margin-top: 0.75rem;
+  border-radius: 4px;
+}
+
+.tool-params {
+  margin-bottom: 0.75rem;
+}
+
+.tool-params strong {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.prompt-box {
+  padding: 8px;
+  background: rgb(245, 245, 245);
+  border-radius: 4px;
+  font-size: 12px;
+  color: rgb(24, 144, 255);
+  white-space: pre-wrap;
+}
+
+.tool-result {
+  margin-top: 0.5rem;
+}
+
+.tool-result strong {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+  color: #666;
 }
 
 .step-text {
