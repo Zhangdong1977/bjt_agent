@@ -21,6 +21,10 @@ const content = ref<DocumentContentResponse | null>(null)
 const ragQuery = ref('')
 const ragResults = ref<RAGSearchResult[]>([])
 const searching = ref(false)
+const activeTab = ref('content')
+const allShards = ref<any[]>([])
+const filteredShards = ref<any[]>([])
+const shardFilter = ref('')
 
 // 将 Markdown 转换为 HTML 并消毒
 const htmlContent = computed(() => {
@@ -65,6 +69,39 @@ watch(() => props.visible, (val) => {
   }
 })
 
+// 新增方法：加载所有分片
+async function loadAllShards() {
+  if (!props.docId) return
+  searching.value = true
+  try {
+    const response = await knowledgeApi.getDocumentShards(props.docId)
+    allShards.value = response.data.shards || []
+    filteredShards.value = allShards.value
+  } catch (err) {
+    console.error('Failed to load shards:', err)
+  } finally {
+    searching.value = false
+  }
+}
+
+// 监听Tab切换
+watch(activeTab, (tab) => {
+  if (tab === 'rag') {
+    loadAllShards()
+  }
+})
+
+// 过滤分片
+watch(shardFilter, (filter) => {
+  if (!filter.trim()) {
+    filteredShards.value = allShards.value
+  } else {
+    filteredShards.value = allShards.value.filter((s: any) =>
+      s.content.toLowerCase().includes(filter.toLowerCase())
+    )
+  }
+})
+
 function close() {
   emit('update:visible', false)
 }
@@ -79,7 +116,7 @@ function close() {
   >
     <div class="doc-detail">
       <a-spin :spinning="loading">
-        <a-tabs>
+        <a-tabs v-model:activeKey="activeTab">
           <a-tab-pane key="content" tab="文档内容">
             <div v-if="content" class="content-view" v-html="htmlContent"></div>
             <Empty v-else description="无法加载文档内容" />
@@ -87,26 +124,26 @@ function close() {
 
           <a-tab-pane key="rag" tab="RAG分片">
             <div class="rag-search">
-              <a-input-search
-                v-model:value="ragQuery"
-                placeholder="输入搜索内容测试RAG..."
-                enter-button="搜索"
-                @search="searchRAG"
+              <a-input
+                v-model:value="shardFilter"
+                placeholder="在分片中搜索..."
+                allow-clear
+                style="margin-bottom: 16px;"
               />
               <a-spin :spinning="searching">
-                <div v-if="ragResults.length > 0" class="rag-results">
-                  <p class="search-info">
-                    找到 {{ ragResults.length }} 个结果 ({{ (ragResults[0]?.score || 0).toFixed(2) }} 相似度)
+                <div v-if="filteredShards.length > 0" class="shards-list">
+                  <p class="shard-info">
+                    共 {{ filteredShards.length }} 个分片
                   </p>
-                  <div v-for="(result, idx) in ragResults" :key="idx" class="rag-item">
-                    <div class="rag-header">
-                      <Tag>{{ result.score.toFixed(2) }}</Tag>
-                      <span class="rag-source">{{ result.source }}</span>
+                  <div v-for="shard in filteredShards" :key="shard.id" class="shard-item">
+                    <div class="shard-header">
+                      <Tag>分片 {{ shard.id.replace('shard-', '') }}</Tag>
+                      <span class="shard-lines">第 {{ shard.startLine }}-{{ shard.endLine }} 行</span>
                     </div>
-                    <p class="rag-snippet">{{ result.snippet }}</p>
+                    <pre class="shard-content">{{ shard.content }}</pre>
                   </div>
                 </div>
-                <Empty v-else description="输入内容搜索RAG分片" />
+                <Empty v-else-if="!searching" description="暂无分片数据" />
               </a-spin>
             </div>
           </a-tab-pane>
@@ -172,5 +209,46 @@ function close() {
   line-height: 1.5;
   margin: 0;
   color: #333;
+}
+
+.shards-list {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.shard-info {
+  color: #666;
+  margin-bottom: 12px;
+}
+
+.shard-item {
+  background: #fafafa;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.shard-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.shard-lines {
+  font-size: 12px;
+  color: #999;
+}
+
+.shard-content {
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: white;
+  padding: 8px;
+  border-radius: 4px;
+  max-height: 200px;
+  overflow-y: auto;
 }
 </style>
