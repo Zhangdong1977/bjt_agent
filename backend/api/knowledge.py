@@ -170,6 +170,51 @@ async def get_document_content(
     return {"content": content, "filename": document_id}
 
 
+@router.get("/documents/{document_id}/shards")
+async def get_document_shards(
+    document_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """获取文档的所有RAG分片"""
+    user_dir = os.path.join(settings.knowledge_base_path, current_user.id)
+    # 解析后的markdown文件路径
+    md_file_path = os.path.join(user_dir, f"{document_id}.md")
+
+    if not os.path.exists(md_file_path):
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # 安全检查
+    if not md_file_path.startswith(os.path.abspath(user_dir)):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # 读取文件内容
+    with open(md_file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # 按50行分片
+    lines = content.split('\n')
+    total_lines = len(lines)
+    chunk_size = 50
+    shards = []
+
+    for i in range(0, total_lines, chunk_size):
+        chunk_lines = lines[i:i + chunk_size]
+        shard_content = '\n'.join(chunk_lines)
+        shards.append({
+            "id": f"shard-{i // chunk_size + 1}",
+            "startLine": i + 1,
+            "endLine": min(i + chunk_size, total_lines),
+            "content": shard_content
+        })
+
+    return {
+        "docId": document_id,
+        "filename": document_id,
+        "shards": shards,
+        "totalShards": len(shards)
+    }
+
+
 @router.post("/rag-search")
 async def rag_search(
     query: str = Body(..., embed=True),
