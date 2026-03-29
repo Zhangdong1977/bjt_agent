@@ -7,13 +7,13 @@ import { Router, Request, Response } from 'express';
 import { asyncHandler, createError } from '../middleware/errorHandler.js';
 
 // Import types from rag-memory
-import type { MemoryIndex, IndexStatus } from 'rag-memory';
+import type { IndexManager } from 'rag-memory';
 
-// Extend Request to include memory instance
+// Extend Request to include index manager instance
 declare global {
   namespace Express {
     interface Request {
-      memory?: MemoryIndex;
+      indexManager?: IndexManager;
     }
   }
 }
@@ -31,34 +31,41 @@ interface StatusResponseBody {
 
 /**
  * GET /api/status
- * Get service status
+ * Get user index status
  */
 router.get(
   '/status',
   asyncHandler(async (req: Request, res: Response) => {
-    // Check if memory instance is available
-    if (!req.memory) {
-      throw createError('Memory index not initialized', 503, 'service_unavailable');
+    const userId = req.headers['x-user-id'] as string;
+
+    if (!userId) {
+      throw createError('X-User-ID header is required', 400, 'missing_user_id');
     }
 
-    const memoryStatus: IndexStatus = req.memory.status();
-
-    // Map internal status to API status
-    let apiStatus: 'ready' | 'indexing' | 'error' = 'ready';
-    if (memoryStatus.dirty) {
-      apiStatus = 'indexing';
+    const manager = req.indexManager;
+    if (!manager) {
+      throw createError('Index manager not initialized', 503, 'service_unavailable');
     }
 
-    const response: StatusResponseBody = {
-      status: apiStatus,
-      files: memoryStatus.files,
-      chunks: memoryStatus.chunks,
-      provider: memoryStatus.provider,
-      model: memoryStatus.model,
-      lastSync: new Date().toISOString(), // rag-memory doesn't track last sync time
-    };
+    const status = await manager.getStatus(userId);
 
-    res.json(response);
+    if (!status) {
+      // User has no index yet - return empty status
+      res.json({
+        status: 'ready',
+        files: 0,
+        chunks: 0,
+        provider: 'zhipu',
+        model: 'embedding-3',
+        lastSync: new Date().toISOString(),
+      });
+      return;
+    }
+
+    res.json({
+      ...status,
+      lastSync: new Date().toISOString(),
+    });
   })
 );
 
@@ -67,12 +74,12 @@ router.get(
  * Health check endpoint
  */
 router.get('/health', (req: Request, res: Response) => {
-  const isMemoryReady = !!req.memory;
+  const isIndexManagerReady = !!req.indexManager;
 
   res.json({
-    status: isMemoryReady ? 'ok' : 'degraded',
+    status: isIndexManagerReady ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
-    memory: isMemoryReady ? 'ready' : 'not_initialized',
+    indexManager: isIndexManagerReady ? 'ready' : 'not_initialized',
   });
 });
 
