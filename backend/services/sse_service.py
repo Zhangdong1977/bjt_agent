@@ -2,8 +2,6 @@
 
 import asyncio
 import logging
-import os
-import threading
 import time
 from typing import AsyncGenerator, Optional
 
@@ -23,8 +21,8 @@ class SSEConnectionManager:
     async def connect(self, task_id: str, last_event_id: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Connect to SSE stream for a specific task.
 
-        Uses Redis Streams for reliable message delivery with persistence.
-        Consumer groups enable replay capability and ordered delivery.
+        Uses Redis Streams with simple XREAD (not consumer groups) for
+        reliable message delivery without pending message complexity.
 
         Args:
             task_id: The task ID to subscribe to
@@ -35,8 +33,6 @@ class SSEConnectionManager:
         """
         settings = get_settings()
         stream_key = f"sse:stream:{task_id}"
-        consumer_group = f"sse_group_{task_id}"
-        consumer_name = f"consumer_{os.getpid()}_{threading.current_thread().ident}"
 
         queue: asyncio.Queue = asyncio.Queue()
         event_count = 0
@@ -46,29 +42,27 @@ class SSEConnectionManager:
             r = None
             try:
                 r = redis.from_url(settings.redis_url, decode_responses=True)
-                try:
-                    # Create consumer group if not exists (mkstream=True creates stream)
-                    r.xgroup_create(stream_key, consumer_group, id="0", mkstream=True)
-                except redis.ResponseError as e:
-                    if "BUSYGROUP" not in str(e):
-                        raise
+                logger.info(f"SSE subscribed to stream: {stream_key}")
 
-                logger.info(f"SSE subscribed to stream: {stream_key}, group: {consumer_group}")
+                # Start reading from last_event_id if provided, otherwise from beginning
+                # Use XREAD instead of XREADGROUP to avoid pending message issues
+                start_id = last_event_id if last_event_id else "0"
 
-                # Read from stream using consumer group
                 while True:
                     try:
-                        messages = r.xreadgroup(
-                            consumer_group,
-                            consumer_name,
-                            {stream_key: ">"},  # ">" means only new messages
-                            count=1,
+                        # XREAD reads directly from stream without consumer groups
+                        # Block for 1 second waiting for new messages
+                        messages = r.xread(
+                            {stream_key: start_id},  # Read from last_event_id or start
+                            count=10,
                             block=1000  # 1 second block
                         )
                         if messages:
                             for stream, entries in messages:
                                 for msg_id, data in entries:
                                     queue.put_nowait((msg_id, data))
+                                    # Update start_id to continue from this point
+                                    start_id = msg_id
                     except Exception as e:
                         logger.warning(f"Stream read error: {e}")
                         time.sleep(0.1)
@@ -83,11 +77,10 @@ class SSEConnectionManager:
                 queue.put_nowait(None)  # Signal end of stream
 
         try:
-            listener_thread = threading.Thread(target=redis_listener, daemon=True)
-            listener_thread.start()
+            listener_thread = asyncio.create_task(
+                asyncio.to_thread(redis_listener)
+            )
             await asyncio.sleep(0.3)  # Wait for subscription
-
-            last_id = last_event_id  # For reconnection support
 
             while True:
                 try:
@@ -102,7 +95,6 @@ class SSEConnectionManager:
                 json_data = data.get('data', '') if isinstance(data, dict) else str(data)
                 logger.info(f"SSE yielding event {event_count}: {str(json_data)[:100]}")
                 yield f"id: {msg_id}\ndata: {json_data}\n\n"
-                last_id = msg_id
         except asyncio.CancelledError:
             logger.info("SSE connection cancelled")
             raise

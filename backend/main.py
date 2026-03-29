@@ -80,6 +80,10 @@ async def stream_task_events(task_id: str, token: str | None = None):
     including document parsing status and review agent steps.
     Events are published via Redis pubsub from Celery workers.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"SSE connection requested for task: {task_id}")
+
     # Validate token if provided (optional for backwards compatibility)
     if token:
         from jose import JWTError, jwt
