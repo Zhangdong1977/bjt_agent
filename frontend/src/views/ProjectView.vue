@@ -332,7 +332,7 @@ function getSeverityClass(severity: string) {
 
         <div class="review-controls">
           <button
-            v-if="!projectStore.currentTask || projectStore.currentTask.status === 'completed' || projectStore.currentTask.status === 'failed'"
+            v-if="!showHistoricalTimeline && (!projectStore.currentTask || projectStore.currentTask.status === 'completed' || projectStore.currentTask.status === 'failed')"
             class="primary-btn"
             :disabled="!canStartReview || projectStore.reviewLoading"
             @click="startReview"
