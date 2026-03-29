@@ -7,16 +7,16 @@
  */
 
 import { Router, Request, Response } from 'express';
-import type { MemoryIndex } from 'rag-memory';
+import type { MemoryIndex, IndexManager } from 'rag-memory';
 
 // Import middleware
 import { asyncHandler, createError } from '../middleware/errorHandler.js';
 
-// Extend Request to include memory instance
+// Extend Request to include indexManager
 declare global {
   namespace Express {
     interface Request {
-      memory?: MemoryIndex;
+      indexManager?: IndexManager;
     }
   }
 }
@@ -77,6 +77,14 @@ router.post(
   asyncHandler(async (req: Request, res: Response) => {
     const { query, limit = 10, options = {} }: SearchRequestBody = req.body;
 
+    // Read X-User-ID header
+    const userId = req.headers['x-user-id'] as string;
+
+    if (!userId) {
+      log.warn('Missing X-User-ID header');
+      throw createError('X-User-ID header is required', 400, 'missing_user_id');
+    }
+
     // Validate request - Requirement 1.1, 2.1
     if (!query || typeof query !== 'string') {
       log.warn('Invalid query: missing or not a string');
@@ -97,11 +105,15 @@ router.post(
     // Clamp limit between 1 and 50
     const maxResults = Math.min(Math.max(limit, 1), 50);
 
-    // Check if memory instance is available
-    if (!req.memory) {
-      log.error('Memory index not initialized');
-      throw createError('Memory index not initialized', 503, 'service_unavailable');
+    // Get index manager
+    const manager = req.indexManager;
+    if (!manager) {
+      log.error('Index manager not initialized');
+      throw createError('Index manager not initialized', 503, 'service_unavailable');
     }
+
+    // Get user's memory index
+    const memory = await manager.getIndex(userId);
 
     // Validate minScore if provided
     let minScore = options.minScore;
@@ -114,7 +126,7 @@ router.post(
 
     // Perform search - Requirement 1.1
     const startTime = Date.now();
-    const results = await req.memory.search(trimmedQuery, {
+    const results = await memory.search(trimmedQuery, {
       maxResults,
       minScore,
     });
@@ -122,6 +134,7 @@ router.post(
 
     // Log search results - Requirement 1.6
     log.info('Search completed', {
+      userId,
       query: trimmedQuery.substring(0, 50),
       resultsCount: results.length,
       queryTime,
