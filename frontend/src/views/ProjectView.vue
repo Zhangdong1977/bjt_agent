@@ -103,6 +103,11 @@ async function startReview() {
   }
 }
 
+async function handleRerunReview() {
+  clearHistoricalTimeline()
+  await startReview()
+}
+
 const selectedHistoryTaskId = ref('')
 const originalTaskId = ref<string | null>(null)
 
@@ -314,6 +319,12 @@ function getSeverityClass(severity: string) {
           </button>
           <button v-if="selectedHistoryTaskId" @click="clearHistoricalTimeline" class="secondary-btn">
             关闭历史
+          </button>
+        </div>
+
+        <div v-if="showHistoricalTimeline" class="rerun-section">
+          <button @click="handleRerunReview" class="primary-btn">
+            重新审查
           </button>
         </div>
 
@@ -918,6 +929,12 @@ function getSeverityClass(severity: string) {
 
 .secondary-btn:hover {
   background: #4b5563;
+}
+
+.rerun-section {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed #ddd;
 }
 
 /* Agent Timeline */
