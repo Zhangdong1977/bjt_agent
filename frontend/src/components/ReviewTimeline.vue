@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
 import type { SSEEvent } from '@/types'
+import { Timeline } from 'ant-design-vue'
 import {
   CheckOutlined,
   ClockCircleOutlined,
   LoadingOutlined,
+  CloseCircleOutlined,
   ToolOutlined,
   EyeOutlined,
   BulbOutlined,
@@ -13,6 +15,9 @@ import {
 defineProps<{
   taskId: string
 }>()
+
+// 注册 Ant Design Timeline 组件
+const TimelineItem = Timeline.Item
 
 interface TimelineStep {
   step_number: number
@@ -67,6 +72,22 @@ function disconnect() {
 
 function reset() {
   steps.value = []
+}
+
+function getStepColor(stepType: string): string {
+  const colorMap: Record<string, string> = {
+    tool_call: '#fa8c16',    // 橙色
+    observation: '#52c41a',  // 绿色
+    thought: '#1890ff',       // 蓝色
+  }
+  return colorMap[stepType] || '#d9d9d9'
+}
+
+function getStepIcon(step: TimelineStep) {
+  if (step.status === 'completed') return CheckOutlined
+  if (step.status === 'running') return LoadingOutlined
+  if (step.status === 'error') return CloseCircleOutlined
+  return ClockCircleOutlined
 }
 
 defineExpose({ connect, disconnect, reset })
