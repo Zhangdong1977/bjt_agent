@@ -106,6 +106,8 @@ async function startReview() {
 async function handleRerunReview() {
   clearHistoricalTimeline()
   await startReview()
+  // Refresh the task list after re-run
+  await projectStore.fetchReviewTasks()
 }
 
 const selectedHistoryTaskId = ref('')

@@ -310,7 +310,11 @@ export const useProjectStore = defineStore('project', () => {
     reviewTasks.value = await reviewApi.getTasks(currentProject.value.id)
   }
 
-  async function selectReviewTask(taskId: string) {
+  async function selectReviewTask(taskId: string | null) {
+    if (!taskId) {
+      currentTask.value = null
+      return
+    }
     selectedTaskId.value = taskId
     // Find the task in reviewTasks
     const task = reviewTasks.value.find(t => t.id === taskId)
