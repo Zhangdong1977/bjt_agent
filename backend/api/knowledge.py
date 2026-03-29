@@ -154,7 +154,7 @@ async def get_document_content(
 ):
     """获取知识库文档的Markdown内容"""
     user_dir = os.path.join(settings.knowledge_base_path, current_user.id)
-    file_path = os.path.join(user_dir, document_id)
+    file_path = os.path.join(user_dir, f"{document_id}.md")
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Document not found")
