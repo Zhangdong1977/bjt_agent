@@ -1,0 +1,16 @@
+uid=174_0 RootWebArea "Bid Review Agent" url="http://localhost:3000/home/knowledge"
+  uid=174_1 heading "标书审查智能体" level="1"
+  uid=174_2 StaticText "kbtestfinal"
+  uid=174_3 button "退出"
+  uid=174_4 menu orientation="vertical"
+    uid=174_5 menuitem "file-search 标书检查"
+    uid=174_6 menuitem "history 历史标书"
+    uid=174_7 menuitem "book 知识库"
+  uid=174_8 main
+    uid=174_9 navigation
+      uid=174_10 StaticText "首页"
+      uid=174_11 StaticText "/"
+      uid=174_12 StaticText "知识库"
+    uid=174_13 button "upload 点击或拖拽上传企业产品或资质文档 支持 PDF、Word 格式"
+    uid=174_14 StaticText "已上传文档"
+    uid=174_15 StaticText "No data"

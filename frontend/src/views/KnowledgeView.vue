@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { knowledgeApi } from '@/api/client'
 import { message } from 'ant-design-vue'
 import type { UploadFile } from 'ant-design-vue'
-import { UploadOutlined, FileTextOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { UploadOutlined, FileTextOutlined, PlusOutlined, SyncOutlined, CheckCircleOutlined, ExclamationCircleOutlined } from '@ant-design/icons-vue'
 import KnowledgeDocDetail from '@/components/KnowledgeDocDetail.vue'
 
 interface KnowledgeDoc {
@@ -19,11 +19,30 @@ interface GlobalSearchResult {
   score: number
 }
 
+interface IndexStatus {
+  status: 'ready' | 'indexing' | 'error' | 'unavailable'
+  files: number
+  chunks: number
+  provider: string
+  model: string
+  lastSync: string | null
+}
+
 // 全局搜索相关
 const globalQuery = ref('')
 const globalResults = ref<GlobalSearchResult[]>([])
 const globalSearching = ref(false)
 const globalSearched = ref(false)
+
+// 索引状态
+const indexStatus = ref<IndexStatus>({
+  status: 'unavailable',
+  files: 0,
+  chunks: 0,
+  provider: '',
+  model: '',
+  lastSync: null
+})
 
 // 文档过滤
 const docFilter = ref('')
@@ -44,6 +63,7 @@ const showUpload = ref(false)
 
 onMounted(() => {
   fetchDocs()
+  fetchIndexStatus()
 })
 
 async function fetchDocs() {
@@ -55,6 +75,15 @@ async function fetchDocs() {
     message.error('获取文档列表失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function fetchIndexStatus() {
+  try {
+    const response = await knowledgeApi.getIndexStatus()
+    indexStatus.value = response.data
+  } catch {
+    indexStatus.value.status = 'unavailable'
   }
 }
 
@@ -152,6 +181,28 @@ function getScoreColor(score: number): string {
         <div class="search-header">
           <h1>知识库搜索</h1>
           <p class="search-subtitle">输入关键词搜索文档内容</p>
+        </div>
+
+        <!-- 索引状态指示器 -->
+        <div class="index-status">
+          <div v-if="indexStatus.status === 'ready'" class="status-item status-ready">
+            <check-circle-outlined style="color: #52c41a" />
+            <span>索引就绪</span>
+            <span class="status-detail">{{ indexStatus.files }} 个文件, {{ indexStatus.chunks }} 个分片</span>
+          </div>
+          <div v-else-if="indexStatus.status === 'indexing'" class="status-item status-indexing">
+            <sync-outlined spin style="color: #1890ff" />
+            <span>正在索引...</span>
+            <span class="status-detail">{{ indexStatus.files }} 个文件</span>
+          </div>
+          <div v-else-if="indexStatus.status === 'error'" class="status-item status-error">
+            <exclamation-circle-outlined style="color: #ff4d4f" />
+            <span>索引错误</span>
+          </div>
+          <div v-else class="status-item status-unavailable">
+            <exclamation-circle-outlined style="color: #faad14" />
+            <span>索引服务不可用</span>
+          </div>
         </div>
 
         <div class="search-box">
@@ -430,5 +481,45 @@ function getScoreColor(score: number): string {
 .upload-progress p {
   margin-top: 16px;
   color: #666;
+}
+
+.index-status {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.status-ready {
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+}
+
+.status-indexing {
+  background: #e6f7ff;
+  border: 1px solid #91d5ff;
+}
+
+.status-error {
+  background: #fff2f0;
+  border: 1px solid #ffccc7;
+}
+
+.status-unavailable {
+  background: #fffbe6;
+  border: 1px solid #ffe58f;
+}
+
+.status-detail {
+  color: #666;
+  margin-left: 8px;
 }
 </style>

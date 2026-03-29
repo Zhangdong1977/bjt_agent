@@ -389,6 +389,10 @@ export const knowledgeApi = {
 
   globalSearch: (query: string, limit: number = 20) => {
     return apiClient.post('/knowledge/search', { query, limit })
+  },
+
+  getIndexStatus: () => {
+    return apiClient.get('/knowledge/index-status')
   }
 }
 

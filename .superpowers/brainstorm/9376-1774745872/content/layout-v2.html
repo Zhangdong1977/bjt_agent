@@ -1,0 +1,56 @@
+<h2>确认：70/30 布局</h2>
+<p class="subtitle">左侧搜索区域70% | 右侧文档列表30%</p>
+
+<div style="display: flex; gap: 20px; height: 70vh;">
+  <!-- Left: Google-style Search (70%) -->
+  <div style="flex: 7; padding: 30px; display: flex; flex-direction: column;">
+    <div style="text-align: center; margin-bottom: 40px;">
+      <h1 style="font-size: 42px; margin-bottom: 20px;">知识库搜索</h1>
+      <input class="mock-input" style="width: 100%; max-width: 700px; height: 50px; font-size: 18px;" placeholder="输入关键词搜索文档分片...">
+      <div style="margin-top: 15px;">
+        <button class="mock-button" style="padding: 12px 40px; font-size: 16px;">搜索</button>
+      </div>
+    </div>
+    <div style="flex: 1; overflow-y: auto; padding: 0 40px;">
+      <h4 style="margin-bottom: 15px;">搜索结果：</h4>
+      <div style="background: #fafafa; border-radius: 12px; padding: 20px;">
+        <div class="mock-card" style="background: white; margin-bottom: 12px; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+          <div style="font-size: 12px; color: #1890ff;">📄 RTCMS技术规范书.docx › 第 3 页</div>
+          <div style="margin-top: 8px; line-height: 1.6;">...相关的文档内容片段显示在这里，这是搜索匹配到的内容...</div>
+          <div style="font-size: 11px; color: #52c41a; margin-top: 8px;">相关度：0.95</div>
+        </div>
+        <div class="mock-card" style="background: white; margin-bottom: 12px; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+          <div style="font-size: 12px; color: #1890ff;">📄 技术规范.pdf › 第 15 页</div>
+          <div style="margin-top: 8px; line-height: 1.6;">...另一个相关的内容片段，RAG检索匹配到的内容...</div>
+          <div style="font-size: 11px; color: #52c41a; margin-top: 8px;">相关度：0.87</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: Document List (30%) -->
+  <div style="flex: 3; background: #f5f5f5; padding: 20px; border-left: 1px solid #e8e8e8; display: flex; flex-direction: column;">
+    <button class="mock-button" style="width: 100%; background: #1890ff; color: white; padding: 12px; margin-bottom: 15px; font-size: 15px;">+ 上传文档</button>
+    <div style="margin-bottom: 12px;">
+      <input class="mock-input" style="width: 100%;" placeholder="搜索文档...">
+    </div>
+    <div style="flex: 1; overflow-y: auto;">
+      <div class="mock-card" style="background: white; margin-bottom: 10px; padding: 14px; border-radius: 8px; border-left: 3px solid #1890ff;">
+        <div style="font-weight: 500; font-size: 14px;">📄 RTCMS技术规范书.docx</div>
+        <div style="font-size: 11px; color: #999; margin-top: 4px;">上传于 2026-03-28 | 491 KB</div>
+      </div>
+      <div class="mock-card" style="background: white; margin-bottom: 10px; padding: 14px; border-radius: 8px;">
+        <div style="font-weight: 500; font-size: 14px;">📄 投标文件.pdf</div>
+        <div style="font-size: 11px; color: #999; margin-top: 4px;">上传于 2026-03-27 | 2.3 MB</div>
+      </div>
+      <div class="mock-card" style="background: white; margin-bottom: 10px; padding: 14px; border-radius: 8px;">
+        <div style="font-weight: 500; font-size: 14px;">📄 项目需求文档.docx</div>
+        <div style="font-size: 11px; color: #999; margin-top: 4px;">上传于 2026-03-26 | 856 KB</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top: 20px; text-align: center;">
+  <p class="subtitle">✓ 70/30 布局确认 | 左侧全局RAG搜索 | 右侧文档管理</p>
+</div>

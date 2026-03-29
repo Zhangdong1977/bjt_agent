@@ -1,0 +1,11 @@
+uid=163_0 RootWebArea "Bid Review Agent" url="http://localhost:3000/login"
+  uid=163_1 heading "标书审查智能体" level="1"
+  uid=163_2 heading "登录" level="2"
+  uid=163_3 StaticText "用户名"
+  uid=163_4 textbox "用户名" required
+  uid=163_5 StaticText "密码"
+  uid=163_6 textbox "密码" required
+  uid=163_7 button "登录"
+  uid=163_8 StaticText "还没有账号？"
+  uid=163_9 link "注册" url="http://localhost:3000/register"
+    uid=163_10 StaticText "注册"

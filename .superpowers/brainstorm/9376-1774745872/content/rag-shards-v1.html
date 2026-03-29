@@ -1,0 +1,48 @@
+<h2>RAG分片标签页设计</h2>
+<p class="subtitle">文档详情页 - RAG分片标签</p>
+
+<div style="padding: 20px; background: #fafafa; border-radius: 12px;">
+  <!-- Document Header -->
+  <div style="margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #e8e8e8;">
+    <h3 style="margin: 0;">📄 RTCMS技术规范书.docx</h3>
+    <p style="margin: 5px 0 0; color: #666; font-size: 13px;">共 24 个分片</p>
+  </div>
+
+  <!-- Search/Filter -->
+  <div style="margin-bottom: 15px;">
+    <input class="mock-input" style="width: 100%;" placeholder="在分片中搜索...">
+  </div>
+
+  <!-- Shard List -->
+  <div style="max-height: 400px; overflow-y: auto;">
+    <div class="mock-card" style="background: white; margin-bottom: 10px; padding: 14px; border-radius: 8px; border-left: 3px solid #1890ff;">
+      <div style="font-size: 12px; color: #666; margin-bottom: 5px;">分片 1 | 第 1-50 行</div>
+      <div style="line-height: 1.5; font-size: 13px;"># RTCMS技术规范书\n\nRTCMS技术规范书\n\n\n目录\n\nRTCMS技术规范书 1\n\n1. 简介 4\n...</div>
+    </div>
+
+    <div class="mock-card" style="background: white; margin-bottom: 10px; padding: 14px; border-radius: 8px; border-left: 3px solid #52c41a;">
+      <div style="font-size: 12px; color: #666; margin-bottom: 5px;">分片 2 | 第 51-100 行</div>
+      <div style="line-height: 1.5; font-size: 13px;">1.1. 技术背景\n\n随着音视频技术的快速发展，传统的MCU架构已经无法满足现代会议系统的需求...</div>
+    </div>
+
+    <div class="mock-card" style="background: white; margin-bottom: 10px; padding: 14px; border-radius: 8px; border-left: 3px solid #faad14;">
+      <div style="font-size: 12px; color: #666; margin-bottom: 5px;">分片 3 | 第 101-150 行</div>
+      <div style="line-height: 1.5; font-size: 13px;">1.2. RTCMS简介\n\nRTCMS是一种新一代实时通信管理系统，支持MCU和SFU双模式架构...</div>
+    </div>
+
+    <div class="mock-card" style="background: white; margin-bottom: 10px; padding: 14px; border-radius: 8px; border-left: 3px solid #1890ff;">
+      <div style="font-size: 12px; color: #666; margin-bottom: 5px;">分片 4 | 第 151-200 行</div>
+      <div style="line-height: 1.5; font-size: 13px;">2. RTCMS架构\n\n2.1. RTCMS软件架构\n\nRTCMS采用分布式架构设计，包含媒体控制器和媒体处理器两大核心组件...</div>
+    </div>
+  </div>
+
+  <!-- Load More -->
+  <div style="text-align: center; margin-top: 15px;">
+    <button class="mock-button" style="padding: 8px 30px; background: #f0f0f0;">加载更多分片</button>
+  </div>
+</div>
+
+<div style="margin-top: 20px;">
+  <p class="label">技术说明</p>
+  <p style="font-size: 13px; color: #666;">需要新增API：按文档路径查询该文档的所有分片，无需关键词搜索。</p>
+</div>

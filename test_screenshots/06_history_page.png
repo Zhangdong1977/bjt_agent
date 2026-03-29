@@ -1,0 +1,21 @@
+uid=180_0 RootWebArea "Bid Review Agent" url="http://localhost:3000/home/history"
+  uid=180_1 heading "标书审查智能体" level="1"
+  uid=180_2 StaticText "kbtestfinal"
+  uid=180_3 button "退出"
+  uid=180_4 menu orientation="vertical"
+    uid=180_5 menuitem "file-search 标书检查"
+    uid=180_6 menuitem "history 历史标书" focusable focused
+    uid=180_7 menuitem "book 知识库"
+  uid=180_8 main
+    uid=182_0 navigation
+      uid=182_1 StaticText "首页"
+      uid=182_2 StaticText "/"
+      uid=182_3 StaticText "历史标书"
+    uid=182_4 textbox "搜索项目名称" value="UI测试项目-文档审查流程"
+    uid=183_0 button "close-circle"
+    uid=182_5 button "search"
+    uid=182_6 StaticText "项目名称"
+    uid=182_7 StaticText "描述"
+    uid=182_8 StaticText "创建时间"
+    uid=182_9 StaticText "操作"
+    uid=183_1 StaticText "暂无历史项目"

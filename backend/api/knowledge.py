@@ -3,6 +3,7 @@ from typing import List, Annotated
 import asyncio
 import os
 import shutil
+import json
 from datetime import datetime
 from uuid import uuid4
 
@@ -20,6 +21,20 @@ router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
 settings = get_settings()
 
+
+def get_original_filename(user_dir: str, file_id: str) -> str:
+    """从元数据文件获取原始文件名，如果不存在则返回file_id"""
+    meta_path = os.path.join(user_dir, f"{file_id}.meta.json")
+    try:
+        if os.path.exists(meta_path):
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+                return meta.get('originalFilename', file_id)
+    except (json.JSONDecodeError, IOError):
+        pass
+    return file_id
+
+
 @router.get("/documents", response_model=KnowledgeDocumentListResponse)
 async def list_documents(current_user: User = Depends(get_current_user)):
     """获取当前用户的所有知识库文档"""
@@ -29,12 +44,16 @@ async def list_documents(current_user: User = Depends(get_current_user)):
 
     documents = []
     for item in os.listdir(user_dir):
+        # 跳过元数据文件和.md转换文件
+        if item.endswith('.meta.json') or item.endswith('.md'):
+            continue
         item_path = os.path.join(user_dir, item)
         if os.path.isfile(item_path):
             stat = os.stat(item_path)
+            original_filename = get_original_filename(user_dir, item)
             documents.append(KnowledgeDocumentResponse(
                 id=item,
-                filename=item,
+                filename=original_filename,
                 file_path=item_path,
                 file_size=stat.st_size,
                 created_at=datetime.fromtimestamp(stat.st_ctime),
@@ -61,6 +80,12 @@ async def upload_document(
         shutil.copyfileobj(file.file, buffer)
 
     stat = os.stat(file_path)
+
+    # 保存元数据文件（包含原始文件名）
+    meta_path = os.path.join(user_dir, f"{unique_filename}.meta.json")
+    meta_data = {"originalFilename": file.filename}
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(meta_data, f, ensure_ascii=False)
 
     # 触发知识库同步（异步，不阻塞响应）
     asyncio.create_task(sync_knowledge_base())
@@ -97,6 +122,11 @@ async def delete_document(
     md_file_path = file_path + ".md"
     if os.path.exists(md_file_path):
         os.remove(md_file_path)
+
+    # 删除元数据文件（如果存在）
+    meta_file_path = file_path + ".meta.json"
+    if os.path.exists(meta_file_path):
+        os.remove(meta_file_path)
 
     # 触发 RAG 同步（异步，不阻塞响应）
     asyncio.create_task(sync_knowledge_base())
@@ -167,7 +197,7 @@ async def get_document_content(
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    return {"content": content, "filename": document_id}
+    return {"content": content, "filename": get_original_filename(user_dir, document_id)}
 
 
 @router.get("/documents/{document_id}/shards")
@@ -209,7 +239,7 @@ async def get_document_shards(
 
     return {
         "docId": document_id,
-        "filename": document_id,
+        "filename": get_original_filename(user_dir, document_id),
         "shards": shards,
         "totalShards": len(shards)
     }
@@ -273,6 +303,28 @@ async def global_search(
             }
     except httpx.RequestError:
         raise HTTPException(status_code=503, detail="RAG service unavailable")
+
+
+@router.get("/index-status")
+async def get_index_status():
+    """获取RAG索引状态"""
+    rag_settings = get_settings()
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{rag_settings.rag_memory_service_url}/api/status"
+            )
+            return response.json()
+    except httpx.RequestError:
+        return {
+            "status": "unavailable",
+            "files": 0,
+            "chunks": 0,
+            "provider": "unknown",
+            "model": "unknown",
+            "lastSync": None
+        }
 
 
 async def sync_knowledge_base() -> bool:

@@ -9,8 +9,7 @@
 
 import express from 'express';
 import cors from 'cors';
-import type { MemoryIndex } from 'rag-memory';
-import { createMemoryIndex } from 'rag-memory';
+import { IndexManager } from './indexManager.js';
 
 // Import configuration
 import { getConfig, validateConfig, type ServiceConfig } from './config/index.js';
@@ -29,7 +28,7 @@ import readfileRouter from './routes/readfile.js';
 declare global {
   namespace Express {
     interface Request {
-      memory?: MemoryIndex;
+      indexManager?: IndexManager;
     }
   }
 }
@@ -37,6 +36,8 @@ declare global {
 /**
  * Simple logger for server lifecycle events
  */
+let indexManager: IndexManager;
+
 const log = {
   info: (msg: string, ...args: any[]) => console.log(`[rag-memory:info] ${msg}`, ...args),
   warn: (msg: string, ...args: any[]) => console.warn(`[rag-memory:warn] ${msg}`, ...args),
@@ -83,47 +84,19 @@ function loadConfig(): ServiceConfig {
  * Initialize rag-memory index
  * Logs initialization stats (files and chunks) - Requirement 1.1
  */
-async function initializeMemory(config: ServiceConfig): Promise<MemoryIndex> {
-  log.info('Initializing memory index...');
+async function initializeMemory(config: ServiceConfig): Promise<IndexManager> {
+  log.info('Initializing index manager...');
 
   try {
-    const memory = await createMemoryIndex({
-      documentsPath: config.documentsPath,
-      indexPath: config.indexPath,
-      config: {
-        embeddings: {
-          provider: 'zhipu',
-          model: config.embeddingModel,
-          remote: {
-            apiKey: config.zhipuApiKey,
-          },
-        },
-        search: {
-          maxResults: config.maxSearchResults,
-          minScore: 0.0,
-          hybrid: {
-            enabled: true,
-            vectorWeight: config.vectorWeight,
-            textWeight: config.bm25Weight,
-            candidateMultiplier: 2.0,
-          },
-        },
-        extraPaths: [config.documentsPath], // Add documents path as extra path
-      },
-      initialSync: true,
+    const indexManager = new IndexManager({
+      documentsBasePath: config.documentsPath,
     });
 
-    // Log initialization stats - Requirement 1.1
-    const status = memory.status();
-    log.info('Memory index initialized successfully');
-    log.info(`Indexed files: ${status.files}`);
-    log.info(`Text chunks: ${status.chunks}`);
-    log.info(`Provider: ${status.provider}`);
-    log.info(`Model: ${status.model}`);
+    log.info('Index manager initialized');
 
-    return memory;
+    return indexManager;
   } catch (error) {
-    log.error('Failed to initialize memory index:', error);
+    log.error('Failed to initialize index manager:', error);
     throw error;
   }
 }
@@ -131,10 +104,10 @@ async function initializeMemory(config: ServiceConfig): Promise<MemoryIndex> {
 /**
  * Register API routes
  */
-function registerRoutes(app: express.Express, memory: MemoryIndex): void {
-  // Make memory instance available to all routes
+function registerRoutes(app: express.Express, manager: IndexManager): void {
+  // Make indexManager instance available to all routes
   app.use((req, res, next) => {
-    req.memory = memory;
+    req.indexManager = manager;
     next();
   });
 
@@ -187,15 +160,11 @@ function startServer(app: express.Express, config: ServiceConfig): any {
  * Graceful shutdown handler
  * Closes memory index on SIGTERM - Requirement 1.1
  */
-async function gracefulShutdown(memory: MemoryIndex, signal: string): Promise<void> {
+async function gracefulShutdown(signal: string): Promise<void> {
   log.info(`${signal} received, starting graceful shutdown...`);
-
   try {
-    // Close memory index - Requirement 1.1
-    log.info('Closing memory index...');
-    await memory.close();
-    log.info('Memory index closed');
-
+    log.info('Closing all memory indices...');
+    await indexManager.closeAll();
     log.info('Shutdown complete');
     process.exit(0);
   } catch (error) {
@@ -214,28 +183,28 @@ async function main(): Promise<void> {
   // Create Express app
   const app = createApp();
 
-  // Initialize memory index
-  const memory = await initializeMemory(config);
+  // Initialize index manager
+  indexManager = await initializeMemory(config);
 
   // Register routes
-  registerRoutes(app, memory);
+  registerRoutes(app, indexManager);
 
   // Start server
   startServer(app, config);
 
   // Setup graceful shutdown handlers - Requirement 1.1
-  process.on('SIGTERM', () => gracefulShutdown(memory, 'SIGTERM'));
-  process.on('SIGINT', () => gracefulShutdown(memory, 'SIGINT'));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
   // Handle uncaught errors
   process.on('uncaughtException', (error: Error) => {
     log.error('Uncaught exception:', error);
-    gracefulShutdown(memory, 'UNCAUGHT_EXCEPTION').catch(() => process.exit(1));
+    gracefulShutdown('UNCAUGHT_EXCEPTION').catch(() => process.exit(1));
   });
 
   process.on('unhandledRejection', (reason: unknown) => {
     log.error('Unhandled rejection:', reason);
-    gracefulShutdown(memory, 'UNHANDLED_REJECTION').catch(() => process.exit(1));
+    gracefulShutdown('UNHANDLED_REJECTION').catch(() => process.exit(1));
   });
 }
 
