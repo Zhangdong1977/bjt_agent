@@ -100,28 +100,20 @@ onUnmounted(() => {
 <template>
   <div class="review-timeline">
     <h3>智能体进度</h3>
-    <div class="timeline-container">
-      <div
+    <a-timeline mode="left" class="review-timeline">
+      <a-timeline-item
         v-for="(step, index) in steps"
         :key="index"
-        class="timeline-item"
+        :color="getStepColor(step.step_type)"
+        :pending="step.status === 'running'"
       >
-        <!-- Connection line before node -->
-        <div
-          :class="['timeline-line', `line-${step.status || 'pending'}`]"
-          v-if="index > 0"
-        ></div>
-
-        <!-- Node -->
-        <div :class="['timeline-node', `node-${step.status || 'pending'}`]">
+        <template #dot>
           <CheckOutlined v-if="step.status === 'completed'" />
           <ClockCircleOutlined v-else-if="step.status === 'pending'" />
           <LoadingOutlined v-else-if="step.status === 'running'" class="spin-icon" />
-          <span v-else-if="step.status === 'error'">✕</span>
-          <span v-else>{{ step.step_number }}</span>
-        </div>
+          <CloseCircleOutlined v-else-if="step.status === 'error'" />
+        </template>
 
-        <!-- Content card -->
         <div :class="['timeline-content-card', `card-${step.step_type}`]">
           <div class="card-header">
             <span :class="['step-icon', `icon-${step.step_type}`]">
@@ -135,13 +127,15 @@ onUnmounted(() => {
           </div>
           <p class="step-text">{{ step.content }}</p>
         </div>
-      </div>
+      </a-timeline-item>
 
-      <div v-if="steps.length === 0" class="timeline-empty">
-        <ClockCircleOutlined class="empty-icon" />
-        <span>等待智能体启动...</span>
-      </div>
-    </div>
+      <a-timeline-item v-if="steps.length === 0" pending>
+        <template #dot><ClockCircleOutlined /></template>
+        <div class="timeline-empty">
+          <span>等待智能体启动...</span>
+        </div>
+      </a-timeline-item>
+    </a-timeline>
   </div>
 </template>
 
@@ -158,92 +152,11 @@ onUnmounted(() => {
   margin-bottom: 1rem;
 }
 
-.timeline-container {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+/* Timeline container scrollable */
+:deep(.review-timeline) {
   max-height: 400px;
   overflow-y: auto;
   padding-left: 0.5rem;
-}
-
-.timeline-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
-  position: relative;
-}
-
-/* Connection lines */
-.timeline-line {
-  position: absolute;
-  left: 15px;
-  top: -12px;
-  width: 2px;
-  height: 12px;
-}
-
-.line-pending {
-  background: repeating-linear-gradient(
-    to bottom,
-    #d9d9d9 0px,
-    #d9d9d9 4px,
-    transparent 4px,
-    transparent 8px
-  );
-}
-
-.line-running {
-  background: linear-gradient(to bottom, #faad14, #52c41a);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-.line-completed {
-  background: #52c41a;
-  width: 3px;
-}
-
-.line-error {
-  background: #ff4d4f;
-  width: 3px;
-}
-
-/* Timeline nodes */
-.timeline-node {
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.75rem;
-  font-weight: bold;
-  z-index: 1;
-}
-
-.node-pending {
-  background: #f5f5f5;
-  border: 2px dashed #d9d9d9;
-  color: #999;
-}
-
-.node-running {
-  background: #fff7e6;
-  border: 2px solid #faad14;
-  color: #faad14;
-}
-
-.node-completed {
-  background: #f6ffed;
-  border: 2px solid #52c41a;
-  color: #52c41a;
-}
-
-.node-error {
-  background: #fff2f0;
-  border: 2px solid #ff4d4f;
-  color: #ff4d4f;
 }
 
 /* Content cards */
@@ -328,11 +241,6 @@ onUnmounted(() => {
   text-align: center;
 }
 
-.empty-icon {
-  font-size: 2rem;
-  color: #d9d9d9;
-}
-
 /* Animations */
 .spin-icon {
   animation: spin 1s linear infinite;
@@ -344,15 +252,6 @@ onUnmounted(() => {
   }
   to {
     transform: rotate(360deg);
-  }
-}
-
-@keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
   }
 }
 </style>
