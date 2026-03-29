@@ -85,6 +85,43 @@ function getStepColor(stepType: string): string {
   return colorMap[stepType] || '#d9d9d9'
 }
 
+function getTagColor(stepType: string): string {
+  const colorMap: Record<string, string> = {
+    tool_call: 'purple',
+    observation: 'green',
+    thought: 'blue',
+  }
+  return colorMap[stepType] || 'default'
+}
+
+function getStepEmoji(stepType: string): string {
+  const emojiMap: Record<string, string> = {
+    tool_call: '🔧',
+    observation: '👁',
+    thought: '💭',
+  }
+  return emojiMap[stepType] || '📝'
+}
+
+function getStepLabel(stepType: string, toolName?: string): string {
+  if (stepType === 'tool_call') {
+    return `工具调用: ${toolName || 'unknown'}`
+  }
+  if (stepType === 'observation') {
+    return '观察'
+  }
+  return '思考过程'
+}
+
+function formatTime(date: Date): string {
+  return date.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
+
 function getStepIcon(step: TimelineStep) {
   if (step.status === 'completed') return CheckOutlined
   if (step.status === 'running') return LoadingOutlined
