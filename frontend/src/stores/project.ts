@@ -233,8 +233,10 @@ export const useProjectStore = defineStore('project', () => {
           console.log('[SSE] Status auto-updated to running from step event')
         }
         if (event.step_number !== undefined) {
-          // Deduplicate by step_number to prevent duplicate entries on SSE reconnect
-          const exists = agentSteps.value.some(s => s.step_number === event.step_number)
+          // Deduplicate by step_number + step_type to prevent duplicate entries on SSE reconnect
+          const exists = agentSteps.value.some(s =>
+            s.step_number === event.step_number && s.step_type === event.step_type
+          )
           if (!exists) {
             // Force new array reference to trigger Vue reactivity
             const newSteps = [...agentSteps.value, {
@@ -334,13 +336,42 @@ export const useProjectStore = defineStore('project', () => {
   async function loadHistoricalSteps(taskId: string) {
     if (!currentProject.value) return
     const steps = await reviewApi.getSteps(currentProject.value.id, taskId)
-    agentSteps.value = steps.map(s => ({
-      step_number: s.step_number,
-      step_type: s.step_type,
-      tool_name: s.tool_name || undefined,
-      content: s.content,
-      timestamp: new Date(s.created_at),
-    }))
+
+    // Group steps by step_number, then interleave observation before tool_calls
+    const groupedSteps: typeof agentSteps.value = []
+
+    // Group by step_number
+    const byNumber = new Map<number, typeof steps>()
+    for (const s of steps) {
+      const existing = byNumber.get(s.step_number)
+      if (existing) {
+        existing.push(s)
+      } else {
+        byNumber.set(s.step_number, [s])
+      }
+    }
+
+    // For each step_number, sort: observation/thought first, then tool
+    const sortOrder: Record<string, number> = { observation: 0, thought: 1, tool: 2 }
+    const sortedNumbers = Array.from(byNumber.keys()).sort((a, b) => a - b)
+
+    for (const num of sortedNumbers) {
+      const group = byNumber.get(num)!
+      // Sort within group: observation/thought before tool
+      group.sort((a, b) => (sortOrder[a.step_type] ?? 99) - (sortOrder[b.step_type] ?? 99))
+
+      for (const s of group) {
+        groupedSteps.push({
+          step_number: s.step_number,
+          step_type: s.step_type,
+          tool_name: s.tool_name || undefined,
+          content: s.content,
+          timestamp: new Date(s.created_at),
+        })
+      }
+    }
+
+    agentSteps.value = groupedSteps
   }
 
   return {
