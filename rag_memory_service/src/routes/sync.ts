@@ -14,13 +14,13 @@ import { parseDocument } from '../parsers/document_parser.js';
 import { getConfig } from '../config/index.js';
 
 // Import types from rag-memory
-import type { MemoryIndex, IndexStatus, SyncOptions } from 'rag-memory';
+import type { MemoryIndex, IndexStatus, IndexManager, SyncOptions } from 'rag-memory';
 
-// Extend Request to include memory instance
+// Extend Request to include indexManager
 declare global {
   namespace Express {
     interface Request {
-      memory?: MemoryIndex;
+      indexManager?: IndexManager;
     }
   }
 }
@@ -117,21 +117,31 @@ async function convertDocumentsToMarkdown(
 router.post(
   '/sync',
   asyncHandler(async (req: Request, res: Response) => {
-    const { force = false }: SyncRequestBody = req.body;
+    const userId = req.headers['x-user-id'] as string;
 
-    // Check if memory instance is available
-    if (!req.memory) {
-      throw createError('Memory index not initialized', 503, 'service_unavailable');
+    if (!userId) {
+      throw createError('X-User-ID header is required', 400, 'missing_user_id');
     }
 
+    const { force = false }: SyncRequestBody = req.body;
+
+    const manager = req.indexManager;
+    if (!manager) {
+      throw createError('Index manager not initialized', 503, 'service_unavailable');
+    }
+
+    // Get user's index (creates if not exists)
+    const memory = await manager.getIndex(userId);
+
     // Get status before sync for statistics tracking
-    const statusBefore: IndexStatus = req.memory.status();
+    const statusBefore: IndexStatus = memory.status();
     const errors: string[] = [];
 
     // Convert DOCX/PDF to Markdown before sync
     const config = getConfig();
-    console.log(`[sync] Converting documents in ${config.documentsPath}...`);
-    const convertResult = await convertDocumentsToMarkdown(config.documentsPath);
+    const userDocumentsPath = path.join(config.documentsPath, userId);
+    console.log(`[sync] Converting documents in ${userDocumentsPath}...`);
+    const convertResult = await convertDocumentsToMarkdown(userDocumentsPath);
     if (convertResult.errors.length > 0) {
       errors.push(...convertResult.errors);
     }
@@ -139,7 +149,7 @@ router.post(
     // Perform sync with progress tracking
     const startTime = Date.now();
     try {
-      await req.memory.sync({
+      await memory.sync({
         force,
         progress: (update) => {
           // Log progress updates
@@ -156,7 +166,7 @@ router.post(
     const duration = Date.now() - startTime;
 
     // Get status after sync to calculate statistics
-    const statusAfter: IndexStatus = req.memory.status();
+    const statusAfter: IndexStatus = memory.status();
 
     const response: SyncResponseBody = {
       filesProcessed: statusAfter.files,
