@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { projectsApi, documentsApi, reviewApi, getAccessToken } from '@/api/client'
-import type { Project, Document, ReviewTask, ReviewResponse, SSEEvent, UploadProgress } from '@/types'
+import type { Project, Document, ReviewTask, ReviewResponse, SSEEvent, UploadProgress, ReviewTaskListItem } from '@/types'
 
 export interface AgentStep {
   step_number: number
@@ -25,7 +25,7 @@ export const useProjectStore = defineStore('project', () => {
   const agentSteps = ref<AgentStep[]>([])
 
   // Historical review tasks
-  const reviewTasks = ref<any[]>([])
+  const reviewTasks = ref<ReviewTaskListItem[]>([])
   const selectedTaskId = ref<string | null>(null)
 
   // Upload progress state
