@@ -13,6 +13,7 @@ from backend.schemas.review import (
     ReviewResponse,
     ReviewResultResponse,
     ReviewTaskResponse,
+    ReviewTaskListItem,
     AgentStepResponse,
 )
 from backend.services.sse_service import sse_manager
@@ -33,6 +34,24 @@ async def verify_project_ownership(project_id: str, user_id: str, db: DBSession)
             detail="Project not found",
         )
     return project
+
+
+@router.get("/tasks", response_model=list[ReviewTaskListItem])
+async def list_review_tasks(
+    project_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> list[ReviewTask]:
+    """List all review tasks for the project (newest first)."""
+    await verify_project_ownership(project_id, current_user.id, db)
+
+    result = await db.execute(
+        select(ReviewTask)
+        .where(ReviewTask.project_id == project_id)
+        .order_by(ReviewTask.created_at.desc())
+    )
+    tasks = result.scalars().all()
+    return tasks
 
 
 @router.post("", response_model=ReviewTaskResponse, status_code=status.HTTP_201_CREATED)

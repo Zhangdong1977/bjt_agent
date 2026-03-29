@@ -53,3 +53,15 @@ class AgentStepResponse(BaseModel):
     duration_ms: int | None
 
     model_config = {"from_attributes": True}
+
+
+class ReviewTaskListItem(BaseModel):
+    """Lightweight review task info for list display."""
+
+    id: str
+    status: str
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
