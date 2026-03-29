@@ -91,7 +91,7 @@ class BidReviewAgent(BaseAgent):
             self.event_callback(event_type, data)
 
     async def run_review(self) -> list[dict]:
-        """Run the bid review process with real-time event emission.
+        """Run the bid review process.
 
         Returns:
             List of findings with requirement, bid content, compliance status, etc.
@@ -113,18 +113,12 @@ class BidReviewAgent(BaseAgent):
 
         self.add_user_message(task)
 
-        # Send starting event
-        self._send_event("progress", {"message": "Starting agent review..."})
-        self._send_event("step", {
-            "step_number": 1,
-            "step_type": "thought",
-            "content": "Initializing bid review agent...",
-        })
-
-        step_number = 2
-
-        # Run the agent loop manually with event emission
+        # Run the agent loop manually
         tool_list = list(self.tools.values())
+
+        # Use a dedicated step counter instead of len(messages)-1 to ensure
+        # step numbers are sequential starting from 1
+        step_counter = 1
 
         while len(self.messages) - 1 < self.max_steps:  # -1 for system message
             # Check for cancellation
@@ -135,11 +129,7 @@ class BidReviewAgent(BaseAgent):
             await self._summarize_messages()
 
             # Get LLM response
-            try:
-                response = await self.llm.generate(messages=self.messages, tools=tool_list)
-            except Exception as e:
-                self._send_event("error", {"message": f"LLM error: {str(e)}"})
-                break
+            response = await self.llm.generate(messages=self.messages, tools=tool_list)
 
             # Add assistant message
             assistant_msg = Message(
@@ -150,59 +140,53 @@ class BidReviewAgent(BaseAgent):
             )
             self.messages.append(assistant_msg)
 
-            # Emit step event
-            if response.content:
-                self._send_event("step", {
-                    "step_number": step_number,
-                    "step_type": "thought",
-                    "content": str(response.content)[:200],
-                })
-                step_number += 1
+            # Send step event for assistant response
+            self._send_event("step", {
+                "step_number": step_counter,
+                "step_type": "thought" if not response.tool_calls else "observation",
+                "tool_name": None,
+                "content": response.content[:200] if response.content else "",
+            })
+            step_counter += 1
 
             # Check if task is complete
             if not response.tool_calls:
                 break
 
-            # Execute tools with event emission
+            # Execute tools
             for tool_call in response.tool_calls:
                 function_name = tool_call.function.name
 
-                # Emit tool call event
+                # Send step event before tool execution
                 self._send_event("step", {
-                    "step_number": step_number,
+                    "step_number": step_counter,
                     "step_type": "tool_call",
                     "tool_name": function_name,
-                    "content": f"Calling {function_name}...",
+                    "content": f"Called {function_name}",
                 })
-                step_number += 1
+                step_counter += 1
 
                 # Execute tool
                 if function_name in self.tools:
-                    try:
-                        result = await self.tools[function_name].execute(**tool_call.function.arguments)
-                        # Emit tool result event
-                        result_preview = str(result.content)[:100] if result.success else str(result.error)[:100]
-                        self._send_event("step", {
-                            "step_number": step_number,
-                            "step_type": "observation",
-                            "tool_name": function_name,
-                            "content": result_preview,
-                        })
-                        step_number += 1
+                    result = await self.tools[function_name].execute(**tool_call.function.arguments)
 
-                        # Add tool message
-                        tool_msg = Message(
-                            role="tool",
-                            content=result.content if result.success else f"Error: {result.error}",
-                            tool_call_id=tool_call.id,
-                            name=function_name,
-                        )
-                        self.messages.append(tool_msg)
-                    except Exception as e:
-                        self._send_event("error", {"message": f"Tool {function_name} failed: {str(e)}"})
-                        break
+                    # Add tool message
+                    tool_msg = Message(
+                        role="tool",
+                        content=result.content if result.success else f"Error: {result.error}",
+                        tool_call_id=tool_call.id,
+                        name=function_name,
+                    )
+                    self.messages.append(tool_msg)
                 else:
-                    self._send_event("error", {"message": f"Unknown tool: {function_name}"})
+                    # Add error tool message for unknown tool
+                    tool_msg = Message(
+                        role="tool",
+                        content=f"Error: Unknown tool {function_name}",
+                        tool_call_id=tool_call.id,
+                        name=function_name,
+                    )
+                    self.messages.append(tool_msg)
 
         # Extract findings
         findings = self._extract_findings_from_messages()
