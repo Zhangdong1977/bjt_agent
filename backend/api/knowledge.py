@@ -200,6 +200,61 @@ async def get_document_content(
     return {"content": content, "filename": get_original_filename(user_dir, document_id)}
 
 
+def chunk_markdown_content(content: str, tokens: int = 400, overlap: int = 80) -> list:
+    """
+    将 Markdown 内容分片，与 rag_memory_service 的 chunkMarkdown 逻辑一致。
+
+    Args:
+        content: Markdown 文本内容
+        tokens: 目标分片大小（token数），默认 400
+        overlap: 分片重叠大小（token数），默认 80
+
+    Returns:
+        分片列表，每个分片包含 startLine, endLine, text, hash
+    """
+    max_chars = max(32, tokens * 4)  # tokens * 4，与 rag-memory 一致
+    overlap_chars = max(0, overlap * 4)
+
+    lines = content.split('\n')
+    chunks = []
+
+    current_chunk_lines = []
+    current_length = 0
+    start_line = 1
+
+    for i, line in enumerate(lines):
+        line_length = len(line) + 1  # +1 for newline
+
+        if current_length + line_length > max_chars and len(current_chunk_lines) > 0:
+            # 保存当前分片
+            chunk_text = '\n'.join(current_chunk_lines)
+            chunks.append({
+                "startLine": start_line,
+                "endLine": i,
+                "text": chunk_text,
+            })
+
+            # 开始新分片，包含重叠部分
+            overlap_lines = max(1, overlap_chars // 80)  # 估算每行约80字符
+            current_chunk_lines = current_chunk_lines[-overlap_lines:]
+            current_length = sum(len(l) + 1 for l in current_chunk_lines)
+            start_line = i - overlap_lines + 1
+
+        current_chunk_lines.append(line)
+        current_length += line_length
+
+    # 处理最后一个分片
+    if current_chunk_lines:
+        chunk_text = '\n'.join(current_chunk_lines)
+        chunks.append({
+            "startLine": start_line,
+            "endLine": len(lines),
+            "text": chunk_text,
+        })
+
+    return chunks
+
+
 @router.get("/documents/{document_id}/shards")
 async def get_document_shards(
     document_id: str,
@@ -221,20 +276,17 @@ async def get_document_shards(
     with open(md_file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # 按50行分片
-    lines = content.split('\n')
-    total_lines = len(lines)
-    chunk_size = 50
-    shards = []
+    # 使用与 rag_memory_service 一致的分片逻辑（字符级）
+    chunks = chunk_markdown_content(content)
 
-    for i in range(0, total_lines, chunk_size):
-        chunk_lines = lines[i:i + chunk_size]
-        shard_content = '\n'.join(chunk_lines)
+    # 格式化为与前端期望的格式一致
+    shards = []
+    for i, chunk in enumerate(chunks):
         shards.append({
-            "id": f"shard-{i // chunk_size + 1}",
-            "startLine": i + 1,
-            "endLine": min(i + chunk_size, total_lines),
-            "content": shard_content
+            "id": f"shard-{i + 1}",
+            "startLine": chunk["startLine"],
+            "endLine": chunk["endLine"],
+            "content": chunk["text"]
         })
 
     return {
@@ -288,14 +340,16 @@ async def global_search(
             )
             results = response.json()
 
-            # 格式化结果，添加文档ID
+            # 格式化结果，添加文档ID和原始文件名
             formatted_results = []
+            user_dir = os.path.join(settings.knowledge_base_path, current_user.id)
             for r in results.get("results", []):
                 # 从path中提取文档ID（path格式: /path/to/doc.docx.md）
                 path = r.get("path", "")
                 doc_id = os.path.basename(path).replace(".md", "")
+                original_filename = get_original_filename(user_dir, doc_id)
                 formatted_results.append({
-                    "source": r.get("path", ""),
+                    "source": original_filename,
                     "snippet": r.get("snippet", ""),
                     "score": r.get("score", 0),
                     "docId": doc_id,
@@ -325,7 +379,12 @@ async def get_index_status(current_user: User = Depends(get_current_user)):
                 f"{rag_settings.rag_memory_service_url}/api/status",
                 headers=headers
             )
-            return response.json()
+            result = response.json()
+            # 如果没有文件（files=0 且 chunks=0），认为索引已就绪
+            # 因为没有什么需要索引的，避免一直显示"正在索引"
+            if result.get("files", 0) == 0 and result.get("chunks", 0) == 0:
+                result["status"] = "ready"
+            return result
     except httpx.RequestError:
         return {
             "status": "unavailable",

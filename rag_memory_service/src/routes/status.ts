@@ -48,6 +48,13 @@ router.get(
       throw createError('Index manager not initialized', 503, 'service_unavailable');
     }
 
+    // Ensure index is loaded first (loads from SQLite if exists)
+    try {
+      await manager.getIndex(userId);
+    } catch (error) {
+      console.error(`Failed to load index for user ${userId}:`, error);
+    }
+
     const status = await manager.getStatus(userId);
 
     if (!status) {

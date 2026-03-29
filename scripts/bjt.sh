@@ -377,11 +377,6 @@ do_restart() {
 
     log "Restarting services..."
 
-    # Cleanup tasks before stopping services
-    log "Cleaning up running tasks..."
-    curl -X POST "http://localhost:8000/api/tasks/cleanup-on-restart" 2>/dev/null || true
-    sleep 1
-
     do_stop
     sleep 2
     do_start

@@ -403,6 +403,8 @@ function getScoreColor(score: number): string {
   margin-bottom: 12px;
   cursor: pointer;
   transition: background 0.2s;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .result-item:hover {
@@ -431,6 +433,9 @@ function getScoreColor(score: number): string {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  word-break: break-word;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .search-hint {
