@@ -140,11 +140,11 @@ onUnmounted(() => {
   <div class="review-timeline">
     <h3>智能体进度</h3>
     <div class="timeline-scroll-container">
-      <a-timeline mode="left">
+      <a-timeline mode="left" class="review-timeline">
         <a-timeline-item
           v-for="(step, index) in steps"
           :key="index"
-          :color="getStepColor(step.step_type)"
+          :color="step.status === 'running' ? 'blue' : getStepColor(step.step_type)"
           :pending="step.status === 'running'"
         >
           <template #dot>
@@ -152,17 +152,35 @@ onUnmounted(() => {
           </template>
 
           <div :class="['timeline-content-card', `card-${step.step_type}`]">
+            <!-- 卡片头部 -->
             <div class="card-header">
-              <span :class="['step-icon', `icon-${step.step_type}`]">
-                <ToolOutlined v-if="step.step_type === 'tool_call'" />
-                <EyeOutlined v-else-if="step.step_type === 'observation'" />
-                <BulbOutlined v-else />
+              <Tag :color="getTagColor(step.step_type)">第 {{ step.step_number }} 节</Tag>
+              <span class="step-label">
+                {{ getStepEmoji(step.step_type) }} {{ getStepLabel(step.step_type, step.tool_name) }}
               </span>
-              <span class="step-type">
-                {{ step.step_type === 'tool_call' ? `${step.tool_name || '工具'}` : step.step_type === 'observation' ? '观察' : '思考' }}
+              <span v-if="step.status === 'running'" class="status-running">
+                <Tag color="processing">RUNNING</Tag>
               </span>
+              <span v-if="step.duration" class="duration">{{ step.duration }}s</span>
+              <span class="timestamp">{{ formatTime(step.timestamp) }}</span>
             </div>
+
+            <!-- 步骤内容 -->
             <p class="step-text">{{ step.content }}</p>
+
+            <!-- 可折叠详细信息（仅工具调用有此项） -->
+            <Collapse v-if="step.step_type === 'tool_call' && step.tool_params" class="tool-collapse" ghost>
+              <CollapsePanel key="1" header="显示详细信息">
+                <div class="tool-params">
+                  <strong>提示词:</strong>
+                  <div class="prompt-box">{{ step.tool_params.prompt }}</div>
+                </div>
+                <div v-if="step.tool_result" class="tool-result">
+                  <strong>结果:</strong>
+                  <div>{{ step.tool_result }}</div>
+                </div>
+              </CollapsePanel>
+            </Collapse>
           </div>
         </a-timeline-item>
 
