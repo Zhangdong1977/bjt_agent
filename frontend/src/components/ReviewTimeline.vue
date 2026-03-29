@@ -16,9 +16,6 @@ defineProps<{
   taskId: string
 }>()
 
-// 注册 Ant Design Timeline 组件
-const TimelineItem = Timeline.Item
-
 interface TimelineStep {
   step_number: number
   step_type: string
@@ -108,10 +105,7 @@ onUnmounted(() => {
         :pending="step.status === 'running'"
       >
         <template #dot>
-          <CheckOutlined v-if="step.status === 'completed'" />
-          <ClockCircleOutlined v-else-if="step.status === 'pending'" />
-          <LoadingOutlined v-else-if="step.status === 'running'" class="spin-icon" />
-          <CloseCircleOutlined v-else-if="step.status === 'error'" />
+          <component :is="getStepIcon(step)" :class="{ 'spin-icon': step.status === 'running' }" />
         </template>
 
         <div :class="['timeline-content-card', `card-${step.step_type}`]">
