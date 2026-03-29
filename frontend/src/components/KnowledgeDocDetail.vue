@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { knowledgeApi } from '@/api/client'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import type { RAGSearchResult, DocumentContentResponse } from '@/types'
 import { Drawer, Tag, Empty } from 'ant-design-vue'
 
@@ -21,10 +22,10 @@ const ragQuery = ref('')
 const ragResults = ref<RAGSearchResult[]>([])
 const searching = ref(false)
 
-// 将 Markdown 转换为 HTML
+// 将 Markdown 转换为 HTML 并消毒
 const htmlContent = computed(() => {
   if (!content.value?.md_content) return ''
-  return marked(content.value.md_content)
+  return DOMPurify.sanitize(marked.parse(content.value.md_content) as string)
 })
 
 // 加载文档内容
