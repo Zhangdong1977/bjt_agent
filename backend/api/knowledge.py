@@ -237,7 +237,7 @@ async def rag_search(
 
 @router.post("/search")
 async def global_search(
-    query: str = Body(...),
+    query: str = Body(..., embed=True),
     limit: int = 20,
     current_user: User = Depends(get_current_user)
 ):
