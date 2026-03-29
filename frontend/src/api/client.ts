@@ -7,6 +7,7 @@ import type {
   Document,
   DocumentContent,
   ReviewTask,
+  ReviewTaskListItem,
   ReviewResponse,
   AgentStep,
   ReviewResult
