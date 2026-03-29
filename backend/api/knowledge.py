@@ -235,6 +235,47 @@ async def rag_search(
         raise HTTPException(status_code=503, detail="RAG service unavailable")
 
 
+@router.post("/search")
+async def global_search(
+    query: str = Body(...),
+    limit: int = 20,
+    current_user: User = Depends(get_current_user)
+):
+    """全局搜索知识库"""
+    rag_settings = get_settings()
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{rag_settings.rag_memory_service_url}/api/search",
+                json={"query": query, "limit": limit}
+            )
+            results = response.json()
+
+            # 格式化结果，添加文档ID
+            formatted_results = []
+            for r in results.get("results", []):
+                # 从path中提取文档ID（path格式: /path/to/doc.docx.md）
+                path = r.get("path", "")
+                doc_id = os.path.basename(path).replace(".md", "")
+                formatted_results.append({
+                    "source": r.get("path", ""),
+                    "snippet": r.get("snippet", ""),
+                    "score": r.get("score", 0),
+                    "docId": doc_id,
+                    "startLine": r.get("startLine", 0),
+                    "endLine": r.get("endLine", 0)
+                })
+
+            return {
+                "results": formatted_results,
+                "queryTime": results.get("queryTime", 0),
+                "totalResults": results.get("totalResults", 0)
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+
 async def sync_knowledge_base() -> bool:
     """Trigger rag_memory_service to sync knowledge base index."""
     settings = get_settings()
