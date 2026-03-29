@@ -24,6 +24,10 @@ export const useProjectStore = defineStore('project', () => {
   // Agent timeline steps
   const agentSteps = ref<AgentStep[]>([])
 
+  // Historical review tasks
+  const reviewTasks = ref<any[]>([])
+  const selectedTaskId = ref<string | null>(null)
+
   // Upload progress state
   const uploadProgress = ref<Record<string, UploadProgress>>({})
 
@@ -229,16 +233,22 @@ export const useProjectStore = defineStore('project', () => {
           console.log('[SSE] Status auto-updated to running from step event')
         }
         if (event.step_number !== undefined) {
-          // Force new array reference to trigger Vue reactivity
-          const newSteps = [...agentSteps.value, {
-            step_number: event.step_number,
-            step_type: event.step_type || 'unknown',
-            tool_name: event.tool_name,
-            content: event.content || '',
-            timestamp: new Date(),
-          }]
-          agentSteps.value = newSteps
-          console.log('[SSE] Step added, total steps:', agentSteps.value.length)
+          // Deduplicate by step_number to prevent duplicate entries on SSE reconnect
+          const exists = agentSteps.value.some(s => s.step_number === event.step_number)
+          if (!exists) {
+            // Force new array reference to trigger Vue reactivity
+            const newSteps = [...agentSteps.value, {
+              step_number: event.step_number,
+              step_type: event.step_type || 'unknown',
+              tool_name: event.tool_name,
+              content: event.content || '',
+              timestamp: new Date(),
+            }]
+            agentSteps.value = newSteps
+            console.log('[SSE] Step added, total steps:', agentSteps.value.length)
+          } else {
+            console.log('[SSE] Duplicate step ignored:', event.step_number)
+          }
         }
         break
       case 'complete':
@@ -295,6 +305,40 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
+  async function fetchReviewTasks() {
+    if (!currentProject.value) return
+    reviewTasks.value = await reviewApi.getTasks(currentProject.value.id)
+  }
+
+  async function selectReviewTask(taskId: string) {
+    selectedTaskId.value = taskId
+    // Find the task in reviewTasks
+    const task = reviewTasks.value.find(t => t.id === taskId)
+    if (task) {
+      currentTask.value = {
+        id: task.id,
+        project_id: task.project_id,
+        status: task.status,
+        started_at: task.started_at,
+        completed_at: task.completed_at,
+        error_message: null,
+        created_at: task.created_at,
+      }
+    }
+  }
+
+  async function loadHistoricalSteps(taskId: string) {
+    if (!currentProject.value) return
+    const steps = await reviewApi.getSteps(currentProject.value.id, taskId)
+    agentSteps.value = steps.map(s => ({
+      step_number: s.step_number,
+      step_type: s.step_type,
+      tool_name: s.tool_name || undefined,
+      content: s.content,
+      timestamp: new Date(s.created_at),
+    }))
+  }
+
   return {
     projects,
     currentProject,
@@ -305,6 +349,8 @@ export const useProjectStore = defineStore('project', () => {
     reviewLoading,
     agentSteps,
     uploadProgress,
+    reviewTasks,
+    selectedTaskId,
     fetchProjects,
     createProject,
     deleteProject,
@@ -318,6 +364,9 @@ export const useProjectStore = defineStore('project', () => {
     connectSSE,
     disconnectSSE,
     clearDocumentPoll,
+    fetchReviewTasks,
+    selectReviewTask,
+    loadHistoricalSteps,
     $reset
   }
 })
