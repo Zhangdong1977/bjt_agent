@@ -4,14 +4,15 @@ import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { documentsApi } from '@/api/client'
 import type { DocumentContent } from '@/types'
-import { ElMessage, ElScrollbar } from 'element-plus'
-import { Loading } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import ReviewTimeline from '@/components/ReviewTimeline.vue'
 
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
 
 const projectId = computed(() => route.params.id as string)
+const timelineRef = ref<InstanceType<typeof ReviewTimeline> | null>(null)
 const tenderDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'tender'))
 const bidDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'bid'))
 const canStartReview = computed(() => tenderDoc.value?.status === 'parsed' && bidDoc.value?.status === 'parsed')
@@ -77,6 +78,10 @@ async function startReview() {
   try {
     await projectStore.startReview()
     ElMessage.info('审查已启动，正在连接事件流...')
+    // 连接 ReviewTimeline 组件
+    if (projectStore.currentTask?.id) {
+      timelineRef.value?.connect(projectStore.currentTask.id)
+    }
   } catch {
     ElMessage.error('启动审查失败')
   }
@@ -263,31 +268,11 @@ function getSeverityClass(severity: string) {
         </p>
 
         <!-- Agent Timeline -->
-        <div v-if="projectStore.currentTask && (projectStore.currentTask.status === 'running' || projectStore.currentTask.status === 'completed')" class="timeline">
-          <h3>{{ projectStore.currentTask.status === 'completed' ? '智能体步骤 (已完成)' : '智能体进度' }}</h3>
-          <el-scrollbar height="300px">
-            <div class="timeline-steps">
-              <div
-                v-for="step in projectStore.agentSteps"
-                :key="step.step_number"
-                :class="['timeline-step', `step-${step.step_type}`]"
-              >
-                <div class="step-indicator">
-                  <span class="step-number">{{ step.step_number }}</span>
-                </div>
-                <div class="step-content">
-                  <span class="step-type">
-                    {{ step.step_type === 'tool_call' ? `${step.tool_name || '工具'}` : '思考' }}
-                  </span>
-                  <p class="step-text">{{ step.content }}</p>
-                </div>
-              </div>
-              <div v-if="projectStore.agentSteps.length === 0" class="timeline-empty">
-                <el-icon class="is-loading"><Loading /></el-icon> 等待智能体启动...
-              </div>
-            </div>
-          </el-scrollbar>
-        </div>
+        <ReviewTimeline
+          v-if="projectStore.currentTask"
+          ref="timelineRef"
+          :task-id="projectStore.currentTask.id"
+        />
       </section>
 
       <!-- Results Section -->
@@ -825,79 +810,4 @@ function getSeverityClass(severity: string) {
 }
 
 /* Agent Timeline */
-.timeline {
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid #eee;
-}
-
-.timeline h3 {
-  color: #555;
-  font-size: 1rem;
-  margin-bottom: 1rem;
-}
-
-.timeline-steps {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.timeline-step {
-  display: flex;
-  gap: 0.75rem;
-  align-items: flex-start;
-}
-
-.step-indicator {
-  flex-shrink: 0;
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: 50%;
-  background: #6366f1;
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.75rem;
-  font-weight: bold;
-}
-
-.step-content {
-  flex: 1;
-  background: #f5f5f5;
-  padding: 0.5rem 0.75rem;
-  border-radius: 4px;
-}
-
-.step-type {
-  font-size: 0.85rem;
-  font-weight: 500;
-  color: #555;
-}
-
-.step-text {
-  margin: 0.25rem 0 0 0;
-  font-size: 0.9rem;
-  color: #333;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.step-tool_call .step-indicator {
-  background: #f6ad55;
-}
-
-.step-observation .step-indicator {
-  background: #68d391;
-}
-
-.timeline-empty {
-  color: #666;
-  font-style: italic;
-  padding: 1rem;
-  text-align: center;
-}
 </style>
