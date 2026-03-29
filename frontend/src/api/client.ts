@@ -381,6 +381,14 @@ export const knowledgeApi = {
 
   getDocumentContent: (docId: string) => {
     return apiClient.get(`/knowledge/documents/${docId}/content`)
+  },
+
+  getDocumentShards: (docId: string) => {
+    return apiClient.get(`/knowledge/documents/${docId}/shards`)
+  },
+
+  globalSearch: (query: string, limit: number = 20) => {
+    return apiClient.post('/knowledge/search', { query, limit })
   }
 }
 
