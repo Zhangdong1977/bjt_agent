@@ -7,7 +7,8 @@
  */
 
 import { Router, Request, Response } from 'express';
-import type { MemoryIndex, IndexManager } from 'rag-memory';
+import type { MemoryIndex } from 'rag-memory';
+import type { IndexManager } from '../indexManager.js';
 
 // Import middleware
 import { asyncHandler, createError } from '../middleware/errorHandler.js';

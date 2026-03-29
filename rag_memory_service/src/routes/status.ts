@@ -7,7 +7,8 @@ import { Router, Request, Response } from 'express';
 import { asyncHandler, createError } from '../middleware/errorHandler.js';
 
 // Import types from rag-memory
-import type { IndexManager } from 'rag-memory';
+import type { MemoryIndex } from 'rag-memory';
+import type { IndexManager } from '../indexManager.js';
 
 // Extend Request to include index manager instance
 declare global {

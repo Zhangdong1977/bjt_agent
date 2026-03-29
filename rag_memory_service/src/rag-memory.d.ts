@@ -20,6 +20,7 @@ declare module 'rag-memory' {
 
   export interface SyncOptions {
     force?: boolean;
+    progress?: (update: { completed: number; total: number; label?: string }) => void;
   }
 
   export interface ReadFileOptions {

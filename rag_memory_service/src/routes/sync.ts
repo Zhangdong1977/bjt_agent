@@ -14,7 +14,8 @@ import { parseDocument } from '../parsers/document_parser.js';
 import { getConfig } from '../config/index.js';
 
 // Import types from rag-memory
-import type { MemoryIndex, IndexStatus, IndexManager, SyncOptions } from 'rag-memory';
+import type { MemoryIndex, IndexStatus, SyncOptions } from 'rag-memory';
+import type { IndexManager } from '../indexManager.js';
 
 // Extend Request to include indexManager
 declare global {
