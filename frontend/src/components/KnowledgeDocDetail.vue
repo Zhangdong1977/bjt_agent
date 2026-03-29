@@ -3,8 +3,16 @@ import { ref, computed, watch } from 'vue'
 import { knowledgeApi } from '@/api/client'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import type { RAGSearchResult, DocumentContentResponse } from '@/types'
+import type { DocumentContentResponse } from '@/types'
 import { Drawer, Tag, Empty } from 'ant-design-vue'
+
+// Shard type for RAG document shards
+interface Shard {
+  id: string
+  content: string
+  startLine: number
+  endLine: number
+}
 
 const props = defineProps<{
   visible: boolean
@@ -18,13 +26,14 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const content = ref<DocumentContentResponse | null>(null)
-const ragQuery = ref('')
-const ragResults = ref<RAGSearchResult[]>([])
-const searching = ref(false)
+const loadingShards = ref(false)
 const activeTab = ref('content')
-const allShards = ref<any[]>([])
-const filteredShards = ref<any[]>([])
+const allShards = ref<Shard[]>([])
+const filteredShards = ref<Shard[]>([])
 const shardFilter = ref('')
+
+// Debounce timer for shard filtering
+let filterDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 // 将 Markdown 转换为 HTML 并消毒
 const htmlContent = computed(() => {
@@ -46,33 +55,21 @@ async function loadContent() {
   }
 }
 
-// 执行RAG搜索
-async function searchRAG() {
-  if (!ragQuery.value.trim()) return
-  searching.value = true
-  try {
-    const response = await knowledgeApi.ragSearch(ragQuery.value)
-    ragResults.value = response.data.results || []
-  } catch (err) {
-    console.error('RAG search failed:', err)
-  } finally {
-    searching.value = false
-  }
-}
-
 // 监听 visible 变化，加载内容
 watch(() => props.visible, (val) => {
   if (val) {
     loadContent()
-    ragQuery.value = ''
-    ragResults.value = []
+    shardFilter.value = ''
+  } else {
+    // Reset shard filter when drawer closes
+    shardFilter.value = ''
   }
 })
 
-// 新增方法：加载所有分片
+// 加载所有分片
 async function loadAllShards() {
   if (!props.docId) return
-  searching.value = true
+  loadingShards.value = true
   try {
     const response = await knowledgeApi.getDocumentShards(props.docId)
     allShards.value = response.data.shards || []
@@ -80,7 +77,7 @@ async function loadAllShards() {
   } catch (err) {
     console.error('Failed to load shards:', err)
   } finally {
-    searching.value = false
+    loadingShards.value = false
   }
 }
 
@@ -88,18 +85,26 @@ async function loadAllShards() {
 watch(activeTab, (tab) => {
   if (tab === 'rag') {
     loadAllShards()
+  } else {
+    // Reset filter when switching away from RAG tab
+    shardFilter.value = ''
   }
 })
 
-// 过滤分片
+// 过滤分片（带防抖）
 watch(shardFilter, (filter) => {
-  if (!filter.trim()) {
-    filteredShards.value = allShards.value
-  } else {
-    filteredShards.value = allShards.value.filter((s: any) =>
-      s.content.toLowerCase().includes(filter.toLowerCase())
-    )
+  if (filterDebounceTimer) {
+    clearTimeout(filterDebounceTimer)
   }
+  filterDebounceTimer = setTimeout(() => {
+    if (!filter.trim()) {
+      filteredShards.value = allShards.value
+    } else {
+      filteredShards.value = allShards.value.filter((s) =>
+        s.content.toLowerCase().includes(filter.toLowerCase())
+      )
+    }
+  }, 300)
 })
 
 function close() {
@@ -130,7 +135,7 @@ function close() {
                 allow-clear
                 style="margin-bottom: 16px;"
               />
-              <a-spin :spinning="searching">
+              <a-spin :spinning="loadingShards">
                 <div v-if="filteredShards.length > 0" class="shards-list">
                   <p class="shard-info">
                     共 {{ filteredShards.length }} 个分片
@@ -143,7 +148,7 @@ function close() {
                     <pre class="shard-content">{{ shard.content }}</pre>
                   </div>
                 </div>
-                <Empty v-else-if="!searching" description="暂无分片数据" />
+                <Empty v-else-if="!loadingShards" description="暂无分片数据" />
               </a-spin>
             </div>
           </a-tab-pane>
@@ -174,41 +179,6 @@ function close() {
 
 .rag-search {
   padding: 16px 0;
-}
-
-.rag-results {
-  margin-top: 16px;
-}
-
-.search-info {
-  color: #666;
-  margin-bottom: 12px;
-}
-
-.rag-item {
-  background: #f5f5f5;
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 12px;
-}
-
-.rag-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.rag-source {
-  font-size: 12px;
-  color: #666;
-}
-
-.rag-snippet {
-  font-size: 14px;
-  line-height: 1.5;
-  margin: 0;
-  color: #333;
 }
 
 .shards-list {
