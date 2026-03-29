@@ -190,30 +190,48 @@ def run_review(self, task_id: str) -> dict:
     return run_async(_run())
 
 
-def _record_agent_step(db, task_id: str, step_number: int, msg, event_cb) -> int:
-    """Record an agent step from message history.
+def _record_agent_step(db, task_id: str, step_number: int, msg) -> int:
+    """Record agent steps from message history to database.
+
+    Records both observation (assistant content) and tool_call steps.
+    When tool_calls exist, observation and first tool_call share the same step_number
+    to match the SSE event pattern.
+
+    Note: SSE events are already sent by BidReviewAgent.run_review() during execution.
+    This function only persists steps to the database after the fact.
 
     Returns the next step number.
     """
     if msg.tool_calls:
+        # Record observation step with the step_number (same as SSE pattern)
+        if msg.content:
+            observation = AgentStep(
+                task_id=task_id,
+                step_number=step_number,
+                step_type="observation",
+                content=str(msg.content)[:500],
+                tool_name=None,
+            )
+            db.add(observation)
+
+        # Record each tool_call with sequential step_number AFTER the observation
+        first_tool_step_number = step_number
         for tc in msg.tool_calls:
             step = AgentStep(
                 task_id=task_id,
-                step_number=step_number,
+                step_number=first_tool_step_number,
                 step_type="tool_call",
                 content=f"Called {tc.function.name}",
                 tool_name=tc.function.name,
                 tool_args=tc.function.arguments,
             )
             db.add(step)
-            event_cb("step", {
-                "step_number": step_number,
-                "step_type": "tool_call",
-                "tool_name": tc.function.name,
-                "content": f"Called {tc.function.name}",
-            })
-            step_number += 1
+            first_tool_step_number += 1
+
+        # Return the next available step_number (after all tool_calls)
+        return first_tool_step_number
     elif msg.content:
+        # No tool_calls, record as thought step
         step = AgentStep(
             task_id=task_id,
             step_number=step_number,
@@ -222,12 +240,9 @@ def _record_agent_step(db, task_id: str, step_number: int, msg, event_cb) -> int
             tool_name=None,
         )
         db.add(step)
-        event_cb("step", {
-            "step_number": step_number,
-            "step_type": "thought",
-            "content": str(msg.content)[:200],
-        })
         step_number += 1
+        return step_number
+
     return step_number
 
 
@@ -306,22 +321,16 @@ async def _run_agent_review(
         max_steps=100,
     )
 
-    # Send starting event
-    event_cb("step", {
-        "step_number": 1,
-        "step_type": "thought",
-        "content": "Initializing bid review agent...",
-    })
-
+    # Note: BidReviewAgent.run_review() sends its own initialization event internally
     # Run the agent
-    step_number = 2
+    step_number = 1
     try:
         result = await agent.run_review()
 
         # Record agent steps from message history
         for msg in agent.get_history():
             if msg.role == "assistant":
-                step_number = _record_agent_step(db, task_id, step_number, msg, event_cb)
+                step_number = _record_agent_step(db, task_id, step_number, msg)
 
         await db.flush()
         return _parse_findings_result(result)
