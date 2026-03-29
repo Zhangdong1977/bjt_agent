@@ -352,7 +352,7 @@ export const useProjectStore = defineStore('project', () => {
     }
 
     // For each step_number, sort: observation/thought first, then tool
-    const sortOrder: Record<string, number> = { observation: 0, thought: 1, tool: 2 }
+    const sortOrder: Record<string, number> = { observation: 0, thought: 1, tool_call: 2 }
     const sortedNumbers = Array.from(byNumber.keys()).sort((a, b) => a - b)
 
     for (const num of sortedNumbers) {
@@ -366,7 +366,7 @@ export const useProjectStore = defineStore('project', () => {
           step_type: s.step_type,
           tool_name: s.tool_name || undefined,
           content: s.content,
-          timestamp: new Date(s.created_at),
+          timestamp: s.created_at ? new Date(s.created_at) : new Date(),
         })
       }
     }
