@@ -4,6 +4,7 @@ import { knowledgeApi } from '@/api/client'
 import { message } from 'ant-design-vue'
 import type { UploadFile } from 'ant-design-vue'
 import { UploadOutlined, FileTextOutlined } from '@ant-design/icons-vue'
+import KnowledgeDocDetail from '@/components/KnowledgeDocDetail.vue'
 
 interface KnowledgeDoc {
   id: string
@@ -16,6 +17,9 @@ interface KnowledgeDoc {
 const docs = ref<KnowledgeDoc[]>([])
 const loading = ref(false)
 const uploading = ref(false)
+const uploadProgress = ref<number>(0)
+const selectedDoc = ref<{ id: string; name: string } | null>(null)
+const showDocDetail = ref(false)
 
 onMounted(() => {
   fetchDocs()
@@ -34,15 +38,24 @@ async function fetchDocs() {
 }
 
 async function handleUpload(info: { file: UploadFile }) {
-  if (info.file.status === 'uploading') {
-    uploading.value = true
-  } else if (info.file.status === 'done') {
-    uploading.value = false
+  const file = info.file.originFileObj as File
+  if (!file) return
+
+  uploading.value = true
+  uploadProgress.value = 0
+
+  try {
+    await knowledgeApi.uploadDocument(file, (progress) => {
+      uploadProgress.value = progress.percent
+    })
     message.success('文档上传成功')
+    uploadProgress.value = 100
     fetchDocs()
-  } else if (info.file.status === 'error') {
-    uploading.value = false
+  } catch {
     message.error('文档上传失败')
+  } finally {
+    uploading.value = false
+    uploadProgress.value = 0
   }
 }
 
@@ -64,6 +77,11 @@ async function previewDoc(doc: KnowledgeDoc) {
     message.error('未登录，无法预览文档')
   }
 }
+
+function openDocDetail(doc: KnowledgeDoc) {
+  selectedDoc.value = { id: doc.id, name: doc.filename }
+  showDocDetail.value = true
+}
 </script>
 
 <template>
@@ -74,10 +92,14 @@ async function previewDoc(doc: KnowledgeDoc) {
     </a-breadcrumb>
 
     <a-card class="upload-card" :bordered="false">
+      <div v-if="uploading" class="upload-progress">
+        <a-progress :percent="uploadProgress" status="active" />
+        <p>正在上传...</p>
+      </div>
       <a-upload-dragger
+        v-else
         name="file"
         :multiple="true"
-        action="/api/knowledge/upload"
         :show-upload-list="false"
         accept=".pdf,.doc,.docx"
         @change="handleUpload"
@@ -103,11 +125,13 @@ async function previewDoc(doc: KnowledgeDoc) {
             <template #actions>
               <a @click="previewDoc(item)">预览</a>
               <a-divider type="vertical" />
+              <a @click="openDocDetail(item)">详情</a>
+              <a-divider type="vertical" />
               <a-popconfirm
                 title="确定要删除此文档吗？"
                 @confirm="deleteDoc(item.id)"
               >
-                <a class="delete-link">删除</a>
+                <a class="delete-link" href="javascript:void(0)">删除</a>
               </a-popconfirm>
             </template>
             <a-list-item-meta>
@@ -129,6 +153,12 @@ async function previewDoc(doc: KnowledgeDoc) {
         </template>
       </a-list>
     </a-card>
+
+    <KnowledgeDocDetail
+      v-model:visible="showDocDetail"
+      :doc-id="selectedDoc?.id || ''"
+      :doc-name="selectedDoc?.name || ''"
+    />
   </div>
 </template>
 
@@ -146,6 +176,16 @@ async function previewDoc(doc: KnowledgeDoc) {
   border-radius: 12px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   margin-bottom: 24px;
+}
+
+.upload-progress {
+  padding: 24px;
+  text-align: center;
+}
+
+.upload-progress p {
+  margin-top: 16px;
+  color: #666;
 }
 
 .list-card {
