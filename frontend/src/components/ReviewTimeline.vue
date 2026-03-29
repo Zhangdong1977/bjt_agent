@@ -97,39 +97,41 @@ onUnmounted(() => {
 <template>
   <div class="review-timeline">
     <h3>智能体进度</h3>
-    <a-timeline mode="left" class="review-timeline">
-      <a-timeline-item
-        v-for="(step, index) in steps"
-        :key="index"
-        :color="getStepColor(step.step_type)"
-        :pending="step.status === 'running'"
-      >
-        <template #dot>
-          <component :is="getStepIcon(step)" :class="{ 'spin-icon': step.status === 'running' }" />
-        </template>
+    <div class="timeline-scroll-container">
+      <a-timeline mode="left">
+        <a-timeline-item
+          v-for="(step, index) in steps"
+          :key="index"
+          :color="getStepColor(step.step_type)"
+          :pending="step.status === 'running'"
+        >
+          <template #dot>
+            <component :is="getStepIcon(step)" :class="{ 'spin-icon': step.status === 'running' }" />
+          </template>
 
-        <div :class="['timeline-content-card', `card-${step.step_type}`]">
-          <div class="card-header">
-            <span :class="['step-icon', `icon-${step.step_type}`]">
-              <ToolOutlined v-if="step.step_type === 'tool_call'" />
-              <EyeOutlined v-else-if="step.step_type === 'observation'" />
-              <BulbOutlined v-else />
-            </span>
-            <span class="step-type">
-              {{ step.step_type === 'tool_call' ? `${step.tool_name || '工具'}` : step.step_type === 'observation' ? '观察' : '思考' }}
-            </span>
+          <div :class="['timeline-content-card', `card-${step.step_type}`]">
+            <div class="card-header">
+              <span :class="['step-icon', `icon-${step.step_type}`]">
+                <ToolOutlined v-if="step.step_type === 'tool_call'" />
+                <EyeOutlined v-else-if="step.step_type === 'observation'" />
+                <BulbOutlined v-else />
+              </span>
+              <span class="step-type">
+                {{ step.step_type === 'tool_call' ? `${step.tool_name || '工具'}` : step.step_type === 'observation' ? '观察' : '思考' }}
+              </span>
+            </div>
+            <p class="step-text">{{ step.content }}</p>
           </div>
-          <p class="step-text">{{ step.content }}</p>
-        </div>
-      </a-timeline-item>
+        </a-timeline-item>
 
-      <a-timeline-item v-if="steps.length === 0" pending>
-        <template #dot><ClockCircleOutlined /></template>
-        <div class="timeline-empty">
-          <span>等待智能体启动...</span>
-        </div>
-      </a-timeline-item>
-    </a-timeline>
+        <a-timeline-item v-if="steps.length === 0" pending>
+          <template #dot><ClockCircleOutlined /></template>
+          <div class="timeline-empty">
+            <span>等待智能体启动...</span>
+          </div>
+        </a-timeline-item>
+      </a-timeline>
+    </div>
   </div>
 </template>
 
@@ -146,11 +148,28 @@ onUnmounted(() => {
   margin-bottom: 1rem;
 }
 
-/* Timeline container scrollable */
-:deep(.review-timeline) {
+/* Timeline scrollable container */
+.timeline-scroll-container {
   max-height: 400px;
   overflow-y: auto;
   padding-left: 0.5rem;
+}
+
+/* Ant Design Timeline overrides */
+:deep(.ant-timeline) {
+  padding-left: 4px;
+}
+
+:deep(.ant-timeline-item-content) {
+  padding: 0 0 20px 20px !important;
+}
+
+:deep(.ant-timeline-item-tail) {
+  left: 6px !important;
+}
+
+:deep(.ant-timeline-item-head) {
+  left: 0 !important;
 }
 
 /* Content cards */
