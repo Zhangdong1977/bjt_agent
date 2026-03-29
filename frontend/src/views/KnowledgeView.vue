@@ -10,13 +10,18 @@ interface KnowledgeDoc {
   id: string
   filename: string
   created_at: string
-  file_type: string
-  size: number
+}
+
+interface GlobalSearchResult {
+  docId: string
+  source: string
+  snippet: string
+  score: number
 }
 
 // 全局搜索相关
 const globalQuery = ref('')
-const globalResults = ref<any[]>([])
+const globalResults = ref<GlobalSearchResult[]>([])
 const globalSearching = ref(false)
 const globalSearched = ref(false)
 
@@ -113,6 +118,7 @@ async function onGlobalSearch() {
     globalResults.value = response.data.results || []
   } catch (err) {
     console.error('Global search failed:', err)
+    message.error('搜索失败，请重试')
     globalResults.value = []
   } finally {
     globalSearching.value = false
