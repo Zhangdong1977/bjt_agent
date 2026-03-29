@@ -18,6 +18,8 @@ export interface IndexStatus {
   model: string;
 }
 
+const MAX_INDICES_LIMIT = 100;
+
 export class IndexManager {
   private indices: Map<string, MemoryIndex> = new Map();
   private documentsBasePath: string;
@@ -27,40 +29,75 @@ export class IndexManager {
   }
 
   /**
+   * Validate userId format to prevent path traversal
+   */
+  private validateUserId(userId: string): void {
+    if (!/^[a-zA-Z0-9_-]+$/.test(userId)) {
+      throw new Error('Invalid userId format');
+    }
+  }
+
+  /**
+   * Evict oldest index when limit is reached
+   */
+  private evictOldestIndex(): void {
+    const firstKey = this.indices.keys().next().value;
+    if (firstKey) {
+      console.log(`IndexManager: Evicting oldest index for user ${firstKey} due to limit`);
+      this.indices.delete(firstKey);
+    }
+  }
+
+  /**
    * Get or create MemoryIndex for a user
    */
   async getIndex(userId: string): Promise<MemoryIndex> {
+    this.validateUserId(userId);
+
     // Return cached index if exists
     if (this.indices.has(userId)) {
       return this.indices.get(userId)!;
+    }
+
+    // Check indices limit and evict if necessary
+    if (this.indices.size >= MAX_INDICES_LIMIT) {
+      this.evictOldestIndex();
     }
 
     // Create new index for user
     const userPath = path.join(this.documentsBasePath, userId);
     const indexPath = path.join(userPath, 'data', 'memory.sqlite');
 
-    const memory = await createMemoryIndex({
-      documentsPath: userPath,
-      indexPath: indexPath,
-      config: {
-        embeddings: {
-          provider: 'zhipu',
-          model: 'embedding-3',
-        },
-        search: {
-          maxResults: 50,
-          minScore: 0.0,
-          hybrid: {
-            enabled: true,
-            vectorWeight: 0.7,
-            textWeight: 0.3,
-            candidateMultiplier: 2.0,
+    let memory: MemoryIndex;
+    try {
+      memory = await createMemoryIndex({
+        documentsPath: userPath,
+        indexPath: indexPath,
+        config: {
+          embeddings: {
+            provider: 'zhipu',
+            model: 'embedding-3',
           },
+          search: {
+            maxResults: 50,
+            minScore: 0.0,
+            hybrid: {
+              enabled: true,
+              vectorWeight: 0.7,
+              textWeight: 0.3,
+              candidateMultiplier: 2.0,
+            },
+          },
+          extraPaths: [userPath],
         },
-        extraPaths: [userPath],
-      },
-      initialSync: false,  // Don't sync on creation
-    });
+        initialSync: false,  // Don't sync on creation
+      });
+      console.log(`IndexManager: Created index for user ${userId}`);
+    } catch (error) {
+      // Cleanup Map entry on failure if it was set
+      this.indices.delete(userId);
+      throw error;
+    }
 
     this.indices.set(userId, memory);
     return memory;
@@ -91,7 +128,12 @@ export class IndexManager {
   async closeIndex(userId: string): Promise<void> {
     const memory = this.indices.get(userId);
     if (memory) {
-      await memory.close();
+      try {
+        await memory.close();
+        console.log(`IndexManager: Closed index for user ${userId}`);
+      } catch (error) {
+        console.error(`IndexManager: Error closing index for user ${userId}:`, error);
+      }
       this.indices.delete(userId);
     }
   }
@@ -101,7 +143,12 @@ export class IndexManager {
    */
   async closeAll(): Promise<void> {
     for (const [userId, memory] of this.indices) {
-      await memory.close();
+      try {
+        await memory.close();
+        console.log(`IndexManager: Closed index for user ${userId}`);
+      } catch (error) {
+        console.error(`IndexManager: Error closing index for user ${userId}:`, error);
+      }
     }
     this.indices.clear();
   }
