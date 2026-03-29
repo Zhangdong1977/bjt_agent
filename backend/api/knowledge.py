@@ -88,7 +88,7 @@ async def upload_document(
         json.dump(meta_data, f, ensure_ascii=False)
 
     # 触发知识库同步（异步，不阻塞响应）
-    asyncio.create_task(sync_knowledge_base())
+    asyncio.create_task(sync_knowledge_base(current_user.id))
 
     return KnowledgeDocumentResponse(
         id=unique_filename,
@@ -129,7 +129,7 @@ async def delete_document(
         os.remove(meta_file_path)
 
     # 触发 RAG 同步（异步，不阻塞响应）
-    asyncio.create_task(sync_knowledge_base())
+    asyncio.create_task(sync_knowledge_base(current_user.id))
 
     return {"message": "Document deleted"}
 
@@ -254,11 +254,14 @@ async def rag_search(
     """测试知识库RAG搜索"""
     rag_settings = get_settings()
 
+    headers = {"X-User-ID": current_user.id}
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{rag_settings.rag_memory_service_url}/api/search",
-                json={"query": query, "limit": limit}
+                json={"query": query, "limit": limit},
+                headers=headers
             )
             return response.json()
     except httpx.RequestError:
@@ -268,16 +271,20 @@ async def rag_search(
 @router.post("/search")
 async def global_search(
     query: str = Body(..., embed=True),
-    limit: int = 20
+    limit: int = 20,
+    current_user: User = Depends(get_current_user)
 ):
     """全局搜索知识库"""
     rag_settings = get_settings()
+
+    headers = {"X-User-ID": current_user.id}
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{rag_settings.rag_memory_service_url}/api/search",
-                json={"query": query, "limit": limit}
+                json={"query": query, "limit": limit},
+                headers=headers
             )
             results = response.json()
 
@@ -306,14 +313,17 @@ async def global_search(
 
 
 @router.get("/index-status")
-async def get_index_status():
+async def get_index_status(current_user: User = Depends(get_current_user)):
     """获取RAG索引状态"""
     rag_settings = get_settings()
+
+    headers = {"X-User-ID": current_user.id}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
-                f"{rag_settings.rag_memory_service_url}/api/status"
+                f"{rag_settings.rag_memory_service_url}/api/status",
+                headers=headers
             )
             return response.json()
     except httpx.RequestError:
@@ -327,15 +337,20 @@ async def get_index_status():
         }
 
 
-async def sync_knowledge_base() -> bool:
+async def sync_knowledge_base(user_id: str = None) -> bool:
     """Trigger rag_memory_service to sync knowledge base index."""
     settings = get_settings()
+
+    headers = {}
+    if user_id:
+        headers["X-User-ID"] = user_id
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{settings.rag_memory_service_url}/api/sync",
-                json={"force": False}
+                json={"force": False},
+                headers=headers
             )
             return response.status_code == 200
     except httpx.RequestError:
