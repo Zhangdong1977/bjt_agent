@@ -41,7 +41,7 @@ async def list_review_tasks(
     project_id: str,
     db: DBSession,
     current_user: CurrentUser,
-) -> list[ReviewTask]:
+) -> list[ReviewTaskListItem]:
     """List all review tasks for the project (newest first)."""
     await verify_project_ownership(project_id, current_user.id, db)
 
