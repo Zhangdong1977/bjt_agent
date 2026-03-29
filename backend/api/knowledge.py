@@ -238,8 +238,7 @@ async def rag_search(
 @router.post("/search")
 async def global_search(
     query: str = Body(..., embed=True),
-    limit: int = 20,
-    current_user: User = Depends(get_current_user)
+    limit: int = 20
 ):
     """全局搜索知识库"""
     rag_settings = get_settings()
@@ -272,8 +271,8 @@ async def global_search(
                 "queryTime": results.get("queryTime", 0),
                 "totalResults": results.get("totalResults", 0)
             }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="RAG service unavailable")
 
 
 async def sync_knowledge_base() -> bool:
