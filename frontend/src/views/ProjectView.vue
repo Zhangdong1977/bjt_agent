@@ -104,16 +104,13 @@ async function startReview() {
 }
 
 const selectedHistoryTaskId = ref('')
-
-async function handleHistoryTaskChange() {
-  if (selectedHistoryTaskId.value) {
-    await projectStore.fetchReviewTasks()
-  }
-}
+const originalTaskId = ref<string | null>(null)
 
 async function loadHistoricalTimeline() {
   if (!selectedHistoryTaskId.value || !projectStore.currentProject) return
   try {
+    // Save current task ID for restoration when exiting historical mode
+    originalTaskId.value = projectStore.currentTask?.id || null
     await projectStore.selectReviewTask(selectedHistoryTaskId.value)
     await projectStore.loadHistoricalSteps(selectedHistoryTaskId.value)
     historicalSteps.value = projectStore.agentSteps.map(s => ({
@@ -133,6 +130,13 @@ function clearHistoricalTimeline() {
   showHistoricalTimeline.value = false
   selectedHistoryTaskId.value = ''
   historicalSteps.value = []
+  // Restore the original task
+  if (originalTaskId.value) {
+    projectStore.selectReviewTask(originalTaskId.value)
+  } else {
+    projectStore.currentTask = null
+  }
+  originalTaskId.value = null
 }
 
 function formatDate(dateStr: string | null): string {
@@ -299,7 +303,7 @@ function getSeverityClass(severity: string) {
         <!-- Review History Selector -->
         <div v-if="completedTasks.length > 0" class="history-selector">
           <label>查看历史记录:</label>
-          <select v-model="selectedHistoryTaskId" @change="handleHistoryTaskChange">
+          <select v-model="selectedHistoryTaskId">
             <option value="">-- 选择历史任务 --</option>
             <option v-for="task in completedTasks" :key="task.id" :value="task.id">
               {{ formatDate(task.completed_at) }} - {{ task.status }}
