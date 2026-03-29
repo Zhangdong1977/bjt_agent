@@ -22,6 +22,11 @@ interface TimelineStep {
   content: string
   timestamp: Date
   status?: 'pending' | 'running' | 'completed' | 'error'
+  duration?: number      // 耗时（秒）
+  tool_params?: {       // 工具调用参数
+    prompt: string
+  }
+  tool_result?: string   // 工具调用结果
 }
 
 const steps = ref<TimelineStep[]>([])
