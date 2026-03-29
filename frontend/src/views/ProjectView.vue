@@ -17,14 +17,30 @@ const tenderDoc = computed(() => projectStore.documents.find(d => d.doc_type ===
 const bidDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'bid'))
 const canStartReview = computed(() => tenderDoc.value?.status === 'parsed' && bidDoc.value?.status === 'parsed')
 
+const showHistoricalTimeline = ref(false)
+const historicalSteps = ref<TimelineStep[]>([])
+
+interface TimelineStep {
+  step_number: number
+  step_type: string
+  tool_name?: string
+  content: string
+  timestamp: Date
+}
+
+const completedTasks = computed(() =>
+  projectStore.reviewTasks.filter(t => t.status === 'completed')
+)
+
 // Document viewer state
 const showDocViewer = ref(false)
 const docViewerContent = ref<DocumentContent | null>(null)
 const docViewerLoading = ref(false)
 const docViewerTitle = ref('')
 
-onMounted(() => {
-  projectStore.selectProject(projectId.value)
+onMounted(async () => {
+  await projectStore.selectProject(projectId.value)
+  await projectStore.fetchReviewTasks()
 })
 
 function goBack() {
@@ -85,6 +101,43 @@ async function startReview() {
   } catch {
     ElMessage.error('启动审查失败')
   }
+}
+
+const selectedHistoryTaskId = ref('')
+
+async function handleHistoryTaskChange() {
+  if (selectedHistoryTaskId.value) {
+    await projectStore.fetchReviewTasks()
+  }
+}
+
+async function loadHistoricalTimeline() {
+  if (!selectedHistoryTaskId.value || !projectStore.currentProject) return
+  try {
+    await projectStore.selectReviewTask(selectedHistoryTaskId.value)
+    await projectStore.loadHistoricalSteps(selectedHistoryTaskId.value)
+    historicalSteps.value = projectStore.agentSteps.map(s => ({
+      step_number: s.step_number,
+      step_type: s.step_type,
+      tool_name: s.tool_name,
+      content: s.content,
+      timestamp: s.timestamp,
+    }))
+    showHistoricalTimeline.value = true
+  } catch (error) {
+    ElMessage.error('加载历史时间线失败')
+  }
+}
+
+function clearHistoricalTimeline() {
+  showHistoricalTimeline.value = false
+  selectedHistoryTaskId.value = ''
+  historicalSteps.value = []
+}
+
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return 'N/A'
+  return new Date(dateStr).toLocaleString('zh-CN')
 }
 
 function getStatusClass(status: string) {
@@ -243,6 +296,23 @@ function getSeverityClass(severity: string) {
       <section class="section">
         <h2>审查</h2>
 
+        <!-- Review History Selector -->
+        <div v-if="completedTasks.length > 0" class="history-selector">
+          <label>查看历史记录:</label>
+          <select v-model="selectedHistoryTaskId" @change="handleHistoryTaskChange">
+            <option value="">-- 选择历史任务 --</option>
+            <option v-for="task in completedTasks" :key="task.id" :value="task.id">
+              {{ formatDate(task.completed_at) }} - {{ task.status }}
+            </option>
+          </select>
+          <button v-if="selectedHistoryTaskId" @click="loadHistoricalTimeline" class="secondary-btn">
+            加载历史时间线
+          </button>
+          <button v-if="selectedHistoryTaskId" @click="clearHistoricalTimeline" class="secondary-btn">
+            关闭历史
+          </button>
+        </div>
+
         <div class="review-controls">
           <button
             v-if="!projectStore.currentTask || projectStore.currentTask.status === 'completed' || projectStore.currentTask.status === 'failed'"
@@ -267,11 +337,13 @@ function getSeverityClass(severity: string) {
           请上传招标书和应标书以开始审查。
         </p>
 
-        <!-- Agent Timeline -->
+        <!-- Agent Timeline (Live or Historical) -->
         <ReviewTimeline
           v-if="projectStore.currentTask"
           ref="timelineRef"
           :task-id="projectStore.currentTask.id"
+          :initial-steps="showHistoricalTimeline ? historicalSteps : []"
+          :historical-mode="showHistoricalTimeline"
         />
       </section>
 
@@ -807,6 +879,41 @@ function getSeverityClass(severity: string) {
   height: auto;
   border: 1px solid #ddd;
   border-radius: 4px;
+}
+
+.history-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: #f5f5f5;
+  border-radius: 8px;
+}
+
+.history-selector label {
+  font-weight: 500;
+  color: #333;
+}
+
+.history-selector select {
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  min-width: 200px;
+}
+
+.secondary-btn {
+  padding: 0.5rem 1rem;
+  background: #6b7280;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.secondary-btn:hover {
+  background: #4b5563;
 }
 
 /* Agent Timeline */
