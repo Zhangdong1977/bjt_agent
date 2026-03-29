@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import type { SSEEvent } from '@/types'
 import {
   CheckOutlined,
@@ -42,6 +42,13 @@ onMounted(() => {
     connect(props.taskId)
   }
 })
+
+// Watch for initialSteps changes (e.g., when loading historical timeline multiple times)
+watch(() => props.initialSteps, (newSteps) => {
+  if (newSteps?.length) {
+    steps.value = newSteps
+  }
+}, { deep: true })
 
 function handleSSEEvent(event: SSEEvent) {
   if (event.type === 'step' && event.step_number !== undefined) {
