@@ -24,8 +24,8 @@ const searching = ref(false)
 
 // 将 Markdown 转换为 HTML 并消毒
 const htmlContent = computed(() => {
-  if (!content.value?.md_content) return ''
-  return DOMPurify.sanitize(marked.parse(content.value.md_content) as string)
+  if (!content.value?.content) return ''
+  return DOMPurify.sanitize(marked.parse(content.value.content) as string)
 })
 
 // 加载文档内容

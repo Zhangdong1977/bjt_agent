@@ -132,6 +132,6 @@ export interface RAGSearchResponse {
 }
 
 export interface DocumentContentResponse {
-  md_content: string
-  images: string[]
+  content: string
+  filename: string
 }
