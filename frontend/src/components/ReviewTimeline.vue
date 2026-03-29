@@ -1,20 +1,21 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import type { SSEEvent } from '@/types'
 import {
   CheckOutlined,
   ClockCircleOutlined,
   LoadingOutlined,
   CloseCircleOutlined,
-  ToolOutlined,
-  EyeOutlined,
-  BulbOutlined,
 } from '@ant-design/icons-vue'
 import { Tag, Collapse, CollapsePanel } from 'ant-design-vue'
 
-defineProps<{
+const props = defineProps<{
   taskId: string
+  initialSteps?: TimelineStep[]  // For displaying historical steps
+  historicalMode?: boolean        // Whether showing historical data
 }>()
+
+const isHistorical = computed(() => props.historicalMode)
 
 interface TimelineStep {
   step_number: number
@@ -33,15 +34,28 @@ interface TimelineStep {
 const steps = ref<TimelineStep[]>([])
 let eventSource: EventSource | null = null
 
+onMounted(() => {
+  if (props.initialSteps?.length) {
+    steps.value = props.initialSteps
+  }
+  if (!props.historicalMode) {
+    connect(props.taskId)
+  }
+})
+
 function handleSSEEvent(event: SSEEvent) {
   if (event.type === 'step' && event.step_number !== undefined) {
-    steps.value.push({
-      step_number: event.step_number,
-      step_type: event.step_type || 'unknown',
-      tool_name: event.tool_name,
-      content: event.content || '',
-      timestamp: new Date(),
-    })
+    // Deduplicate by step_number to prevent duplicate entries on SSE reconnect
+    const exists = steps.value.some(s => s.step_number === event.step_number)
+    if (!exists) {
+      steps.value.push({
+        step_number: event.step_number,
+        step_type: event.step_type || 'unknown',
+        tool_name: event.tool_name,
+        content: event.content || '',
+        timestamp: new Date(),
+      })
+    }
   } else if (event.type === 'status' && event.status === 'running') {
     steps.value = []
   }
@@ -138,7 +152,10 @@ onUnmounted(() => {
 
 <template>
   <div class="review-timeline">
-    <h3>智能体进度</h3>
+    <div class="timeline-header">
+      <h3>{{ isHistorical ? '历史记录' : '智能体进度' }}</h3>
+      <span v-if="isHistorical" class="historical-badge">历史</span>
+    </div>
     <div class="timeline-scroll-container">
       <a-timeline mode="left" class="review-timeline">
         <a-timeline-item
@@ -206,6 +223,20 @@ onUnmounted(() => {
   color: #555;
   font-size: 1rem;
   margin-bottom: 1rem;
+}
+
+.historical-badge {
+  background: #8b5cf6;
+  color: white;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  margin-left: 0.5rem;
+}
+
+.timeline-header {
+  display: flex;
+  align-items: center;
 }
 
 /* Timeline scrollable container */
