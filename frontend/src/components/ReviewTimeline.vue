@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
 import type { SSEEvent } from '@/types'
-import { Timeline } from 'ant-design-vue'
 import {
   CheckOutlined,
   ClockCircleOutlined,
