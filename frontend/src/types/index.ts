@@ -120,11 +120,9 @@ export interface UploadProgress {
 
 // RAG Search types
 export interface RAGSearchResult {
-  path: string
-  startLine: number
-  endLine: number
-  score: number
+  source: string
   snippet: string
+  score: number
 }
 
 export interface RAGSearchResponse {
@@ -134,6 +132,6 @@ export interface RAGSearchResponse {
 }
 
 export interface DocumentContentResponse {
-  content: string
-  filename: string
+  md_content: string
+  images: string[]
 }
