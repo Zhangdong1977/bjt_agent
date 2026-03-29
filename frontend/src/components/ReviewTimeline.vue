@@ -10,6 +10,7 @@ import {
   EyeOutlined,
   BulbOutlined,
 } from '@ant-design/icons-vue'
+import { Tag, Collapse, CollapsePanel } from 'ant-design-vue'
 
 defineProps<{
   taskId: string
