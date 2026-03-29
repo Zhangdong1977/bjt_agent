@@ -314,6 +314,11 @@ export const reviewApi = {
   async getResultsByTask(projectId: string, taskId: string): Promise<ReviewResult[]> {
     const response = await apiClient.get(`/projects/${projectId}/review/tasks/${taskId}/results`)
     return response.data
+  },
+
+  async getTasks(projectId: string): Promise<ReviewTaskListItem[]> {
+    const response = await apiClient.get(`/projects/${projectId}/review/tasks`)
+    return response.data
   }
 }
 

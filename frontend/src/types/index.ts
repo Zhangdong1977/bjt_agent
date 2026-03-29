@@ -59,6 +59,15 @@ export interface ReviewTask {
   created_at: string
 }
 
+export interface ReviewTaskListItem {
+  id: string
+  project_id: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  started_at: string | null
+  completed_at: string | null
+  created_at: string
+}
+
 export interface ReviewResult {
   id: string
   task_id: string
