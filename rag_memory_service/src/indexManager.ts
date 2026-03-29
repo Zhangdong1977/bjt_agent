@@ -5,6 +5,7 @@
 
 import { createMemoryIndex, MemoryIndex } from 'rag-memory';
 import path from 'node:path';
+import { getConfig } from './config/index.js';
 
 export interface IndexManagerOptions {
   documentsBasePath: string;  // e.g., /workspace/knowledge
@@ -67,6 +68,7 @@ export class IndexManager {
     // Create new index for user
     const userPath = path.join(this.documentsBasePath, userId);
     const indexPath = path.join(userPath, 'data', 'memory.sqlite');
+    const config = getConfig();
 
     let memory: MemoryIndex;
     try {
@@ -76,7 +78,10 @@ export class IndexManager {
         config: {
           embeddings: {
             provider: 'zhipu',
-            model: 'embedding-3',
+            model: config.embeddingModel,
+            remote: {
+              apiKey: config.zhipuApiKey,
+            },
           },
           search: {
             maxResults: 50,
