@@ -232,14 +232,28 @@ Returns matching lines with line numbers and surrounding context."""
 
             # If full content requested, return friendly summary
             if full_content:
-                content = "\n".join(lines)
-                summary = self._extract_summary(content)
-                doc_label = "招标书" if doc_type == "tender" else "投标书"
-                friendly_content = f"📄 {doc_label}内容摘要\n\n这份{doc_label}的主要内容如下：\n{summary}\n\n[完整文档已加载，共 {len(lines)} 行]"
+                full_text = "\n".join(lines)
+                if len(full_text) > self.chunk_size * 3:
+                    full_text = self._chunk_content(full_text, chunk)
+                    if chunk > 0:
+                        full_text = f"[... Chunk {chunk} ...]\n{full_text}"
+
+                # Generate friendly summary
+                summary = self._extract_summary(full_text)
+                doc_label = "招标" if doc_type == "tender" else "投标"
+
+                friendly_content = f"""📄 {doc_label}书内容摘要
+
+这份{doc_label}书共 {len(lines)} 行，内容如下：
+
+{summary}
+
+[完整文档已加载]"""
+
                 return ToolResult(
                     success=True,
                     content=friendly_content,
-                    data={"line_count": len(lines), "chunk": chunk, "raw_summary": summary},
+                    data={"line_count": len(lines), "chunk": chunk, "full_content": full_text},
                 )
 
             # If query provided, search by keyword
@@ -254,15 +268,28 @@ Returns matching lines with line numbers and surrounding context."""
                         data={"query": query, "matches": 0},
                     )
 
-                # Format results with context
+                # Format results with context and citations
                 doc_label = "招标书" if doc_type == "tender" else "投标书"
                 formatted = [f"🔎 在{doc_label}中找到 **{len(matches)}** 处提到\"{query}\"：\n"]
+                citations = []
                 for i, m in enumerate(matches[:MAX_LINES_PER_QUERY], 1):
-                    formatted.append(f"{i}. {m['line_content']}")
+                    # Format citation with line number and quoted content
+                    citation = f"[Line {m['line_number']}] \"{m['line_content']}\""
+                    formatted.append(f"{i}. {citation}")
                     if m.get('context_before'):
                         formatted.append(f"   <- {m['context_before']}")
                     if m.get('context_after'):
                         formatted.append(f"   -> {m['context_after']}")
+                    # Build structured citation for data
+                    citations.append({
+                        "index": i,
+                        "line_number": m['line_number'],
+                        "quote": m['line_content'],
+                        "context_before": m.get('context_before', ''),
+                        "context_after": m.get('context_after', ''),
+                    })
+
+                formatted.append(f"\n共找到 {len(matches)} 处匹配")
 
                 return ToolResult(
                     success=True,
@@ -271,6 +298,7 @@ Returns matching lines with line numbers and surrounding context."""
                         "query": query,
                         "matches": len(matches),
                         "results": matches,
+                        "citations": citations,
                     },
                 )
 
