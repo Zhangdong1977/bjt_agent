@@ -558,23 +558,26 @@ onUnmounted(() => {
   text-align: center;
 }
 
-/* 合并的工具节点样式 - 简洁线性设计 */
+/* 合并的工具节点样式 */
 .tool-node {
-  padding: 0.25rem 0;
+  background: linear-gradient(135deg, rgb(249, 240, 255) 0%, rgb(253, 250, 255) 100%);
+  border-left: 4px solid rgb(211, 173, 247);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
 }
 
 .tool-header {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-bottom: 0.35rem;
+  margin-bottom: 0.4rem;
 }
 
 .tool-row {
   display: flex;
   align-items: flex-start;
   gap: 0.5rem;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.3rem;
   font-size: 0.85rem;
   line-height: 1.4;
 }
@@ -596,10 +599,6 @@ onUnmounted(() => {
 .param-tag {
   display: inline;
   margin-right: 0.75rem;
-}
-
-.param-tag::before {
-  content: '';
 }
 
 /* Animations */
