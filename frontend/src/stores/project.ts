@@ -9,6 +9,8 @@ export interface AgentStep {
   tool_name?: string
   content: string
   timestamp: Date
+  tool_args?: Record<string, any>
+  tool_result?: Record<string, any>
 }
 
 export const useProjectStore = defineStore('project', () => {
@@ -367,6 +369,8 @@ export const useProjectStore = defineStore('project', () => {
           tool_name: s.tool_name || undefined,
           content: s.content,
           timestamp: s.created_at ? new Date(s.created_at) : new Date(),
+          tool_args: s.tool_args || undefined,
+          tool_result: s.tool_result || undefined,
         })
       }
     }

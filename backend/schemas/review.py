@@ -50,6 +50,8 @@ class AgentStepResponse(BaseModel):
     step_type: str
     content: str
     tool_name: str | None
+    tool_args: dict | None = None
+    tool_result: dict | None = None
     duration_ms: int | None
 
     model_config = {"from_attributes": True}

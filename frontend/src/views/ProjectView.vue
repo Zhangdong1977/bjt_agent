@@ -126,6 +126,8 @@ async function loadHistoricalTimeline() {
       tool_name: s.tool_name,
       content: s.content,
       timestamp: s.timestamp,
+      tool_args: s.tool_args,
+      tool_result: s.tool_result,
     }))
     showHistoricalTimeline.value = true
   } catch (error) {

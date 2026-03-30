@@ -33,7 +33,7 @@ interface TimelineStep {
   status?: 'pending' | 'running' | 'completed' | 'error'
   duration?: number
   tool_args?: Record<string, any>
-  tool_result?: ToolResult
+  tool_result?: ToolResult & { _merged?: boolean }
 }
 
 const steps = ref<TimelineStep[]>([])
@@ -114,17 +114,42 @@ watch(() => props.initialSteps, (newSteps) => {
 
 function handleSSEEvent(event: SSEEvent) {
   if (event.type === 'step' && event.step_number !== undefined) {
-    const exists = steps.value.some(s => s.step_number === event.step_number)
-    if (!exists) {
+    if (event.step_type === 'tool_call') {
+      // tool_call: 创建新节点
       steps.value.push({
         step_number: event.step_number,
-        step_type: event.step_type || 'unknown',
+        step_type: 'tool_call',
         tool_name: event.tool_name,
         content: event.content || '',
         timestamp: new Date(),
         tool_args: event.tool_args,
-        tool_result: event.tool_result,
+        tool_result: undefined,  // 预置，后续补充
       })
+    } else if (event.step_type === 'tool_result') {
+      // tool_result: 查找对应的 tool_call 节点并合并
+      const pairedStep = steps.value.find(s =>
+        s.step_number === event.step_number! - 1 &&
+        s.tool_name === event.tool_name &&
+        s.step_type === 'tool_call'
+      )
+      if (pairedStep) {
+        pairedStep.tool_result = event.tool_result
+        pairedStep.tool_result!._merged = true  // 标记已合并
+      }
+    } else {
+      // 其他类型(step_type === 'thought' 或 'observation')直接添加
+      const exists = steps.value.some(s => s.step_number === event.step_number)
+      if (!exists) {
+        steps.value.push({
+          step_number: event.step_number,
+          step_type: event.step_type || 'unknown',
+          tool_name: event.tool_name,
+          content: event.content || '',
+          timestamp: new Date(),
+          tool_args: event.tool_args,
+          tool_result: event.tool_result,
+        })
+      }
     }
   } else if (event.type === 'status' && event.status === 'running') {
     steps.value = []
@@ -256,7 +281,7 @@ onUnmounted(() => {
     <div class="timeline-scroll-container">
       <a-timeline mode="left" class="review-timeline">
         <a-timeline-item
-          v-for="(step, index) in steps"
+          v-for="(step, index) in steps.filter(s => !s.tool_result?._merged)"
           :key="index"
           :color="step.status === 'running' ? 'blue' : getStepColor(step.step_type)"
           :pending="step.status === 'running'"
@@ -265,7 +290,36 @@ onUnmounted(() => {
             <component :is="getStepIcon(step)" :class="{ 'spin-icon': step.status === 'running' }" />
           </template>
 
-          <div :class="['timeline-content-card', `card-${step.step_type}`]">
+          <!-- 合并的工具调用节点 -->
+          <div v-if="step.step_type === 'tool_call'" class="tool-node">
+            <div class="tool-header">
+              <Tag color="purple">第 {{ step.step_number }} 节</Tag>
+              <span class="tool-name">{{ getFriendlyToolName(step.tool_name) }}</span>
+              <Tag v-if="step.tool_result" :color="step.tool_result.status === 'success' ? 'green' : 'red'">
+                {{ step.tool_result.status === 'success' ? '成功' : '失败' }}
+              </Tag>
+            </div>
+
+            <!-- 调用参数 -->
+            <div v-if="step.tool_args" class="tool-section call-section">
+              <strong>调用参数:</strong>
+              <div class="params-list">
+                <div v-for="param in getFriendlyArgs(step.tool_name, step.tool_args)" :key="param.key">
+                  <span class="param-key">{{ param.key }}:</span>
+                  <span class="param-value">{{ param.value }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 返回结果 -->
+            <div v-if="step.tool_result" class="tool-section result-section">
+              <strong>返回结果:</strong>
+              <div class="result-text">{{ getFriendlyResult(step.tool_name, step.tool_result) }}</div>
+            </div>
+          </div>
+
+          <!-- 非工具调用的节点使用原有样式 -->
+          <div v-else :class="['timeline-content-card', `card-${step.step_type}`]">
             <!-- 卡片头部 -->
             <div class="card-header">
               <Tag :color="getTagColor(step.step_type)">第 {{ step.step_number }} 节</Tag>
@@ -282,24 +336,10 @@ onUnmounted(() => {
             <!-- 步骤内容 -->
             <p class="step-text">{{ step.content }}</p>
 
-            <!-- 可折叠详细信息（仅工具调用和工具返回有此项） -->
-            <Collapse v-if="(step.step_type === 'tool_call' || step.step_type === 'tool_result') && (step.tool_args || step.tool_result)" class="tool-collapse" ghost>
+            <!-- 可折叠详细信息（仅观察和思考有此项） -->
+            <Collapse v-if="(step.step_type === 'observation' || step.step_type === 'thought') && (step.tool_args || step.tool_result)" class="tool-collapse" ghost>
               <CollapsePanel key="1" header="显示详细信息">
-                <!-- 工具调用参数 -->
-                <template v-if="step.step_type === 'tool_call' && step.tool_args">
-                  <div class="tool-section">
-                    <strong>调用参数:</strong>
-                    <div class="params-list">
-                      <div v-for="param in getFriendlyArgs(step.tool_name, step.tool_args)" :key="param.key" class="param-item">
-                        <span class="param-key">{{ param.key }}:</span>
-                        <span class="param-value">{{ param.value }}</span>
-                      </div>
-                    </div>
-                  </div>
-                </template>
-
-                <!-- 工具返回结果 -->
-                <template v-if="step.step_type === 'tool_result' && step.tool_result">
+                <template v-if="step.tool_result">
                   <div class="tool-section">
                     <strong>返回结果:</strong>
                     <div class="result-text">{{ getFriendlyResult(step.tool_name, step.tool_result) }}</div>
@@ -528,6 +568,39 @@ onUnmounted(() => {
   font-style: italic;
   padding: 2rem 1rem;
   text-align: center;
+}
+
+/* 合并的工具节点样式 */
+.tool-node {
+  background: linear-gradient(135deg, rgb(249, 240, 255) 0%, rgb(253, 250, 255) 100%);
+  border-left: 4px solid rgb(211, 173, 247);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.tool-name {
+  font-weight: 600;
+  color: #333;
+}
+
+.call-section {
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px dashed #ddd;
+}
+
+.result-section {
+  background: rgba(82, 196, 26, 0.1);
+  border-radius: 4px;
+  padding: 0.5rem;
 }
 
 /* Animations */

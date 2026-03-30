@@ -104,6 +104,8 @@ export interface AgentStep {
   step_type: 'thought' | 'tool' | 'observation'
   content: string
   tool_name: string | null
+  tool_args?: Record<string, any>
+  tool_result?: Record<string, any>
   created_at: string
 }
 
