@@ -56,6 +56,52 @@ class DocSearchTool(BaseTool):
                 return i + 1, line  # 1-indexed
         return -1, ""
 
+    def _extract_summary(self, content: str) -> str:
+        """Extract a structured summary from document content.
+
+        Returns a human-friendly summary with categorized sections.
+        """
+        lines = content.split('\n')
+        summary_parts = []
+
+        # Define category patterns
+        categories = {
+            "技术": {"patterns": [r"技术", r"Python", r"Vue", r"FastAPI", r"开发"], "icon": "🛠️"},
+            "工期": {"patterns": [r"工期", r"时间", r"交付", r"完成"], "icon": "⏱️"},
+            "预算": {"patterns": [r"预算", r"价格", r"万", r"元", r"费用", r"成本"], "icon": "💰"},
+            "资质": {"patterns": [r"资质", r"证书", r"认证", r"ISO", r"CMMI"], "icon": "📋"},
+        }
+
+        # Find matching lines for each category
+        categorized_lines = {cat: [] for cat in categories}
+
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped or len(line_stripped) < 5:
+                continue
+            for cat_name, cat_info in categories.items():
+                for pattern in cat_info["patterns"]:
+                    if re.search(pattern, line_stripped, re.IGNORECASE):
+                        categorized_lines[cat_name].append(line_stripped[:150])
+                        break
+
+        # Build summary
+        for cat_name, cat_info in categories.items():
+            lines_for_cat = categorized_lines[cat_name][:3]  # Max 3 lines per category
+            if lines_for_cat:
+                summary_parts.append(f"\n{cat_info['icon']} {cat_name}要求")
+                for l in lines_for_cat:
+                    summary_parts.append(f"• {l}")
+
+        if not summary_parts:
+            # Fallback: first few non-empty lines
+            summary_parts.append("\n📝 文档内容")
+            for line in lines[:5]:
+                if line.strip():
+                    summary_parts.append(f"• {line.strip()[:100]}")
+
+        return "\n".join(summary_parts)
+
     def _search_by_keyword(self, lines: list[str], query: str, max_results: int = MAX_LINES_PER_QUERY) -> list[dict]:
         """Search document lines by keyword and return matches with context.
 
