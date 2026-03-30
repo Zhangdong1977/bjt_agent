@@ -163,12 +163,28 @@ class BidReviewAgent(BaseAgent):
                     "step_type": "tool_call",
                     "tool_name": function_name,
                     "content": f"Called {function_name}",
+                    "tool_args": tool_call.function.arguments,
                 })
                 step_counter += 1
 
                 # Execute tool
                 if function_name in self.tools:
                     result = await self.tools[function_name].execute(**tool_call.function.arguments)
+
+                    # Send tool result event
+                    self._send_event("step", {
+                        "step_number": step_counter,
+                        "step_type": "tool_result",
+                        "tool_name": function_name,
+                        "content": f"{function_name} 返回",
+                        "tool_result": {
+                            "status": "success" if result.success else "error",
+                            "content": result.content if result.success else None,
+                            "error": result.error if not result.success else None,
+                            "count": getattr(result, 'count', None),
+                        },
+                    })
+                    step_counter += 1
 
                     # Add tool message
                     tool_msg = Message(
