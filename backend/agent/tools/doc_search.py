@@ -135,36 +135,39 @@ class DocSearchTool(BaseTool):
         return results
 
     def _chunk_content(self, content: str, chunk_num: int = 0) -> str:
-        """Split large content into chunks and return specific chunk."""
+        """Split large content into chunks and return specific chunk.
+
+        Returns the full content if it's smaller than chunk_size.
+        Returns empty string if chunk_num is out of range.
+        """
         if len(content) <= self.chunk_size:
             return content
 
+        # Split content into chunks at paragraph/sentence boundaries
         chunks = []
         start = 0
         while start < len(content):
             end = start + self.chunk_size
-            if chunk_num > 0 and start < self.chunk_size * chunk_num:
-                start = self.chunk_size * chunk_num
-                continue
-            chunk = content[start:end]
-            # Try to break at a paragraph or sentence boundary
             if end < len(content):
+                # Try to break at a paragraph or sentence boundary
                 break_points = [
-                    chunk.rfind("\n\n"),
-                    chunk.rfind("\n"),
-                    chunk.rfind(". "),
+                    content.rfind("\n\n", start, end),
+                    content.rfind("\n", start, end),
+                    content.rfind(". ", start, end),
                 ]
                 for bp in break_points:
-                    if bp > self.chunk_size * 0.7:  # At least 70% of chunk_size
-                        end = start + bp + 1
-                        chunk = content[start:end]
+                    if bp > start and bp >= end - 200:  # At least 200 chars into chunk
+                        end = bp + 1
                         break
+            chunk = content[start:end]
             chunks.append(chunk)
             start = end
 
-        if chunk_num < len(chunks):
-            return chunks[chunk_num]
-        return content
+        # Return the requested chunk or empty if out of range
+        if chunk_num < 0 or chunk_num >= len(chunks):
+            return ""
+
+        return chunks[chunk_num]
 
     @property
     def name(self) -> str:
