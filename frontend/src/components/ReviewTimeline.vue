@@ -17,6 +17,13 @@ const props = defineProps<{
 
 const isHistorical = computed(() => props.historicalMode)
 
+interface ToolResult {
+  status: 'success' | 'error'
+  content?: string
+  error?: string
+  count?: number
+}
+
 interface TimelineStep {
   step_number: number
   step_type: string
@@ -24,15 +31,70 @@ interface TimelineStep {
   content: string
   timestamp: Date
   status?: 'pending' | 'running' | 'completed' | 'error'
-  duration?: number      // 耗时（秒）
-  tool_params?: {       // 工具调用参数
-    prompt: string
-  }
-  tool_result?: string   // 工具调用结果
+  duration?: number
+  tool_args?: Record<string, any>
+  tool_result?: ToolResult
 }
 
 const steps = ref<TimelineStep[]>([])
 let eventSource: EventSource | null = null
+
+// 工具名称映射
+const toolNameMap: Record<string, string> = {
+  search_tender_doc: '搜索文档',
+  rag_search: '搜索知识库',
+  comparator: '内容比对',
+}
+
+// 参数键映射 (每个工具独立)
+const toolParamKeyMap: Record<string, Record<string, string>> = {
+  search_tender_doc: {
+    doc_type: '文档类型',
+    query: '查询内容',
+    chunk: '章节',
+    full_content: '完整内容',
+  },
+  rag_search: {
+    query: '查询内容',
+    limit: '返回数量',
+  },
+  comparator: {
+    requirement: '招标要求',
+    bid_content: '投标内容',
+  },
+}
+
+// 参数值映射 (每个工具独立)
+const toolParamValueMap: Record<string, Record<string, Record<string, string>>> = {
+  search_tender_doc: {
+    doc_type: {
+      tender: '招标文档',
+      bid: '投标文档',
+    },
+  },
+}
+
+// 工具结果格式化
+const toolResultFormatter: Record<string, (result: ToolResult) => string> = {
+  search_tender_doc: (result) => {
+    if (result.status === 'success') {
+      return `找到 ${result.count || 0} 条相关内容 - ${result.content?.slice(0, 100)}...`
+    }
+    return `搜索失败: ${result.error}`
+  },
+  rag_search: (result) => {
+    if (result.status === 'success') {
+      return `知识库返回 ${result.count || 0} 条结果`
+    }
+    return `查询失败: ${result.error}`
+  },
+  comparator: (result) => {
+    if (result.status === 'success') {
+      return `比对完成: ${result.content?.slice(0, 100)}...`
+    }
+    return `比对失败: ${result.error}`
+  },
+}
 
 onMounted(() => {
   if (props.initialSteps?.length) {
@@ -52,7 +114,6 @@ watch(() => props.initialSteps, (newSteps) => {
 
 function handleSSEEvent(event: SSEEvent) {
   if (event.type === 'step' && event.step_number !== undefined) {
-    // Deduplicate by step_number to prevent duplicate entries on SSE reconnect
     const exists = steps.value.some(s => s.step_number === event.step_number)
     if (!exists) {
       steps.value.push({
@@ -61,6 +122,8 @@ function handleSSEEvent(event: SSEEvent) {
         tool_name: event.tool_name,
         content: event.content || '',
         timestamp: new Date(),
+        tool_args: event.tool_args,
+        tool_result: event.tool_result,
       })
     }
   } else if (event.type === 'status' && event.status === 'running') {
@@ -126,12 +189,39 @@ function getStepEmoji(stepType: string): string {
 
 function getStepLabel(stepType: string, toolName?: string): string {
   if (stepType === 'tool_call') {
-    return `工具调用: ${toolName || 'unknown'}`
+    return `工具调用: ${getFriendlyToolName(toolName)}`
+  }
+  if (stepType === 'tool_result') {
+    return `工具返回: ${getFriendlyToolName(toolName)}`
   }
   if (stepType === 'observation') {
     return '观察'
   }
   return '思考过程'
+}
+
+function getFriendlyToolName(toolName?: string): string {
+  if (!toolName) return '未知工具'
+  return toolNameMap[toolName] || toolName
+}
+
+function getFriendlyArgs(toolName?: string, args?: Record<string, any>): Array<{key: string, value: string}> {
+  if (!toolName || !args) return []
+  const keyMap = toolParamKeyMap[toolName] || {}
+  const valueMap = toolParamValueMap[toolName] || {}
+  return Object.entries(args).map(([k, v]) => ({
+    key: keyMap[k] || k,
+    value: (valueMap[k] as Record<string, string>)?.[String(v)] || String(v),
+  }))
+}
+
+function getFriendlyResult(toolName?: string, result?: ToolResult): string {
+  if (!toolName || !result) return ''
+  const formatter = toolResultFormatter[toolName]
+  if (formatter) {
+    return formatter(result)
+  }
+  return result.status === 'success' ? `完成: ${result.content?.slice(0, 50)}...` : `失败: ${result.error}`
 }
 
 function formatTime(date: Date): string {
@@ -192,17 +282,29 @@ onUnmounted(() => {
             <!-- 步骤内容 -->
             <p class="step-text">{{ step.content }}</p>
 
-            <!-- 可折叠详细信息（仅工具调用有此项） -->
-            <Collapse v-if="step.step_type === 'tool_call' && step.tool_params" class="tool-collapse" ghost>
+            <!-- 可折叠详细信息（仅工具调用和工具返回有此项） -->
+            <Collapse v-if="(step.step_type === 'tool_call' || step.step_type === 'tool_result') && (step.tool_args || step.tool_result)" class="tool-collapse" ghost>
               <CollapsePanel key="1" header="显示详细信息">
-                <div class="tool-params">
-                  <strong>提示词:</strong>
-                  <div class="prompt-box">{{ step.tool_params.prompt }}</div>
-                </div>
-                <div v-if="step.tool_result" class="tool-result">
-                  <strong>结果:</strong>
-                  <div>{{ step.tool_result }}</div>
-                </div>
+                <!-- 工具调用参数 -->
+                <template v-if="step.step_type === 'tool_call' && step.tool_args">
+                  <div class="tool-section">
+                    <strong>调用参数:</strong>
+                    <div class="params-list">
+                      <div v-for="param in getFriendlyArgs(step.tool_name, step.tool_args)" :key="param.key" class="param-item">
+                        <span class="param-key">{{ param.key }}:</span>
+                        <span class="param-value">{{ param.value }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- 工具返回结果 -->
+                <template v-if="step.step_type === 'tool_result' && step.tool_result">
+                  <div class="tool-section">
+                    <strong>返回结果:</strong>
+                    <div class="result-text">{{ getFriendlyResult(step.tool_name, step.tool_result) }}</div>
+                  </div>
+                </template>
               </CollapsePanel>
             </Collapse>
           </div>
@@ -363,6 +465,48 @@ onUnmounted(() => {
   margin-bottom: 0.25rem;
   font-size: 0.85rem;
   color: #666;
+}
+
+.tool-section {
+  margin-bottom: 0.75rem;
+}
+
+.tool-section strong {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.params-list {
+  padding: 8px;
+  background: rgb(245, 245, 245);
+  border-radius: 4px;
+}
+
+.param-item {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.param-key {
+  color: #1890ff;
+  font-weight: 500;
+}
+
+.param-value {
+  color: #333;
+}
+
+.result-text {
+  padding: 8px;
+  background: rgb(245, 245, 245);
+  border-radius: 4px;
+  font-size: 0.85rem;
+  color: #52c41a;
+  white-space: pre-wrap;
 }
 
 .step-text {
