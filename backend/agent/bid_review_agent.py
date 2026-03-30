@@ -70,7 +70,7 @@ class BidReviewAgent(BaseAgent):
         # Initialize tools
         tools = [
             DocSearchTool(tender_doc_path=tender_doc_path, bid_doc_path=bid_doc_path),
-            RAGSearchTool(),
+            RAGSearchTool(user_id=user_id),
             ComparatorTool(),
         ]
 

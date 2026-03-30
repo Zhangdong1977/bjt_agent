@@ -10,9 +10,14 @@ from backend.config import get_settings
 class RAGSearchTool(BaseTool):
     """Tool for searching the enterprise knowledge base via rag_memory_service."""
 
-    def __init__(self):
-        """Initialize the RAG search tool."""
+    def __init__(self, user_id: str):
+        """Initialize the RAG search tool.
+
+        Args:
+            user_id: The user ID for RAG service authentication
+        """
         super().__init__()
+        self.user_id = user_id
 
     @property
     def name(self) -> str:
@@ -70,6 +75,7 @@ Returns relevant knowledge base entries with source information."""
                 response = await client.post(
                     f"{settings.rag_memory_service_url}/api/search",
                     json={"query": query, "limit": limit},
+                    headers={"X-User-ID": self.user_id},
                 )
 
                 if response.status_code == 200:
