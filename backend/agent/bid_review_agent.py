@@ -56,6 +56,8 @@ class BidReviewAgent(BaseAgent):
         self.user_id = user_id
         self.event_callback = event_callback
         self._findings: list[dict] = []
+        # Store tool results for persistence via _record_agent_step
+        self._tool_results: dict[str, dict] = {}
 
         # Initialize LLM client (MiniMax uses OpenAI protocol)
         llm_client = LLMClient(
@@ -171,18 +173,21 @@ class BidReviewAgent(BaseAgent):
                 if function_name in self.tools:
                     result = await self.tools[function_name].execute(**tool_call.function.arguments)
 
+                    # Store tool result for persistence
+                    self._tool_results[function_name] = {
+                        "status": "success" if result.success else "error",
+                        "content": result.content if result.success else None,
+                        "error": result.error if not result.success else None,
+                        "count": getattr(result, 'count', None),
+                    }
+
                     # Send tool result event
                     self._send_event("step", {
                         "step_number": step_counter,
                         "step_type": "tool_result",
                         "tool_name": function_name,
                         "content": f"{function_name} 返回",
-                        "tool_result": {
-                            "status": "success" if result.success else "error",
-                            "content": result.content if result.success else None,
-                            "error": result.error if not result.success else None,
-                            "count": getattr(result, 'count', None),
-                        },
+                        "tool_result": self._tool_results[function_name],
                     })
                     step_counter += 1
 

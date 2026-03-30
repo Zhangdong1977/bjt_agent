@@ -13,7 +13,7 @@ import type {
   ReviewResult
 } from '@/types'
 
-const API_BASE = '/api'
+const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
 // Create axios instance
 const apiClient: AxiosInstance = axios.create({
@@ -327,8 +327,8 @@ export const reviewApi = {
 export function createSSEStream(taskId: string): EventSource {
   const token = getAccessToken()
   const url = token
-    ? `/api/events/tasks/${taskId}/stream?token=${encodeURIComponent(token)}`
-    : `/api/events/tasks/${taskId}/stream`
+    ? `${API_BASE}/events/tasks/${taskId}/stream?token=${encodeURIComponent(token)}`
+    : `${API_BASE}/events/tasks/${taskId}/stream`
   return new EventSource(url)
 }
 

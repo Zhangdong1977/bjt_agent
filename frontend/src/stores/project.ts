@@ -3,6 +3,8 @@ import { ref } from 'vue'
 import { projectsApi, documentsApi, reviewApi, getAccessToken } from '@/api/client'
 import type { Project, Document, ReviewTask, ReviewResponse, SSEEvent, UploadProgress, ReviewTaskListItem } from '@/types'
 
+const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+
 export interface AgentStep {
   step_number: number
   step_type: string
@@ -175,8 +177,8 @@ export const useProjectStore = defineStore('project', () => {
 
     const token = getAccessToken()
     const url = token
-      ? `/api/events/tasks/${taskId}/stream?token=${encodeURIComponent(token)}`
-      : `/api/events/tasks/${taskId}/stream`
+      ? `${API_BASE}/events/tasks/${taskId}/stream?token=${encodeURIComponent(token)}`
+      : `${API_BASE}/events/tasks/${taskId}/stream`
     sseEventSource.value = new EventSource(url)
 
     sseEventSource.value.onmessage = (event) => {
@@ -375,7 +377,23 @@ export const useProjectStore = defineStore('project', () => {
       }
     }
 
-    agentSteps.value = groupedSteps
+    // Merge tool_result into corresponding tool_call nodes
+    for (const step of groupedSteps) {
+      if (step.step_type === 'tool_result') {
+        const pairedStep = groupedSteps.find(s =>
+          s.step_number === step.step_number - 1 &&
+          s.tool_name === step.tool_name &&
+          s.step_type === 'tool_call'
+        )
+        if (pairedStep) {
+          pairedStep.tool_result = step.tool_result
+          ;(step as any)._merged = true
+        }
+      }
+    }
+
+    // Filter out merged tool_result nodes
+    agentSteps.value = groupedSteps.filter(s => !(s.step_type === 'tool_result' && (s as any)._merged))
   }
 
   return {

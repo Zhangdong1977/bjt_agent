@@ -9,6 +9,8 @@ import {
 } from '@ant-design/icons-vue'
 import { Tag, Collapse, CollapsePanel } from 'ant-design-vue'
 
+const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+
 const props = defineProps<{
   taskId: string
   initialSteps?: TimelineStep[]  // For displaying historical steps
@@ -158,7 +160,7 @@ function handleSSEEvent(event: SSEEvent) {
 
 function connect(taskId: string) {
   disconnect()
-  eventSource = new EventSource(`/api/events/tasks/${taskId}/stream`)
+  eventSource = new EventSource(`${API_BASE}/events/tasks/${taskId}/stream`)
 
   eventSource.onmessage = (e) => {
     try {

@@ -190,12 +190,12 @@ def run_review(self, task_id: str) -> dict:
     return run_async(_run())
 
 
-def _record_agent_step(db, task_id: str, step_number: int, msg) -> int:
+def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: dict | None = None) -> int:
     """Record agent steps from message history to database.
 
-    Records both observation (assistant content) and tool_call steps.
+    Records observation (assistant content), tool_call, tool_result, and thought steps.
     When tool_calls exist, observation and first tool_call share the same step_number
-    to match the SSE event pattern.
+    to match the SSE event pattern. tool_result steps are recorded after tool_call steps.
 
     Note: SSE events are already sent by BidReviewAgent.run_review() during execution.
     This function only persists steps to the database after the fact.
@@ -228,7 +228,22 @@ def _record_agent_step(db, task_id: str, step_number: int, msg) -> int:
             db.add(step)
             first_tool_step_number += 1
 
-        # Return the next available step_number (after all tool_calls)
+        # Record tool_result steps after all tool_calls
+        for tc in msg.tool_calls:
+            func_name = tc.function.name
+            if tool_results and func_name in tool_results:
+                result_step = AgentStep(
+                    task_id=task_id,
+                    step_number=first_tool_step_number,
+                    step_type="tool_result",
+                    content=f"{func_name} 返回",
+                    tool_name=func_name,
+                    tool_result=tool_results[func_name],
+                )
+                db.add(result_step)
+                first_tool_step_number += 1
+
+        # Return the next available step_number (after all tool_calls and tool_results)
         return first_tool_step_number
     elif msg.content:
         # No tool_calls, record as thought step
@@ -330,7 +345,7 @@ async def _run_agent_review(
         # Record agent steps from message history
         for msg in agent.get_history():
             if msg.role == "assistant":
-                step_number = _record_agent_step(db, task_id, step_number, msg)
+                step_number = _record_agent_step(db, task_id, step_number, msg, agent._tool_results)
 
         await db.flush()
         return _parse_findings_result(result)
