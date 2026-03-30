@@ -305,11 +305,10 @@ onUnmounted(() => {
             <!-- 调用参数 -->
             <div v-if="step.tool_args" class="tool-section call-section">
               <strong>调用参数:</strong>
-              <div class="params-list">
-                <div v-for="param in getFriendlyArgs(step.tool_name, step.tool_args)" :key="param.key">
-                  <span class="param-key">{{ param.key }}:</span>
-                  <span class="param-value">{{ param.value }}</span>
-                </div>
+              <div class="params-text">
+                <span v-for="param in getFriendlyArgs(step.tool_name, step.tool_args)" :key="param.key">
+                  {{ param.key }}: {{ param.value }}&nbsp;&nbsp;
+                </span>
               </div>
             </div>
 
@@ -533,18 +532,9 @@ onUnmounted(() => {
   font-size: 0.85rem;
 }
 
-.param-key {
-  color: #1890ff;
-  font-weight: 500;
-}
-
-.param-value {
-  color: #333;
-}
-
 .result-text {
   font-size: 0.85rem;
-  color: #1890ff;
+  color: #666;
   white-space: pre-wrap;
 }
 
@@ -593,16 +583,27 @@ onUnmounted(() => {
 .call-section {
   margin-bottom: 0.5rem;
   padding: 0.5rem;
-  background: rgba(139, 92, 246, 0.06);
+  background: rgba(139, 92, 246, 0.08);
   border-radius: 4px;
-  border-left: 3px solid rgba(139, 92, 246, 0.3);
+  border-left: 3px solid rgba(139, 92, 246, 0.4);
 }
 
 .result-section {
-  background: rgba(24, 144, 255, 0.08);
+  background: rgba(139, 92, 246, 0.08);
   border-radius: 4px;
   padding: 0.5rem;
-  border-left: 3px solid rgba(24, 144, 255, 0.3);
+  border-left: 3px solid rgba(139, 92, 246, 0.4);
+}
+
+.params-text {
+  color: #666;
+  font-size: 0.85rem;
+}
+
+.result-text {
+  color: #666;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
 }
 
 /* Animations */
