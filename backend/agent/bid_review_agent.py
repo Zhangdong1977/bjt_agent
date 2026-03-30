@@ -142,15 +142,14 @@ class BidReviewAgent(BaseAgent):
             )
             self.messages.append(assistant_msg)
 
-            # Send step event for assistant response (only if has content)
-            if response.content:
-                self._send_event("step", {
-                    "step_number": step_counter,
-                    "step_type": "thought" if not response.tool_calls else "observation",
-                    "tool_name": None,
-                    "content": response.content[:200],
-                })
-                step_counter += 1
+            # Send step event for assistant response (always, to keep step numbers in sync)
+            self._send_event("step", {
+                "step_number": step_counter,
+                "step_type": "thought" if not response.tool_calls else "observation",
+                "tool_name": None,
+                "content": response.content[:200] if response.content else "",
+            })
+            step_counter += 1
 
             # Check if task is complete
             if not response.tool_calls:

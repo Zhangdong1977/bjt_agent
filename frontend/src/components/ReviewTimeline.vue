@@ -140,6 +140,10 @@ function handleSSEEvent(event: SSEEvent) {
       }
     } else {
       // 其他类型(step_type === 'thought' 或 'observation')直接添加
+      // 跳过空的 observation/thought（content 为空且没有工具结果）
+      if (!event.content && !event.tool_result) {
+        return
+      }
       const exists = steps.value.some(s => s.step_number === event.step_number)
       if (!exists) {
         steps.value.push({
