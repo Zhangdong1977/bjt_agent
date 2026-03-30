@@ -284,25 +284,25 @@ Returns matching lines with line numbers and surrounding context."""
                 matches = self._search_by_keyword(lines, query)
 
                 if not matches:
-                    doc_label = "招标书" if doc_type == "tender" else "投标书"
+                    doc_label = "招标" if doc_type == "tender" else "投标"
                     return ToolResult(
                         success=True,
-                        content=f"抱歉，未在{doc_label}中找到与\"{query}\"相关的内容。",
+                        content=f"抱歉，未在{doc_label}书中找到与\"{query}\"相关的内容。",
                         data={"query": query, "matches": 0},
                     )
 
                 # Format results with context and citations
-                doc_label = "招标书" if doc_type == "tender" else "投标书"
-                formatted = [f"🔎 在{doc_label}中找到 **{len(matches)}** 处提到\"{query}\"：\n"]
+                doc_label = "招标" if doc_type == "tender" else "投标"
+                display_matches = matches[:10]
+                formatted = [f"🔍 在{doc_label}书中找到 **{len(matches)}** 处提到\"{query}\"：\n"]
                 citations = []
-                for i, m in enumerate(matches[:MAX_LINES_PER_QUERY], 1):
+                for i, m in enumerate(display_matches, 1):
                     # Format citation with line number and quoted content
-                    citation = f"[Line {m['line_number']}] \"{m['line_content']}\""
-                    formatted.append(f"{i}. {citation}")
+                    formatted.append(f"{i}. {m['line_content']}")
                     if m.get('context_before'):
-                        formatted.append(f"   <- {m['context_before']}")
+                        formatted.append(f"   ↳ 上文: {m['context_before']}")
                     if m.get('context_after'):
-                        formatted.append(f"   -> {m['context_after']}")
+                        formatted.append(f"   ↳ 下文: {m['context_after']}")
                     # Build structured citation for data
                     citations.append({
                         "index": i,
@@ -312,7 +312,8 @@ Returns matching lines with line numbers and surrounding context."""
                         "context_after": m.get('context_after', ''),
                     })
 
-                formatted.append(f"\n共找到 {len(matches)} 处匹配")
+                if len(matches) > 10:
+                    formatted.append(f"\n... 还有 {len(matches) - 10} 处匹配")
 
                 return ToolResult(
                     success=True,
