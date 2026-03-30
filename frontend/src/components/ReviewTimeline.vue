@@ -283,7 +283,7 @@ onUnmounted(() => {
     <div class="timeline-scroll-container">
       <a-timeline mode="left" class="review-timeline">
         <a-timeline-item
-          v-for="(step, index) in steps.filter(s => !s.tool_result?._merged)"
+          v-for="(step, index) in steps.filter(s => !(s.step_type === 'tool_result' && s.tool_result?._merged))"
           :key="index"
           :color="step.status === 'running' ? 'blue' : getStepColor(step.step_type)"
           :pending="step.status === 'running'"
