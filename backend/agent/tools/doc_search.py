@@ -10,6 +10,21 @@ from mini_agent.tools.base import Tool as BaseTool, ToolResult
 DEFAULT_CHUNK_SIZE = 8000  # characters
 MAX_LINES_PER_QUERY = 100
 
+# Constants for _extract_summary
+_MIN_LINE_LENGTH = 5
+_MAX_LINE_TRUNCATE = 150
+_MAX_LINES_PER_CATEGORY = 3
+_FALLBACK_LINE_TRUNCATE = 100
+_FALLBACK_LINE_COUNT = 5
+
+# Precompiled category patterns for performance
+_CATEGORY_PATTERNS = {
+    "技术": (re.compile(r"技术|Python|Vue|FastAPI|开发", re.IGNORECASE), "🛠️"),
+    "工期": (re.compile(r"工期|时间|交付|完成", re.IGNORECASE), "⏱️"),
+    "预算": (re.compile(r"预算|价格|万|元|费用|成本", re.IGNORECASE), "💰"),
+    "资质": (re.compile(r"资质|证书|认证|ISO|CMMI", re.IGNORECASE), "📋"),
+}
+
 
 class DocSearchTool(BaseTool):
     """Tool for searching and reading tender/bid document content."""
@@ -64,41 +79,32 @@ class DocSearchTool(BaseTool):
         lines = content.split('\n')
         summary_parts = []
 
-        # Define category patterns
-        categories = {
-            "技术": {"patterns": [r"技术", r"Python", r"Vue", r"FastAPI", r"开发"], "icon": "🛠️"},
-            "工期": {"patterns": [r"工期", r"时间", r"交付", r"完成"], "icon": "⏱️"},
-            "预算": {"patterns": [r"预算", r"价格", r"万", r"元", r"费用", r"成本"], "icon": "💰"},
-            "资质": {"patterns": [r"资质", r"证书", r"认证", r"ISO", r"CMMI"], "icon": "📋"},
-        }
-
-        # Find matching lines for each category
-        categorized_lines = {cat: [] for cat in categories}
+        # Find matching lines for each category using precompiled patterns
+        categorized_lines = {cat: [] for cat in _CATEGORY_PATTERNS}
 
         for line in lines:
             line_stripped = line.strip()
-            if not line_stripped or len(line_stripped) < 5:
+            if not line_stripped or len(line_stripped) < _MIN_LINE_LENGTH:
                 continue
-            for cat_name, cat_info in categories.items():
-                for pattern in cat_info["patterns"]:
-                    if re.search(pattern, line_stripped, re.IGNORECASE):
-                        categorized_lines[cat_name].append(line_stripped[:150])
-                        break
+            for cat_name, (pattern, _icon) in _CATEGORY_PATTERNS.items():
+                if pattern.search(line_stripped):
+                    categorized_lines[cat_name].append(line_stripped[:_MAX_LINE_TRUNCATE])
+                    break
 
         # Build summary
-        for cat_name, cat_info in categories.items():
-            lines_for_cat = categorized_lines[cat_name][:3]  # Max 3 lines per category
+        for cat_name, (pattern, icon) in _CATEGORY_PATTERNS.items():
+            lines_for_cat = categorized_lines[cat_name][:(_MAX_LINES_PER_CATEGORY)]
             if lines_for_cat:
-                summary_parts.append(f"\n{cat_info['icon']} {cat_name}要求")
+                summary_parts.append(f"\n{icon} {cat_name}要求")
                 for l in lines_for_cat:
                     summary_parts.append(f"• {l}")
 
         if not summary_parts:
             # Fallback: first few non-empty lines
             summary_parts.append("\n📝 文档内容")
-            for line in lines[:5]:
+            for line in lines[:(_FALLBACK_LINE_COUNT)]:
                 if line.strip():
-                    summary_parts.append(f"• {line.strip()[:100]}")
+                    summary_parts.append(f"• {line.strip()[:(_FALLBACK_LINE_TRUNCATE)]}")
 
         return "\n".join(summary_parts)
 
@@ -224,17 +230,16 @@ Returns matching lines with line numbers and surrounding context."""
             doc_path = Path(self.tender_doc_path if doc_type == "tender" else self.bid_doc_path)
             _, lines = self._load_document(doc_path)
 
-            # If full content requested, return truncated content
+            # If full content requested, return friendly summary
             if full_content:
                 content = "\n".join(lines)
-                if len(content) > self.chunk_size * 3:
-                    content = self._chunk_content(content, chunk)
-                    if chunk > 0:
-                        content = f"[... Chunk {chunk} ...]\n{content}"
+                summary = self._extract_summary(content)
+                doc_label = "招标书" if doc_type == "tender" else "投标书"
+                friendly_content = f"📄 {doc_label}内容摘要\n\n这份{doc_label}的主要内容如下：\n{summary}\n\n[完整文档已加载，共 {len(lines)} 行]"
                 return ToolResult(
                     success=True,
-                    content=content,
-                    data={"line_count": len(lines), "chunk": chunk},
+                    content=friendly_content,
+                    data={"line_count": len(lines), "chunk": chunk, "raw_summary": summary},
                 )
 
             # If query provided, search by keyword
@@ -242,21 +247,22 @@ Returns matching lines with line numbers and surrounding context."""
                 matches = self._search_by_keyword(lines, query)
 
                 if not matches:
+                    doc_label = "招标书" if doc_type == "tender" else "投标书"
                     return ToolResult(
                         success=True,
-                        content=f"No content matching '{query}' found in {doc_type} document.",
+                        content=f"抱歉，未在{doc_label}中找到与\"{query}\"相关的内容。",
                         data={"query": query, "matches": 0},
                     )
 
                 # Format results with context
-                formatted = [f"Found {len(matches)} matches for '{query}':\n"]
-                for m in matches[:MAX_LINES_PER_QUERY]:
-                    formatted.append(f"Line {m['line_number']}: {m['line_content']}")
+                doc_label = "招标书" if doc_type == "tender" else "投标书"
+                formatted = [f"🔎 在{doc_label}中找到 **{len(matches)}** 处提到\"{query}\"：\n"]
+                for i, m in enumerate(matches[:MAX_LINES_PER_QUERY], 1):
+                    formatted.append(f"{i}. {m['line_content']}")
                     if m.get('context_before'):
-                        formatted.append(f"  <- {m['context_before']}")
+                        formatted.append(f"   <- {m['context_before']}")
                     if m.get('context_after'):
-                        formatted.append(f"  -> {m['context_after']}")
-                    formatted.append("")
+                        formatted.append(f"   -> {m['context_after']}")
 
                 return ToolResult(
                     success=True,
