@@ -80,6 +80,10 @@ const toolParamValueMap: Record<string, Record<string, Record<string, string>>> 
 const toolResultFormatter: Record<string, (result: ToolResult) => string> = {
   search_tender_doc: (result) => {
     if (result.status === 'success') {
+      // 新的友好格式已包含 emoji 图标，直接使用
+      if (result.content?.startsWith('📄') || result.content?.startsWith('🔍')) {
+        return result.content
+      }
       return `找到 ${result.count || 0} 条相关内容 - ${result.content?.slice(0, 100)}...`
     }
     return `搜索失败: ${result.error}`
