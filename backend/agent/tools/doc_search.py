@@ -269,9 +269,10 @@ Returns matching lines with line numbers and surrounding context."""
                 )
 
             # No query, return document info
+            doc_label = "招标" if doc_type == "tender" else "投标"
             return ToolResult(
                 success=True,
-                content=f"{doc_type.capitalize()} document loaded: {len(lines)} lines",
+                content=f"📄 已加载{doc_label}书，共 {len(lines)} 行。",
                 data={
                     "line_count": len(lines),
                     "doc_type": doc_type,
