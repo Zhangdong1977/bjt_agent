@@ -107,6 +107,15 @@ export interface AgentStep {
   created_at: string
 }
 
+// Tool Result type
+export interface ToolResult {
+  status: 'success' | 'error'
+  content?: string
+  error?: string
+  count?: number
+  data?: any
+}
+
 // SSE Event types
 export interface SSEEvent {
   type: 'status' | 'progress' | 'step' | 'complete' | 'error'
@@ -116,6 +125,8 @@ export interface SSEEvent {
   step_number?: number
   step_type?: string
   tool_name?: string
+  tool_args?: Record<string, any>
+  tool_result?: ToolResult
   content?: string
   findings_count?: number
 }
