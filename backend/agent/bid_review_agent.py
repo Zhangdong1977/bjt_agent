@@ -143,11 +143,19 @@ class BidReviewAgent(BaseAgent):
             self.messages.append(assistant_msg)
 
             # Send step event for assistant response (always, to keep step numbers in sync)
+            # Ensure content is a string before slicing
+            raw_content = response.content
+            if raw_content is None:
+                content_preview = ""
+            elif isinstance(raw_content, str):
+                content_preview = raw_content[:200]
+            else:
+                content_preview = str(raw_content)[:200]
             self._send_event("step", {
                 "step_number": step_counter,
                 "step_type": "thought" if not response.tool_calls else "observation",
                 "tool_name": None,
-                "content": response.content[:200] if response.content else "",
+                "content": content_preview,
             })
             step_counter += 1
 
@@ -159,29 +167,33 @@ class BidReviewAgent(BaseAgent):
             for tool_call in response.tool_calls:
                 function_name = tool_call.function.name
 
-                # Send step event before tool execution
-                self._send_event("step", {
-                    "step_number": step_counter,
-                    "step_type": "tool_call",
-                    "tool_name": function_name,
-                    "content": f"Called {function_name}",
-                    "tool_args": tool_call.function.arguments,
-                })
-                step_counter += 1
+                # Validate arguments before executing
+                if tool_call.function.arguments is None:
+                    tool_call.function.arguments = {}
 
-                # Execute tool
+                # Execute tool first
                 if function_name in self.tools:
                     result = await self.tools[function_name].execute(**tool_call.function.arguments)
 
                     # Store tool result for persistence
                     self._tool_results[function_name] = {
                         "status": "success" if result.success else "error",
-                        "content": result.content if result.success else None,
+                        "content": result.content if result.success and result.content else None,
                         "error": result.error if not result.success else None,
                         "count": getattr(result, 'count', None),
                     }
 
-                    # Send tool result event
+                    # Send step event for tool_call
+                    self._send_event("step", {
+                        "step_number": step_counter,
+                        "step_type": "tool_call",
+                        "tool_name": function_name,
+                        "content": f"Called {function_name}",
+                        "tool_args": tool_call.function.arguments if tool_call.function.arguments else {},
+                    })
+                    step_counter += 1
+
+                    # Send step event for tool_result (at next step, so frontend can pair with tool_call at step_number - 1)
                     self._send_event("step", {
                         "step_number": step_counter,
                         "step_type": "tool_result",
@@ -189,12 +201,14 @@ class BidReviewAgent(BaseAgent):
                         "content": f"{function_name} 返回",
                         "tool_result": self._tool_results[function_name],
                     })
-                    step_counter += 1
 
                     # Add tool message
+                    tool_msg_content = result.content if result.success else f"Error: {result.error}"
+                    if tool_msg_content is None:
+                        tool_msg_content = ""
                     tool_msg = Message(
                         role="tool",
-                        content=result.content if result.success else f"Error: {result.error}",
+                        content=tool_msg_content,
                         tool_call_id=tool_call.id,
                         name=function_name,
                     )
@@ -272,13 +286,31 @@ class BidReviewAgent(BaseAgent):
         Returns:
             Parsed JSON object/array or None if parsing fails.
         """
+        if not content:
+            return None
+
         # Try direct parse
         try:
             return json.loads(content.strip())
         except json.JSONDecodeError:
             pass
 
-        # Try to extract JSON array from markdown
+        # Try to extract JSON from markdown code blocks (```json ... ``` or ``` ... ```)
+        # Pattern matches fenced code blocks with optional json/lang specifier
+        json_code_block_match = re.search(
+            r'```(?:json)?\s*\n?(.*?)\n?```',
+            content,
+            re.DOTALL | re.IGNORECASE
+        )
+        if json_code_block_match:
+            json_str = json_code_block_match.group(1).strip()
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError:
+                pass
+
+        # Try to extract JSON array from content (handles multi-line arrays)
+        # Look for [...] ) pattern with balanced brackets
         json_array_match = re.search(r'\[\s*\{.*\}\s*\]', content, re.DOTALL)
         if json_array_match:
             try:
@@ -286,8 +318,8 @@ class BidReviewAgent(BaseAgent):
             except json.JSONDecodeError:
                 pass
 
-        # Try to extract JSON object
-        json_obj_match = re.search(r'\{[^{}]*"[^}]+\}[^{}]*\}', content, re.DOTALL)
+        # Try to extract JSON object (handles multi-line objects)
+        json_obj_match = re.search(r'\{[^{}]*"[^"]+"\s*:[^{}]*\}', content, re.DOTALL)
         if json_obj_match:
             try:
                 return json.loads(json_obj_match.group(0))

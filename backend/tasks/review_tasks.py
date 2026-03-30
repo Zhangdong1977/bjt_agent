@@ -200,7 +200,7 @@ def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: di
     Note: SSE events are already sent by BidReviewAgent.run_review() during execution.
     This function only persists steps to the database after the fact.
 
-    Returns the next step number.
+    Returns the next step number after all steps in this message are recorded.
     """
     if msg.tool_calls:
         # Record observation step with the step_number (same as SSE pattern)
@@ -214,39 +214,40 @@ def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: di
             )
             db.add(observation)
 
-        # Record each tool_call with sequential step_number AFTER the observation
-        first_tool_step_number = step_number
-        for tc in msg.tool_calls:
+        num_tool_calls = len(msg.tool_calls)
+
+        # Record each tool_call with sequential step_number starting from step_number
+        # In SSE pattern: observation and first tool_call share same step_number,
+        # then tool_result is at step_number + 1
+        next_step = step_number
+        for i, tc in enumerate(msg.tool_calls):
             step = AgentStep(
                 task_id=task_id,
-                step_number=first_tool_step_number,
+                step_number=next_step,
                 step_type="tool_call",
                 content=f"Called {tc.function.name}",
                 tool_name=tc.function.name,
                 tool_args=tc.function.arguments,
             )
             db.add(step)
-            first_tool_step_number += 1
-
-        # Record tool_result steps after each tool_call
-        # tool_result for tool_call at step X should be recorded at step X + 1
-        tool_call_step = step_number
-        for tc in msg.tool_calls:
-            tool_call_step += 1  # tool_call was recorded at this step
+            # tool_result for this tool_call is at next_step + 1
+            next_step += 1
             func_name = tc.function.name
             if tool_results and func_name in tool_results:
                 result_step = AgentStep(
                     task_id=task_id,
-                    step_number=tool_call_step + 1,  # tool_result after its tool_call
+                    step_number=next_step,
                     step_type="tool_result",
                     content=f"{func_name} 返回",
                     tool_name=func_name,
                     tool_result=tool_results[func_name],
                 )
                 db.add(result_step)
+            next_step += 1
 
-        # Return the next available step_number (after all tool_calls and tool_results)
-        return first_tool_step_number
+        # Return the next available step_number after all steps in this message
+        # step_number + 1 (observation if present) + 2 * num_tool_calls (call + result each)
+        return step_number + 1 + 2 * num_tool_calls
     elif msg.content:
         # No tool_calls, record as thought step
         step = AgentStep(
