@@ -295,27 +295,26 @@ onUnmounted(() => {
           <!-- 合并的工具调用节点 -->
           <div v-if="step.step_type === 'tool_call'" class="tool-node">
             <div class="tool-header">
-              <Tag color="purple">第 {{ step.step_number }} 节</Tag>
-              <span class="tool-name">{{ getFriendlyToolName(step.tool_name) }}</span>
-              <Tag v-if="step.tool_result" :color="step.tool_result.status === 'success' ? 'green' : 'red'">
+              <Tag color="purple">{{ getFriendlyToolName(step.tool_name) }}</Tag>
+              <Tag v-if="step.tool_result" :color="step.tool_result.status === 'success' ? 'green' : 'red'" size="small">
                 {{ step.tool_result.status === 'success' ? '成功' : '失败' }}
               </Tag>
             </div>
 
             <!-- 调用参数 -->
-            <div v-if="step.tool_args" class="tool-section call-section">
-              <strong>调用参数:</strong>
-              <div class="params-text">
-                <span v-for="param in getFriendlyArgs(step.tool_name, step.tool_args)" :key="param.key">
-                  {{ param.key }}: {{ param.value }}&nbsp;&nbsp;
+            <div v-if="step.tool_args" class="tool-row">
+              <span class="row-label">参数:</span>
+              <span class="row-content">
+                <span v-for="param in getFriendlyArgs(step.tool_name, step.tool_args)" :key="param.key" class="param-tag">
+                  {{ param.key }}: {{ param.value }}
                 </span>
-              </div>
+              </span>
             </div>
 
             <!-- 返回结果 -->
-            <div v-if="step.tool_result" class="tool-section result-section">
-              <strong>返回结果:</strong>
-              <div class="result-text">{{ getFriendlyResult(step.tool_name, step.tool_result) }}</div>
+            <div v-if="step.tool_result" class="tool-row">
+              <span class="row-label">结果:</span>
+              <span class="row-content result">{{ getFriendlyResult(step.tool_name, step.tool_result) }}</span>
             </div>
           </div>
 
@@ -559,51 +558,48 @@ onUnmounted(() => {
   text-align: center;
 }
 
-/* 合并的工具节点样式 */
+/* 合并的工具节点样式 - 简洁线性设计 */
 .tool-node {
-  background: linear-gradient(135deg, rgb(249, 240, 255) 0%, rgb(253, 250, 255) 100%);
-  border-left: 4px solid rgb(211, 173, 247);
-  border-radius: 6px;
-  padding: 0.75rem 1rem;
+  padding: 0.25rem 0;
 }
 
 .tool-header {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 0.5rem;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.35rem;
 }
 
-.tool-name {
-  font-weight: 600;
-  color: #333;
-}
-
-.call-section {
-  margin-bottom: 0.5rem;
-  padding: 0.5rem;
-  background: rgba(139, 92, 246, 0.08);
-  border-radius: 4px;
-  border-left: 3px solid rgba(139, 92, 246, 0.4);
-}
-
-.result-section {
-  background: rgba(139, 92, 246, 0.08);
-  border-radius: 4px;
-  padding: 0.5rem;
-  border-left: 3px solid rgba(139, 92, 246, 0.4);
-}
-
-.params-text {
-  color: #666;
+.tool-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
   font-size: 0.85rem;
+  line-height: 1.4;
 }
 
-.result-text {
+.row-label {
+  color: #888;
+  min-width: 36px;
+  flex-shrink: 0;
+}
+
+.row-content {
+  color: #555;
+}
+
+.row-content.result {
   color: #666;
-  font-size: 0.85rem;
-  white-space: pre-wrap;
+}
+
+.param-tag {
+  display: inline;
+  margin-right: 0.75rem;
+}
+
+.param-tag::before {
+  content: '';
 }
 
 /* Animations */
