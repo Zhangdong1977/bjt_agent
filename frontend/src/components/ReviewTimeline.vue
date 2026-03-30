@@ -295,10 +295,13 @@ onUnmounted(() => {
           <!-- 合并的工具调用节点 -->
           <div v-if="step.step_type === 'tool_call'" class="tool-node">
             <div class="tool-header">
-              <Tag color="purple">{{ getFriendlyToolName(step.tool_name) }}</Tag>
+              <Tag color="purple">第 {{ step.step_number }} 节</Tag>
+              <span class="tool-emoji">🔧</span>
+              <span class="tool-name">{{ getFriendlyToolName(step.tool_name) }}</span>
               <Tag v-if="step.tool_result" :color="step.tool_result.status === 'success' ? 'green' : 'red'" size="small">
                 {{ step.tool_result.status === 'success' ? '成功' : '失败' }}
               </Tag>
+              <span class="tool-time">{{ formatTime(step.timestamp) }}</span>
             </div>
 
             <!-- 调用参数 -->
@@ -571,6 +574,22 @@ onUnmounted(() => {
   align-items: center;
   gap: 0.5rem;
   margin-bottom: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.tool-emoji {
+  font-size: 0.9rem;
+}
+
+.tool-name {
+  font-weight: 600;
+  color: #333;
+}
+
+.tool-time {
+  color: #999;
+  font-size: 0.8rem;
+  margin-left: auto;
 }
 
 .tool-row {
