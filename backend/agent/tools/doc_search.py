@@ -233,27 +233,47 @@ Returns matching lines with line numbers and surrounding context."""
             # If full content requested, return friendly summary
             if full_content:
                 full_text = "\n".join(lines)
+                total_lines = len(lines)
+                total_chunks = (len(full_text) + self.chunk_size - 1) // self.chunk_size if len(full_text) > self.chunk_size * 3 else 1
+
                 if len(full_text) > self.chunk_size * 3:
                     full_text = self._chunk_content(full_text, chunk)
                     if chunk > 0:
                         full_text = f"[... Chunk {chunk} ...]\n{full_text}"
+                        current_chunk_lines = len(full_text.split('\n'))
+                    else:
+                        current_chunk_lines = len(full_text.split('\n'))
+                else:
+                    current_chunk_lines = total_lines
 
                 # Generate friendly summary
                 summary = self._extract_summary(full_text)
                 doc_label = "招标" if doc_type == "tender" else "投标"
 
+                # Pagination note for chunked content
+                if chunk > 0:
+                    pagination_note = f"\n📄 当前第 {chunk + 1} 页，共 {total_chunks} 页"
+                else:
+                    pagination_note = ""
+
                 friendly_content = f"""📄 {doc_label}书内容摘要
 
-这份{doc_label}书共 {len(lines)} 行，内容如下：
+这份{doc_label}书共 {total_lines} 行，内容如下：
 
-{summary}
+{summary}{pagination_note}
 
 [完整文档已加载]"""
 
                 return ToolResult(
                     success=True,
                     content=friendly_content,
-                    data={"line_count": len(lines), "chunk": chunk, "full_content": full_text},
+                    data={
+                        "line_count": total_lines,
+                        "chunk": chunk,
+                        "total_chunks": total_chunks,
+                        "current_chunk_lines": current_chunk_lines,
+                        "full_content": full_text,
+                    },
                 )
 
             # If query provided, search by keyword
