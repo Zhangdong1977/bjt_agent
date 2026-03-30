@@ -228,20 +228,22 @@ def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: di
             db.add(step)
             first_tool_step_number += 1
 
-        # Record tool_result steps after all tool_calls
+        # Record tool_result steps after each tool_call
+        # tool_result for tool_call at step X should be recorded at step X + 1
+        tool_call_step = step_number
         for tc in msg.tool_calls:
+            tool_call_step += 1  # tool_call was recorded at this step
             func_name = tc.function.name
             if tool_results and func_name in tool_results:
                 result_step = AgentStep(
                     task_id=task_id,
-                    step_number=first_tool_step_number,
+                    step_number=tool_call_step + 1,  # tool_result after its tool_call
                     step_type="tool_result",
                     content=f"{func_name} 返回",
                     tool_name=func_name,
                     tool_result=tool_results[func_name],
                 )
                 db.add(result_step)
-                first_tool_step_number += 1
 
         # Return the next available step_number (after all tool_calls and tool_results)
         return first_tool_step_number
