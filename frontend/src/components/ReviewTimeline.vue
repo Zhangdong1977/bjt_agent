@@ -543,11 +543,8 @@ onUnmounted(() => {
 }
 
 .result-text {
-  padding: 8px;
-  background: rgb(245, 245, 245);
-  border-radius: 4px;
   font-size: 0.85rem;
-  color: #52c41a;
+  color: #1890ff;
   white-space: pre-wrap;
 }
 
@@ -595,14 +592,17 @@ onUnmounted(() => {
 
 .call-section {
   margin-bottom: 0.5rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px dashed #ddd;
+  padding: 0.5rem;
+  background: rgba(139, 92, 246, 0.06);
+  border-radius: 4px;
+  border-left: 3px solid rgba(139, 92, 246, 0.3);
 }
 
 .result-section {
-  background: rgba(82, 196, 26, 0.1);
+  background: rgba(24, 144, 255, 0.08);
   border-radius: 4px;
   padding: 0.5rem;
+  border-left: 3px solid rgba(24, 144, 255, 0.3);
 }
 
 /* Animations */
