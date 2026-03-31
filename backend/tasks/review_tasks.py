@@ -15,16 +15,16 @@ logger = logging.getLogger(__name__)
 def run_async(coro):
     """Helper to run async function in sync context.
 
-    Uses an existing event loop if available, otherwise creates a new one.
-    This pattern is safer for Celery workers than asyncio.run() which creates
-    and closes a new loop each time.
+    Always creates a new event loop to avoid issues with closed or unusable
+    loops in Celery worker contexts. This is safer than get_event_loop() which
+    may return a closed loop or one from a different thread.
     """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 # Error message constants
