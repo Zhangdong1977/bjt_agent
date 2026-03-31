@@ -7,7 +7,7 @@ import {
   LoadingOutlined,
   CloseCircleOutlined,
 } from '@ant-design/icons-vue'
-import { Tag, Collapse, CollapsePanel } from 'ant-design-vue'
+import { Tag } from 'ant-design-vue'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
@@ -19,23 +19,29 @@ const props = defineProps<{
 
 const isHistorical = computed(() => props.historicalMode)
 
+interface ToolCall {
+  name: string
+  arguments: Record<string, any>
+}
+
 interface ToolResult {
-  status: 'success' | 'error'
-  content?: string
-  error?: string
-  count?: number
+  name: string
+  result: any
 }
 
 interface TimelineStep {
   step_number: number
   step_type: string
-  tool_name?: string
   content: string
   timestamp: Date
   status?: 'pending' | 'running' | 'completed' | 'error'
   duration?: number
-  tool_args?: Record<string, any>
-  tool_result?: ToolResult & { _merged?: boolean }
+  tool_args?: {
+    tool_calls?: ToolCall[]
+  }
+  tool_result?: {
+    tool_results?: ToolResult[]
+  }
 }
 
 const steps = ref<TimelineStep[]>([])
@@ -48,61 +54,8 @@ const toolNameMap: Record<string, string> = {
   comparator: '内容比对',
 }
 
-// 参数键映射 (每个工具独立)
-const toolParamKeyMap: Record<string, Record<string, string>> = {
-  search_tender_doc: {
-    doc_type: '文档类型',
-    query: '查询内容',
-    chunk: '章节',
-    full_content: '完整内容',
-  },
-  rag_search: {
-    query: '查询内容',
-    limit: '返回数量',
-  },
-  comparator: {
-    requirement: '招标要求',
-    bid_content: '投标内容',
-  },
-}
-
-// 参数值映射 (每个工具独立)
-const toolParamValueMap: Record<string, Record<string, Record<string, string>>> = {
-  search_tender_doc: {
-    doc_type: {
-      tender: '招标文档',
-      bid: '投标文档',
-    },
-  },
-}
-
-// 工具结果格式化
-const toolResultFormatter: Record<string, (result: ToolResult) => string> = {
-  search_tender_doc: (result) => {
-    if (result.status === 'success') {
-      // 新的友好格式已包含 emoji 图标，直接使用
-      if (result.content?.startsWith('📄') || result.content?.startsWith('🔍')) {
-        return result.content
-      }
-      return `找到 ${result.count || 0} 条相关内容 - ${result.content?.slice(0, 100)}...`
-    }
-    return `搜索失败: ${result.error}`
-  },
-  rag_search: (result) => {
-    if (result.status === 'success') {
-      return `知识库返回 ${result.count || 0} 条结果`
-    }
-    return `查询失败: ${result.error}`
-  },
-  comparator: (result) => {
-    if (result.status === 'success') {
-      return `比对完成: ${result.content?.slice(0, 100)}...`
-    }
-    return `比对失败: ${result.error}`
-  },
-}
-
 onMounted(() => {
+  // Always set initial steps if available, regardless of historicalMode
   if (props.initialSteps?.length) {
     steps.value = props.initialSteps
   }
@@ -115,6 +68,8 @@ onMounted(() => {
 watch(() => props.initialSteps, (newSteps) => {
   if (newSteps?.length) {
     steps.value = newSteps
+  } else {
+    steps.value = []  // 清理步骤，避免从历史模式切回时残留
   }
 }, { deep: true })
 
@@ -130,6 +85,10 @@ watch(() => props.taskId, (newTaskId, oldTaskId) => {
 // Watch for historicalMode changes
 watch(() => props.historicalMode, (isHistorical) => {
   if (isHistorical) {
+    // Entering historical mode: load historical steps from props
+    if (props.initialSteps?.length) {
+      steps.value = props.initialSteps
+    }
     disconnect()  // 断开 SSE 连接
   } else if (props.taskId) {
     steps.value = []  // 清理步骤
@@ -139,45 +98,43 @@ watch(() => props.historicalMode, (isHistorical) => {
 
 function handleSSEEvent(event: SSEEvent) {
   if (event.type === 'step' && event.step_number !== undefined) {
-    if (event.step_type === 'tool_call') {
-      // tool_call: 创建新节点
-      steps.value.push({
-        step_number: event.step_number,
-        step_type: 'tool_call',
-        tool_name: event.tool_name,
-        content: event.content || '',
-        timestamp: new Date(),
-        tool_args: event.tool_args,
-        tool_result: undefined,  // 预置，后续补充
-      })
-    } else if (event.step_type === 'tool_result') {
-      // tool_result: 查找对应的 tool_call 节点并合并
+    if (event.step_type === 'tool_result') {
+      // tool_result: 查找对应的 step 并合并 tool_results
       const pairedStep = steps.value.find(s =>
         s.step_number === event.step_number! - 1 &&
-        s.tool_name === event.tool_name &&
-        s.step_type === 'tool_call'
+        s.step_type !== 'tool_result'
       )
       if (pairedStep) {
-        pairedStep.tool_result = event.tool_result
-        pairedStep.tool_result!._merged = true  // 标记已合并
+        // API sends {tool_results: [...]} but SSEEvent type says ToolResult
+        // @ts-ignore - type mismatch due to outdated SSEEvent type
+        pairedStep.tool_result = { tool_results: event.tool_result?.tool_results || [event.tool_result] }
       }
     } else {
-      // 其他类型(step_type === 'thought' 或 'observation')直接添加
+      // observation/thought/tool_call: 直接添加或更新现有 step
       // 跳过空的 observation/thought（content 为空且没有工具结果）
-      if (!event.content && !event.tool_result) {
+      if (!event.content && !event.tool_args?.tool_calls?.length) {
         return
       }
-      const exists = steps.value.some(s => s.step_number === event.step_number)
-      if (!exists) {
-        steps.value.push({
-          step_number: event.step_number,
-          step_type: event.step_type || 'unknown',
-          tool_name: event.tool_name,
-          content: event.content || '',
-          timestamp: new Date(),
-          tool_args: event.tool_args,
-          tool_result: event.tool_result,
-        })
+      // 去重检查：按 step_number 检查
+      const existingIndex = steps.value.findIndex(s =>
+        s.step_number === event.step_number
+      )
+      // API sends tool_args with {tool_calls: [...]} and tool_result with {tool_results: [...]}
+      // but SSEEvent type uses old flat format, so we need to cast
+      const stepData: TimelineStep = {
+        step_number: event.step_number,
+        step_type: event.step_type || 'unknown',
+        content: event.content || '',
+        timestamp: new Date(),
+        tool_args: event.tool_args as TimelineStep['tool_args'],
+        // @ts-ignore - type mismatch due to outdated SSEEvent type
+        tool_result: event.tool_result ? { tool_results: event.tool_result.tool_results || [event.tool_result] } : undefined,
+      }
+      if (existingIndex >= 0) {
+        // 更新现有 step
+        steps.value[existingIndex] = { ...steps.value[existingIndex], ...stepData }
+      } else {
+        steps.value.push(stepData)
       }
     }
   } else if (event.type === 'status' && event.status === 'running') {
@@ -241,17 +198,14 @@ function getStepEmoji(stepType: string): string {
   return emojiMap[stepType] || '📝'
 }
 
-function getStepLabel(stepType: string, toolName?: string): string {
-  if (stepType === 'tool_call') {
-    return `工具调用: ${getFriendlyToolName(toolName)}`
-  }
-  if (stepType === 'tool_result') {
-    return `工具返回: ${getFriendlyToolName(toolName)}`
-  }
+function getStepLabel(stepType: string): string {
   if (stepType === 'observation') {
     return '观察'
   }
-  return '思考过程'
+  if (stepType === 'thought') {
+    return '思考过程'
+  }
+  return stepType
 }
 
 function getFriendlyToolName(toolName?: string): string {
@@ -259,23 +213,21 @@ function getFriendlyToolName(toolName?: string): string {
   return toolNameMap[toolName] || toolName
 }
 
-function getFriendlyArgs(toolName?: string, args?: Record<string, any>): Array<{key: string, value: string}> {
-  if (!toolName || !args) return []
-  const keyMap = toolParamKeyMap[toolName] || {}
-  const valueMap = toolParamValueMap[toolName] || {}
-  return Object.entries(args).map(([k, v]) => ({
-    key: keyMap[k] || k,
-    value: (valueMap[k] as Record<string, string>)?.[String(v)] || String(v),
-  }))
-}
-
-function getFriendlyResult(toolName?: string, result?: ToolResult): string {
-  if (!toolName || !result) return ''
-  const formatter = toolResultFormatter[toolName]
-  if (formatter) {
-    return formatter(result)
+function formatToolResult(toolResult: ToolResult): string {
+  if (!toolResult) return ''
+  // tool_result now has {name, result} format
+  if (toolResult.name && toolResult.result) {
+    const resultContent = typeof toolResult.result === 'object'
+      ? JSON.stringify(toolResult.result).slice(0, 100)
+      : String(toolResult.result)
+    return `${getFriendlyToolName(toolResult.name)}: ${resultContent}...`
   }
-  return result.status === 'success' ? `完成: ${result.content?.slice(0, 50)}...` : `失败: ${result.error}`
+  // Fallback for legacy format
+  const result = toolResult as any
+  if (result.status === 'success') {
+    return `完成: ${result.content?.slice(0, 50) || ''}...`
+  }
+  return `失败: ${result.error || 'unknown'}`
 }
 
 function formatTime(date: Date): string {
@@ -310,7 +262,7 @@ onUnmounted(() => {
     <div class="timeline-scroll-container">
       <a-timeline mode="left" class="review-timeline">
         <a-timeline-item
-          v-for="(step, index) in steps.filter(s => !(s.step_type === 'tool_result' && s.tool_result?._merged))"
+          v-for="(step, index) in steps"
           :key="index"
           :color="step.status === 'running' ? 'blue' : getStepColor(step.step_type)"
           :pending="step.status === 'running'"
@@ -319,42 +271,13 @@ onUnmounted(() => {
             <component :is="getStepIcon(step)" :class="{ 'spin-icon': step.status === 'running' }" />
           </template>
 
-          <!-- 合并的工具调用节点 -->
-          <div v-if="step.step_type === 'tool_call'" class="tool-node">
-            <div class="tool-header">
-              <Tag color="purple">第 {{ step.step_number }} 节</Tag>
-              <span class="tool-emoji">🔧</span>
-              <span class="tool-name">{{ getFriendlyToolName(step.tool_name) }}</span>
-              <Tag v-if="step.tool_result" :color="step.tool_result.status === 'success' ? 'green' : 'red'" size="small">
-                {{ step.tool_result.status === 'success' ? '成功' : '失败' }}
-              </Tag>
-              <span class="tool-time">{{ formatTime(step.timestamp) }}</span>
-            </div>
-
-            <!-- 调用参数 -->
-            <div v-if="step.tool_args" class="tool-row">
-              <span class="row-label">参数:</span>
-              <span class="row-content">
-                <span v-for="param in getFriendlyArgs(step.tool_name, step.tool_args)" :key="param.key" class="param-tag">
-                  {{ param.key }}: {{ param.value }}
-                </span>
-              </span>
-            </div>
-
-            <!-- 返回结果 -->
-            <div v-if="step.tool_result" class="tool-row">
-              <span class="row-label">结果:</span>
-              <span class="row-content result">{{ getFriendlyResult(step.tool_name, step.tool_result) }}</span>
-            </div>
-          </div>
-
-          <!-- 非工具调用的节点使用原有样式 -->
-          <div v-else :class="['timeline-content-card', `card-${step.step_type}`]">
+          <!-- 统一的步骤卡片 -->
+          <div :class="['timeline-content-card', `card-${step.step_type}`]">
             <!-- 卡片头部 -->
             <div class="card-header">
               <Tag :color="getTagColor(step.step_type)">第 {{ step.step_number }} 节</Tag>
               <span class="step-label">
-                {{ getStepEmoji(step.step_type) }} {{ getStepLabel(step.step_type, step.tool_name) }}
+                {{ getStepEmoji(step.step_type) }} {{ getStepLabel(step.step_type) }}
               </span>
               <span v-if="step.status === 'running'" class="status-running">
                 <Tag color="processing">RUNNING</Tag>
@@ -364,19 +287,32 @@ onUnmounted(() => {
             </div>
 
             <!-- 步骤内容 -->
-            <p class="step-text">{{ step.content }}</p>
+            <p v-if="step.content" class="step-text">{{ step.content }}</p>
 
-            <!-- 可折叠详细信息（仅观察和思考有此项） -->
-            <Collapse v-if="(step.step_type === 'observation' || step.step_type === 'thought') && (step.tool_args || step.tool_result)" class="tool-collapse" ghost>
-              <CollapsePanel key="1" header="显示详细信息">
-                <template v-if="step.tool_result">
-                  <div class="tool-section">
-                    <strong>返回结果:</strong>
-                    <div class="result-text">{{ getFriendlyResult(step.tool_name, step.tool_result) }}</div>
-                  </div>
-                </template>
-              </CollapsePanel>
-            </Collapse>
+            <!-- 内嵌的工具调用列表 -->
+            <div v-if="step.tool_args?.tool_calls?.length" class="tool-calls-section">
+              <div
+                v-for="(toolCall, tcIndex) in step.tool_args.tool_calls"
+                :key="tcIndex"
+                class="tool-call-item"
+              >
+                <div class="tool-call-header">
+                  <Tag color="purple" size="small">🔧 {{ getFriendlyToolName(toolCall.name) }}</Tag>
+                </div>
+                <div class="tool-call-args">
+                  <span v-for="(value, key) in toolCall.arguments" :key="key" class="param-tag">
+                    {{ key }}: {{ typeof value === 'object' ? JSON.stringify(value) : String(value) }}
+                  </span>
+                </div>
+                <!-- 配对的工具返回结果 -->
+                <div v-if="step.tool_result?.tool_results?.[tcIndex]" class="tool-call-result">
+                  <span class="row-label">结果:</span>
+                  <span class="row-content result">
+                    {{ formatToolResult(step.tool_result.tool_results[tcIndex]) }}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         </a-timeline-item>
 
@@ -500,132 +436,44 @@ onUnmounted(() => {
   font-size: 0.85rem;
 }
 
-/* 折叠面板样式 */
-.tool-collapse {
+/* Tool calls section - embedded within each step */
+.tool-calls-section {
   margin-top: 0.75rem;
+  padding: 0.5rem;
+  background: rgba(0, 0, 0, 0.02);
   border-radius: 4px;
 }
 
-.tool-params {
-  margin-bottom: 0.75rem;
-}
-
-.tool-params strong {
-  display: block;
-  margin-bottom: 0.25rem;
-  font-size: 0.85rem;
-  color: #666;
-}
-
-.prompt-box {
-  padding: 8px;
-  background: rgb(245, 245, 245);
+.tool-call-item {
+  margin-bottom: 0.5rem;
+  padding: 0.5rem;
+  background: white;
   border-radius: 4px;
-  font-size: 12px;
-  color: rgb(24, 144, 255);
-  white-space: pre-wrap;
+  border: 1px solid #f0f0f0;
 }
 
-.tool-result {
-  margin-top: 0.5rem;
+.tool-call-item:last-child {
+  margin-bottom: 0;
 }
 
-.tool-result strong {
-  display: block;
-  margin-bottom: 0.25rem;
+.tool-call-header {
+  margin-bottom: 0.3rem;
+}
+
+.tool-call-args {
   font-size: 0.85rem;
   color: #666;
+  margin-bottom: 0.3rem;
 }
 
-.tool-section {
-  margin-bottom: 0.75rem;
-}
-
-.tool-section strong {
-  display: block;
-  margin-bottom: 0.25rem;
-  font-size: 0.85rem;
-  color: #666;
-}
-
-.params-list {
-  padding: 8px;
-  background: rgb(245, 245, 245);
-  border-radius: 4px;
-}
-
-.param-item {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.25rem;
-  font-size: 0.85rem;
-}
-
-.result-text {
-  font-size: 0.85rem;
-  color: #666;
-  white-space: pre-wrap;
-}
-
-.step-text {
-  margin: 0;
-  font-size: 0.9rem;
-  color: #333;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
-}
-
-/* Empty state */
-.timeline-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.75rem;
-  color: #666;
-  font-style: italic;
-  padding: 2rem 1rem;
-  text-align: center;
-}
-
-/* 合并的工具节点样式 */
-.tool-node {
-  background: linear-gradient(135deg, rgb(249, 240, 255) 0%, rgb(253, 250, 255) 100%);
-  border-left: 4px solid rgb(211, 173, 247);
-  border-radius: 6px;
-  padding: 0.75rem 1rem;
-}
-
-.tool-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.4rem;
-  flex-wrap: wrap;
-}
-
-.tool-emoji {
-  font-size: 0.9rem;
-}
-
-.tool-name {
-  font-weight: 600;
-  color: #333;
-}
-
-.tool-time {
-  color: #999;
-  font-size: 0.8rem;
-  margin-left: auto;
-}
-
-.tool-row {
+.tool-call-result {
   display: flex;
   align-items: flex-start;
   gap: 0.5rem;
-  margin-bottom: 0.3rem;
   font-size: 0.85rem;
   line-height: 1.4;
+  padding-top: 0.3rem;
+  border-top: 1px dashed #f0f0f0;
 }
 
 .row-label {
