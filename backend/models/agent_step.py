@@ -14,7 +14,13 @@ if TYPE_CHECKING:
 
 
 class AgentStep(Base):
-    """Agent step model - stores agent execution steps for timeline display."""
+    """Agent step model - stores agent execution steps for timeline display.
+
+    Step numbering follows Mini-Agent pattern:
+    - Each LLM response (assistant message) = one step_number
+    - tool_calls are embedded within the step, not assigned separate numbers
+    - Multiple tool_calls in one LLM response share the same step_number
+    """
 
     __tablename__ = "agent_steps"
 
