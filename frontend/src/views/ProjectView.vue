@@ -109,7 +109,7 @@ async function startReview() {
 }
 
 async function handleRerunReview() {
-  clearHistoricalTimeline()
+  // startReview() now handles state cleanup internally
   await startReview()
   // Refresh the task list after re-run
   await projectStore.fetchReviewTasks()
