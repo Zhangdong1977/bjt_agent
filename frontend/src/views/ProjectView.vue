@@ -92,6 +92,11 @@ async function handleDeleteDoc(docId: string) {
 
 async function startReview() {
   try {
+    // 清理历史时间线状态
+    showHistoricalTimeline.value = false
+    selectedHistoryTaskId.value = ''
+    historicalSteps.value = []
+
     await projectStore.startReview()
     ElMessage.info('审查已启动，正在连接事件流...')
     // 连接 ReviewTimeline 组件
