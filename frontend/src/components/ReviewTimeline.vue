@@ -118,6 +118,26 @@ watch(() => props.initialSteps, (newSteps) => {
   }
 }, { deep: true })
 
+// Watch for historicalMode changes to manage SSE connection
+watch(() => props.historicalMode, (isHistorical, wasHistorical) => {
+  if (isHistorical && !wasHistorical) {
+    // Switching to historical mode - disconnect SSE
+    disconnect()
+  } else if (!isHistorical && wasHistorical) {
+    // Switching to real-time mode - connect SSE
+    connect(props.taskId)
+  }
+})
+
+// Watch for taskId changes to reconnect SSE
+watch(() => props.taskId, (newTaskId, oldTaskId) => {
+  if (!props.historicalMode && newTaskId && newTaskId !== oldTaskId) {
+    steps.value = []  // 清理旧步骤
+    disconnect()      // 断开旧连接
+    connect(newTaskId) // 连接新 SSE
+  }
+})
+
 function handleSSEEvent(event: SSEEvent) {
   if (event.type === 'step' && event.step_number !== undefined) {
     if (event.step_type === 'tool_call') {
