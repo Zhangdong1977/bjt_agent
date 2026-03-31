@@ -142,28 +142,27 @@ class BidReviewAgent(BaseAgent):
             )
             self.messages.append(assistant_msg)
 
-            # Send step event for assistant response (always, to keep step numbers in sync)
-            # Ensure content is a string before slicing
-            raw_content = response.content
-            if raw_content is None:
-                content_preview = ""
-            elif isinstance(raw_content, str):
-                content_preview = raw_content[:200]
-            else:
-                content_preview = str(raw_content)[:200]
-            self._send_event("step", {
-                "step_number": step_counter,
-                "step_type": "thought" if not response.tool_calls else "observation",
-                "tool_name": None,
-                "content": content_preview,
-            })
-            step_counter += 1
-
             # Check if task is complete
             if not response.tool_calls:
+                # Send final response event without tool calls
+                raw_content = response.content
+                if raw_content is None:
+                    content_preview = ""
+                elif isinstance(raw_content, str):
+                    content_preview = raw_content[:200]
+                else:
+                    content_preview = str(raw_content)[:200]
+                self._send_event("step", {
+                    "step_number": step_counter,
+                    "step_type": "thought",
+                    "tool_name": None,
+                    "content": content_preview,
+                    "tool_calls": [],
+                    "tool_results": [],
+                })
                 break
 
-            # Execute tools
+            # Execute tools and collect results
             for tool_call in response.tool_calls:
                 function_name = tool_call.function.name
 
@@ -182,25 +181,6 @@ class BidReviewAgent(BaseAgent):
                         "error": result.error if not result.success else None,
                         "count": getattr(result, 'count', None),
                     }
-
-                    # Send step event for tool_call
-                    self._send_event("step", {
-                        "step_number": step_counter,
-                        "step_type": "tool_call",
-                        "tool_name": function_name,
-                        "content": f"Called {function_name}",
-                        "tool_args": tool_call.function.arguments if tool_call.function.arguments else {},
-                    })
-                    step_counter += 1
-
-                    # Send step event for tool_result (at next step, so frontend can pair with tool_call at step_number - 1)
-                    self._send_event("step", {
-                        "step_number": step_counter,
-                        "step_type": "tool_result",
-                        "tool_name": function_name,
-                        "content": f"{function_name} 返回",
-                        "tool_result": self._tool_results[function_name],
-                    })
 
                     # Add tool message
                     tool_msg_content = result.content if result.success else f"Error: {result.error}"
@@ -222,6 +202,31 @@ class BidReviewAgent(BaseAgent):
                         name=function_name,
                     )
                     self.messages.append(tool_msg)
+
+            # Send single step event with content + tool_calls + tool_results
+            raw_content = response.content
+            if raw_content is None:
+                content_preview = ""
+            elif isinstance(raw_content, str):
+                content_preview = raw_content[:200]
+            else:
+                content_preview = str(raw_content)[:200]
+            step_type = "observation" if response.tool_calls else "thought"
+            self._send_event("step", {
+                "step_number": step_counter,
+                "step_type": step_type,
+                "tool_name": None,
+                "content": content_preview,
+                "tool_calls": [
+                    {"name": tc.function.name, "arguments": tc.function.arguments}
+                    for tc in response.tool_calls
+                ] if response.tool_calls else [],
+                "tool_results": [
+                    {"name": name, "result": result}
+                    for name, result in self._tool_results.items()
+                ] if self._tool_results else [],
+            })
+            step_counter += 1
 
         # Extract findings
         findings = self._extract_findings_from_messages()
