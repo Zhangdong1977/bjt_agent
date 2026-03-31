@@ -191,77 +191,59 @@ def run_review(self, task_id: str) -> dict:
 
 
 def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: dict | None = None) -> int:
-    """Record agent steps from message history to database.
+    """Record agent steps from message history.
 
-    Records observation (assistant content), tool_call, tool_result, and thought steps.
-    When tool_calls exist, observation and first tool_call share the same step_number
-    to match the SSE event pattern. tool_result steps are recorded after tool_call steps.
-
-    Note: SSE events are already sent by BidReviewAgent.run_review() during execution.
-    This function only persists steps to the database after the fact.
-
-    Returns the next step number after all steps in this message are recorded.
+    每个 LLM 响应（assistant message）作为一个 step。
+    Tool_calls 内嵌在 step 中，不独占 step_number。
     """
-    if msg.tool_calls:
-        # Record observation step with the step_number (same as SSE pattern)
-        if msg.content:
-            observation = AgentStep(
-                task_id=task_id,
-                step_number=step_number,
-                step_type="observation",
-                content=str(msg.content)[:500],
-                tool_name=None,
-            )
-            db.add(observation)
-
-        num_tool_calls = len(msg.tool_calls)
-
-        # Record each tool_call with sequential step_number starting from step_number
-        # In SSE pattern: observation and first tool_call share same step_number,
-        # then tool_result is at step_number + 1
-        next_step = step_number
-        for i, tc in enumerate(msg.tool_calls):
-            step = AgentStep(
-                task_id=task_id,
-                step_number=next_step,
-                step_type="tool_call",
-                content=f"Called {tc.function.name}",
-                tool_name=tc.function.name,
-                tool_args=tc.function.arguments,
-            )
-            db.add(step)
-            # tool_result for this tool_call is at next_step + 1
-            next_step += 1
-            func_name = tc.function.name
-            if tool_results and func_name in tool_results:
-                result_step = AgentStep(
-                    task_id=task_id,
-                    step_number=next_step,
-                    step_type="tool_result",
-                    content=f"{func_name} 返回",
-                    tool_name=func_name,
-                    tool_result=tool_results[func_name],
-                )
-                db.add(result_step)
-            next_step += 1
-
-        # Return the next available step_number after all steps in this message
-        # step_number + 1 (observation if present) + 2 * num_tool_calls (call + result each)
-        return step_number + 1 + 2 * num_tool_calls
-    elif msg.content:
-        # No tool_calls, record as thought step
-        step = AgentStep(
-            task_id=task_id,
-            step_number=step_number,
-            step_type="thought",
-            content=str(msg.content)[:500],
-            tool_name=None,
-        )
-        db.add(step)
-        step_number += 1
+    if msg.role != "assistant":
         return step_number
 
-    return step_number
+    # 收集 tool_calls 数据
+    tool_calls_data = []
+    if msg.tool_calls:
+        for tc in msg.tool_calls:
+            func_name = tc.function.name
+            tool_calls_data.append({
+                "name": func_name,
+                "arguments": tc.function.arguments,
+            })
+
+    # 收集 tool_results 数据
+    tool_results_data = []
+    if tool_calls_data and tool_results:
+        for tc_data in tool_calls_data:
+            func_name = tc_data["name"]
+            if func_name in tool_results:
+                tool_results_data.append({
+                    "name": func_name,
+                    "result": tool_results[func_name]
+                })
+
+    # 确定 step_type
+    if msg.content and tool_calls_data:
+        step_type = "observation"
+    elif msg.content:
+        step_type = "thought"
+    elif tool_calls_data:
+        step_type = "tool_call"
+    else:
+        return step_number  # 跳过空消息
+
+    # 记录一条 AgentStep
+    step = AgentStep(
+        task_id=task_id,
+        step_number=step_number,
+        step_type=step_type,
+        content=str(msg.content)[:500] if msg.content else None,
+        tool_name=None,
+        tool_args={"tool_calls": tool_calls_data} if tool_calls_data else None,
+        tool_result={"tool_results": tool_results_data} if tool_results_data else None,
+    )
+    db.add(step)
+
+    # 返回下一个 step_number
+    return step_number + 1
 
 
 def _create_error_finding(error_msg: str) -> list[dict]:
@@ -336,7 +318,7 @@ async def _run_agent_review(
         bid_doc_path=bid_path,
         user_id=user_id,
         event_callback=event_cb,
-        max_steps=100,
+        max_steps=200,
     )
 
     # Note: BidReviewAgent.run_review() sends its own initialization event internally
