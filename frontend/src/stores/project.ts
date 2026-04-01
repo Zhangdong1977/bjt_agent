@@ -153,7 +153,9 @@ export const useProjectStore = defineStore('project', () => {
 
   async function fetchReviewResults() {
     if (!currentProject.value) return
-    reviewResults.value = await reviewApi.getResults(currentProject.value.id)
+    const results = await reviewApi.getResults(currentProject.value.id)
+    console.log('[fetchReviewResults] results:', JSON.stringify(results))
+    reviewResults.value = results
   }
 
   // SSE reconnection state
@@ -179,15 +181,22 @@ export const useProjectStore = defineStore('project', () => {
     const url = token
       ? `${API_BASE}/events/tasks/${taskId}/stream?token=${encodeURIComponent(token)}`
       : `${API_BASE}/events/tasks/${taskId}/stream`
+
+    console.log('[connectSSE] Connecting to SSE URL:', url, 'taskId:', taskId)
+
     sseEventSource.value = new EventSource(url)
+
+    sseEventSource.value.onopen = () => {
+      console.log('[connectSSE] SSE connection opened successfully for taskId:', taskId)
+    }
 
     sseEventSource.value.onmessage = (event) => {
       try {
         const data: SSEEvent = JSON.parse(event.data)
-        console.log('SSE event received:', data)
+        console.log('[connectSSE] SSE event received:', data.type, 'taskId:', taskId, 'data:', data)
         handleSSEEvent(data)
       } catch (err) {
-        console.error('Failed to parse SSE event:', err, 'Raw data:', event.data)
+        console.error('[connectSSE] Failed to parse SSE event:', err, 'Raw data:', event.data)
       }
     }
 
@@ -257,10 +266,19 @@ export const useProjectStore = defineStore('project', () => {
           }
         }
         break
+      case 'merging':
+        console.log('[SSE] 正在合并历史结果...', event.message)
+        // Could show a global loading indicator here
+        break
+      case 'merged':
+        console.log('[SSE] 合并完成, merged_count:', event.merged_count, 'total_count:', event.total_count)
+        fetchReviewResults()
+        break
       case 'complete':
         if (currentTask.value) {
           currentTask.value.status = 'completed'
         }
+        console.log('[SSE] Review complete, fetching results...')
         fetchReviewResults()
         disconnectSSE()
         break
