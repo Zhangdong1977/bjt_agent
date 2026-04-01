@@ -17,7 +17,7 @@ const emit = defineEmits<{
 const projectStore = useProjectStore()
 
 const timelineRef = ref<InstanceType<typeof ReviewTimeline> | null>(null)
-const historicalSteps = ref<AgentStep[]>([])
+const historicalSteps = ref<any[]>([])
 const isHistoricalMode = ref(false)
 const selectedTaskId = ref<string>('')
 
