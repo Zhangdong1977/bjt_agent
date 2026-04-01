@@ -24,7 +24,10 @@ const docViewerTitle = ref('')
 
 onMounted(async () => {
   await projectStore.selectProject(projectId.value)
-  // TimelineArea component handles fetching tasks internally
+  // Fetch review tasks for TimelineArea to use
+  await projectStore.fetchReviewTasks()
+  // Fetch latest review results
+  await projectStore.fetchReviewResults()
 })
 
 async function handleTaskComplete(_taskId: string) {
