@@ -260,29 +260,32 @@ do_stop() {
 cleanup_redis_celery() {
     log "Cleaning up Redis Celery task data..."
 
-    # Get Redis URL from environment or use default
-    local redis_url="${REDIS_URL:-redis://183.66.37.186:7005}"
+    # Use Python to clean Redis (redis-cli not available)
+    python3 << 'EOF'
+import redis
+import sys
 
-    # Parse Redis URL to get host and port
-    local redis_host=$(echo "$redis_url" | sed -E 's|redis://([^:]+):([0-9]+).*|\1|')
-    local redis_port=$(echo "$redis_url" | sed -E 's|redis://([^:]+):([0-9]+).*|\2|')
+r = redis.Redis(host='183.66.37.186', port=7005, decode_responses=True)
 
-    # Use redis-cli to flush Celery keys
-    # Celery keys are typically prefixed with: celery, celerybeat, stream:task:
-    redis-cli -h "$redis_host" -p "$redis_port" --no-auth-warning KEYS "celery*" 2>/dev/null | while read -r key; do
-        if [ -n "$key" ]; then
-            log "Deleting Redis key: $key"
-            redis-cli -h "$redis_host" -p "$redis_port" --no-auth-warning DEL "$key" 2>/dev/null || true
-        fi
-    done
+patterns = [
+    'celery*',
+    'celery-task-meta*',
+    'celerybeat*',
+    'stream:task:*',
+    'sse:stream:*',
+]
 
-    # Clean up SSE stream keys (stream:task:*)
-    redis-cli -h "$redis_host" -p "$redis_port" --no-auth-warning KEYS "stream:task:*" 2>/dev/null | while read -r key; do
-        if [ -n "$key" ]; then
-            log "Deleting Redis stream key: $key"
-            redis-cli -h "$redis_host" -p "$redis_port" --no-auth-warning DEL "$key" 2>/dev/null || true
-        fi
-    done
+total_deleted = 0
+for pattern in patterns:
+    keys = r.keys(pattern)
+    if keys:
+        for key in keys:
+            print(f"Deleting Redis key: {key}", flush=True)
+            r.delete(key)
+            total_deleted += 1
+
+print(f"Redis cleanup completed. Total keys deleted: {total_deleted}", flush=True)
+EOF
 
     log "Redis Celery task data cleanup completed"
 }
