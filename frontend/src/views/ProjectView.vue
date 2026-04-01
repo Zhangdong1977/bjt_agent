@@ -13,7 +13,6 @@ const router = useRouter()
 const projectStore = useProjectStore()
 
 const projectId = computed(() => route.params.id as string)
-const timelineAreaRef = ref<{ startReview?: () => Promise<void> } | null>(null)
 const tenderDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'tender'))
 const bidDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'bid'))
 
@@ -225,7 +224,6 @@ function getStatusClass(status: string) {
       <section class="section">
         <h2>时间线</h2>
         <TimelineArea
-          ref="timelineAreaRef"
           :project-id="projectId"
           @task-complete="handleTaskComplete"
         />
@@ -489,124 +487,6 @@ function getStatusClass(status: string) {
   color: #dc2626;
 }
 
-.review-controls {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.primary-btn {
-  padding: 0.75rem 1.5rem;
-  background: #6366f1;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-weight: 500;
-  transition: background-color 0.2s ease, transform 0.1s ease;
-}
-
-.primary-btn:hover {
-  background: #4f46e5;
-}
-
-.primary-btn:active {
-  transform: scale(0.98);
-}
-
-.primary-btn:disabled {
-  background: #d1d5db;
-  cursor: not-allowed;
-}
-
-.hint {
-  color: #666;
-  margin-top: 1rem;
-}
-
-.summary {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 1rem;
-  margin-bottom: 2rem;
-}
-
-.summary-item {
-  text-align: center;
-  padding: 1rem;
-  background: #f5f5f5;
-  border-radius: 8px;
-}
-
-.summary-value {
-  display: block;
-  font-size: 2rem;
-  font-weight: bold;
-  color: #333;
-}
-
-.summary-label {
-  color: #666;
-  font-size: 0.9rem;
-}
-
-.summary-item.success .summary-value { color: #68d391; }
-.summary-item.error .summary-value { color: #e53e3e; }
-.summary-item.critical .summary-value { color: #c53030; }
-.summary-item.major .summary-value { color: #dd6b20; }
-.summary-item.minor .summary-value { color: #d69e2e; }
-
-.findings-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.finding-card {
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  padding: 1rem;
-}
-
-.finding-card.non-compliant {
-  border-color: #fc8181;
-  background: #fff5f5;
-}
-
-.finding-header {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-
-.severity-badge, .compliance-badge {
-  padding: 0.25rem 0.75rem;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: 500;
-}
-
-.severity-critical { background: #c53030; color: white; }
-.severity-major { background: #dd6b20; color: white; }
-.severity-minor { background: #d69e2e; color: white; }
-
-.compliance-badge.compliant { background: #68d391; color: white; }
-.compliance-badge.non-compliant { background: #fc8181; color: white; }
-
-.finding-body p {
-  margin: 0.5rem 0;
-  color: #333;
-}
-
-.explanation {
-  color: #666;
-  font-style: italic;
-}
-
-.suggestion {
-  color: #6366f1;
-}
-
 /* Document Viewer Modal */
 .modal-overlay {
   position: fixed;
@@ -713,47 +593,4 @@ function getStatusClass(status: string) {
   border: 1px solid #ddd;
   border-radius: 4px;
 }
-
-.history-selector {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-  padding: 0.75rem;
-  background: #f5f5f5;
-  border-radius: 8px;
-}
-
-.history-selector label {
-  font-weight: 500;
-  color: #333;
-}
-
-.history-selector select {
-  padding: 0.5rem;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  min-width: 200px;
-}
-
-.secondary-btn {
-  padding: 0.5rem 1rem;
-  background: #6b7280;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.secondary-btn:hover {
-  background: #4b5563;
-}
-
-.rerun-section {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px dashed #ddd;
-}
-
-/* Agent Timeline */
 </style>
