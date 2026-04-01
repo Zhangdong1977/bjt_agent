@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from backend.celery_app import celery_app
-from backend.models import async_session_factory, ReviewTask, ReviewResult, AgentStep
+from backend.models import ReviewTask, ReviewResult, AgentStep
 
 logger = logging.getLogger(__name__)
 
@@ -15,16 +15,37 @@ logger = logging.getLogger(__name__)
 def run_async(coro):
     """Helper to run async function in sync context.
 
-    Always creates a new event loop to avoid issues with closed or unusable
-    loops in Celery worker contexts. This is safer than get_event_loop() which
-    may return a closed loop or one from a different thread.
+    Uses asyncio.run() which properly sets up the event loop context for
+    SQLAlchemy asyncpg driver. This avoids the 'attached to a different loop'
+    error that occurs with manually created loops in Celery worker contexts.
     """
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    return asyncio.run(coro)
+
+
+def create_session_factory():
+    """Create a new async session factory within the current event loop context.
+
+    This must be called within an asyncio event loop to ensure the session
+    factory is properly bound to that loop.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from backend.config import get_settings
+
+    settings = get_settings()
+    engine = create_async_engine(
+        settings.database_url,
+        echo=settings.debug,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=20,
+    )
+    return async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
 
 
 # Error message constants
@@ -48,6 +69,7 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
     Uses Redis Streams for reliable message delivery with persistence.
     XADD + Lua script ensures atomic stream operations.
     """
+    import traceback
     try:
         import redis
         from backend.config import get_settings
@@ -55,7 +77,7 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
         settings = get_settings()
         stream_key = f"sse:stream:{task_id}"
         event = json.dumps({"type": event_type, "task_id": task_id, **data})
-        logger.info(f"Publishing event to stream: {stream_key} -> {event}")
+        logger.info(f"[_publish_event] Publishing to stream: {stream_key}, event_type={event_type}, data_keys={list(data.keys())}")
 
         r = redis.from_url(settings.redis_url)
         try:
@@ -70,11 +92,11 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
             return msg_id
             """
             msg_id = r.eval(lua_script, 1, stream_key, event, 3600)  # 1 hour TTL
-            logger.info(f"Published event to stream: {stream_key}, msg_id={msg_id}")
+            logger.info(f"[_publish_event] SUCCESS: stream={stream_key}, msg_id={msg_id}, event_type={event_type}")
         finally:
             r.close()
     except Exception as e:
-        logger.warning(f"Failed to publish event to Redis Stream: {e}")
+        logger.error(f"[_publish_event] FAILED to publish event: {e}, stream={stream_key}, event_type={event_type}, traceback={traceback.format_exc()}")
 
 
 @celery_app.task(bind=True, name="backend.tasks.review_tasks.run_review")
@@ -89,7 +111,9 @@ def run_review(self, task_id: str) -> dict:
     5. Publishes SSE events via Redis
     """
     async def _run():
-        async with async_session_factory() as db:
+        # Create session factory within the event loop to avoid 'different loop' error
+        session_factory = create_session_factory()
+        async with session_factory() as db:
             from sqlalchemy import select
 
             # Get the review task
@@ -153,7 +177,7 @@ def run_review(self, task_id: str) -> dict:
 
                 # Store only non-compliant findings (ReviewResult is for non-compliance)
                 non_compliant_findings = [f for f in findings if not f.get("is_compliant", False)]
-                logger.info(f"Agent returned {len(findings)} findings, {len(non_compliant_findings)} non-compliant")
+                logger.info(f"[_run] project_id={task.project_id}, task_id={task_id}, total_findings={len(findings)}, non_compliant={len(non_compliant_findings)}")
                 for finding_data in non_compliant_findings:
                     finding = ReviewResult(
                         task_id=task_id,
@@ -165,6 +189,10 @@ def run_review(self, task_id: str) -> dict:
                 task.completed_at = datetime.utcnow()
                 await db.flush()
                 await db.commit()
+
+                # Trigger merge task after successful completion
+                from backend.tasks.review_tasks import merge_review_results
+                merge_review_results.delay(project_id=task.project_id, latest_task_id=task_id)
 
                 # Send completion event
                 _publish_event(task_id, "complete", {
@@ -188,6 +216,34 @@ def run_review(self, task_id: str) -> dict:
                 return {"status": "error", "message": str(e)}
 
     return run_async(_run())
+
+
+@celery_app.task(bind=True, name="backend.tasks.review_tasks.merge_review_results")
+def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
+    """Merge historical review results for a project.
+
+    This task:
+    1. Queries all historical ReviewResult for the project
+    2. Uses AI semantic similarity to deduplicate
+    3. Stores merged results in project_review_results table
+    4. Publishes SSE events for frontend progress
+    """
+    def event_cb(event_type: str, data: dict):
+        _publish_event(latest_task_id, event_type, data)
+
+    async def _run_merge():
+        session_factory = create_session_factory()
+        async with session_factory() as db:
+            from backend.services.merge_service import MergeService
+            merge_service = MergeService(db)
+            merged_count, total_count = await merge_service.merge_project_results(
+                project_id=project_id,
+                latest_task_id=latest_task_id,
+                event_callback=event_cb,
+            )
+            return {"status": "success", "merged_count": merged_count, "total_count": total_count}
+
+    return run_async(_run_merge())
 
 
 def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: dict | None = None) -> int:
