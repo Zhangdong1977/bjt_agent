@@ -120,7 +120,7 @@ export interface ToolResult {
 
 // SSE Event types
 export interface SSEEvent {
-  type: 'status' | 'progress' | 'step' | 'complete' | 'error'
+  type: 'status' | 'progress' | 'step' | 'complete' | 'error' | 'merging' | 'merged'
   task_id: string
   status?: string
   message?: string
@@ -131,6 +131,8 @@ export interface SSEEvent {
   tool_result?: ToolResult
   content?: string
   findings_count?: number
+  merged_count?: number
+  total_count?: number
 }
 
 // Upload types

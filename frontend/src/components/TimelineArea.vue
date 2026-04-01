@@ -62,7 +62,14 @@ async function loadHistoricalSteps() {
       tool_result: s.tool_result,
     }))
     isHistoricalMode.value = true
-  } catch (error) {
+  } catch (error: any) {
+    // 404 means the task doesn't exist yet (e.g., newly created task)
+    // Silently ignore and clear the steps
+    if (error?.response?.status === 404) {
+      console.log('[loadHistoricalSteps] Task steps not found (may be new task), clearing steps')
+      historicalSteps.value = []
+      return
+    }
     console.error('Failed to load historical steps:', error)
     ElMessage.error('加载历史时间线失败')
   }

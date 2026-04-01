@@ -72,6 +72,34 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/debug/redis")
+async def debug_redis():
+    """Debug endpoint to check Redis connection."""
+    import redis
+    from backend.config import get_settings
+    settings = get_settings()
+
+    result = {
+        "redis_url": settings.redis_url,
+        "redis_url_empty": not bool(settings.redis_url),
+    }
+
+    if settings.redis_url:
+        try:
+            r = redis.from_url(settings.redis_url, decode_responses=True)
+            r.ping()
+            keys = r.keys("sse:stream:*")
+            result["redis_connection"] = "success"
+            result["stream_count"] = len(keys)
+            r.close()
+        except Exception as e:
+            result["redis_connection"] = f"failed: {e}"
+    else:
+        result["redis_connection"] = "not configured (redis_url is empty)"
+
+    return result
+
+
 @app.get("/api/events/tasks/{task_id}/stream")
 async def stream_task_events(task_id: str, token: str | None = None):
     """Stream SSE events for a specific task.

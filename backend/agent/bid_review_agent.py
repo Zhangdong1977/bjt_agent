@@ -89,8 +89,15 @@ class BidReviewAgent(BaseAgent):
 
     def _send_event(self, event_type: str, data: dict) -> None:
         """Send an event via callback if available."""
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[BidReviewAgent._send_event] type={event_type}, data_keys={list(data.keys())}, callback_exists={self.event_callback is not None}")
         if self.event_callback:
-            self.event_callback(event_type, data)
+            try:
+                self.event_callback(event_type, data)
+                logger.info(f"[BidReviewAgent._send_event] Successfully sent event type={event_type}")
+            except Exception as e:
+                logger.error(f"[BidReviewAgent._send_event] Failed to send event: {e}")
 
     async def run_review(self) -> list[dict]:
         """Run the bid review process.
