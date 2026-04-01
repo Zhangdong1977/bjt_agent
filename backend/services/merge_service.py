@@ -103,6 +103,8 @@ class MergeService:
 
         # Process new results from latest task
         latest_results = [r for r in historical_results if r["task_id"] == latest_task_id]
+        logger.info(f"[merge] latest_results count: {len(latest_results)}, keys: {[r.get('requirement_key') for r in latest_results]}")
+        logger.info(f"[merge] existing_by_key count: {len(existing_by_key)}, keys: {list(existing_by_key.keys())}")
         new_merged_records: list[dict] = []
         merge_count = 0
 
@@ -112,17 +114,24 @@ class MergeService:
             if req_key in existing_by_key:
                 existing = existing_by_key[req_key]
 
+                # 构建所有现有记录的列表（用于 LLM 对比）
+                all_existing = list(existing_merged)
+
                 # 使用 LLM 决策
                 decision = await self._get_llm_merge_decision(
                     new_result,
-                    [existing]
+                    all_existing
                 )
+                logger.info(f"[merge] LLM decision for key={req_key}: action={decision['action']}, reason={decision.get('reason', '')[:100]}")
 
                 if decision["action"] == "keep":
-                    merged_record = {**new_result, "merged_from_count": 2}
-                    new_merged_records.append(merged_record)
+                    # keep = 保留新旧两条记录
+                    new_record_copy = {**new_result, "merged_from_count": 1}
+                    existing_record_copy = {**existing, "merged_from_count": existing.get("merged_from_count", 1)}
+                    new_merged_records.append(existing_record_copy)
+                    new_merged_records.append(new_record_copy)
                     matched_keys.add(req_key)
-                    merge_count += 1
+                    merge_count += 1  # count as 1 merge operation
                 elif decision["action"] == "replace":
                     merged_record = {**existing, **new_result}
                     merged_record["merged_from_count"] = existing.get("merged_from_count", 1) + 1
@@ -149,6 +158,8 @@ class MergeService:
             req_key = rec.get("requirement_key", "")
             if req_key not in matched_keys:
                 new_merged_records.append(rec)
+
+        logger.info(f"[merge] After processing: matched_keys={matched_keys} (size={len(matched_keys)}), new_merged_records count={len(new_merged_records)}, unmatched existing records: {[rec.get('requirement_key') for rec in existing_merged if rec.get('requirement_key') not in matched_keys]}")
 
         # Delete all existing ProjectReviewResult for this project
         await self.db.execute(
