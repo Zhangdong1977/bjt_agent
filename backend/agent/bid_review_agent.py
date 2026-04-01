@@ -23,6 +23,7 @@ from backend.config import get_settings
 from backend.agent.tools.doc_search import DocSearchTool
 from backend.agent.tools.rag_search import RAGSearchTool
 from backend.agent.tools.comparator import ComparatorTool
+from backend.agent.tools import MergeDeciderTool
 from backend.agent.prompt import SYSTEM_PROMPT
 
 settings = get_settings()
@@ -72,6 +73,7 @@ class BidReviewAgent(BaseAgent):
             DocSearchTool(tender_doc_path=tender_doc_path, bid_doc_path=bid_doc_path),
             RAGSearchTool(user_id=user_id),
             ComparatorTool(),
+            MergeDeciderTool(),
         ]
 
         # Set up workspace
@@ -512,3 +514,27 @@ class BidReviewAgent(BaseAgent):
             return "minor"
 
         return "minor"  # Default to minor
+
+    async def decide_merge(
+        self,
+        new_finding: dict,
+        existing_findings: list[dict],
+    ) -> str:
+        """调用 LLM 进行合并决策。
+
+        Args:
+            new_finding: 新发现的完整信息
+            existing_findings: 现有发现列表
+
+        Returns:
+            LLM 自然语言决策结果
+        """
+        from backend.agent.tools import MergeDeciderTool
+
+        tool = MergeDeciderTool()
+        result = await tool.execute(new_finding, existing_findings)
+
+        if not result.success:
+            raise RuntimeError(f"Merge decider failed: {result.error}")
+
+        return result.content
