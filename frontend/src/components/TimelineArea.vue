@@ -4,6 +4,7 @@ import { useProjectStore } from '@/stores/project'
 import { reviewApi } from '@/api/client'
 import ReviewTimeline from '@/components/ReviewTimeline.vue'
 import { ElMessage } from 'element-plus'
+import type { AgentStep } from '@/types'
 
 const props = defineProps<{
   projectId: string
@@ -16,7 +17,7 @@ const emit = defineEmits<{
 const projectStore = useProjectStore()
 
 const timelineRef = ref<InstanceType<typeof ReviewTimeline> | null>(null)
-const historicalSteps = ref<any[]>([])
+const historicalSteps = ref<AgentStep[]>([])
 const isHistoricalMode = ref(false)
 const selectedTaskId = ref<string>('')
 
@@ -57,7 +58,7 @@ async function loadHistoricalSteps() {
       step_number: s.step_number,
       step_type: s.step_type,
       content: s.content,
-      timestamp: new Date(s.created_at || Date.now()),
+      timestamp: s.created_at ? new Date(s.created_at) : new Date(),
       tool_args: s.tool_args,
       tool_result: s.tool_result,
     }))
