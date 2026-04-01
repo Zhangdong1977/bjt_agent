@@ -119,29 +119,29 @@ class MergeService:
                 )
 
                 if decision["action"] == "keep":
-                    new_result["merged_from_count"] = 2
-                    new_merged_records.append(new_result)
+                    merged_record = {**new_result, "merged_from_count": 2}
+                    new_merged_records.append(merged_record)
                     matched_keys.add(req_key)
                     merge_count += 1
                 elif decision["action"] == "replace":
-                    existing.update(new_result)
-                    existing["merged_from_count"] = existing.get("merged_from_count", 1) + 1
-                    new_merged_records.append(existing)
+                    merged_record = {**existing, **new_result}
+                    merged_record["merged_from_count"] = existing.get("merged_from_count", 1) + 1
+                    new_merged_records.append(merged_record)
                     matched_keys.add(req_key)
                     merge_count += 1
                 elif decision["action"] == "discard":
                     new_merged_records.append(existing)
                     matched_keys.add(req_key)
                 elif decision["action"] == "keep_both":
-                    new_result["merged_from_count"] = 1
-                    existing["merged_from_count"] = existing.get("merged_from_count", 1)
-                    new_merged_records.append(existing)
-                    new_merged_records.append(new_result)
+                    new_record_copy = {**new_result, "merged_from_count": 1}
+                    existing_record_copy = {**existing, "merged_from_count": existing.get("merged_from_count", 1)}
+                    new_merged_records.append(existing_record_copy)
+                    new_merged_records.append(new_record_copy)
                     matched_keys.add(req_key)
             else:
                 # 新 key，直接添加
-                new_result["merged_from_count"] = 1
-                new_merged_records.append(new_result)
+                merged_record = {**new_result, "merged_from_count": 1}
+                new_merged_records.append(merged_record)
                 matched_keys.add(req_key)
 
         # Handle historical records not in latest task

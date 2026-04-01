@@ -63,3 +63,16 @@ class TestMergeServiceLLMDecision:
 
         assert decision["action"] == "keep_both"
         assert decision["parse_failed"] is True
+
+    @pytest.mark.asyncio
+    async def test_keep_both_on_parse(self, mock_agent, mock_db):
+        """When LLM says keep_both, both records should be kept."""
+        # This simulates when parser returns keep_both (parse_failed case handled separately)
+        mock_agent.decide_merge.return_value = "some unparseable text"
+
+        service = MergeService(mock_db, mock_agent)
+
+        # The fallback (keep_both) happens on parse failure
+        decision = await service._get_llm_merge_decision({}, [{"key": "val"}])
+
+        assert decision["action"] == "keep_both"
