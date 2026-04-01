@@ -8,19 +8,60 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Project, ReviewTask, ReviewResult, ProjectReviewResult
-from backend.services.embedding_service import EmbeddingService, SEVERITY_ORDER
 
 logger = logging.getLogger(__name__)
 
-SIMILARITY_THRESHOLD = 0.85  # 85% similarity threshold for deduplication
-
 
 class MergeService:
-    """Service for merging historical review results with AI deduplication."""
+    """Service for merging historical review results with LLM deduplication."""
 
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, agent=None):
+        """Initialize the merge service.
+
+        Args:
+            db: Database session
+            agent: BidReviewAgent instance for LLM decisions (optional for backwards compatibility)
+        """
         self.db = db
-        self.embedding_service = EmbeddingService()
+        self.agent = agent
+
+    async def _get_llm_merge_decision(
+        self,
+        new_finding: dict,
+        existing_findings: list[dict],
+    ) -> dict:
+        """调用 LLM 获取合并决策。
+
+        Args:
+            new_finding: 新发现
+            existing_findings: 现有发现列表
+
+        Returns:
+            解析后的决策字典
+        """
+        from backend.services.merge_decision_parser import parse_merge_decision
+
+        if not self.agent:
+            # Fallback if no agent provided
+            logger.warning("No agent provided for LLM merge decision, using keep_both")
+            return {
+                "action": "keep_both",
+                "reason": "No agent available",
+                "replace_key": None,
+                "parse_failed": True,
+            }
+
+        try:
+            decision_text = await self.agent.decide_merge(new_finding, existing_findings)
+            return parse_merge_decision(decision_text)
+        except Exception as e:
+            logger.warning(f"LLM merge decision failed: {e}, using keep_both strategy")
+            return {
+                "action": "keep_both",
+                "reason": f"LLM调用失败: {str(e)}",
+                "replace_key": None,
+                "parse_failed": True,
+            }
 
     async def merge_project_results(
         self,
@@ -69,23 +110,36 @@ class MergeService:
             req_key = new_result.get("requirement_key", "")
 
             if req_key in existing_by_key:
-                # Check semantic similarity
                 existing = existing_by_key[req_key]
-                merged_record, is_duplicate = await self._check_and_merge(
-                    existing, new_result, SIMILARITY_THRESHOLD
+
+                # 使用 LLM 决策
+                decision = await self._get_llm_merge_decision(
+                    new_result,
+                    [existing]
                 )
 
-                if is_duplicate:
-                    merge_count += 1
-                    new_merged_records.append(merged_record)
+                if decision["action"] == "keep":
+                    new_result["merged_from_count"] = 2
+                    new_merged_records.append(new_result)
                     matched_keys.add(req_key)
-                else:
-                    # Not similar enough, add as new
+                    merge_count += 1
+                elif decision["action"] == "replace":
+                    existing.update(new_result)
+                    existing["merged_from_count"] = existing.get("merged_from_count", 1) + 1
+                    new_merged_records.append(existing)
+                    matched_keys.add(req_key)
+                    merge_count += 1
+                elif decision["action"] == "discard":
+                    new_merged_records.append(existing)
+                    matched_keys.add(req_key)
+                elif decision["action"] == "keep_both":
                     new_result["merged_from_count"] = 1
+                    existing["merged_from_count"] = existing.get("merged_from_count", 1)
+                    new_merged_records.append(existing)
                     new_merged_records.append(new_result)
                     matched_keys.add(req_key)
             else:
-                # New requirement_key, add as new
+                # 新 key，直接添加
                 new_result["merged_from_count"] = 1
                 new_merged_records.append(new_result)
                 matched_keys.add(req_key)
@@ -183,48 +237,3 @@ class MergeService:
             }
             for r in records
         ]
-
-    async def _check_and_merge(
-        self,
-        existing: dict,
-        new: dict,
-        threshold: float,
-    ) -> tuple[dict, bool]:
-        """Check similarity and merge two records.
-
-        Returns (record_to_keep, is_duplicate).
-        """
-        existing_text = self._build_text(existing)
-        new_text = self._build_text(new)
-
-        similarity = await self.embedding_service.compute_similarity(existing_text, new_text)
-
-        if similarity >= threshold:
-            # Determine which to keep based on severity
-            existing_rank = SEVERITY_ORDER.get(existing.get("severity", "minor"), 0)
-            new_rank = SEVERITY_ORDER.get(new.get("severity", "minor"), 0)
-
-            if new_rank >= existing_rank:
-                # New has higher/equal severity, update existing record
-                existing["requirement_content"] = new.get("requirement_content", existing["requirement_content"])
-                existing["bid_content"] = new.get("bid_content") or existing.get("bid_content")
-                existing["severity"] = new.get("severity", existing["severity"])
-                existing["explanation"] = new.get("explanation") or existing.get("explanation")
-                existing["suggestion"] = new.get("suggestion") or existing.get("suggestion")
-                existing["task_id"] = new.get("task_id", existing["task_id"])
-                existing["merged_from_count"] = existing.get("merged_from_count", 1) + 1
-                return existing, True
-            else:
-                # Keep existing, mark that new was merged into it
-                existing["merged_from_count"] = existing.get("merged_from_count", 1) + 1
-                return existing, True
-
-        return new, False
-
-    def _build_text(self, record: dict) -> str:
-        """Build comparison text from record fields."""
-        parts = []
-        for field in ["requirement_content", "bid_content", "explanation", "suggestion"]:
-            if record.get(field):
-                parts.append(str(record[field]))
-        return " ".join(parts)
