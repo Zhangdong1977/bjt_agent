@@ -236,24 +236,28 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
         async with session_factory() as db:
             from backend.services.merge_service import MergeService
             from backend.agent.bid_review_agent import BidReviewAgent
+            try:
+                # Create agent for merge decisions (paths don't matter since we only use MergeDeciderTool)
+                agent = BidReviewAgent(
+                    project_id=project_id,
+                    tender_doc_path="",
+                    bid_doc_path="",
+                    user_id="system",
+                    event_callback=None,
+                    max_steps=1,
+                )
 
-            # Create agent for merge decisions (paths don't matter since we only use MergeDeciderTool)
-            agent = BidReviewAgent(
-                project_id=project_id,
-                tender_doc_path="",
-                bid_doc_path="",
-                user_id="system",
-                event_callback=None,
-                max_steps=1,
-            )
-
-            merge_service = MergeService(db, agent)
-            merged_count, total_count = await merge_service.merge_project_results(
-                project_id=project_id,
-                latest_task_id=latest_task_id,
-                event_callback=event_cb,
-            )
-            return {"status": "success", "merged_count": merged_count, "total_count": total_count}
+                merge_service = MergeService(db, agent)
+                merged_count, total_count = await merge_service.merge_project_results(
+                    project_id=project_id,
+                    latest_task_id=latest_task_id,
+                    event_callback=event_cb,
+                )
+                return {"status": "success", "merged_count": merged_count, "total_count": total_count}
+            except Exception as e:
+                logger.error(f"Merge failed: {e}")
+                event_cb("error", {"message": str(e)})
+                return {"status": "error", "message": str(e)}
 
     return run_async(_run_merge())
 
