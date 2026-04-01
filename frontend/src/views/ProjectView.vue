@@ -5,32 +5,17 @@ import { useProjectStore } from '@/stores/project'
 import { documentsApi } from '@/api/client'
 import type { DocumentContent } from '@/types'
 import { ElMessage } from 'element-plus'
-import ReviewTimeline from '@/components/ReviewTimeline.vue'
+import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
+import TimelineArea from '@/components/TimelineArea.vue'
 
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
 
 const projectId = computed(() => route.params.id as string)
-const timelineRef = ref<InstanceType<typeof ReviewTimeline> | null>(null)
+const timelineAreaRef = ref<{ startReview?: () => Promise<void> } | null>(null)
 const tenderDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'tender'))
 const bidDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'bid'))
-const canStartReview = computed(() => tenderDoc.value?.status === 'parsed' && bidDoc.value?.status === 'parsed')
-
-const showHistoricalTimeline = ref(false)
-const historicalSteps = ref<TimelineStep[]>([])
-
-interface TimelineStep {
-  step_number: number
-  step_type: string
-  tool_name?: string
-  content: string
-  timestamp: Date
-}
-
-const completedTasks = computed(() =>
-  projectStore.reviewTasks.filter(t => t.status === 'completed')
-)
 
 // Document viewer state
 const showDocViewer = ref(false)
@@ -40,8 +25,15 @@ const docViewerTitle = ref('')
 
 onMounted(async () => {
   await projectStore.selectProject(projectId.value)
-  await projectStore.fetchReviewTasks()
+  // TimelineArea component handles fetching tasks internally
 })
+
+async function handleTaskComplete(_taskId: string) {
+  // 任务完成时刷新审查结果
+  await projectStore.fetchReviewResults()
+  // 刷新任务列表
+  await projectStore.fetchReviewTasks()
+}
 
 function goBack() {
   router.back()
@@ -90,74 +82,6 @@ async function handleDeleteDoc(docId: string) {
   }
 }
 
-async function startReview() {
-  try {
-    // 清理历史时间线状态
-    showHistoricalTimeline.value = false
-    selectedHistoryTaskId.value = ''
-    historicalSteps.value = []
-
-    await projectStore.startReview()
-    ElMessage.info('审查已启动，正在连接事件流...')
-    // 连接 ReviewTimeline 组件
-    if (projectStore.currentTask?.id) {
-      timelineRef.value?.connect(projectStore.currentTask.id)
-    }
-  } catch {
-    ElMessage.error('启动审查失败')
-  }
-}
-
-async function handleRerunReview() {
-  // startReview() now handles state cleanup internally
-  await startReview()
-  // Refresh the task list after re-run
-  await projectStore.fetchReviewTasks()
-}
-
-const selectedHistoryTaskId = ref('')
-const originalTaskId = ref<string | null>(null)
-
-async function loadHistoricalTimeline() {
-  if (!selectedHistoryTaskId.value || !projectStore.currentProject) return
-  try {
-    // Save current task ID for restoration when exiting historical mode
-    originalTaskId.value = projectStore.currentTask?.id || null
-    await projectStore.selectReviewTask(selectedHistoryTaskId.value)
-    await projectStore.loadHistoricalSteps(selectedHistoryTaskId.value)
-    historicalSteps.value = projectStore.agentSteps.map(s => ({
-      step_number: s.step_number,
-      step_type: s.step_type,
-      tool_name: s.tool_name,
-      content: s.content,
-      timestamp: s.timestamp,
-      tool_args: s.tool_args,
-      tool_result: s.tool_result,
-    }))
-    showHistoricalTimeline.value = true
-  } catch (error) {
-    ElMessage.error('加载历史时间线失败')
-  }
-}
-
-function clearHistoricalTimeline() {
-  showHistoricalTimeline.value = false
-  selectedHistoryTaskId.value = ''
-  historicalSteps.value = []
-  // Restore the original task
-  if (originalTaskId.value) {
-    projectStore.selectReviewTask(originalTaskId.value)
-  } else {
-    projectStore.currentTask = null
-  }
-  originalTaskId.value = null
-}
-
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return 'N/A'
-  return new Date(dateStr).toLocaleString('zh-CN')
-}
-
 function getStatusClass(status: string) {
   switch (status) {
     case 'parsed':
@@ -170,19 +94,6 @@ function getStatusClass(status: string) {
       return 'status-error'
     default:
       return 'status-pending'
-  }
-}
-
-function getSeverityClass(severity: string) {
-  switch (severity) {
-    case 'critical':
-      return 'severity-critical'
-    case 'major':
-      return 'severity-major'
-    case 'minor':
-      return 'severity-minor'
-    default:
-      return ''
   }
 }
 </script>
@@ -310,122 +221,20 @@ function getSeverityClass(severity: string) {
         </div>
       </section>
 
-      <!-- Review Section -->
+      <!-- Timeline Section -->
       <section class="section">
-        <h2>审查</h2>
-
-        <!-- Review History Selector -->
-        <div v-if="completedTasks.length > 0" class="history-selector">
-          <label>查看历史记录:</label>
-          <select v-model="selectedHistoryTaskId">
-            <option value="">-- 选择历史任务 --</option>
-            <option v-for="task in completedTasks" :key="task.id" :value="task.id">
-              {{ formatDate(task.completed_at) }} - {{ task.status }}
-            </option>
-          </select>
-          <button v-if="selectedHistoryTaskId" @click="loadHistoricalTimeline" class="secondary-btn">
-            加载历史时间线
-          </button>
-          <button v-if="selectedHistoryTaskId" @click="clearHistoricalTimeline" class="secondary-btn">
-            关闭历史
-          </button>
-        </div>
-
-        <div v-if="showHistoricalTimeline" class="rerun-section">
-          <button @click="handleRerunReview" class="primary-btn">
-            重新审查
-          </button>
-        </div>
-
-        <div class="review-controls">
-          <button
-            v-if="!showHistoricalTimeline && (!projectStore.currentTask || projectStore.currentTask.status === 'completed' || projectStore.currentTask.status === 'failed')"
-            class="primary-btn"
-            :disabled="!canStartReview || projectStore.reviewLoading"
-            @click="startReview"
-          >
-            {{ projectStore.reviewLoading ? '启动中...' : '开始审查' }}
-          </button>
-
-          <div v-if="projectStore.currentTask" class="task-status">
-            <span :class="['status', getStatusClass(projectStore.currentTask.status)]">
-              {{ projectStore.currentTask.status }}
-            </span>
-            <p v-if="projectStore.currentTask.error_message" class="error-msg">
-              {{ projectStore.currentTask.error_message }}
-            </p>
-          </div>
-        </div>
-
-        <p v-if="!canStartReview && !tenderDoc && !bidDoc" class="hint">
-          请上传招标书和应标书以开始审查。
-        </p>
-
-        <!-- Agent Timeline (Live or Historical) -->
-        <ReviewTimeline
-          v-if="projectStore.currentTask"
-          ref="timelineRef"
-          :task-id="projectStore.currentTask.id"
-          :initial-steps="showHistoricalTimeline ? historicalSteps : []"
-          :historical-mode="showHistoricalTimeline"
+        <h2>时间线</h2>
+        <TimelineArea
+          ref="timelineAreaRef"
+          :project-id="projectId"
+          @task-complete="handleTaskComplete"
         />
       </section>
 
       <!-- Results Section -->
-      <section v-if="projectStore.reviewResults" class="section">
+      <section class="section">
         <h2>审查结果</h2>
-
-        <div class="summary">
-          <div class="summary-item">
-            <span class="summary-value">{{ projectStore.reviewResults.summary.total_requirements }}</span>
-            <span class="summary-label">总计</span>
-          </div>
-          <div class="summary-item success">
-            <span class="summary-value">{{ projectStore.reviewResults.summary.compliant }}</span>
-            <span class="summary-label">合规</span>
-          </div>
-          <div class="summary-item error">
-            <span class="summary-value">{{ projectStore.reviewResults.summary.non_compliant }}</span>
-            <span class="summary-label">不合规</span>
-          </div>
-          <div class="summary-item critical">
-            <span class="summary-value">{{ projectStore.reviewResults.summary.critical }}</span>
-            <span class="summary-label">严重</span>
-          </div>
-          <div class="summary-item major">
-            <span class="summary-value">{{ projectStore.reviewResults.summary.major }}</span>
-            <span class="summary-label">主要</span>
-          </div>
-          <div class="summary-item minor">
-            <span class="summary-value">{{ projectStore.reviewResults.summary.minor }}</span>
-            <span class="summary-label">次要</span>
-          </div>
-        </div>
-
-        <div class="findings-list">
-          <div
-            v-for="finding in projectStore.reviewResults.findings"
-            :key="finding.id"
-            :class="['finding-card', { 'non-compliant': !finding.is_compliant }]"
-          >
-            <div class="finding-header">
-              <span :class="['severity-badge', getSeverityClass(finding.severity)]">
-                {{ finding.severity }}
-              </span>
-              <span :class="['compliance-badge', finding.is_compliant ? 'compliant' : 'non-compliant']">
-                {{ finding.is_compliant ? '合规' : '不合规' }}
-              </span>
-            </div>
-            <div class="finding-body">
-              <p class="requirement"><strong>要求:</strong> {{ finding.requirement_content }}</p>
-              <p class="bid-content"><strong>应标内容:</strong> {{ finding.bid_content }}</p>
-              <p v-if="finding.explanation" class="explanation">{{ finding.explanation }}</p>
-              <p v-if="finding.suggestion && !finding.is_compliant" class="suggestion">
-                <strong>建议:</strong> {{ finding.suggestion }}
-              </p>
-            </div>
-          </div>
-        </div>
+        <ReviewResultsArea :review-results="projectStore.reviewResults" />
       </section>
     </main>
 
