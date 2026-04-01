@@ -529,8 +529,6 @@ class BidReviewAgent(BaseAgent):
         Returns:
             LLM 自然语言决策结果
         """
-        from backend.agent.tools import MergeDeciderTool
-
         tool = MergeDeciderTool()
         result = await tool.execute(new_finding, existing_findings)
 
