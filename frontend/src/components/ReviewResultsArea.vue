@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useProjectStore } from '@/stores/project'
+import type { ReviewResponse } from '@/types'
 
-const projectStore = useProjectStore()
+const props = defineProps<{
+  reviewResults: ReviewResponse | null | undefined
+}>()
 
-const reviewResults = computed(() => projectStore.reviewResults)
-const hasResults = computed(() => reviewResults.value && reviewResults.value.findings && reviewResults.value.findings.length > 0)
+const hasFindings = computed(() => props.reviewResults && props.reviewResults.findings && props.reviewResults.findings.length > 0)
 
 function getSeverityClass(severity: string) {
   switch (severity) {
@@ -19,38 +20,38 @@ function getSeverityClass(severity: string) {
 
 <template>
   <div class="review-results-area">
-    <div v-if="hasResults" class="summary">
+    <div v-if="hasFindings" class="summary">
       <div class="summary-item">
-        <span class="summary-value">{{ reviewResults.summary.total_requirements }}</span>
+        <span class="summary-value">{{ props.reviewResults?.summary.total_requirements }}</span>
         <span class="summary-label">总计</span>
       </div>
       <div class="summary-item success">
-        <span class="summary-value">{{ reviewResults.summary.compliant }}</span>
+        <span class="summary-value">{{ props.reviewResults?.summary.compliant }}</span>
         <span class="summary-label">合规</span>
       </div>
       <div class="summary-item error">
-        <span class="summary-value">{{ reviewResults.summary.non_compliant }}</span>
+        <span class="summary-value">{{ props.reviewResults?.summary.non_compliant }}</span>
         <span class="summary-label">不合规</span>
       </div>
       <div class="summary-item critical">
-        <span class="summary-value">{{ reviewResults.summary.critical }}</span>
+        <span class="summary-value">{{ props.reviewResults?.summary.critical }}</span>
         <span class="summary-label">严重</span>
       </div>
       <div class="summary-item major">
-        <span class="summary-value">{{ reviewResults.summary.major }}</span>
+        <span class="summary-value">{{ props.reviewResults?.summary.major }}</span>
         <span class="summary-label">主要</span>
       </div>
       <div class="summary-item minor">
-        <span class="summary-value">{{ reviewResults.summary.minor }}</span>
+        <span class="summary-value">{{ props.reviewResults?.summary.minor }}</span>
         <span class="summary-label">次要</span>
       </div>
     </div>
 
-    <div v-if="hasResults" class="findings-list">
+    <div v-if="hasFindings" class="findings-list">
       <div
-        v-for="finding in reviewResults.findings"
-        :key="finding.id"
-        :class="['finding-card', { 'non-compliant': !finding.is_compliant }]"
+        v-for="finding in props.reviewResults?.findings"
+        :key="finding?.id"
+        :class="['finding-card', { 'non-compliant': !finding?.is_compliant }]"
       >
         <div class="finding-header">
           <span :class="['severity-badge', getSeverityClass(finding.severity)]">
@@ -71,7 +72,7 @@ function getSeverityClass(severity: string) {
       </div>
     </div>
 
-    <div v-if="!hasResults" class="no-results">
+    <div v-if="!hasFindings" class="no-results">
       <p>暂无审查结果</p>
     </div>
   </div>
