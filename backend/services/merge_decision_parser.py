@@ -61,7 +61,7 @@ def parse_merge_decision(text: str) -> dict:
         logger.warning(f"Failed to parse merge decision: {e}, text: {text[:200]}")
         return {
             "action": "keep_both",
-            "reason": f"解析失败: {str(e)}",
+            "reason": f"parse failed: {str(e)}",
             "replace_key": None,
             "parse_failed": True,
         }
