@@ -58,7 +58,10 @@ class BidReviewAgent(BaseAgent):
         self.event_callback = event_callback
         self._findings: list[dict] = []
         # Store tool results for persistence via _record_agent_step
-        self._tool_results: dict[str, dict] = {}
+        # Use list to preserve order and allow multiple calls to same tool
+        self._tool_results: list[dict] = []
+        # Track the starting index for each step's tool results
+        self._tool_results_step_start: int = 0
 
         # Initialize LLM client (MiniMax uses OpenAI protocol)
         llm_client = LLMClient(
@@ -183,13 +186,15 @@ class BidReviewAgent(BaseAgent):
                 if function_name in self.tools:
                     result = await self.tools[function_name].execute(**tool_call.function.arguments)
 
-                    # Store tool result for persistence
-                    self._tool_results[function_name] = {
+                    # Store tool result for persistence (append to list, don't overwrite)
+                    self._tool_results.append({
+                        "id": tool_call.id,
+                        "name": function_name,
                         "status": "success" if result.success else "error",
                         "content": result.content if result.success and result.content else None,
                         "error": result.error if not result.success else None,
                         "count": getattr(result, 'count', None),
-                    }
+                    })
 
                     # Add tool message
                     tool_msg_content = result.content if result.success else f"Error: {result.error}"
@@ -221,20 +226,21 @@ class BidReviewAgent(BaseAgent):
             else:
                 content_preview = str(raw_content)[:200]
             step_type = "observation" if response.tool_calls else "thought"
+            # Only send tool_results that belong to this step (from _tool_results_step_start onwards)
+            step_tool_results = self._tool_results[self._tool_results_step_start:] if self._tool_results else []
             self._send_event("step", {
                 "step_number": step_counter,
                 "step_type": step_type,
                 "tool_name": None,
                 "content": content_preview,
                 "tool_calls": [
-                    {"name": tc.function.name, "arguments": tc.function.arguments}
+                    {"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments}
                     for tc in response.tool_calls
                 ] if response.tool_calls else [],
-                "tool_results": [
-                    {"name": name, "result": result}
-                    for name, result in self._tool_results.items()
-                ] if self._tool_results else [],
+                "tool_results": step_tool_results,
             })
+            # Update tracker for next step
+            self._tool_results_step_start = len(self._tool_results)
             step_counter += 1
 
         # Extract findings

@@ -129,6 +129,9 @@ export interface SSEEvent {
   tool_name?: string
   tool_args?: Record<string, any>
   tool_result?: ToolResult
+  // Backend sends flat arrays for step events
+  tool_calls?: Array<{ name: string; arguments: Record<string, any> }>
+  tool_results?: Array<{ name: string; result: any }>
   content?: string
   findings_count?: number
   merged_count?: number

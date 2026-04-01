@@ -45,6 +45,8 @@ interface TimelineStep {
 }
 
 const steps = ref<TimelineStep[]>([])
+const isMerging = ref(false)
+const mergeProgress = ref('')
 let eventSource: EventSource | null = null
 
 // 工具名称映射
@@ -105,30 +107,34 @@ function handleSSEEvent(event: SSEEvent) {
         s.step_type !== 'tool_result'
       )
       if (pairedStep) {
-        // API sends {tool_results: [...]} but SSEEvent type says ToolResult
-        // @ts-ignore - type mismatch due to outdated SSEEvent type
-        pairedStep.tool_result = { tool_results: event.tool_result?.tool_results || [event.tool_result] }
+        // Backend sends {tool_results: [...]} structure - use any to handle type mismatch
+        const toolResultData = event.tool_result as any
+        pairedStep.tool_result = { tool_results: toolResultData?.tool_results || [toolResultData] }
       }
     } else {
       // observation/thought/tool_call: 直接添加或更新现有 step
-      // 跳过空的 observation/thought（content 为空且没有工具结果）
-      if (!event.content && !event.tool_args?.tool_calls?.length) {
+      // Backend sends tool_calls as direct array, not wrapped in tool_args
+      // Convert: tool_calls -> tool_args.tool_calls
+      const toolCalls = (event as any).tool_calls as Array<{ name: string; arguments: Record<string, any> }> | undefined
+      const toolResults = (event as any).tool_results as Array<{ name: string; result: any }> | undefined
+
+      // 跳过空的 observation/thought（content 为空且没有工具调用）
+      if (!event.content && !toolCalls?.length) {
         return
       }
       // 去重检查：按 step_number 检查
       const existingIndex = steps.value.findIndex(s =>
         s.step_number === event.step_number
       )
-      // API sends tool_args with {tool_calls: [...]} and tool_result with {tool_results: [...]}
-      // but SSEEvent type uses old flat format, so we need to cast
+      // Backend sends tool_calls/tool_results as flat arrays
+      // Convert to TimelineStep format: {tool_calls: [...]} and {tool_results: [...]}
       const stepData: TimelineStep = {
         step_number: event.step_number,
         step_type: event.step_type || 'unknown',
         content: event.content || '',
         timestamp: new Date(),
-        tool_args: event.tool_args as TimelineStep['tool_args'],
-        // @ts-ignore - type mismatch due to outdated SSEEvent type
-        tool_result: event.tool_result ? { tool_results: event.tool_result.tool_results || [event.tool_result] } : undefined,
+        tool_args: toolCalls ? { tool_calls: toolCalls } : undefined,
+        tool_result: toolResults ? { tool_results: toolResults } : undefined,
       }
       if (existingIndex >= 0) {
         // 更新现有 step
@@ -139,6 +145,14 @@ function handleSSEEvent(event: SSEEvent) {
     }
   } else if (event.type === 'status' && event.status === 'running') {
     steps.value = []
+  } else if (event.type === 'merging') {
+    // 收到 merging 事件，显示合并动画
+    isMerging.value = true
+    mergeProgress.value = event.message || '正在合并历史结果...'
+  } else if (event.type === 'merged') {
+    // 收到 merged 事件，隐藏合并动画
+    isMerging.value = false
+    mergeProgress.value = ''
   }
 }
 
@@ -213,19 +227,67 @@ function getFriendlyToolName(toolName?: string): string {
   return toolNameMap[toolName] || toolName
 }
 
+// 人类友好的工具参数标签映射
+const argLabelMap: Record<string, string> = {
+  doc_type: '文档类型',
+  query: '查询',
+  requirement: '需求',
+  bid_content: '投标内容',
+  severity: '严重程度',
+  full_content: '完整内容',
+  chunk: '分块',
+  limit: '数量限制',
+}
+
+// 文档类型值映射
+const docTypeMap: Record<string, string> = {
+  tender: '招标书',
+  bid: '投标书',
+}
+
+function formatToolArg(key: string, value: any): string {
+  // 映射标签
+  const label = argLabelMap[key] || key
+  // 映射值
+  let displayValue = value
+  if (key === 'doc_type' && docTypeMap[value]) {
+    displayValue = docTypeMap[value]
+  } else if (typeof value === 'boolean') {
+    displayValue = value ? '是' : '否'
+  } else if (typeof value === 'object') {
+    displayValue = JSON.stringify(value).slice(0, 50)
+    if (JSON.stringify(value).length > 50) displayValue += '...'
+  } else if (typeof value === 'string' && value.length > 100) {
+    displayValue = value.slice(0, 100) + '...'
+  }
+  return `${label}: ${displayValue}`
+}
+
 function formatToolResult(toolResult: ToolResult): string {
   if (!toolResult) return ''
-  // tool_result now has {name, result} format
+  // tool_result has {name, result: {status, content, error}} format
   if (toolResult.name && toolResult.result) {
-    const resultContent = typeof toolResult.result === 'object'
-      ? JSON.stringify(toolResult.result).slice(0, 100)
-      : String(toolResult.result)
+    const result = toolResult.result as any
+    // Use human-friendly content if available
+    if (result.status === 'success' && result.content) {
+      const content = result.content.length > 200
+        ? result.content.slice(0, 200) + '...'
+        : result.content
+      return `${getFriendlyToolName(toolResult.name)}: ${content}`
+    }
+    if (result.status === 'error') {
+      return `${getFriendlyToolName(toolResult.name)}: 失败 - ${result.error || 'unknown'}`
+    }
+    // Fallback for other object formats
+    const resultContent = typeof result === 'object'
+      ? JSON.stringify(result).slice(0, 100)
+      : String(result)
     return `${getFriendlyToolName(toolResult.name)}: ${resultContent}...`
   }
-  // Fallback for legacy format
+  // Legacy format
   const result = toolResult as any
   if (result.status === 'success') {
-    return `完成: ${result.content?.slice(0, 50) || ''}...`
+    return `完成: ${result.content?.slice(0, 200) || ''}...`
   }
   return `失败: ${result.error || 'unknown'}`
 }
@@ -275,7 +337,7 @@ onUnmounted(() => {
           <div :class="['timeline-content-card', `card-${step.step_type}`]">
             <!-- 卡片头部 -->
             <div class="card-header">
-              <Tag :color="getTagColor(step.step_type)">第 {{ step.step_number }} 节</Tag>
+              <Tag :color="getTagColor(step.step_type)">第 {{ step.step_number }} 步</Tag>
               <span class="step-label">
                 {{ getStepEmoji(step.step_type) }} {{ getStepLabel(step.step_type) }}
               </span>
@@ -301,7 +363,7 @@ onUnmounted(() => {
                 </div>
                 <div class="tool-call-args">
                   <span v-for="(value, key) in toolCall.arguments" :key="key" class="param-tag">
-                    {{ key }}: {{ typeof value === 'object' ? JSON.stringify(value) : String(value) }}
+                    {{ formatToolArg(key, value) }}
                   </span>
                 </div>
                 <!-- 配对的工具返回结果 -->
@@ -316,10 +378,24 @@ onUnmounted(() => {
           </div>
         </a-timeline-item>
 
-        <a-timeline-item v-if="steps.length === 0" pending>
+        <a-timeline-item v-if="steps.length === 0 && !isMerging" pending>
           <template #dot><ClockCircleOutlined /></template>
           <div class="timeline-empty">
             <span>等待智能体启动...</span>
+          </div>
+        </a-timeline-item>
+
+        <!-- 合并阶段动画 -->
+        <a-timeline-item v-if="isMerging" pending>
+          <template #dot><LoadingOutlined class="spin-icon" /></template>
+          <div class="merge-progress-card">
+            <div class="merge-progress-header">
+              <Tag color="processing">合并中</Tag>
+              <span class="merge-progress-text">{{ mergeProgress }}</span>
+            </div>
+            <div class="merge-progress-hint">
+              <span>正在处理历史审查结果，这可能需要一些时间...</span>
+            </div>
           </div>
         </a-timeline-item>
       </a-timeline>
@@ -354,10 +430,8 @@ onUnmounted(() => {
   align-items: center;
 }
 
-/* Timeline scrollable container */
+/* Timeline container - full height, no scroll */
 .timeline-scroll-container {
-  max-height: 400px;
-  overflow-y: auto;
   padding-left: 0.5rem;
 }
 
@@ -507,5 +581,31 @@ onUnmounted(() => {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Merge progress card */
+.merge-progress-card {
+  background: linear-gradient(135deg, rgb(255, 251, 235) 0%, rgb(255, 252, 245) 100%);
+  border-left: 4px solid rgb(255, 189, 46);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.merge-progress-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.merge-progress-text {
+  font-weight: 600;
+  color: #d46b08;
+}
+
+.merge-progress-hint {
+  font-size: 0.85rem;
+  color: #8c8c8c;
 }
 </style>

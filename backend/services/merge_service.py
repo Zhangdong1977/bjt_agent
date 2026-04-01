@@ -63,6 +63,26 @@ class MergeService:
                 "parse_failed": True,
             }
 
+    def _generate_new_requirement_key(self, existing_records: list[dict]) -> str:
+        """Generate a new requirement key that doesn't exist in existing records.
+
+        Args:
+            existing_records: List of existing ProjectReviewResult records
+
+        Returns:
+            New requirement key in format 'req_XXX' where XXX is next sequential number
+        """
+        max_num = 0
+        for rec in existing_records:
+            key = rec.get("requirement_key", "")
+            if key.startswith("req_"):
+                try:
+                    num = int(key[4:])
+                    max_num = max(max_num, num)
+                except ValueError:
+                    pass
+        return f"req_{max_num + 1:03d}"
+
     async def merge_project_results(
         self,
         project_id: str,
@@ -91,6 +111,48 @@ class MergeService:
         existing_merged = await self._get_existing_merged(project_id)
         logger.info(f"[merge] Found {len(existing_merged)} existing ProjectReviewResult records")
 
+        # Process new results from latest task
+        latest_results = [r for r in historical_results if r["task_id"] == latest_task_id]
+        logger.info(f"[merge] latest_results count: {len(latest_results)}, keys: {[r.get('requirement_key') for r in latest_results]}")
+
+        # Fast path: first task with no existing merged records
+        if len(existing_merged) == 0:
+            logger.info("[merge] First task detected, using fast path without LLM decision")
+            if event_callback:
+                event_callback("merging", {"message": "首次入库，无需合并..."})
+
+            now = datetime.utcnow()
+            for record in latest_results:
+                prr = ProjectReviewResult(
+                    id=str(uuid.uuid4()),
+                    project_id=project_id,
+                    requirement_key=record["requirement_key"],
+                    requirement_content=record["requirement_content"],
+                    bid_content=record.get("bid_content"),
+                    is_compliant=record.get("is_compliant", False),
+                    severity=record["severity"],
+                    location_page=record.get("location_page"),
+                    location_line=record.get("location_line"),
+                    suggestion=record.get("suggestion"),
+                    explanation=record.get("explanation"),
+                    source_task_id=record["task_id"],
+                    merged_from_count=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+                self.db.add(prr)
+
+            await self.db.commit()
+
+            if event_callback:
+                event_callback("merged", {
+                    "merged_count": len(latest_results),
+                    "total_count": len(latest_results),
+                })
+
+            logger.info(f"[merge] Fast path completed: {len(latest_results)} records inserted")
+            return len(latest_results), len(latest_results)
+
         # Build map of existing by requirement_key
         existing_by_key: dict[str, dict] = {}
         for rec in existing_merged:
@@ -98,14 +160,13 @@ class MergeService:
             if key:
                 existing_by_key[key] = rec
 
-        # Track which existing records were matched
-        matched_keys = set()
-
-        # Process new results from latest task
-        latest_results = [r for r in historical_results if r["task_id"] == latest_task_id]
-        logger.info(f"[merge] latest_results count: {len(latest_results)}, keys: {[r.get('requirement_key') for r in latest_results]}")
         logger.info(f"[merge] existing_by_key count: {len(existing_by_key)}, keys: {list(existing_by_key.keys())}")
+
+        # 先复制所有现有记录作为基础
         new_merged_records: list[dict] = []
+        for rec in existing_merged:
+            new_merged_records.append({**rec})
+
         merge_count = 0
 
         for new_result in latest_results:
@@ -115,7 +176,7 @@ class MergeService:
                 existing = existing_by_key[req_key]
 
                 # 构建所有现有记录的列表（用于 LLM 对比）
-                all_existing = list(existing_merged)
+                all_existing = list(new_merged_records)
 
                 # 使用 LLM 决策
                 decision = await self._get_llm_merge_decision(
@@ -125,41 +186,92 @@ class MergeService:
                 logger.info(f"[merge] LLM decision for key={req_key}: action={decision['action']}, reason={decision.get('reason', '')[:100]}")
 
                 if decision["action"] == "keep":
-                    # keep = 保留新旧两条记录
-                    new_record_copy = {**new_result, "merged_from_count": 1}
-                    existing_record_copy = {**existing, "merged_from_count": existing.get("merged_from_count", 1)}
-                    new_merged_records.append(existing_record_copy)
-                    new_merged_records.append(new_record_copy)
-                    matched_keys.add(req_key)
-                    merge_count += 1  # count as 1 merge operation
-                elif decision["action"] == "replace":
-                    merged_record = {**existing, **new_result}
-                    merged_record["merged_from_count"] = existing.get("merged_from_count", 1) + 1
+                    # keep = 新发现是全新的，生成新 key 添加
+                    new_key = self._generate_new_requirement_key(new_merged_records)
+                    merged_record = {**new_result, "requirement_key": new_key, "merged_from_count": 1}
                     new_merged_records.append(merged_record)
-                    matched_keys.add(req_key)
+                    merge_count += 1
+                elif decision["action"] == "replace":
+                    replace_key = decision.get("replace_key")
+                    if not replace_key:
+                        logger.warning(f"[merge] replace action but no replace_key specified, using keep")
+                        new_key = self._generate_new_requirement_key(new_merged_records)
+                        merged_record = {**new_result, "requirement_key": new_key, "merged_from_count": 1}
+                        new_merged_records.append(merged_record)
+                    else:
+                        target_record = None
+                        for rec in new_merged_records:
+                            if rec.get("requirement_key") == replace_key:
+                                target_record = rec
+                                break
+                        if target_record:
+                            target_record.update({
+                                **new_result,
+                                "requirement_key": replace_key,
+                                "merged_from_count": target_record.get("merged_from_count", 1) + 1,
+                            })
+                        else:
+                            logger.warning(f"[merge] replace target {replace_key} not found, treating as keep")
+                            new_key = self._generate_new_requirement_key(new_merged_records)
+                            merged_record = {**new_result, "requirement_key": new_key, "merged_from_count": 1}
+                            new_merged_records.append(merged_record)
                     merge_count += 1
                 elif decision["action"] == "discard":
-                    new_merged_records.append(existing)
-                    matched_keys.add(req_key)
+                    # discard = 丢弃新发现，什么都不做
+                    pass
                 elif decision["action"] == "keep_both":
                     new_record_copy = {**new_result, "merged_from_count": 1}
-                    existing_record_copy = {**existing, "merged_from_count": existing.get("merged_from_count", 1)}
-                    new_merged_records.append(existing_record_copy)
                     new_merged_records.append(new_record_copy)
-                    matched_keys.add(req_key)
+                    merge_count += 1
             else:
-                # 新 key，直接添加
-                merged_record = {**new_result, "merged_from_count": 1}
-                new_merged_records.append(merged_record)
-                matched_keys.add(req_key)
+                # 新 key，但需要与所有现有记录对比
+                all_existing = list(new_merged_records)
+                decision = await self._get_llm_merge_decision(new_result, all_existing)
+                logger.info(f"[merge] LLM decision for new key {req_key}: action={decision['action']}")
 
-        # Handle historical records not in latest task
-        for rec in existing_merged:
-            req_key = rec.get("requirement_key", "")
-            if req_key not in matched_keys:
-                new_merged_records.append(rec)
+                if decision["action"] == "keep":
+                    # keep = 新发现是全新的，生成新 key 添加
+                    new_key = self._generate_new_requirement_key(new_merged_records)
+                    merged_record = {**new_result, "requirement_key": new_key, "merged_from_count": 1}
+                    new_merged_records.append(merged_record)
+                    merge_count += 1
+                elif decision["action"] == "replace":
+                    replace_key = decision.get("replace_key")
+                    if replace_key:
+                        # Find and update existing record
+                        target_record = None
+                        for rec in new_merged_records:
+                            if rec.get("requirement_key") == replace_key:
+                                target_record = rec
+                                break
+                        if target_record:
+                            target_record.update({
+                                **new_result,
+                                "requirement_key": replace_key,
+                                "merged_from_count": target_record.get("merged_from_count", 1) + 1,
+                            })
+                            merge_count += 1
+                        else:
+                            # Target not found, treat as keep
+                            new_key = self._generate_new_requirement_key(new_merged_records)
+                            merged_record = {**new_result, "requirement_key": new_key, "merged_from_count": 1}
+                            new_merged_records.append(merged_record)
+                            merge_count += 1
+                    else:
+                        # No replace_key specified, treat as keep
+                        new_key = self._generate_new_requirement_key(new_merged_records)
+                        merged_record = {**new_result, "requirement_key": new_key, "merged_from_count": 1}
+                        new_merged_records.append(merged_record)
+                        merge_count += 1
+                elif decision["action"] == "keep_both":
+                    # keep_both = 保留两条记录，生成新 key 给新记录
+                    new_key = self._generate_new_requirement_key(new_merged_records)
+                    merged_record = {**new_result, "requirement_key": new_key, "merged_from_count": 1}
+                    new_merged_records.append(merged_record)
+                    merge_count += 1
+                # discard: 什么都不做
 
-        logger.info(f"[merge] After processing: matched_keys={matched_keys} (size={len(matched_keys)}), new_merged_records count={len(new_merged_records)}, unmatched existing records: {[rec.get('requirement_key') for rec in existing_merged if rec.get('requirement_key') not in matched_keys]}")
+        logger.info(f"[merge] After processing: new_merged_records count={len(new_merged_records)}")
 
         # Delete all existing ProjectReviewResult for this project
         await self.db.execute(

@@ -262,7 +262,7 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
     return run_async(_run_merge())
 
 
-def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: dict | None = None) -> int:
+def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: list | None = None) -> int:
     """Record agent steps from message history.
 
     每个 LLM 响应（assistant message）作为一个 step。
@@ -277,19 +277,21 @@ def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: di
         for tc in msg.tool_calls:
             func_name = tc.function.name
             tool_calls_data.append({
+                "id": tc.id,
                 "name": func_name,
                 "arguments": tc.function.arguments,
             })
 
-    # 收集 tool_results 数据
+    # 收集 tool_results 数据 (tool_results is already the correct slice for this step)
     tool_results_data = []
-    if tool_calls_data and tool_results:
-        for tc_data in tool_calls_data:
-            func_name = tc_data["name"]
-            if func_name in tool_results:
+    if tool_calls_data and tool_results and isinstance(tool_results, list):
+        # tool_results is in the same order as tool_calls, match by index
+        for i, tc_data in enumerate(tool_calls_data):
+            if i < len(tool_results):
+                tr = tool_results[i]
                 tool_results_data.append({
-                    "name": func_name,
-                    "result": tool_results[func_name]
+                    "name": tr.get("name"),
+                    "result": tr
                 })
 
     # 确定 step_type
@@ -396,13 +398,18 @@ async def _run_agent_review(
     # Note: BidReviewAgent.run_review() sends its own initialization event internally
     # Run the agent
     step_number = 1
+    tool_results_start_idx = 0  # Track starting index for each step's tool results
     try:
         result = await agent.run_review()
 
         # Record agent steps from message history
         for msg in agent.get_history():
             if msg.role == "assistant":
-                step_number = _record_agent_step(db, task_id, step_number, msg, agent._tool_results)
+                # Compute how many tool results belong to this step
+                num_tool_calls = len(msg.tool_calls) if msg.tool_calls else 0
+                step_tool_results = agent._tool_results[tool_results_start_idx:tool_results_start_idx + num_tool_calls]
+                step_number = _record_agent_step(db, task_id, step_number, msg, step_tool_results)
+                tool_results_start_idx += num_tool_calls
 
         await db.flush()
         return _parse_findings_result(result)
