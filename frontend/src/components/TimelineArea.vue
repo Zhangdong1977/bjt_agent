@@ -4,7 +4,6 @@ import { useProjectStore } from '@/stores/project'
 import { reviewApi } from '@/api/client'
 import ReviewTimeline from '@/components/ReviewTimeline.vue'
 import { ElMessage } from 'element-plus'
-import type { AgentStep } from '@/types'
 
 const props = defineProps<{
   projectId: string
