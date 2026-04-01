@@ -273,6 +273,8 @@ export const useProjectStore = defineStore('project', () => {
       case 'merged':
         console.log('[SSE] 合并完成, merged_count:', event.merged_count, 'total_count:', event.total_count)
         fetchReviewResults()
+        // Now disconnect after merge is complete
+        disconnectSSE()
         break
       case 'complete':
         if (currentTask.value) {
@@ -280,7 +282,9 @@ export const useProjectStore = defineStore('project', () => {
         }
         console.log('[SSE] Review complete, fetching results...')
         fetchReviewResults()
-        disconnectSSE()
+        // Don't disconnect SSE here - wait for 'merged' event from merge task
+        // The merge task runs asynchronously after review completes
+        // and sends 'merged' event when done, which will trigger another fetchReviewResults
         break
       case 'error':
         if (currentTask.value) {

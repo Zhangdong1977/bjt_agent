@@ -23,9 +23,13 @@ class EmbeddingService:
 
     def __init__(self):
         settings = get_settings()
+        # Ensure base_url has /v1 suffix for Mini-Max API
+        base_url = settings.mini_agent_api_base.rstrip('/')
+        if not base_url.endswith('/v1'):
+            base_url = base_url + '/v1'
         self.client = AsyncOpenAI(
             api_key=settings.mini_agent_api_key,
-            base_url=settings.mini_agent_api_base,
+            base_url=base_url,
         )
         self.model = "embeddings"  # MiniMax embedding model
 

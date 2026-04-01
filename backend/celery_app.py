@@ -25,6 +25,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_routes={
         "backend.tasks.review_tasks.run_review": {"queue": "review"},
+        "backend.tasks.review_tasks.merge_review_results": {"queue": "review"},
         "backend.tasks.document_parser.parse_document": {"queue": "parser"},
     },
 )
