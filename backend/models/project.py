@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .user import User
     from .document import Document
     from .review_task import ReviewTask
+    from .project_review_result import ProjectReviewResult
 
 
 class Project(Base):
@@ -28,6 +29,7 @@ class Project(Base):
     user: Mapped["User"] = relationship("User", back_populates="projects")
     documents: Mapped[list["Document"]] = relationship("Document", back_populates="project", cascade="all, delete-orphan")
     review_tasks: Mapped[list["ReviewTask"]] = relationship("ReviewTask", back_populates="project", cascade="all, delete-orphan")
+    project_review_results: Mapped[list["ProjectReviewResult"]] = relationship("ProjectReviewResult", back_populates="project", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Project(id={self.id}, name={self.name})>"
