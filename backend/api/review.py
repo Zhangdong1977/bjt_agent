@@ -1,14 +1,17 @@
 """Review API routes."""
 
+import logging
 from datetime import datetime
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from backend.api.deps import DBSession, CurrentUser
-from backend.models import Project, ReviewTask, ReviewResult, AgentStep
+from backend.models import Project, ReviewTask, ReviewResult, AgentStep, ProjectReviewResult
 from backend.schemas.review import (
     ReviewResponse,
     ReviewResultResponse,
@@ -102,42 +105,23 @@ async def get_review_results(
     db: DBSession,
     current_user: CurrentUser,
 ) -> ReviewResponse:
-    """Get the latest review results for the project."""
+    """Get the merged review results for the project.
+
+    Returns all merged non-compliant findings across all historical review tasks.
+    """
     await verify_project_ownership(project_id, current_user.id, db)
 
-    # Get latest completed task
+    # Get all merged results for this project
     result = await db.execute(
-        select(ReviewTask)
-        .where(ReviewTask.project_id == project_id, ReviewTask.status == "completed")
-        .order_by(ReviewTask.completed_at.desc())
-        .limit(1)
-    )
-    task = result.scalar_one_or_none()
-
-    if not task:
-        # No completed review yet
-        return ReviewResponse(
-            summary={
-                "total_requirements": 0,
-                "compliant": 0,
-                "non_compliant": 0,
-                "critical": 0,
-                "major": 0,
-                "minor": 0,
-            },
-            findings=[],
-        )
-
-    # Get all results for this task
-    result = await db.execute(
-        select(ReviewResult)
-        .where(ReviewResult.task_id == task.id)
+        select(ProjectReviewResult)
+        .where(ProjectReviewResult.project_id == project_id)
         .order_by(
-            ReviewResult.severity.asc(),  # critical first
-            ReviewResult.created_at.asc(),
+            ProjectReviewResult.severity.asc(),  # critical first
+            ProjectReviewResult.created_at.asc(),
         )
     )
     findings = result.scalars().all()
+    logger.info(f"[get_review_results] project_id={project_id}, findings_count={len(findings)}")
 
     # Calculate summary
     summary = {

@@ -21,6 +21,25 @@ class ReviewResultResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ProjectReviewResultResponse(BaseModel):
+    """Schema for merged project-level review result."""
+
+    id: str
+    requirement_key: str
+    requirement_content: str
+    bid_content: str | None
+    is_compliant: bool
+    severity: str
+    location_page: int | None
+    location_line: int | None
+    suggestion: str | None
+    explanation: str | None
+    source_task_id: str
+    merged_from_count: int
+
+    model_config = {"from_attributes": True}
+
+
 class ReviewResponse(BaseModel):
     """Schema for review response with summary and findings."""
 
