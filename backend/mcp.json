@@ -1,0 +1,21 @@
+{
+    "mcpServers": {
+        "minimax_coding": {
+            "description": "MiniMax Coding Plan MCP - 提供 understand_image 和 web_search 工具",
+            "type": "stdio",
+            "command": "uvx",
+            "args": [
+                "--from",
+                "git+https://github.com/MiniMax-AI/MiniMax-Coding-Plan-MCP",
+                "minimax-coding-plan-mcp"
+            ],
+            "env": {
+                "MINIMAX_API_KEY": "",
+                "MINIMAX_API_HOST": "https://api.minimaxi.com"
+            },
+            "disabled": false,
+            "connect_timeout": 60.0,
+            "execute_timeout": 120.0
+        }
+    }
+}
