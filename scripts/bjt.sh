@@ -108,7 +108,8 @@ start_celery_parser() {
 start_backend() {
     log "Starting Backend API Server..."
     cd "$BACKEND_DIR"
-    python -m uvicorn main:app --host 0.0.0.0 --port 8000 > "$SCRIPT_DIR/logs/backend.log" 2>&1 &
+    # 生产模式: 使用 uvicorn --workers
+    python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4 > "$SCRIPT_DIR/logs/backend.log" 2>&1 &
     save_pid "backend" "$!"
     log "Backend API started (PID: $(get_pid backend))"
 }
