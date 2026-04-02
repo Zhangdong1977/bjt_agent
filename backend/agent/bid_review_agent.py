@@ -18,6 +18,7 @@ if mini_agent_path.exists() and str(mini_agent_path) not in sys.path:
 from mini_agent.agent import Agent as BaseAgent
 from mini_agent.llm import LLMClient
 from mini_agent.schema import LLMProvider, Message
+from mini_agent.tools.mcp_loader import load_mcp_tools_async
 
 from backend.config import get_settings
 from backend.agent.tools.doc_search import DocSearchTool
@@ -32,7 +33,7 @@ settings = get_settings()
 class BidReviewAgent(BaseAgent):
     """Bid review agent that extends Mini-Agent with domain-specific tools."""
 
-    def __init__(
+    async def __init__(
         self,
         project_id: str,
         tender_doc_path: str,
@@ -91,6 +92,18 @@ class BidReviewAgent(BaseAgent):
             workspace_dir=str(workspace_dir),
             max_steps=max_steps,
         )
+
+        # Load MCP tools (MiniMax-Coding-Plan-MCP)
+        mcp_config_path = Path(__file__).parent.parent / "mcp.json"
+        if mcp_config_path.exists():
+            try:
+                mcp_tools = await load_mcp_tools_async(str(mcp_config_path))
+                for tool in mcp_tools:
+                    self.tools[tool.name] = tool
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Failed to load MCP tools: {e}")
 
     def _send_event(self, event_type: str, data: dict) -> None:
         """Send an event via callback if available."""

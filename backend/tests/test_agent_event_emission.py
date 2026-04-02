@@ -16,7 +16,7 @@ async def test_tool_events_emitted_during_execution():
         captured_events.append((event_type, data.copy(), asyncio.get_event_loop().time()))
 
     # Create agent with mocked dependencies
-    agent = BidReviewAgent(
+    agent = await BidReviewAgent(
         project_id="test_project",
         tender_doc_path="/tmp/test_tender.md",
         bid_doc_path="/tmp/test_bid.md",

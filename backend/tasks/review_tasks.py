@@ -238,7 +238,7 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
             from backend.agent.bid_review_agent import BidReviewAgent
             try:
                 # Create agent for merge decisions (paths don't matter since we only use MergeDeciderTool)
-                agent = BidReviewAgent(
+                agent = await BidReviewAgent(
                     project_id=project_id,
                     tender_doc_path="",
                     bid_doc_path="",
@@ -386,7 +386,7 @@ async def _run_agent_review(
     if hasattr(tender_doc.project, 'user_id'):
         user_id = str(tender_doc.project.user_id)
 
-    agent = BidReviewAgent(
+    agent = await BidReviewAgent(
         project_id=str(tender_doc.project_id),
         tender_doc_path=tender_path,
         bid_doc_path=bid_path,
