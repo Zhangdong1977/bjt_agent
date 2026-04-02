@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: bjt-postgres
+    environment:
+      POSTGRES_DB: bjt_db
+      POSTGRES_USER: bjt_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - bjt-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: bjt-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - bjt-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  bjt-network:
+    driver: bridge
