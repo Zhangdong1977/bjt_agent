@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     mini_agent_api_base: str = "https://api.minimaxi.com"
     mini_agent_model: str = "MiniMax-M2.7-highspeed"
 
+    # Mini-Max MCP
+    minimax_api_key: str = ""
+    minimax_api_host: str = "https://api.minimaxi.com"
+
     # Workspace
     workspace_dir: Path = Path("./workspace")
     knowledge_base_dir: Path = Path("./workspace/knowledge")
