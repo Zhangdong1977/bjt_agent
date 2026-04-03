@@ -23,7 +23,7 @@ NC='\033[0m'
 
 # Conda environment check
 check_conda_env() {
-    local target_env="ssirs"
+    local target_env="py311"
     local current_env="${CONDA_DEFAULT_ENV:-}"
 
     if [ "$current_env" != "$target_env" ]; then
