@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import logging
+import re
 from pathlib import Path
 
 from backend.celery_app import celery_app
@@ -142,82 +143,151 @@ def parse_document(self, document_id: str) -> dict:
         loop.close()
 
 
+async def _substitute_env_vars(config: dict) -> dict:
+    """Substitute ${ENV_VAR} patterns in config with actual environment variable values.
+
+    Handles both top-level config["env"] and nested config["mcpServers"][server]["env"] structures.
+
+    Args:
+        config: MCP server config dict
+
+    Returns:
+        Config with env vars substituted
+    """
+    import os
+    import re
+
+    def substitute_env(env: dict) -> dict:
+        """Substitute env vars in a single env dict."""
+        if not env:
+            return env
+        env = dict(env)  # Copy
+        for key, value in env.items():
+            if isinstance(value, str):
+                # Match ${VAR} pattern
+                matches = re.findall(r'\$\{([^}]+)\}', value)
+                for var_name in matches:
+                    env[key] = value.replace(f'${{{var_name}}}', os.environ.get(var_name, ""))
+        return env
+
+    config = dict(config)  # Shallow copy
+
+    # Handle top-level env
+    if "env" in config and config["env"]:
+        config["env"] = substitute_env(config["env"])
+
+    # Handle nested mcpServers structure
+    if "mcpServers" in config and config["mcpServers"]:
+        config["mcpServers"] = dict(config["mcpServers"])
+        for server_name, server_config in config["mcpServers"].items():
+            if isinstance(server_config, dict) and "env" in server_config:
+                config["mcpServers"][server_name] = dict(server_config)
+                config["mcpServers"][server_name]["env"] = substitute_env(server_config["env"])
+
+    return config
+
+
 async def _process_images_with_llm(images: list, api_key: str, api_base: str, model: str) -> list:
-    """Process images with MiniMax LLM image understanding.
+    """Process images with MiniMax LLM image understanding using MCP.
 
     Args:
         images: List of image info dicts with 'filename' and 'data'
-        api_key: MiniMax API key
-        api_base: API base URL
-        model: Model name
+        api_key: MiniMax API key (unused, MCP handles auth)
+        api_base: API base URL (unused)
+        model: Model name (unused)
 
     Returns:
         List of image descriptions
     """
-    import httpx
+    import sys
+    import tempfile
+    import os
+    import json
+    from pathlib import Path
 
     descriptions = []
 
-    # MiniMax uses OpenAI-compatible API for vision
-    # API endpoint: https://api.minimaxi.com/v1/images/generations (for generation)
-    # For understanding, we use chat completions with image URLs
+    # Add Mini-Agent to path for MCP loading
+    mini_agent_path = Path(__file__).parent.parent.parent / "Mini-Agent"
+    if str(mini_agent_path) not in sys.path:
+        sys.path.insert(0, str(mini_agent_path))
 
-    for img_info in images[:5]:  # Limit to first 5 images to avoid excessive API calls
-        try:
-            # Convert image bytes to base64
-            image_base64 = base64.b64encode(img_info["data"]).decode("utf-8")
-            image_ext = img_info["filename"].split(".")[-1]
-            mime_type = f"image/{image_ext}" if image_ext in ["png", "jpeg", "jpg", "gif", "webp"] else "image/png"
+    from mini_agent.tools.mcp_loader import load_mcp_tools_async, cleanup_mcp_connections
 
-            # Call MiniMax vision API (OpenAI-compatible format)
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{api_base}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": model,
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": "Describe this image in detail. Focus on any text, diagrams, tables, or important visual elements that might be relevant for a document review. If there is no meaningful content, say 'No significant content'."
-                                    },
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:{mime_type};base64,{image_base64}"
-                                        }
-                                    }
-                                ]
-                            }
-                        ],
-                        "max_tokens": 500,
-                    },
+    # Load MCP config and substitute env vars
+    mcp_config_path = Path(__file__).parent.parent / "mcp.json"
+    mcp_config = json.loads(mcp_config_path.read_text())
+    mcp_config = await _substitute_env_vars(mcp_config)
+
+    # Write substituted config to temp file for MCP loader
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp:
+        json.dump(mcp_config, tmp)
+        config_tmp_path = tmp.name
+
+    try:
+        mcp_tools = await load_mcp_tools_async(config_tmp_path)
+
+        understand_image_tool = None
+        for tool in mcp_tools:
+            if tool.name == "understand_image":
+                understand_image_tool = tool
+                break
+
+        if not understand_image_tool:
+            logger.warning("understand_image MCP tool not found, skipping image processing")
+            await cleanup_mcp_connections()
+            return descriptions
+
+        for img_info in images[:5]:  # Limit to first 5 images
+            img_tmp_path = None
+            try:
+                # Save image to temp file for MCP tool
+                ext = img_info["filename"].split(".")[-1]
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+                    tmp.write(img_info["data"])
+                    img_tmp_path = tmp.name
+
+                # Call MCP understand_image tool
+                result = await understand_image_tool.execute(
+                    prompt="Extract all text content from this image. List each text item clearly. If there is no text, say 'No text content'.",
+                    image_source=img_tmp_path,
                 )
 
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                    except Exception:
-                        logger.warning(f"Failed to parse API response as JSON")
-                        continue
-                    if data.get("choices") and len(data["choices"]) > 0:
-                        raw_description = data["choices"][0]["message"].get("content", "") or ""
-                        description = strip_ai_think_tags(raw_description) if raw_description else ""
-                        descriptions.append(f"[Image: {img_info['filename']}] {description}")
+                if result.success and result.content:
+                    # Clean up the result
+                    description = strip_ai_think_tags(result.content)
+                    # Remove markdown formatting (bold, italic, etc.)
+                    description = re.sub(r'\*\*([^*]+)\*\*', r'\1', description)  # Bold
+                    description = re.sub(r'\*([^*]+)\*', r'\1', description)  # Italic
+                    description = re.sub(r'`([^`]+)`', r'\1', description)  # Inline code
+                    # Remove code blocks
+                    description = re.sub(r'^```\w*\n?', '', description)
+                    description = re.sub(r'\n?```$', '', description)
+                    description = description.strip()
+                    descriptions.append(f"[Image: {img_info['filename']}] {description}")
                 else:
-                    logger.warning(f"Image understanding API error: {response.status_code} - {response.text}")
+                    error_msg = result.error or "Unknown error"
+                    logger.warning(f"Image understanding failed for {img_info['filename']}: {error_msg}")
+                    descriptions.append(f"[Image: {img_info['filename']}] (Image processing failed: {error_msg})")
 
-        except Exception as e:
-            logger.warning(f"Failed to process image {img_info['filename']}: {e}")
-            descriptions.append(f"[Image: {img_info['filename']}] (Image processing failed)")
+            except Exception as e:
+                logger.warning(f"Failed to process image {img_info['filename']}: {e}")
+                descriptions.append(f"[Image: {img_info['filename']}] (Image processing failed: {e})")
+            finally:
+                if img_tmp_path and os.path.exists(img_tmp_path):
+                    try:
+                        os.unlink(img_tmp_path)
+                    except Exception:
+                        pass
 
-    return descriptions
+        await cleanup_mcp_connections()
+        return descriptions
+    finally:
+        if config_tmp_path and os.path.exists(config_tmp_path):
+            try:
+                os.unlink(config_tmp_path)
+            except Exception:
+                pass
 
 
 async def _parse_pdf(file_path: Path) -> dict:

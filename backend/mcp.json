@@ -10,7 +10,7 @@
                 "minimax-coding-plan-mcp"
             ],
             "env": {
-                "MINIMAX_API_KEY": "",
+                "MINIMAX_API_KEY": "${MINIMAX_API_KEY}",
                 "MINIMAX_API_HOST": "https://api.minimaxi.com"
             },
             "disabled": false,
