@@ -226,3 +226,42 @@ async def test_process_images_multiple_images():
     assert "Description 1" in result[0]
     assert "[Image: image2.jpg]" in result[1]
     assert "Description 2" in result[1]
+
+
+@pytest.mark.asyncio
+async def test_process_images_handles_empty_choices():
+    """Test empty choices array is handled - no description added."""
+    from backend.tasks.document_parser import _process_images_with_llm
+
+    mock_images = [{"filename": "test.png", "data": b"data"}]
+
+    with patch('httpx.AsyncClient') as mock_client:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"choices": []}
+        mock_client.return_value.__aenter__.return_value.post.return_value = mock_response
+
+        result = await _process_images_with_llm(
+            mock_images, "key", "https://api.minimaxi.com", "model"
+        )
+
+    # Should return empty result when choices is empty
+    assert len(result) == 0
+
+
+@pytest.mark.asyncio
+async def test_process_images_handles_network_error():
+    """Test network error is handled - no description added."""
+    from backend.tasks.document_parser import _process_images_with_llm
+
+    mock_images = [{"filename": "test.png", "data": b"data"}]
+
+    with patch('httpx.AsyncClient') as mock_client:
+        mock_client.return_value.__aenter__.return_value.post.side_effect = ConnectionError("Network failed")
+
+        result = await _process_images_with_llm(
+            mock_images, "key", "https://api.minimaxi.com", "model"
+        )
+
+    assert len(result) == 1
+    assert "Image processing failed" in result[0]
