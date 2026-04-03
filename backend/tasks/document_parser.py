@@ -7,6 +7,7 @@ from pathlib import Path
 
 from backend.celery_app import celery_app
 from backend.models import async_session_factory, Document
+from backend.utils.text_utils import strip_ai_think_tags
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +203,8 @@ async def _process_images_with_llm(images: list, api_key: str, api_base: str, mo
                 if response.status_code == 200:
                     data = response.json()
                     if data.get("choices") and len(data["choices"]) > 0:
-                        description = data["choices"][0]["message"]["content"]
+                        raw_description = data["choices"][0]["message"]["content"]
+                        description = strip_ai_think_tags(raw_description)
                         descriptions.append(f"[Image: {img_info['filename']}] {description}")
                 else:
                     logger.warning(f"Image understanding API error: {response.status_code} - {response.text}")

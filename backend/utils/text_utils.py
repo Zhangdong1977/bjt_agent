@@ -68,3 +68,23 @@ def normalize_line_endings(text: str) -> str:
         Text with normalized line endings
     """
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def strip_ai_think_tags(text: str) -> str:
+    """Remove AI think tags and their content from text.
+
+    Handles both the real AI think tag format (<think>和</think>) and the
+    angled bracket format (<thought></thought>) used in some tests.
+
+    Args:
+        text: The text containing AI think tags
+
+    Returns:
+        Text with think tags and their content removed
+    """
+    # Match <think>...</think> pattern (real AI think tags, including multiline)
+    # Using [\s\S]*? for non-greedy matching across newlines
+    text = re.sub(r'<think>[\s\S]*?</think>', '', text)
+    # Also match <thought>...</thought> format
+    text = re.sub(r'<thought>[\s\S]*?</thought>', '', text)
+    return text.strip()
