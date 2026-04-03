@@ -203,8 +203,8 @@ async def _process_images_with_llm(images: list, api_key: str, api_base: str, mo
                 if response.status_code == 200:
                     data = response.json()
                     if data.get("choices") and len(data["choices"]) > 0:
-                        raw_description = data["choices"][0]["message"]["content"]
-                        description = strip_ai_think_tags(raw_description)
+                        raw_description = data["choices"][0]["message"].get("content", "") or ""
+                        description = strip_ai_think_tags(raw_description) if raw_description else ""
                         descriptions.append(f"[Image: {img_info['filename']}] {description}")
                 else:
                     logger.warning(f"Image understanding API error: {response.status_code} - {response.text}")

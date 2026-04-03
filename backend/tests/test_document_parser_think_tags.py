@@ -5,7 +5,7 @@ import pytest
 from backend.utils.text_utils import strip_ai_think_tags
 
 
-def teststrip_ai_think_tags_basic():
+def test_strip_ai_think_tags_basic():
     """Test basic think tag removal."""
     input_text = "这是一个描述。<think>这是思考过程</think>这是正文继续。"
     expected = "这是一个描述。这是正文继续。"
@@ -59,7 +59,7 @@ def teststrip_ai_think_tags_real_format_multiple():
     assert result == expected
 
 
-def test_strip_thinq_tags_angled_bracket_real():
+def test_strip_think_tags_angled_bracket_real():
     """Test with actual AI思考标签 format <think> and</think>."""
     input_text = "描述文本。<think>思考内容</think>继续文本。"
     expected = "描述文本。继续文本。"
