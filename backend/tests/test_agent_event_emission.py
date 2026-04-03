@@ -70,6 +70,8 @@ async def test_tool_events_emitted_during_execution():
     except Exception as e:
         # Expected to potentially fail due to missing docs, but events should still be emitted
         pass
+    finally:
+        await agent.close()
 
     # Check that events were emitted during execution
     tool_events = [(t, d) for t, d, _ in captured_events if t == "tool_progress"]

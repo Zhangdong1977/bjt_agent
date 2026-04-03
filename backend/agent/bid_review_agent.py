@@ -18,7 +18,7 @@ if mini_agent_path.exists() and str(mini_agent_path) not in sys.path:
 from mini_agent.agent import Agent as BaseAgent
 from mini_agent.llm import LLMClient
 from mini_agent.schema import LLMProvider, Message
-from mini_agent.tools.mcp_loader import load_mcp_tools_async
+from mini_agent.tools.mcp_loader import load_mcp_tools_async, cleanup_mcp_connections
 
 from backend.config import get_settings
 from backend.agent.tools.doc_search import DocSearchTool
@@ -555,3 +555,7 @@ class BidReviewAgent(BaseAgent):
             raise RuntimeError(f"Merge decider failed: {result.error}")
 
         return result.content
+
+    async def close(self):
+        """Close MCP connections and cleanup resources."""
+        await cleanup_mcp_connections()

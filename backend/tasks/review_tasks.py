@@ -258,6 +258,8 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
                 logger.error(f"Merge failed: {e}")
                 event_cb("error", {"message": str(e)})
                 return {"status": "error", "message": str(e)}
+            finally:
+                await agent.close()
 
     return run_async(_run_merge())
 
@@ -417,3 +419,5 @@ async def _run_agent_review(
     except Exception as e:
         event_cb("error", {"message": f"Agent error: {str(e)}"})
         return _create_error_finding(str(e))
+    finally:
+        await agent.close()
