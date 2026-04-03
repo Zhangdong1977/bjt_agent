@@ -236,6 +236,7 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
         async with session_factory() as db:
             from backend.services.merge_service import MergeService
             from backend.agent.bid_review_agent import BidReviewAgent
+            agent = None
             try:
                 # Create agent for merge decisions (paths don't matter since we only use MergeDeciderTool)
                 agent = await BidReviewAgent(
@@ -259,7 +260,8 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
                 event_cb("error", {"message": str(e)})
                 return {"status": "error", "message": str(e)}
             finally:
-                await agent.close()
+                if agent is not None:
+                    await agent.close()
 
     return run_async(_run_merge())
 
