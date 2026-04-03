@@ -201,7 +201,11 @@ async def _process_images_with_llm(images: list, api_key: str, api_base: str, mo
                 )
 
                 if response.status_code == 200:
-                    data = response.json()
+                    try:
+                        data = response.json()
+                    except Exception:
+                        logger.warning(f"Failed to parse API response as JSON")
+                        continue
                     if data.get("choices") and len(data["choices"]) > 0:
                         raw_description = data["choices"][0]["message"].get("content", "") or ""
                         description = strip_ai_think_tags(raw_description) if raw_description else ""
