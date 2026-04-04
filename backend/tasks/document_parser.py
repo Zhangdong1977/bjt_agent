@@ -13,6 +13,27 @@ from backend.utils.text_utils import strip_ai_think_tags
 logger = logging.getLogger(__name__)
 
 
+def _embed_image_descriptions_in_md(md_content: str, desc_map: dict[str, str]) -> str:
+    """Embed image descriptions below their corresponding image links in markdown.
+
+    Args:
+        md_content: Markdown content with ![image](path) patterns
+        desc_map: Mapping of filename -> description text
+
+    Returns:
+        Markdown with descriptions embedded below image links
+    """
+    def replace_image_match(match):
+        image_path = match.group(1)  # e.g., "RTCMS_images/xxx.png"
+        filename = Path(image_path).name  # Extract "xxx.png"
+        desc = desc_map.get(filename, "")
+        if desc:
+            return f"{match.group(0)}\n图片内容: {desc}"
+        return match.group(0)
+
+    return re.sub(r'!\[image\]\(([^)]+)\)', replace_image_match, md_content)
+
+
 async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Document, settings) -> dict:
     """Save parsed content to disk and update document record."""
     parsed_dir = file_path.parent
@@ -31,8 +52,16 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
                 settings.mini_agent_model,
             )
             if image_descriptions:
-                md_content += "\n\n## Extracted Image Content\n\n"
-                md_content += "\n".join([f"- {desc}" for desc in image_descriptions])
+                # Build filename -> description mapping
+                desc_map = {}
+                for desc in image_descriptions:
+                    # Format: "[Image: filename.png] 描述内容"
+                    match = re.match(r'\[Image: ([^\]]+)\] (.+)', desc)
+                    if match:
+                        desc_map[match.group(1)] = match.group(2)
+                # Embed descriptions below corresponding image links
+                if desc_map:
+                    md_content = _embed_image_descriptions_in_md(md_content, desc_map)
         except Exception as e:
             logger.warning(f"Failed to process images with LLM: {e}")
 
