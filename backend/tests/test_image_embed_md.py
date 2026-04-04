@@ -66,9 +66,9 @@ class TestEmbedImageDescriptions:
         # a.png should have description
         a_idx = next(i for i, l in enumerate(lines) if "![image](a.png)" in l)
         assert lines[a_idx + 1] == "图片内容: Description A"
-        # b.png should not have description
+        # b.png should not have description (next line should be next image link)
         b_idx = next(i for i, l in enumerate(lines) if "![image](b.png)" in l)
-        assert lines[b_idx + 1] == ""
+        assert "![image](c.png)" in lines[b_idx + 1]  # Next line is c.png, not empty
         # c.png should have description
         c_idx = next(i for i, l in enumerate(lines) if "![image](c.png)" in l)
         assert lines[c_idx + 1] == "图片内容: Description C"

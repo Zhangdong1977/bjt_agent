@@ -23,9 +23,11 @@ def _embed_image_descriptions_in_md(md_content: str, desc_map: dict[str, str]) -
     Returns:
         Markdown with descriptions embedded below image links
     """
+    from urllib.parse import unquote
+
     def replace_image_match(match):
-        image_path = match.group(1)  # e.g., "RTCMS_images/xxx.png"
-        filename = Path(image_path).name  # Extract "xxx.png"
+        image_path = match.group(1)  # e.g., "RTCMS_images/xxx.png" (may be URL-encoded)
+        filename = Path(unquote(image_path)).name  # Extract "xxx.png" and URL-decode
         desc = desc_map.get(filename, "")
         if desc:
             return f"{match.group(0)}\n图片内容: {desc}"
@@ -217,106 +219,77 @@ async def _substitute_env_vars(config: dict) -> dict:
 
 
 async def _process_images_with_llm(images: list, api_key: str, api_base: str, model: str) -> list:
-    """Process images with MiniMax LLM image understanding using MCP.
+    """Process images with MiniMax LLM image understanding using direct API.
 
     Args:
         images: List of image info dicts with 'filename' and 'data'
-        api_key: MiniMax API key (unused, MCP handles auth)
-        api_base: API base URL (unused)
-        model: Model name (unused)
+        api_key: MiniMax API key
+        api_base: API base URL
+        model: Model name (unused, kept for API compatibility)
 
     Returns:
         List of image descriptions
     """
-    import sys
-    import tempfile
-    import os
-    import json
-    from pathlib import Path
+    import httpx
+    import base64
 
     descriptions = []
 
-    # Add Mini-Agent to path for MCP loading
-    mini_agent_path = Path(__file__).parent.parent.parent / "Mini-Agent"
-    if str(mini_agent_path) not in sys.path:
-        sys.path.insert(0, str(mini_agent_path))
-
-    from mini_agent.tools.mcp_loader import load_mcp_tools_async, cleanup_mcp_connections
-
-    # Load MCP config and substitute env vars
-    mcp_config_path = Path(__file__).parent.parent / "mcp.json"
-    mcp_config = json.loads(mcp_config_path.read_text())
-    mcp_config = await _substitute_env_vars(mcp_config)
-
-    # Write substituted config to temp file for MCP loader
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp:
-        json.dump(mcp_config, tmp)
-        config_tmp_path = tmp.name
-
-    try:
-        mcp_tools = await load_mcp_tools_async(config_tmp_path)
-
-        understand_image_tool = None
-        for tool in mcp_tools:
-            if tool.name == "understand_image":
-                understand_image_tool = tool
-                break
-
-        if not understand_image_tool:
-            logger.warning("understand_image MCP tool not found, skipping image processing")
-            await cleanup_mcp_connections()
-            return descriptions
-
+    async with httpx.AsyncClient(timeout=60.0) as client:
         for img_info in images[:5]:  # Limit to first 5 images
-            img_tmp_path = None
             try:
-                # Save image to temp file for MCP tool
-                ext = img_info["filename"].split(".")[-1]
-                with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                    tmp.write(img_info["data"])
-                    img_tmp_path = tmp.name
+                # Encode image as base64
+                img_b64 = base64.b64encode(img_info["data"]).decode()
 
-                # Call MCP understand_image tool
-                result = await understand_image_tool.execute(
-                    prompt="Extract all text content from this image. List each text item clearly. If there is no text, say 'No text content'.",
-                    image_source=img_tmp_path,
+                # Determine MIME type from filename
+                filename = img_info["filename"]
+                ext = filename.split(".")[-1].lower()
+                mime_types = {
+                    "png": "image/png",
+                    "jpg": "image/jpeg",
+                    "jpeg": "image/jpeg",
+                    "gif": "image/gif",
+                    "webp": "image/webp",
+                }
+                mime_type = mime_types.get(ext, "image/png")
+
+                # Call MiniMax coding plan VLM API endpoint
+                response = await client.post(
+                    f"{api_base}/v1/coding_plan/vlm",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "prompt": "Extract all text content from this image. List each text item clearly. If there is no text, say 'No text content'.",
+                        "image_url": f"data:{mime_type};base64,{img_b64}",
+                    },
                 )
 
-                if result.success and result.content:
-                    # Clean up the result
-                    description = strip_ai_think_tags(result.content)
-                    # Remove markdown formatting (bold, italic, etc.)
-                    description = re.sub(r'\*\*([^*]+)\*\*', r'\1', description)  # Bold
-                    description = re.sub(r'\*([^*]+)\*', r'\1', description)  # Italic
-                    description = re.sub(r'`([^`]+)`', r'\1', description)  # Inline code
-                    # Remove code blocks
-                    description = re.sub(r'^```\w*\n?', '', description)
-                    description = re.sub(r'\n?```$', '', description)
-                    description = description.strip()
-                    descriptions.append(f"[Image: {img_info['filename']}] {description}")
+                if response.status_code == 200:
+                    result = response.json()
+                    content = result.get("content", "")
+                    if content:
+                        description = strip_ai_think_tags(content)
+                        description = re.sub(r"\*\*([^*]+)\*\*", r"\1", description)  # Bold
+                        description = re.sub(r"\*([^*]+)\*", r"\1", description)  # Italic
+                        description = re.sub(r"`([^`]+)`", r"\1", description)  # Inline code
+                        description = re.sub(r"^```\w*\n?", "", description)
+                        description = re.sub(r"\n?```$", "", description)
+                        description = description.strip()
+                        descriptions.append(f"[Image: {filename}] {description}")
+                    else:
+                        descriptions.append(f"[Image: {filename}] (No text content)")
                 else:
-                    error_msg = result.error or "Unknown error"
-                    logger.warning(f"Image understanding failed for {img_info['filename']}: {error_msg}")
-                    descriptions.append(f"[Image: {img_info['filename']}] (Image processing failed: {error_msg})")
+                    error_msg = response.text
+                    logger.warning(f"Image understanding API failed for {filename}: {response.status_code} - {error_msg}")
+                    descriptions.append(f"[Image: {filename}] (Image processing failed: {response.status_code})")
 
             except Exception as e:
                 logger.warning(f"Failed to process image {img_info['filename']}: {e}")
                 descriptions.append(f"[Image: {img_info['filename']}] (Image processing failed: {e})")
-            finally:
-                if img_tmp_path and os.path.exists(img_tmp_path):
-                    try:
-                        os.unlink(img_tmp_path)
-                    except Exception:
-                        pass
 
-        await cleanup_mcp_connections()
-        return descriptions
-    finally:
-        if config_tmp_path and os.path.exists(config_tmp_path):
-            try:
-                os.unlink(config_tmp_path)
-            except Exception:
-                pass
+    return descriptions
 
 
 async def _parse_pdf(file_path: Path) -> dict:
