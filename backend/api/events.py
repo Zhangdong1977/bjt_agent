@@ -21,7 +21,7 @@ async def stream_document_parse_events(document_id: str):
     logger.info(f"[events] SSE connection requested for document parse: {document_id}")
 
     async def event_generator():
-        stream_key = f"sse:stream:doc_parse:{document_id}"
+        stream_key = f"doc_parse:{document_id}"
         try:
             async for raw_event in sse_manager.connect(stream_key):
                 yield raw_event
