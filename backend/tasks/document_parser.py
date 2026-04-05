@@ -2,15 +2,78 @@
 
 import asyncio
 import base64
+import json
 import logging
 import re
+import time
 from pathlib import Path
+
+from typing import Literal
 
 from backend.celery_app import celery_app
 from backend.models import async_session_factory, Document
 from backend.utils.text_utils import strip_ai_think_tags
 
 logger = logging.getLogger(__name__)
+
+
+Stage = Literal["extracting_text", "processing_images", "saving"]
+
+def _publish_parse_progress(document_id: str, stage: Stage, processed: int, total: int, eta_seconds: int) -> None:
+    """Publish a parse progress event to Redis Stream.
+
+    Args:
+        document_id: The document UUID
+        stage: One of "extracting_text", "processing_images", "saving"
+        processed: Number of images processed so far
+        total: Total number of images to process
+        eta_seconds: Estimated seconds remaining
+    """
+    import redis
+    from backend.config import get_settings
+
+    try:
+        settings = get_settings()
+        r = redis.from_url(settings.redis_url)
+        stream_key = f"sse:stream:doc_parse:{document_id}"
+        event = {
+            "type": "parse_progress",
+            "stage": stage,
+            "processed": processed,
+            "total": total,
+            "eta_seconds": eta_seconds,
+        }
+        r.xadd(stream_key, {"data": json.dumps(event)})
+    except Exception as e:
+        logger.warning(f"Failed to publish parse progress for {document_id}: {e}")
+
+
+def _clean_sd_abs_pos_elements(html_content: str) -> str:
+    """Remove sd-abs-pos elements from HTML content.
+
+    These elements are LibreOffice conversion artifacts with absolute positioning
+    that cause layout issues in web view (document height expansion to 100k+ pixels).
+
+    Args:
+        html_content: HTML content as string
+
+    Returns:
+        Cleaned HTML content with sd-abs-pos elements removed
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    # Find and remove all elements with sd-abs-pos class
+    removed_count = 0
+    for element in soup.find_all(class_="sd-abs-pos"):
+        element.decompose()
+        removed_count += 1
+
+    if removed_count > 0:
+        logger.info(f"Removed {removed_count} sd-abs-pos elements from HTML")
+
+    return str(soup)
 
 
 def _embed_image_descriptions_in_md(md_content: str, desc_map: dict[str, str]) -> str:
@@ -36,15 +99,88 @@ def _embed_image_descriptions_in_md(md_content: str, desc_map: dict[str, str]) -
     return re.sub(r'!\[image\]\(([^)]+)\)', replace_image_match, md_content)
 
 
-async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Document, settings) -> dict:
+def _embed_image_descriptions_in_html(html_content: str, desc_map: dict[str, str]) -> str:
+    """Embed image descriptions below their corresponding image tags in HTML.
+
+    Args:
+        html_content: HTML content with <img> tags
+        desc_map: Mapping of filename -> description text
+
+    Returns:
+        HTML with descriptions embedded below image tags
+    """
+    import html
+    from urllib.parse import unquote
+
+    def replace_img_match(match):
+        img_tag = match.group(0)
+        # Extract src attribute
+        src_match = re.search(r'src=["\']([^"\']+)["\']', img_tag)
+        if not src_match:
+            return img_tag
+        src = src_match.group(1)
+        # Try to find matching description by checking if any desc_map key
+        # ends with the filename part of the src path
+        # This handles URL-encoding mismatches between HTML and actual filenames
+        src_filename = Path(src).name
+        desc = ""
+        for key, value in desc_map.items():
+            if key.endswith(src_filename) or src_filename.endswith(key):
+                desc = value
+                break
+        if not desc:
+            # Try URL-decoding the src filename
+            decoded_filename = Path(unquote(src_filename)).name
+            desc = desc_map.get(decoded_filename, "")
+        if desc:
+            # First escape HTML special characters (& < >), then escape backslashes
+            # to prevent issues with \xNN sequences in the content
+            escaped_desc = html.escape(desc, quote=False).replace('\\', '&#92;')
+            return f'{img_tag}<p>图片内容: {escaped_desc}</p>'
+        return img_tag
+
+    return re.sub(r'<img[^>]+>', replace_img_match, html_content)
+
+
+def _fix_html_image_paths(html_content: str, images_dir_name: str) -> str:
+    """Fix image paths in HTML to point to the correct images directory.
+
+    LibreOffice generates HTML with relative image paths, but images are saved
+    to a separate _images/ directory. This function updates the paths.
+
+    Args:
+        html_content: HTML content with <img> tags
+        images_dir_name: Name of the images directory (e.g., "xxx_images")
+
+    Returns:
+        HTML with corrected image paths
+    """
+    def replace_img_src(match):
+        img_tag = match.group(0)
+        src_match = re.search(r'src=["\']([^"\']+)["\']', img_tag)
+        if not src_match:
+            return img_tag
+        src = src_match.group(1)
+        # Skip if already absolute path or already points to images dir
+        if src.startswith(('http://', 'https://', '/')) or images_dir_name in src:
+            return img_tag
+        # Prepend images directory to relative path
+        new_src = f"{images_dir_name}/{src}"
+        return img_tag.replace(f'"{src}"', f'"{new_src}"').replace(f"'{src}'", f"'{new_src}'")
+
+    return re.sub(r'<img[^>]+>', replace_img_src, html_content)
+
+
+async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Document, settings, document_id: str) -> dict:
     """Save parsed content to disk and update document record."""
     parsed_dir = file_path.parent
-    md_path = parsed_dir / f"{file_path.stem}_parsed.md"
+    html_path = parsed_dir / f"{file_path.stem}_parsed.html"
     images_dir = parsed_dir / f"{file_path.stem}_images"
 
-    md_content = parsed_data["text"]
+    html_content = parsed_data["text"]
 
     # Process images with LLM if available
+    desc_map = {}
     if parsed_data["images"] and settings.mini_agent_api_key:
         try:
             image_descriptions = await _process_images_with_llm(
@@ -52,20 +188,29 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
                 settings.mini_agent_api_key,
                 settings.mini_agent_api_base,
                 settings.mini_agent_model,
+                document_id,
             )
             if image_descriptions:
                 # Build filename -> description mapping
-                desc_map = {}
                 for desc in image_descriptions:
                     # Format: "[Image: filename.png] 描述内容"
-                    match = re.match(r'\[Image: ([^\]]+)\] (.+)', desc)
+                    # Use re.DOTALL so that .+ matches newlines in multi-line descriptions
+                    match = re.match(r'\[Image: ([^\]]+)\] (.+)', desc, re.DOTALL)
                     if match:
                         desc_map[match.group(1)] = match.group(2)
-                # Embed descriptions below corresponding image links
-                if desc_map:
-                    md_content = _embed_image_descriptions_in_md(md_content, desc_map)
         except Exception as e:
             logger.warning(f"Failed to process images with LLM: {e}")
+
+    # Fix image paths in HTML to point to the images directory
+    # MUST be done BEFORE embedding descriptions so that filenames match
+    images_dir_name = f"{file_path.stem}_images"
+    if parsed_data["images"]:
+        html_content = _fix_html_image_paths(html_content, images_dir_name)
+
+    # Embed descriptions below corresponding image links in HTML
+    # This must happen AFTER path fixing so that filenames in HTML match desc_map keys
+    if desc_map:
+        html_content = _embed_image_descriptions_in_html(html_content, desc_map)
 
     # Save images
     if parsed_data["images"]:
@@ -75,17 +220,17 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
             img_path.write_bytes(img_info["data"])
         document.parsed_images_dir = str(images_dir)
 
-    # Write markdown and update document
-    md_path.write_text(md_content, encoding="utf-8")
-    document.parsed_md_path = str(md_path)
+    # Write HTML and update document
+    html_path.write_text(html_content, encoding="utf-8")
+    document.parsed_html_path = str(html_path)
     document.page_count = parsed_data.get("page_count")
-    document.word_count = len(md_content.split())
+    document.word_count = len(html_content.split())
     document.status = "parsed"
 
     return {
         "status": "success",
         "document_id": document.id,
-        "parsed_md_path": str(md_path),
+        "parsed_html_path": str(html_path),
         "page_count": document.page_count,
         "word_count": document.word_count,
     }
@@ -104,7 +249,7 @@ async def _parse_document_internal(document: Document, file_path: Path, settings
         document.parse_error = f"Unsupported file type: {suffix}"
         return {"status": "error", "message": f"Unsupported file type: {suffix}"}
 
-    return await _save_parsed_content(file_path, parsed_data, document, settings)
+    return await _save_parsed_content(file_path, parsed_data, document, settings, document.id)
 
 
 @celery_app.task(bind=True, name="backend.tasks.document_parser.parse_document")
@@ -147,6 +292,9 @@ def parse_document(self, document_id: str) -> dict:
             document.status = "parsing"
             await db.flush()
 
+            # Publish initial progress: extracting text stage
+            _publish_parse_progress(document_id, "extracting_text", 0, 0, 0)
+
             file_path = Path(document.file_path)
             if not file_path.exists():
                 document.status = "failed"
@@ -156,6 +304,8 @@ def parse_document(self, document_id: str) -> dict:
 
             try:
                 result = await _parse_document_internal(document, file_path, settings)
+                # Publish final progress: saving stage
+                _publish_parse_progress(document_id, "saving", 0, 0, 0)
                 await db.commit()
                 return result
             except Exception as e:
@@ -218,7 +368,7 @@ async def _substitute_env_vars(config: dict) -> dict:
     return config
 
 
-async def _process_images_with_llm(images: list, api_key: str, api_base: str, model: str) -> list:
+async def _process_images_with_llm(images: list, api_key: str, api_base: str, model: str, document_id: str) -> list:
     """Process images with MiniMax LLM image understanding using direct API.
 
     Args:
@@ -226,17 +376,24 @@ async def _process_images_with_llm(images: list, api_key: str, api_base: str, mo
         api_key: MiniMax API key
         api_base: API base URL
         model: Model name (unused, kept for API compatibility)
+        document_id: Document UUID for progress tracking
 
     Returns:
         List of image descriptions
     """
+    import html
     import httpx
     import base64
+
+    total_images = len(images)
+    processed_count = 0
+    start_time = time.time()
+    PROGRESS_PUBLISH_INTERVAL = 10  # Publish every 10 images
 
     descriptions = []
 
     async with httpx.AsyncClient(timeout=60.0) as client:
-        for img_info in images[:5]:  # Limit to first 5 images
+        for img_info in images:
             try:
                 # Encode image as base64
                 img_b64 = base64.b64encode(img_info["data"]).decode()
@@ -268,26 +425,104 @@ async def _process_images_with_llm(images: list, api_key: str, api_base: str, mo
 
                 if response.status_code == 200:
                     result = response.json()
+                    # Log raw response for debugging
+                    logger.info(f"Image understanding API response for {filename}: {result}")
+                    # Try multiple response formats: {"content": ...} or {"choices": [{"message": {"content": ...}}]}
                     content = result.get("content", "")
+                    if not content and "choices" in result:
+                        choices = result["choices"]
+                        if choices and isinstance(choices, list):
+                            first_choice = choices[0]
+                            if isinstance(first_choice, dict):
+                                message = first_choice.get("message", {})
+                                content = message.get("content", "")
                     if content:
+                        # Log raw content for debugging
+                        logger.info(f"Raw content from API for {filename}: {repr(content)[:500]}")
+                        # Decode HTML entities (e.g., &#92; -> \) before regex processing
+                        # to prevent conflicts with Python escape sequences in regex replacements
+                        content = html.unescape(content)
+                        logger.info(f"After html.unescape for {filename}: {repr(content)[:500]}")
                         description = strip_ai_think_tags(content)
-                        description = re.sub(r"\*\*([^*]+)\*\*", r"\1", description)  # Bold
-                        description = re.sub(r"\*([^*]+)\*", r"\1", description)  # Italic
-                        description = re.sub(r"`([^`]+)`", r"\1", description)  # Inline code
-                        description = re.sub(r"^```\w*\n?", "", description)
-                        description = re.sub(r"\n?```$", "", description)
+                        logger.info(f"After strip_ai_think_tags for {filename}: {repr(description)[:500]}")
+                        # Remove bold markers **text** -> text (function-based to avoid escape issues)
+                        description = re.sub(r'\*\*([^*]+)\*\*', lambda m: m.group(1), description, flags=re.DOTALL)
+                        # Remove italic markers *text* -> text (don't match asterisks at line start)
+                        description = re.sub(r'(?<!\n)\*([^*\n]+)\*(?!\n)', lambda m: m.group(1), description)
+                        # Remove inline code
+                        description = re.sub(r'`([^`]+)`', lambda m: m.group(1), description)
+                        # Remove code blocks
+                        description = re.sub(r'^```\w*\n?', '', description, flags=re.MULTILINE)
+                        description = re.sub(r'\n?```$', '', description)
                         description = description.strip()
+                        # Log description before appending for debugging
+                        logger.info(f"Final description for {filename}: {repr(description)[:500]}")
                         descriptions.append(f"[Image: {filename}] {description}")
+                        processed_count += 1
+                        if processed_count % PROGRESS_PUBLISH_INTERVAL == 0 or processed_count == total_images:
+                            elapsed = time.time() - start_time
+                            avg_time = elapsed / processed_count
+                            remaining = total_images - processed_count
+                            eta_seconds = int(remaining * avg_time)
+                            _publish_parse_progress(
+                                document_id,
+                                "processing_images",
+                                processed_count,
+                                total_images,
+                                eta_seconds,
+                            )
                     else:
                         descriptions.append(f"[Image: {filename}] (No text content)")
+                        processed_count += 1
+                        if processed_count % PROGRESS_PUBLISH_INTERVAL == 0 or processed_count == total_images:
+                            elapsed = time.time() - start_time
+                            avg_time = elapsed / processed_count
+                            remaining = total_images - processed_count
+                            eta_seconds = int(remaining * avg_time)
+                            _publish_parse_progress(
+                                document_id,
+                                "processing_images",
+                                processed_count,
+                                total_images,
+                                eta_seconds,
+                            )
                 else:
                     error_msg = response.text
                     logger.warning(f"Image understanding API failed for {filename}: {response.status_code} - {error_msg}")
                     descriptions.append(f"[Image: {filename}] (Image processing failed: {response.status_code})")
+                    processed_count += 1
+                    if processed_count % PROGRESS_PUBLISH_INTERVAL == 0 or processed_count == total_images:
+                        elapsed = time.time() - start_time
+                        avg_time = elapsed / processed_count
+                        remaining = total_images - processed_count
+                        eta_seconds = int(remaining * avg_time)
+                        _publish_parse_progress(
+                            document_id,
+                            "processing_images",
+                            processed_count,
+                            total_images,
+                            eta_seconds,
+                        )
 
             except Exception as e:
                 logger.warning(f"Failed to process image {img_info['filename']}: {e}")
+                logger.warning(f"Exception type: {type(e).__name__}")
+                # Check if filename contains problematic characters
+                logger.warning(f"Filename repr: {repr(img_info['filename'])}")
                 descriptions.append(f"[Image: {img_info['filename']}] (Image processing failed: {e})")
+                processed_count += 1
+                if processed_count % PROGRESS_PUBLISH_INTERVAL == 0 or processed_count == total_images:
+                    elapsed = time.time() - start_time
+                    avg_time = elapsed / processed_count
+                    remaining = total_images - processed_count
+                    eta_seconds = int(remaining * avg_time)
+                    _publish_parse_progress(
+                        document_id,
+                        "processing_images",
+                        processed_count,
+                        total_images,
+                        eta_seconds,
+                    )
 
     return descriptions
 
@@ -363,21 +598,21 @@ async def _parse_pdf(file_path: Path) -> dict:
 async def _parse_docx(file_path: Path) -> dict:
     """Parse DOCX file using LibreOffice in HTML mode.
 
-    Uses LibreOffice to convert DOCX to HTML, then parses the HTML structure
-    to generate structured Markdown with proper heading, list, and table
-    formatting.
+    Uses LibreOffice to convert DOCX to HTML. Returns the HTML content directly
+    without converting to Markdown, preserving full HTML structure and reducing
+    information loss.
 
     Args:
         file_path: Path to the DOCX file
 
     Returns:
-        Dict with text (markdown), images, and page_count (None)
+        Dict with text (HTML), images, and page_count (None)
 
     Raises:
         ValueError: If LibreOffice conversion fails
     """
     import shutil
-    from backend.parsers import LibreOfficeConverter, html_to_markdown
+    from backend.parsers import LibreOfficeConverter
 
     file_size = file_path.stat().st_size
     logger.info(f"LibreOffice HTML parsing: {file_path} ({file_size / (1024*1024):.2f}MB)")
@@ -388,6 +623,11 @@ async def _parse_docx(file_path: Path) -> dict:
 
     html_content = result["text"]
     lo_images_dir = result["images_dir"]  # LibreOffice temp directory with extracted images
+
+    # Clean up sd-abs-pos elements (LibreOffice absolute positioning artifacts)
+    # These elements cause layout issues in web view as they use absolute positioning
+    # that doesn't flow with the document structure
+    html_content = _clean_sd_abs_pos_elements(html_content)
 
     logger.info(f"LibreOffice HTML conversion successful: {len(html_content)} characters")
 
@@ -403,12 +643,6 @@ async def _parse_docx(file_path: Path) -> dict:
                 if not dest_path.exists():
                     shutil.copy2(img_path, dest_path)
         logger.info(f"Copied images from {lo_images_dir} to {workspace_images_dir}")
-
-    # Convert HTML to structured Markdown
-    # images_base_path is relative path from markdown file to images directory
-    images_base_path = f"{file_path.stem}_images"
-    markdown_text = html_to_markdown(html_content, workspace_images_dir, images_base_path)
-    logger.info(f"HTML to Markdown conversion successful: {len(markdown_text)} characters")
 
     # Extract images from the workspace images directory
     images = []
@@ -430,7 +664,7 @@ async def _parse_docx(file_path: Path) -> dict:
     logger.info(f"Extracted {len(images)} images from DOCX")
 
     return {
-        "text": markdown_text,
+        "text": html_content,
         "images": images,
         "page_count": None,
     }
