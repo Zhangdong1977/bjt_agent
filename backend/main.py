@@ -7,11 +7,13 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from starlette import status
 
 from backend.config import get_settings
 from backend.models import init_db, close_db
 from backend.api import auth_router, projects_router, documents_router, review_router, knowledge_router
+from backend.api.events import router as events_router
 from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -54,6 +56,11 @@ app.include_router(projects_router, prefix=settings.api_prefix)
 app.include_router(documents_router, prefix=settings.api_prefix)
 app.include_router(review_router, prefix=settings.api_prefix)
 app.include_router(knowledge_router, prefix=settings.api_prefix)
+app.include_router(events_router)
+
+# Mount workspace directory as static files for image access
+workspace_path = settings.workspace_path
+app.mount("/files", StaticFiles(directory=str(workspace_path)), name="workspace")
 
 
 @app.get("/")
