@@ -115,10 +115,7 @@ export const useProjectStore = defineStore('project', () => {
 
         // Stop polling if status is final
         if (updatedDoc.status === 'parsed' || updatedDoc.status === 'failed') {
-          if (documentPollIntervals[documentId]) {
-            clearInterval(documentPollIntervals[documentId])
-            delete documentPollIntervals[documentId]
-          }
+          clearDocumentPoll(documentId)
           // Also disconnect SSE since we have final status
           disconnectDocParseSSE(documentId)
         }
@@ -372,6 +369,9 @@ export const useProjectStore = defineStore('project', () => {
     // Clear all document polling intervals
     Object.values(documentPollIntervals).forEach(intervalId => clearInterval(intervalId))
     documentPollIntervals = {}
+    // Close all SSE connections to prevent memory leaks
+    Object.values(docParseSSEConnections.value).forEach(es => es.close())
+    docParseSSEConnections.value = {}
   }
 
   function clearDocumentPoll(documentId: string) {
