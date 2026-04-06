@@ -35,6 +35,9 @@ export const useProjectStore = defineStore('project', () => {
   // Upload progress state
   const uploadProgress = ref<Record<string, UploadProgress>>({})
 
+  // Document parse SSE connections
+  const docParseSSEConnections = ref<Record<string, EventSource>>({})
+
   async function fetchProjects() {
     loading.value = true
     try {
@@ -92,6 +95,8 @@ export const useProjectStore = defineStore('project', () => {
     documents.value.push(doc)
     // Start polling for document status updates
     pollDocumentStatus(doc.id)
+    // Connect SSE for real-time parse progress
+    connectDocParseSSE(doc.id)
     return doc
   }
 
@@ -114,6 +119,8 @@ export const useProjectStore = defineStore('project', () => {
             clearInterval(documentPollIntervals[documentId])
             delete documentPollIntervals[documentId]
           }
+          // Also disconnect SSE since we have final status
+          disconnectDocParseSSE(documentId)
         }
       } catch (err) {
         console.error('Failed to poll document status:', err)
@@ -129,6 +136,47 @@ export const useProjectStore = defineStore('project', () => {
     documentPollIntervals[documentId] = window.setInterval(checkStatus, 2000)
     // Also check immediately
     await checkStatus()
+  }
+
+  function connectDocParseSSE(documentId: string) {
+    disconnectDocParseSSE(documentId)
+    const url = `${API_BASE}/events/documents/${documentId}/stream`
+    const es = new EventSource(url)
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        if (data.type === 'parse_progress') {
+          updateDocumentParseProgress(documentId, data)
+        }
+      } catch (err) {
+        console.error('[connectDocParseSSE] Failed to parse SSE event:', err)
+      }
+    }
+    es.onerror = () => {
+      // Silently ignore SSE errors — frontend falls back to polling
+      disconnectDocParseSSE(documentId)
+    }
+    docParseSSEConnections.value[documentId] = es
+  }
+
+  function disconnectDocParseSSE(documentId: string) {
+    const es = docParseSSEConnections.value[documentId]
+    if (es) {
+      es.close()
+      delete docParseSSEConnections.value[documentId]
+    }
+  }
+
+  function updateDocumentParseProgress(documentId: string, data: { stage: string; processed: number; total: number; eta_seconds: number }) {
+    const doc = documents.value.find(d => d.id === documentId)
+    if (doc) {
+      doc.parse_progress = {
+        stage: data.stage,
+        processed: data.processed,
+        total: data.total,
+        etaSeconds: data.eta_seconds,
+      }
+    }
   }
 
   async function deleteDocument(documentId: string) {
@@ -428,6 +476,10 @@ export const useProjectStore = defineStore('project', () => {
     reviewLoading,
     agentSteps,
     uploadProgress,
+    docParseSSEConnections,
+    connectDocParseSSE,
+    disconnectDocParseSSE,
+    updateDocumentParseProgress,
     reviewTasks,
     selectedTaskId,
     fetchProjects,
