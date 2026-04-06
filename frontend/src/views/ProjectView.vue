@@ -5,8 +5,10 @@ import { useProjectStore } from '@/stores/project'
 import { documentsApi } from '@/api/client'
 import type { DocumentContent } from '@/types'
 import { ElMessage } from 'element-plus'
+import DOMPurify from 'dompurify'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 import TimelineArea from '@/components/TimelineArea.vue'
+import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -123,7 +125,18 @@ function getStatusClass(status: string) {
                 <div class="doc-icon">📄</div>
                 <div class="doc-main">
                   <p class="filename">{{ tenderDoc.original_filename }}</p>
-                  <span :class="['status', getStatusClass(tenderDoc.status)]">
+                  <DocumentParseProgress
+                    v-if="tenderDoc.status === 'parsing'"
+                    :document-id="tenderDoc.id"
+                    :stage="tenderDoc.parse_progress?.stage || 'extracting_text'"
+                    :processed="tenderDoc.parse_progress?.processed || 0"
+                    :total="tenderDoc.parse_progress?.total || 1"
+                    :eta-seconds="tenderDoc.parse_progress?.etaSeconds || 0"
+                  />
+                  <span
+                    v-else
+                    :class="['status', getStatusClass(tenderDoc.status)]"
+                  >
                     {{ tenderDoc.status }}
                   </span>
                   <p v-if="tenderDoc.page_count" class="doc-meta">
@@ -176,7 +189,18 @@ function getStatusClass(status: string) {
                 <div class="doc-icon">📄</div>
                 <div class="doc-main">
                   <p class="filename">{{ bidDoc.original_filename }}</p>
-                  <span :class="['status', getStatusClass(bidDoc.status)]">
+                  <DocumentParseProgress
+                    v-if="bidDoc.status === 'parsing'"
+                    :document-id="bidDoc.id"
+                    :stage="bidDoc.parse_progress?.stage || 'extracting_text'"
+                    :processed="bidDoc.parse_progress?.processed || 0"
+                    :total="bidDoc.parse_progress?.total || 1"
+                    :eta-seconds="bidDoc.parse_progress?.etaSeconds || 0"
+                  />
+                  <span
+                    v-else
+                    :class="['status', getStatusClass(bidDoc.status)]"
+                  >
                     {{ bidDoc.status }}
                   </span>
                   <p v-if="bidDoc.page_count" class="doc-meta">
@@ -249,19 +273,12 @@ function getStatusClass(status: string) {
         <div class="doc-viewer-body">
           <div v-if="docViewerLoading" class="loading">正在加载文档...</div>
           <div v-else-if="docViewerContent" class="doc-content">
-            <pre class="markdown-content">{{ docViewerContent.md_content || '无内容' }}</pre>
-            <div v-if="docViewerContent.images?.length" class="doc-images">
-              <h4>图片 ({{ docViewerContent.images.length }})</h4>
-              <div class="images-grid">
-                <img
-                  v-for="(img, idx) in docViewerContent.images"
-                  :key="idx"
-                  :src="img"
-                  :alt="`页面图片 ${idx + 1}`"
-                  class="doc-image"
-                />
-              </div>
-            </div>
+            <div
+              v-if="docViewerContent.html_content"
+              class="html-content"
+              v-html="DOMPurify.sanitize(docViewerContent.html_content)"
+            ></div>
+            <div v-else class="no-content">无内容</div>
           </div>
         </div>
       </div>
@@ -564,36 +581,53 @@ function getStatusClass(status: string) {
   font-size: 0.95rem;
 }
 
-.markdown-content {
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  font-family: inherit;
+.html-content {
   color: #333;
   line-height: 1.6;
   margin: 0;
 }
 
-.doc-images {
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid #eee;
+.html-content :deep(h1),
+.html-content :deep(h2),
+.html-content :deep(h3),
+.html-content :deep(h4),
+.html-content :deep(h5),
+.html-content :deep(h6) {
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
 }
 
-.doc-images h4 {
-  margin-bottom: 1rem;
-  color: #555;
+.html-content :deep(p) {
+  margin: 0.5em 0;
 }
 
-.images-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 1rem;
+.html-content :deep(ul),
+.html-content :deep(ol) {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
 }
 
-.doc-image {
+.html-content :deep(table) {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+}
+
+.html-content :deep(th),
+.html-content :deep(td) {
+  border: 1px solid #ddd;
+  padding: 0.4em 0.8em;
+}
+
+.html-content :deep(img) {
   max-width: 100%;
   height: auto;
-  border: 1px solid #ddd;
-  border-radius: 4px;
 }
+
+.no-content {
+  color: #999;
+  text-align: center;
+  padding: 2rem;
+}
+
 </style>
