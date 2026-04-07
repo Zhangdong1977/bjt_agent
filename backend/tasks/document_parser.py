@@ -219,9 +219,12 @@ async def _parse_document_internal(document: Document, file_path: Path, settings
     suffix = file_path.suffix.lower()
 
     if suffix == ".pdf":
+        _publish_parse_progress(document.id, "extracting", 0, 0, 0)
         parsed_data = await _parse_pdf(file_path)
     elif suffix in [".docx", ".doc"]:
+        _publish_parse_progress(document.id, "converting", 0, 0, 0)
         parsed_data = await _parse_docx(file_path)
+        _publish_parse_progress(document.id, "extracting", 0, 0, 0)
     else:
         document.status = "failed"
         document.parse_error = f"Unsupported file type: {suffix}"
@@ -269,9 +272,6 @@ def parse_document(self, document_id: str) -> dict:
 
             document.status = "parsing"
             await db.flush()
-
-            # Publish initial progress: extracting text stage
-            _publish_parse_progress(document_id, "extracting", 0, 0, 0)
 
             file_path = Path(document.file_path)
             if not file_path.exists():
