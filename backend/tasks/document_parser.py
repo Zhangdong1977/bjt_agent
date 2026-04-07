@@ -24,7 +24,7 @@ def _publish_parse_progress(document_id: str, stage: Stage, processed: int, tota
 
     Args:
         document_id: The document UUID
-        stage: One of "extracting_text", "processing_images", "saving"
+        stage: One of "converting", "extracting", "saving"
         processed: Number of images processed so far
         total: Total number of images to process
         eta_seconds: Estimated seconds remaining
@@ -181,30 +181,6 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
 
     html_content = parsed_data["text"]
 
-    # Process images with LLM if available
-    desc_map = {}
-    logger.info(f"[_save_parsed_content] images count: {len(parsed_data.get('images', []))}, api_key set: {bool(settings.mini_agent_api_key)}")
-    if parsed_data["images"] and settings.mini_agent_api_key:
-        try:
-            image_descriptions = await _process_images_with_llm(
-                parsed_data["images"],
-                settings.mini_agent_api_key,
-                settings.mini_agent_api_base,
-                settings.mini_agent_model,
-                document_id,
-            )
-            logger.info(f"[_save_parsed_content] _process_images_with_llm returned {len(image_descriptions)} descriptions")
-            if image_descriptions:
-                # Build filename -> description mapping
-                for desc in image_descriptions:
-                    # Format: "[Image: filename.png] 描述内容"
-                    # Use re.DOTALL so that .+ matches newlines in multi-line descriptions
-                    match = re.match(r'\[Image: ([^\]]+)\] (.+)', desc, re.DOTALL)
-                    if match:
-                        desc_map[match.group(1)] = match.group(2)
-        except Exception as e:
-            logger.warning(f"Failed to process images with LLM: {e}")
-
     # Fix image paths in HTML to point to the images directory
     # MUST be done BEFORE embedding descriptions so that filenames match
     images_dir_name = f"{file_path.stem}_images"
@@ -216,11 +192,6 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
         # Also insert img tags for images that exist in directory but aren't referenced in HTML
         # This handles LibreOffice cases where images are extracted but not referenced in HTML
         html_content = _insert_missing_img_tags(html_content, images_dir)
-
-    # Embed descriptions below corresponding image links in HTML
-    # This must happen AFTER path fixing so that filenames in HTML match desc_map keys
-    if desc_map:
-        html_content = _embed_image_descriptions_in_html(html_content, desc_map)
 
     # Save images
     if parsed_data["images"]:
@@ -303,7 +274,7 @@ def parse_document(self, document_id: str) -> dict:
             await db.flush()
 
             # Publish initial progress: extracting text stage
-            _publish_parse_progress(document_id, "extracting_text", 0, 0, 0)
+            _publish_parse_progress(document_id, "extracting", 0, 0, 0)
 
             file_path = Path(document.file_path)
             if not file_path.exists():
