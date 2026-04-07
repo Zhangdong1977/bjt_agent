@@ -1,6 +1,7 @@
 """Document search tool for querying tender and bid documents."""
 
 import re
+from html import unescape
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +17,37 @@ _MAX_LINE_TRUNCATE = 150
 _MAX_LINES_PER_CATEGORY = 3
 _FALLBACK_LINE_TRUNCATE = 100
 _FALLBACK_LINE_COUNT = 5
+
+def strip_html_tags(text: str) -> str:
+    """去除HTML标签，保留纯文本"""
+    if not text:
+        return ""
+    # 先unescape HTML实体
+    text = unescape(text)
+    # 去除<script>和<style>标签及其内容
+    text = re.sub(r'<\s*(script|style)[^>]*>.*?<\s*/\1\s*>', '', text, flags=re.DOTALL|re.IGNORECASE)
+    # 去除所有HTML标签
+    text = re.sub(r'<[^>]+>', '', text)
+    # 清理多余空白
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def smart_truncate(text: str, max_length: int = 150) -> str:
+    """智能截断，优先保留完整句子"""
+    text = text.strip()
+    if not text:
+        return ""
+    if len(text) <= max_length:
+        return text
+    # 在句号、逗号处截断
+    truncated = text[:max_length]
+    for sep in ['。', '，', '. ', ', ']:
+        idx = truncated.rfind(sep)
+        if idx > max_length * 0.6:
+            return truncated[:idx+1]
+    return truncated + '...'
+
 
 # Precompiled category patterns for performance
 _CATEGORY_PATTERNS = {
@@ -33,8 +65,8 @@ class DocSearchTool(BaseTool):
         """Initialize the document search tool.
 
         Args:
-            tender_doc_path: Path to the parsed tender markdown file
-            bid_doc_path: Path to the parsed bid markdown file
+            tender_doc_path: Path to the parsed tender HTML file
+            bid_doc_path: Path to the parsed bid HTML file
             chunk_size: Maximum characters per chunk for large documents
         """
         self.tender_doc_path = tender_doc_path
