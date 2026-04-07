@@ -115,7 +115,7 @@ class DocSearchTool(BaseTool):
         categorized_lines = {cat: [] for cat in _CATEGORY_PATTERNS}
 
         for line in lines:
-            line_stripped = line.strip()
+            line_stripped = strip_html_tags(line.strip())
             if not line_stripped or len(line_stripped) < _MIN_LINE_LENGTH:
                 continue
             for cat_name, (pattern, _icon) in _CATEGORY_PATTERNS.items():
@@ -136,7 +136,7 @@ class DocSearchTool(BaseTool):
             summary_parts.append("\n📝 文档内容")
             for line in lines[:(_FALLBACK_LINE_COUNT)]:
                 if line.strip():
-                    summary_parts.append(f"• {line.strip()[:(_FALLBACK_LINE_TRUNCATE)]}")
+                    summary_parts.append(f"• {strip_html_tags(line.strip())[:(_FALLBACK_LINE_TRUNCATE)]}")
 
         return "\n".join(summary_parts)
 
@@ -151,14 +151,15 @@ class DocSearchTool(BaseTool):
         for i, line in enumerate(lines):
             if query_lower in line.lower():
                 # Get some context (previous and next lines if available)
-                context_before = lines[max(0, i - 1)][:100] if i > 0 else ""
-                context_after = lines[min(len(lines) - 1, i + 1)][:100] if i < len(lines) - 1 else ""
+                # Strip HTML first, then truncate to avoid cutting mid-tag
+                context_before = smart_truncate(strip_html_tags(lines[max(0, i - 1)].strip()), 100) if i > 0 else ""
+                context_after = smart_truncate(strip_html_tags(lines[min(len(lines) - 1, i + 1)].strip()), 100) if i < len(lines) - 1 else ""
 
                 results.append({
                     "line_number": i + 1,  # 1-indexed
-                    "line_content": line.strip(),
-                    "context_before": context_before.strip(),
-                    "context_after": context_after.strip(),
+                    "line_content": smart_truncate(strip_html_tags(line.strip()), 200),
+                    "context_before": context_before,
+                    "context_after": context_after,
                 })
 
                 if len(results) >= max_results:
