@@ -1,18 +1,15 @@
 """Document parsing tasks."""
 
 import asyncio
-import base64
 import json
 import logging
 import re
-import time
 from pathlib import Path
 
 from typing import Literal
 
 from backend.celery_app import celery_app
-from backend.models import async_session_factory, Document
-from backend.utils.text_utils import strip_ai_think_tags
+from backend.models import Document
 
 logger = logging.getLogger(__name__)
 
@@ -303,50 +300,6 @@ def parse_document(self, document_id: str) -> dict:
     finally:
         loop.run_until_complete(engine.dispose())
         loop.close()
-
-
-async def _substitute_env_vars(config: dict) -> dict:
-    """Substitute ${ENV_VAR} patterns in config with actual environment variable values.
-
-    Handles both top-level config["env"] and nested config["mcpServers"][server]["env"] structures.
-
-    Args:
-        config: MCP server config dict
-
-    Returns:
-        Config with env vars substituted
-    """
-    import os
-    import re
-
-    def substitute_env(env: dict) -> dict:
-        """Substitute env vars in a single env dict."""
-        if not env:
-            return env
-        env = dict(env)  # Copy
-        for key, value in env.items():
-            if isinstance(value, str):
-                # Match ${VAR} pattern
-                matches = re.findall(r'\$\{([^}]+)\}', value)
-                for var_name in matches:
-                    env[key] = value.replace(f'${{{var_name}}}', os.environ.get(var_name, ""))
-        return env
-
-    config = dict(config)  # Shallow copy
-
-    # Handle top-level env
-    if "env" in config and config["env"]:
-        config["env"] = substitute_env(config["env"])
-
-    # Handle nested mcpServers structure
-    if "mcpServers" in config and config["mcpServers"]:
-        config["mcpServers"] = dict(config["mcpServers"])
-        for server_name, server_config in config["mcpServers"].items():
-            if isinstance(server_config, dict) and "env" in server_config:
-                config["mcpServers"][server_name] = dict(server_config)
-                config["mcpServers"][server_name]["env"] = substitute_env(server_config["env"])
-
-    return config
 
 
 async def _parse_pdf(file_path: Path) -> dict:
