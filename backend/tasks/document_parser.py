@@ -17,7 +17,7 @@ from backend.utils.text_utils import strip_ai_think_tags
 logger = logging.getLogger(__name__)
 
 
-Stage = Literal["extracting_text", "processing_images", "saving"]
+Stage = Literal["converting", "extracting", "saving"]
 
 def _publish_parse_progress(document_id: str, stage: Stage, processed: int, total: int, eta_seconds: int) -> None:
     """Publish a parse progress event to Redis Stream.
@@ -76,70 +76,8 @@ def _clean_sd_abs_pos_elements(html_content: str) -> str:
     return str(soup)
 
 
-def _embed_image_descriptions_in_md(md_content: str, desc_map: dict[str, str]) -> str:
-    """Embed image descriptions below their corresponding image links in markdown.
-
-    Args:
-        md_content: Markdown content with ![image](path) patterns
-        desc_map: Mapping of filename -> description text
-
-    Returns:
-        Markdown with descriptions embedded below image links
-    """
-    from urllib.parse import unquote
-
-    def replace_image_match(match):
-        image_path = match.group(1)  # e.g., "RTCMS_images/xxx.png" (may be URL-encoded)
-        filename = Path(unquote(image_path)).name  # Extract "xxx.png" and URL-decode
-        desc = desc_map.get(filename, "")
-        if desc:
-            return f"{match.group(0)}\n图片内容: {desc}"
-        return match.group(0)
-
-    return re.sub(r'!\[image\]\(([^)]+)\)', replace_image_match, md_content)
 
 
-def _embed_image_descriptions_in_html(html_content: str, desc_map: dict[str, str]) -> str:
-    """Embed image descriptions below their corresponding image tags in HTML.
-
-    Args:
-        html_content: HTML content with <img> tags
-        desc_map: Mapping of filename -> description text
-
-    Returns:
-        HTML with descriptions embedded below image tags
-    """
-    import html
-    from urllib.parse import unquote
-
-    def replace_img_match(match):
-        img_tag = match.group(0)
-        # Extract src attribute
-        src_match = re.search(r'src=["\']([^"\']+)["\']', img_tag)
-        if not src_match:
-            return img_tag
-        src = src_match.group(1)
-        # Try to find matching description by checking if any desc_map key
-        # ends with the filename part of the src path
-        # This handles URL-encoding mismatches between HTML and actual filenames
-        src_filename = Path(src).name
-        desc = ""
-        for key, value in desc_map.items():
-            if key.endswith(src_filename) or src_filename.endswith(key):
-                desc = value
-                break
-        if not desc:
-            # Try URL-decoding the src filename
-            decoded_filename = Path(unquote(src_filename)).name
-            desc = desc_map.get(decoded_filename, "")
-        if desc:
-            # First escape HTML special characters (& < >), then escape backslashes
-            # to prevent issues with \xNN sequences in the content
-            escaped_desc = html.escape(desc, quote=False).replace('\\', '&#92;')
-            return f'{img_tag}<p>图片内容: {escaped_desc}</p>'
-        return img_tag
-
-    return re.sub(r'<img[^>]+>', replace_img_match, html_content)
 
 
 def _fix_html_image_paths(html_content: str, images_dir_name: str) -> str:
@@ -171,6 +109,70 @@ def _fix_html_image_paths(html_content: str, images_dir_name: str) -> str:
     return re.sub(r'<img[^>]+>', replace_img_src, html_content)
 
 
+def _insert_missing_img_tags(html_content: str, images_dir: Path) -> str:
+    """Insert <img> tags for images that exist in the directory but are not referenced in HTML.
+
+    LibreOffice sometimes extracts images to a _images directory without referencing
+    them in the HTML. This function finds unreferenced images and inserts img tags.
+
+    Args:
+        html_content: HTML content that may be missing img tags
+        images_dir: Path to the directory containing images
+
+    Returns:
+        HTML with img tags inserted for unreferenced images
+    """
+    if not images_dir.exists():
+        return html_content
+
+    # Find all image files in the directory
+    image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
+    image_files = []
+    for ext in image_extensions:
+        image_files.extend(images_dir.glob(f"*{ext}"))
+
+    if not image_files:
+        return html_content
+
+    # Build a set of image filenames already referenced in HTML
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html_content, "html.parser")
+    referenced_images = set()
+    for img in soup.find_all("img"):
+        src = img.get("src", "")
+        # Extract just the filename from the path
+        referenced_images.add(Path(src).name)
+
+    # Find unreferenced images
+    unreferenced_images = [img for img in image_files if img.name not in referenced_images]
+
+    if not unreferenced_images:
+        return html_content
+
+    # Insert img tags at the end of the body (or before closing body tag)
+    # Sort images by name for consistent ordering
+    unreferenced_images.sort(key=lambda x: x.name)
+
+    # Find insertion point - end of body or end of content
+    body = soup.find("body")
+    if body is None:
+        # If no body, append to end of document
+        insert_point = soup
+    else:
+        insert_point = body
+
+    # Create img tags for unreferenced images
+    for img_path in unreferenced_images:
+        img_tag = soup.new_tag("img")
+        img_tag["src"] = f"{images_dir.name}/{img_path.name}"
+        img_tag["alt"] = img_path.stem  # Use filename without extension as alt text
+        img_tag["style"] = "max-width: 100%; height: auto; display: block; margin: 1em 0;"
+        insert_point.append(img_tag)
+        logger.info(f"Inserted missing img tag for unreferenced image: {img_path.name}")
+
+    return str(soup)
+
+
 async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Document, settings, document_id: str) -> dict:
     """Save parsed content to disk and update document record."""
     parsed_dir = file_path.parent
@@ -181,6 +183,7 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
 
     # Process images with LLM if available
     desc_map = {}
+    logger.info(f"[_save_parsed_content] images count: {len(parsed_data.get('images', []))}, api_key set: {bool(settings.mini_agent_api_key)}")
     if parsed_data["images"] and settings.mini_agent_api_key:
         try:
             image_descriptions = await _process_images_with_llm(
@@ -190,6 +193,7 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
                 settings.mini_agent_model,
                 document_id,
             )
+            logger.info(f"[_save_parsed_content] _process_images_with_llm returned {len(image_descriptions)} descriptions")
             if image_descriptions:
                 # Build filename -> description mapping
                 for desc in image_descriptions:
@@ -204,8 +208,14 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
     # Fix image paths in HTML to point to the images directory
     # MUST be done BEFORE embedding descriptions so that filenames match
     images_dir_name = f"{file_path.stem}_images"
-    if parsed_data["images"]:
+    # For DOCX files, images are extracted to workspace_images_dir but parsed_data["images"]
+    # may be empty if the file read failed, so check workspace_images_dir directly
+    has_images = parsed_data["images"] or images_dir.exists()
+    if has_images:
         html_content = _fix_html_image_paths(html_content, images_dir_name)
+        # Also insert img tags for images that exist in directory but aren't referenced in HTML
+        # This handles LibreOffice cases where images are extracted but not referenced in HTML
+        html_content = _insert_missing_img_tags(html_content, images_dir)
 
     # Embed descriptions below corresponding image links in HTML
     # This must happen AFTER path fixing so that filenames in HTML match desc_map keys
@@ -366,165 +376,6 @@ async def _substitute_env_vars(config: dict) -> dict:
                 config["mcpServers"][server_name]["env"] = substitute_env(server_config["env"])
 
     return config
-
-
-async def _process_images_with_llm(images: list, api_key: str, api_base: str, model: str, document_id: str) -> list:
-    """Process images with MiniMax LLM image understanding using direct API.
-
-    Args:
-        images: List of image info dicts with 'filename' and 'data'
-        api_key: MiniMax API key
-        api_base: API base URL
-        model: Model name (unused, kept for API compatibility)
-        document_id: Document UUID for progress tracking
-
-    Returns:
-        List of image descriptions
-    """
-    import html
-    import httpx
-    import base64
-
-    total_images = len(images)
-    processed_count = 0
-    start_time = time.time()
-    PROGRESS_PUBLISH_INTERVAL = 10  # Publish every 10 images
-
-    descriptions = []
-
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        for img_info in images:
-            try:
-                # Encode image as base64
-                img_b64 = base64.b64encode(img_info["data"]).decode()
-
-                # Determine MIME type from filename
-                filename = img_info["filename"]
-                ext = filename.split(".")[-1].lower()
-                mime_types = {
-                    "png": "image/png",
-                    "jpg": "image/jpeg",
-                    "jpeg": "image/jpeg",
-                    "gif": "image/gif",
-                    "webp": "image/webp",
-                }
-                mime_type = mime_types.get(ext, "image/png")
-
-                # Call MiniMax coding plan VLM API endpoint
-                response = await client.post(
-                    f"{api_base}/v1/coding_plan/vlm",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "prompt": "Extract all text content from this image. List each text item clearly. If there is no text, say 'No text content'.",
-                        "image_url": f"data:{mime_type};base64,{img_b64}",
-                    },
-                )
-
-                if response.status_code == 200:
-                    result = response.json()
-                    # Log raw response for debugging
-                    logger.info(f"Image understanding API response for {filename}: {result}")
-                    # Try multiple response formats: {"content": ...} or {"choices": [{"message": {"content": ...}}]}
-                    content = result.get("content", "")
-                    if not content and "choices" in result:
-                        choices = result["choices"]
-                        if choices and isinstance(choices, list):
-                            first_choice = choices[0]
-                            if isinstance(first_choice, dict):
-                                message = first_choice.get("message", {})
-                                content = message.get("content", "")
-                    if content:
-                        # Log raw content for debugging
-                        logger.info(f"Raw content from API for {filename}: {repr(content)[:500]}")
-                        # Decode HTML entities (e.g., &#92; -> \) before regex processing
-                        # to prevent conflicts with Python escape sequences in regex replacements
-                        content = html.unescape(content)
-                        logger.info(f"After html.unescape for {filename}: {repr(content)[:500]}")
-                        description = strip_ai_think_tags(content)
-                        logger.info(f"After strip_ai_think_tags for {filename}: {repr(description)[:500]}")
-                        # Remove bold markers **text** -> text (function-based to avoid escape issues)
-                        description = re.sub(r'\*\*([^*]+)\*\*', lambda m: m.group(1), description, flags=re.DOTALL)
-                        # Remove italic markers *text* -> text (don't match asterisks at line start)
-                        description = re.sub(r'(?<!\n)\*([^*\n]+)\*(?!\n)', lambda m: m.group(1), description)
-                        # Remove inline code
-                        description = re.sub(r'`([^`]+)`', lambda m: m.group(1), description)
-                        # Remove code blocks
-                        description = re.sub(r'^```\w*\n?', '', description, flags=re.MULTILINE)
-                        description = re.sub(r'\n?```$', '', description)
-                        description = description.strip()
-                        # Log description before appending for debugging
-                        logger.info(f"Final description for {filename}: {repr(description)[:500]}")
-                        descriptions.append(f"[Image: {filename}] {description}")
-                        processed_count += 1
-                        if processed_count % PROGRESS_PUBLISH_INTERVAL == 0 or processed_count == total_images:
-                            elapsed = time.time() - start_time
-                            avg_time = elapsed / processed_count
-                            remaining = total_images - processed_count
-                            eta_seconds = int(remaining * avg_time)
-                            _publish_parse_progress(
-                                document_id,
-                                "processing_images",
-                                processed_count,
-                                total_images,
-                                eta_seconds,
-                            )
-                    else:
-                        descriptions.append(f"[Image: {filename}] (No text content)")
-                        processed_count += 1
-                        if processed_count % PROGRESS_PUBLISH_INTERVAL == 0 or processed_count == total_images:
-                            elapsed = time.time() - start_time
-                            avg_time = elapsed / processed_count
-                            remaining = total_images - processed_count
-                            eta_seconds = int(remaining * avg_time)
-                            _publish_parse_progress(
-                                document_id,
-                                "processing_images",
-                                processed_count,
-                                total_images,
-                                eta_seconds,
-                            )
-                else:
-                    error_msg = response.text
-                    logger.warning(f"Image understanding API failed for {filename}: {response.status_code} - {error_msg}")
-                    descriptions.append(f"[Image: {filename}] (Image processing failed: {response.status_code})")
-                    processed_count += 1
-                    if processed_count % PROGRESS_PUBLISH_INTERVAL == 0 or processed_count == total_images:
-                        elapsed = time.time() - start_time
-                        avg_time = elapsed / processed_count
-                        remaining = total_images - processed_count
-                        eta_seconds = int(remaining * avg_time)
-                        _publish_parse_progress(
-                            document_id,
-                            "processing_images",
-                            processed_count,
-                            total_images,
-                            eta_seconds,
-                        )
-
-            except Exception as e:
-                logger.warning(f"Failed to process image {img_info['filename']}: {e}")
-                logger.warning(f"Exception type: {type(e).__name__}")
-                # Check if filename contains problematic characters
-                logger.warning(f"Filename repr: {repr(img_info['filename'])}")
-                descriptions.append(f"[Image: {img_info['filename']}] (Image processing failed: {e})")
-                processed_count += 1
-                if processed_count % PROGRESS_PUBLISH_INTERVAL == 0 or processed_count == total_images:
-                    elapsed = time.time() - start_time
-                    avg_time = elapsed / processed_count
-                    remaining = total_images - processed_count
-                    eta_seconds = int(remaining * avg_time)
-                    _publish_parse_progress(
-                        document_id,
-                        "processing_images",
-                        processed_count,
-                        total_images,
-                        eta_seconds,
-                    )
-
-    return descriptions
 
 
 async def _parse_pdf(file_path: Path) -> dict:
