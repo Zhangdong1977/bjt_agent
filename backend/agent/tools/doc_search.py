@@ -151,14 +151,15 @@ class DocSearchTool(BaseTool):
         for i, line in enumerate(lines):
             if query_lower in line.lower():
                 # Get some context (previous and next lines if available)
-                context_before = lines[max(0, i - 1)][:100] if i > 0 else ""
-                context_after = lines[min(len(lines) - 1, i + 1)][:100] if i < len(lines) - 1 else ""
+                # Strip HTML first, then truncate to avoid cutting mid-tag
+                context_before = smart_truncate(strip_html_tags(lines[max(0, i - 1)].strip()), 100) if i > 0 else ""
+                context_after = smart_truncate(strip_html_tags(lines[min(len(lines) - 1, i + 1)].strip()), 100) if i < len(lines) - 1 else ""
 
                 results.append({
                     "line_number": i + 1,  # 1-indexed
                     "line_content": smart_truncate(strip_html_tags(line.strip()), 200),
-                    "context_before": smart_truncate(strip_html_tags(context_before.strip()), 100),
-                    "context_after": smart_truncate(strip_html_tags(context_after.strip()), 100),
+                    "context_before": context_before,
+                    "context_after": context_after,
                 })
 
                 if len(results) >= max_results:
