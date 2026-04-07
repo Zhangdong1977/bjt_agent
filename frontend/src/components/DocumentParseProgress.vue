@@ -11,8 +11,8 @@ const props = defineProps<{
 
 // Stage label mapping (Chinese)
 const stageLabels: Record<string, string> = {
-  extracting_text: '正在提取文档内容',
-  processing_images: '正在调用 AI 理解图片',
+  converting: '正在转换格式',
+  extracting: '正在提取文本和图片',
   saving: '正在保存解析结果',
 }
 
