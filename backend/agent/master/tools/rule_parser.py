@@ -12,6 +12,16 @@ class RuleParserTool(Tool):
     name = "rule_parser"
     description = "解析规则文档，提取检查项列表"
 
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "rule_doc_path": {"type": "string", "description": "Absolute path to rule document"}
+            },
+            "required": ["rule_doc_path"]
+        }
+
     async def execute(self, rule_doc_path: str) -> ToolResult:
         """
         解析单个规则文档，提取检查项
@@ -89,6 +99,16 @@ class RuleLibraryScannerTool(Tool):
 
     name = "rule_library_scanner"
     description = "扫描规则库目录，返回所有 .md 文件列表"
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "rule_library_path": {"type": "string", "description": "Absolute path to rule library directory"}
+            },
+            "required": ["rule_library_path"]
+        }
 
     async def execute(self, rule_library_path: str) -> ToolResult:
         """扫描规则库目录"""

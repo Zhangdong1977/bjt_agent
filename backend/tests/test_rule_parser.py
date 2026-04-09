@@ -18,7 +18,9 @@ def sample_rule_doc():
 """
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
         f.write(content)
-        return f.name
+        temp_path = f.name
+    yield temp_path
+    Path(temp_path).unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio
