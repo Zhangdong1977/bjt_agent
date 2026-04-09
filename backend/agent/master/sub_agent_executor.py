@@ -1,7 +1,6 @@
 """SubAgentExecutor - 子代理执行器 - 管理单个子代理的生命周期."""
 
 import asyncio
-from datetime import datetime
 from typing import Optional, Callable
 from backend.models.todo_item import TodoItem
 from backend.agent.bid_review_agent import BidReviewAgent
@@ -28,7 +27,10 @@ class SubAgentExecutor:
     def _send_event(self, event_type: str, data: dict):
         """发送 SSE 事件."""
         if self.event_callback:
-            self.event_callback(event_type, data)
+            try:
+                self.event_callback(event_type, data)
+            except Exception:
+                pass  # Don't let callback errors crash the executor
 
     async def create_agent(self, max_steps: int = 100) -> BidReviewAgent:
         """创建子代理实例.
@@ -48,7 +50,7 @@ class SubAgentExecutor:
         self._agent = agent
         return agent
 
-    async def execute(self, max_steps: int = 50) -> dict:
+    async def execute(self, max_steps: int = 100) -> dict:
         """执行子代理检查任务."""
         try:
             # 发送开始事件
@@ -71,9 +73,7 @@ class SubAgentExecutor:
 请按顺序执行每个检查项，输出结构化的检查结果。
 最终输出必须包含一个JSON数组，每项代表一个审查发现。"""
 
-            agent.add_user_message(task)
-
-            # 执行检查
+            # 执行检查 (task message is added inside run_review())
             findings = await agent.run_review()
 
             return {
@@ -103,7 +103,9 @@ class SubAgentExecutor:
             if description:
                 lines.append(f"   描述: {description}")
             if rule_content:
-                lines.append(f"   规则: {rule_content[:200]}...")
+                truncated = rule_content[:200]
+                suffix = "..." if len(rule_content) > 200 else ""
+                lines.append(f"   规则: {truncated}{suffix}")
         return "\n".join(lines)
 
     async def close(self):
@@ -127,7 +129,7 @@ def detect_anomaly(result: dict, todo_item: TodoItem) -> bool:
 
     # 检查是否为全合规但检查项数量不对
     all_compliant = all(f.get("is_compliant", False) for f in findings)
-    if all_compliant and len(findings) < len(todo_item.check_items):
+    if all_compliant and todo_item.check_items and len(findings) < len(todo_item.check_items):
         return True
 
     return False
