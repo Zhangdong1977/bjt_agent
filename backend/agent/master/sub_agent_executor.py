@@ -30,14 +30,19 @@ class SubAgentExecutor:
         if self.event_callback:
             self.event_callback(event_type, data)
 
-    async def create_agent(self) -> BidReviewAgent:
-        """创建子代理实例."""
+    async def create_agent(self, max_steps: int = 100) -> BidReviewAgent:
+        """创建子代理实例.
+
+        Args:
+            max_steps: Maximum number of agent steps to run.
+        """
         agent = BidReviewAgent(
             project_id=self.todo_item.project_id,
             tender_doc_path=self.tender_doc_path,
             bid_doc_path=self.bid_doc_path,
             user_id=self.user_id,
             event_callback=self.event_callback,
+            max_steps=max_steps,
         )
         await agent.initialize()
         self._agent = agent
@@ -53,7 +58,7 @@ class SubAgentExecutor:
             })
 
             # 创建 agent
-            agent = await self.create_agent()
+            agent = await self.create_agent(max_steps=max_steps)
 
             # 构建任务描述
             check_items_text = self._build_check_items_text()
@@ -105,6 +110,7 @@ class SubAgentExecutor:
         """关闭子代理."""
         if self._agent:
             await self._agent.close()
+            self._agent = None
 
 
 def detect_anomaly(result: dict, todo_item: TodoItem) -> bool:
