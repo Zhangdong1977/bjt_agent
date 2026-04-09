@@ -52,7 +52,9 @@ interface TodoItemState {
   rule_doc_name: string
   check_items: CheckItemState[]
   status: 'pending' | 'running' | 'completed' | 'failed'
-  findings_count?: number
+  result?: {
+    findings: any[]
+  }
   error_message?: string
 }
 
@@ -153,6 +155,7 @@ function handleSSEEvent(event: SSEEvent) {
   if (event.type === 'todo_created') {
     // 新建 Todo 项
     addTodoItem(event as any)
+    phase.value = 'todo'
   }
 
   if (event.type === 'todo_list_completed') {
@@ -289,12 +292,12 @@ function addTodoItem(event: SSEEvent) {
   todos.value.set(todoItem.id, todoItem)
 }
 
-function updateTodoStatus(todoId: string, status: TodoItemState['status'], findingsCount?: number, error?: string) {
+function updateTodoStatus(todoId: string, status: TodoItemState['status'], _findingsCount?: number, error?: string) {
   const todo = todos.value.get(todoId)
   if (todo) {
     todo.status = status
-    if (findingsCount !== undefined) {
-      todo.findings_count = findingsCount
+    if (status === 'completed') {
+      todo.result = { findings: [] }
     }
     if (error) {
       todo.error_message = error
