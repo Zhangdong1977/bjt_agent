@@ -8,9 +8,8 @@ import {
   CloseCircleOutlined,
 } from '@ant-design/icons-vue'
 import { Tag } from 'ant-design-vue'
-// Components for todo list display - to be integrated
-// import TodoListCard from './TodoListCard.vue'
-// import SubAgentCard from './SubAgentCard.vue'
+import TodoListCard from './TodoListCard.vue'
+import SubAgentCard from './SubAgentCard.vue'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
@@ -68,6 +67,19 @@ const phase = ref<'master' | 'todo' | 'sub_agents' | 'merging' | 'completed'>('m
 const todos = ref<Map<string, TodoItemState>>(new Map())
 const isMerging = ref(false)
 const mergeProgress = ref('')
+
+// Convert Map to array for TodoListCard and SubAgentCard
+const todoList = computed(() => Array.from(todos.value.values()))
+
+// Track agent index by todo id for SubAgentCard
+const agentIndexMap = computed(() => {
+  const map = new Map<string, number>()
+  let idx = 1
+  for (const todo of todos.value.values()) {
+    map.set(todo.id, idx++)
+  }
+  return map
+})
 let eventSource: EventSource | null = null
 
 // 工具名称映射
@@ -504,6 +516,44 @@ onUnmounted(() => {
           </div>
         </a-timeline-item>
 
+        <!-- Todo list phase: show TodoListCard for each pending todo -->
+        <a-timeline-item v-if="phase === 'todo' && todoList.length > 0">
+          <template #dot><LoadingOutlined class="spin-icon" /></template>
+          <div class="phase-card phase-todo">
+            <div class="phase-header">
+              <Tag color="processing">待执行</Tag>
+              <span class="phase-title">准备分配检查任务</span>
+              <span class="phase-count">{{ todoList.length }} 个规则文档</span>
+            </div>
+            <div class="phase-body">
+              <TodoListCard
+                v-for="todo in todoList"
+                :key="todo.id"
+                :todo="todo as any"
+              />
+            </div>
+          </div>
+        </a-timeline-item>
+
+        <!-- Sub agents phase: show SubAgentCard for each todo -->
+        <a-timeline-item v-if="phase === 'sub_agents' && todoList.length > 0">
+          <template #dot><LoadingOutlined class="spin-icon" /></template>
+          <div class="phase-card phase-agents">
+            <div class="phase-header">
+              <Tag color="purple">执行中</Tag>
+              <span class="phase-title">子智能体检查中</span>
+            </div>
+            <div class="phase-body">
+              <SubAgentCard
+                v-for="todo in todoList"
+                :key="todo.id"
+                :todo="todo as any"
+                :agent-index="agentIndexMap.get(todo.id) || 1"
+              />
+            </div>
+          </div>
+        </a-timeline-item>
+
         <!-- 合并阶段动画 -->
         <a-timeline-item v-if="isMerging" pending>
           <template #dot><LoadingOutlined class="spin-icon" /></template>
@@ -726,5 +776,46 @@ onUnmounted(() => {
 .merge-progress-hint {
   font-size: 0.85rem;
   color: #8c8c8c;
+}
+
+/* Phase cards */
+.phase-card {
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.phase-todo {
+  background: linear-gradient(135deg, rgb(255, 251, 235) 0%, rgb(255, 252, 245) 100%);
+  border-left: 4px solid rgb(255, 189, 46);
+}
+
+.phase-agents {
+  background: linear-gradient(135deg, rgb(249, 240, 255) 0%, rgb(253, 250, 255) 100%);
+  border-left: 4px solid rgb(211, 173, 247);
+}
+
+.phase-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.phase-title {
+  font-weight: 600;
+  color: #333;
+}
+
+.phase-count {
+  color: #8c8c8c;
+  font-size: 0.85rem;
+  margin-left: auto;
+}
+
+.phase-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 </style>
