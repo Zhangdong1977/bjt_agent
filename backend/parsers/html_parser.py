@@ -195,12 +195,22 @@ class HTMLParser:
         """Parse a single table element."""
         headers = []
         rows = []
+        header_row_processed = False
 
-        # Find header row (usually in th tags)
+        # Find header row (usually in th tags, but LibreOffice may use td)
         header_row = table_tag.find("tr")
         if header_row:
-            for th in header_row.find_all(["th", "td"]):
-                headers.append(self._get_text_content(th).strip())
+            ths = header_row.find_all("th")
+            tds = header_row.find_all("td")
+            if ths:
+                headers = [self._get_text_content(th).strip() for th in ths]
+            elif tds:
+                # LibreOffice sometimes uses td for headers - check if first row looks like headers
+                td_contents = [td.get_text(strip=True) for td in tds]
+                # If first row has common header-like content (short text, no long sentences)
+                if all(len(c) < 30 for c in td_contents):
+                    headers = td_contents
+                    header_row_processed = True
 
         if not headers:
             # If no header row found, look for any row with th tags
@@ -214,6 +224,8 @@ class HTMLParser:
         # Find all data rows
         for tr in table_tag.find_all("tr"):
             # Skip the header row if it was processed
+            if header_row_processed and tr == header_row:
+                continue
             if tr.find("th") and not tr.find("td"):
                 continue
 
@@ -263,6 +275,7 @@ class HTMLParser:
         sections = []
         current_section: Optional[ParsedSection] = None
         current_heading_level = 0
+        processed_images: set[str] = set()  # Track processed images to avoid duplicates
 
         for element in self.soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "table", "img"]):
             if element.name.startswith("h") and len(element.name) == 2:
@@ -275,32 +288,51 @@ class HTMLParser:
                         sections.append(current_section)
                     current_section = ParsedSection(title=text)
                     current_heading_level = level
+                    processed_images = set()  # Reset for new section
                 else:
                     # Subsection
                     if current_section is None:
                         current_section = ParsedSection(title=text)
+                        processed_images = set()
                     else:
                         subsection = ParsedSection(title=text)
                         current_section.subsections.append(subsection)
                         current_heading_level = level
 
+            elif element.name in ["ul", "ol"] and current_section is not None:
+                # Extract list items
+                items = []
+                ordered = element.name == "ol"
+                level = self._get_list_level(element)
+
+                for li in element.find_all("li", recursive=False):
+                    text = self._get_text_content(li)
+                    if text.strip():
+                        items.append(ListItem(content=text, level=level, ordered=ordered))
+
+                if items:
+                    current_section.lists.append(items)
+
+            elif element.name == "table" and current_section is not None:
+                # Parse and add table
+                table = self._parse_table(element)
+                if table and (table.headers or table.rows):
+                    current_section.tables.append(table)
+
             elif element.name == "p" and current_section is not None:
-                # Check for images inside the paragraph
-                imgs = element.find_all("img")
-                for img in imgs:
-                    img_obj = self._create_image_from_tag(img)
-                    if img_obj:
-                        current_section.images.append(img_obj)
-                # Also extract text content (without the img tags)
+                # Extract text content (without the img tags)
                 text = self._get_text_content(element)
                 if text.strip():
                     current_section.paragraphs.append(Paragraph(content=text))
 
             elif element.name == "img" and current_section is not None:
-                # Standalone image (not inside a paragraph)
-                img_obj = self._create_image_from_tag(element)
-                if img_obj:
-                    current_section.images.append(img_obj)
+                # Standalone image - add only if not already processed (avoid duplicates from nested img tags)
+                src = element.get("src", "")
+                if src and src not in processed_images:
+                    img_obj = self._create_image_from_tag(element)
+                    if img_obj:
+                        current_section.images.append(img_obj)
+                        processed_images.add(src)
 
         if current_section and current_section.title:
             sections.append(current_section)

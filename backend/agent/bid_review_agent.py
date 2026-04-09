@@ -33,7 +33,7 @@ settings = get_settings()
 class BidReviewAgent(BaseAgent):
     """Bid review agent that extends Mini-Agent with domain-specific tools."""
 
-    async def __init__(
+    def __init__(
         self,
         project_id: str,
         tender_doc_path: str,
@@ -42,7 +42,7 @@ class BidReviewAgent(BaseAgent):
         event_callback=None,
         max_steps: int = 100,
     ):
-        """Initialize the bid review agent.
+        """Initialize the bid review agent (synchronous part).
 
         Args:
             project_id: The project ID for organizing workspace
@@ -93,6 +93,8 @@ class BidReviewAgent(BaseAgent):
             max_steps=max_steps,
         )
 
+    async def initialize(self):
+        """Async initialization - load MCP tools (call after construction)."""
         # Load MCP tools (MiniMax-Coding-Plan-MCP)
         mcp_config_path = Path(__file__).parent.parent / "mcp.json"
         if mcp_config_path.exists():
@@ -279,16 +281,20 @@ class BidReviewAgent(BaseAgent):
                 if parsed and isinstance(parsed, list):
                     for item in parsed:
                         if isinstance(item, dict) and "requirement_key" in item:
-                            findings.append(self._normalize_finding(item, requirement_counter))
-                            requirement_counter += 1
+                            normalized = self._normalize_finding(item, requirement_counter)
+                            if normalized:
+                                findings.append(normalized)
+                                requirement_counter += 1
                 # Also check for single JSON object
                 elif parsed and isinstance(parsed, dict) and "requirement_key" in parsed:
-                    findings.append(self._normalize_finding(parsed, requirement_counter))
-                    requirement_counter += 1
+                    normalized = self._normalize_finding(parsed, requirement_counter)
+                    if normalized:
+                        findings.append(normalized)
+                        requirement_counter += 1
 
         return findings
 
-    def _normalize_finding(self, item: dict, counter: int) -> dict:
+    def _normalize_finding(self, item: dict, counter: int) -> Optional[dict]:
         """Normalize a finding to match ReviewResult model.
 
         Args:
@@ -296,11 +302,39 @@ class BidReviewAgent(BaseAgent):
             counter: Requirement counter for generating keys
 
         Returns:
-            Normalized finding dict matching ReviewResult schema.
+            Normalized finding dict matching ReviewResult schema, or None if invalid.
         """
+        # Validate required fields - if requirement_content is missing or empty,
+        # this is likely a malformed JSON fragment (e.g., just {"explanation": "..."})
+        requirement_content = item.get("requirement_content") or item.get("requirement")
+        if not requirement_content:
+            return None
+
+        # Reject JSON fragments masquerading as requirement_content
+        # A proper requirement is natural language text, not a JSON field declaration
+        # Examples of malformed content:
+        #   '"explanation": "..."'
+        #   '"requirement": "..."'
+        #   '{"explanation": "...", ...}'
+        requirement_str = str(requirement_content).strip()
+        if (
+            # Starts with " followed by a JSON field name pattern
+            (requirement_str.startswith('"') and '":' in requirement_str) or
+            # Looks like a JSON object (starts with { and contains JSON fields)
+            (requirement_str.startswith('{') and '"' in requirement_str and ':' in requirement_str)
+        ):
+            return None
+
+        # Validate that this looks like a finding, not a random JSON object
+        # A proper finding should have either is_compliant or severity
+        if "is_compliant" not in item and "severity" not in item:
+            # Check if it has at least some finding-related fields
+            if not any(key in item for key in ["bid_content", "explanation", "suggestion", "location_page", "location_line"]):
+                return None
+
         return {
-            "requirement_key": item.get("requirement_key", f"req_{counter:03d}"),
-            "requirement_content": item.get("requirement_content", item.get("requirement", "")),
+            "requirement_key": item.get("requirement_key") or f"req_{counter:03d}",
+            "requirement_content": requirement_content,
             "bid_content": item.get("bid_content"),
             "is_compliant": item.get("is_compliant", True),
             "severity": item.get("severity") if not item.get("is_compliant", True) else None,
@@ -403,16 +437,33 @@ class BidReviewAgent(BaseAgent):
             if any(kw in line_lower for kw in ['符合', '不合规', '不满足', '违规', '缺失', '缺少', '未提供']):
                 compliance_lines.append(line.strip())
 
-        # Pattern 3: Extract JSON objects that may not have requirement_key
-        json_matches = re.findall(r'\{[^{}]*"[^"]+"\s*:[^}]+\}', text, re.DOTALL)
-        for json_str in json_matches:
+        # Pattern 3: Extract JSON objects - improved to handle nested braces
+        # First try to find complete JSON arrays or objects
+        json_array_match = re.search(r'\[\s*\{.*\}\s*\]', text, re.DOTALL)
+        if json_array_match:
+            try:
+                parsed = json.loads(json_array_match.group(0))
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, dict):
+                            normalized = self._normalize_finding(item, requirement_counter)
+                            if normalized:
+                                findings.append(normalized)
+                                requirement_counter += 1
+            except json.JSONDecodeError:
+                pass
+
+        # Also look for individual JSON objects with proper structure
+        # Match { "key": "value", ... } patterns that have multiple fields
+        json_object_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        for json_str in re.findall(json_object_pattern, text):
             try:
                 parsed = json.loads(json_str)
-                if isinstance(parsed, dict) and len(parsed) >= 2:
-                    # Normalize even without requirement_key
+                if isinstance(parsed, dict) and len(parsed) >= 3:
                     normalized = self._normalize_finding(parsed, requirement_counter)
-                    findings.append(normalized)
-                    requirement_counter += 1
+                    if normalized:
+                        findings.append(normalized)
+                        requirement_counter += 1
             except json.JSONDecodeError:
                 continue
 

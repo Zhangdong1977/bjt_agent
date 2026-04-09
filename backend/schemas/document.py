@@ -12,7 +12,7 @@ class DocumentResponse(BaseModel):
     doc_type: str
     original_filename: str
     file_path: str
-    parsed_md_path: str | None
+    parsed_html_path: str | None
     parsed_images_dir: str | None
     page_count: int | None
     word_count: int | None
@@ -32,5 +32,5 @@ class DocumentListResponse(BaseModel):
 class DocumentContentResponse(BaseModel):
     """Schema for document content response."""
 
-    md_content: str
+    html_content: str
     images: list[str]

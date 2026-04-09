@@ -239,7 +239,7 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
             agent = None
             try:
                 # Create agent for merge decisions (paths don't matter since we only use MergeDeciderTool)
-                agent = await BidReviewAgent(
+                agent = BidReviewAgent(
                     project_id=project_id,
                     tender_doc_path="",
                     bid_doc_path="",
@@ -247,6 +247,7 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
                     event_callback=None,
                     max_steps=1,
                 )
+                await agent.initialize()
 
                 merge_service = MergeService(db, agent)
                 merged_count, total_count = await merge_service.merge_project_results(
@@ -372,8 +373,8 @@ async def _run_agent_review(
     from backend.agent.bid_review_agent import BidReviewAgent
 
     # Get document paths
-    tender_path = tender_doc.parsed_md_path or ""
-    bid_path = bid_doc.parsed_md_path or ""
+    tender_path = tender_doc.parsed_html_path or ""
+    bid_path = bid_doc.parsed_html_path or ""
 
     if not tender_path or not Path(tender_path).exists():
         raise FileNotFoundError("Tender document not parsed")
@@ -390,7 +391,7 @@ async def _run_agent_review(
     if hasattr(tender_doc.project, 'user_id'):
         user_id = str(tender_doc.project.user_id)
 
-    agent = await BidReviewAgent(
+    agent = BidReviewAgent(
         project_id=str(tender_doc.project_id),
         tender_doc_path=tender_path,
         bid_doc_path=bid_path,
@@ -398,6 +399,7 @@ async def _run_agent_review(
         event_callback=event_cb,
         max_steps=200,
     )
+    await agent.initialize()
 
     # Note: BidReviewAgent.run_review() sends its own initialization event internally
     # Run the agent

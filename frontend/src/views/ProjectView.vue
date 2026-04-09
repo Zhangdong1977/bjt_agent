@@ -126,7 +126,7 @@ function getStatusClass(status: string) {
                 <div class="doc-main">
                   <p class="filename">{{ tenderDoc.original_filename }}</p>
                   <DocumentParseProgress
-                    v-if="tenderDoc.status === 'parsing'"
+                    v-if="tenderDoc.status === 'parsing' || tenderDoc.status === 'pending'"
                     :document-id="tenderDoc.id"
                     :stage="tenderDoc.parse_progress?.stage || 'extracting_text'"
                     :processed="tenderDoc.parse_progress?.processed || 0"
@@ -190,7 +190,7 @@ function getStatusClass(status: string) {
                 <div class="doc-main">
                   <p class="filename">{{ bidDoc.original_filename }}</p>
                   <DocumentParseProgress
-                    v-if="bidDoc.status === 'parsing'"
+                    v-if="bidDoc.status === 'parsing' || bidDoc.status === 'pending'"
                     :document-id="bidDoc.id"
                     :stage="bidDoc.parse_progress?.stage || 'extracting_text'"
                     :processed="bidDoc.parse_progress?.processed || 0"

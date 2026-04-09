@@ -21,7 +21,7 @@ class Document(Base):
     doc_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'tender' (招标书) or 'bid' (应标书)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_path: Mapped[str] = mapped_column(String(500), nullable=False)
-    parsed_md_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    parsed_html_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     parsed_images_dir: Mapped[str | None] = mapped_column(String(500), nullable=True)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     word_count: Mapped[int | None] = mapped_column(Integer, nullable=True)

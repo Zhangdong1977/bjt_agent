@@ -160,17 +160,50 @@ async def get_document_content(
             detail=f"Document is not parsed yet. Current status: {document.status}",
         )
 
-    # Read parsed markdown
-    md_content = ""
-    if document.parsed_md_path and Path(document.parsed_md_path).exists():
-        md_content = Path(document.parsed_md_path).read_text(encoding="utf-8")
+    # Read parsed HTML content
+    html_content = ""
+    if document.parsed_html_path and Path(document.parsed_html_path).exists():
+        html_content = Path(document.parsed_html_path).read_text(encoding="utf-8")
 
-    # Get image paths
+    # Get image paths - convert absolute filesystem paths to /files URL paths
     images = []
+    workspace_dir = settings.workspace_path
+    workspace_rel_path = ""
     if document.parsed_images_dir and Path(document.parsed_images_dir).exists():
-        images = [str(p) for p in Path(document.parsed_images_dir).iterdir() if p.is_file()]
+        for p in Path(document.parsed_images_dir).iterdir():
+            if p.is_file():
+                # Convert absolute path to /files URL path
+                # e.g., /home/openclaw/bjt_agent/workspace/xxx/... -> /files/xxx/...
+                rel_path = p.relative_to(workspace_dir)
+                images.append(f"/files/{rel_path}")
 
-    return DocumentContentResponse(md_content=md_content, images=images)
+        # Compute workspace-relative path for fixing HTML image src paths
+        # Use parent dir of images_dir since HTML img src already contains the images dir name
+        # e.g., /home/openclaw/bjt_agent/workspace/user123/project456/docname_images -> user123/project456
+        workspace_rel_path = Path(document.parsed_images_dir).relative_to(workspace_dir).parent
+
+    # Fix relative image paths in HTML to use /files/ URLs
+    # HTML uses relative paths like "docname_images/xxx.png" but the browser resolves
+    # them relative to the page URL, not the filesystem. We need to prepend /files/.
+    if workspace_rel_path:
+        import re
+
+        def fix_img_src(match):
+            img_tag = match.group(0)
+            src_match = re.search(r'src=["\']([^"\']+)["\']', img_tag)
+            if not src_match:
+                return img_tag
+            src = src_match.group(1)
+            # Skip if already absolute path
+            if src.startswith(('http://', 'https://', '/')):
+                return img_tag
+            # Prepend /files/ with workspace-relative path
+            new_src = f"/files/{workspace_rel_path}/{src}"
+            return img_tag.replace(f'"{src}"', f'"{new_src}"').replace(f"'{src}'", f"'{new_src}'")
+
+        html_content = re.sub(r'<img[^>]+>', fix_img_src, html_content)
+
+    return DocumentContentResponse(html_content=html_content, images=images)
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)

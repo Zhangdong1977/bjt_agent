@@ -11,10 +11,19 @@ const props = defineProps<{
 
 // Stage label mapping (Chinese)
 const stageLabels: Record<string, string> = {
-  converting: '正在转换格式',
-  extracting: '正在提取文本和图片',
+  extracting_text: '正在提取文档内容',
+  processing_images: '正在调用 AI 理解图片',
   saving: '正在保存解析结果',
 }
+
+// Stage number mapping (1-indexed for display)
+const stageOrder: Record<string, number> = {
+  extracting_text: 1,
+  processing_images: 2,
+  saving: 3,
+}
+
+const stageNumber = computed(() => stageOrder[props.stage] || 1)
 
 const stageLabel = computed(() => stageLabels[props.stage] || '正在处理')
 
@@ -39,7 +48,7 @@ const percent = computed(() => {
   return Math.min(props.processed / props.total, 1)
 })
 const dashOffset = computed(() => CIRCUMFERENCE * (1 - percent.value))
-const progressText = computed(() => `${props.processed}/${props.total}`)
+const progressText = computed(() => `${stageNumber.value}/3`)
 </script>
 
 <template>

@@ -71,6 +71,13 @@ export const useProjectStore = defineStore('project', () => {
     try {
       currentProject.value = await projectsApi.get(id)
       documents.value = await documentsApi.list(id)
+      // Connect SSE for any documents that are still parsing
+      for (const doc of documents.value) {
+        if (doc.status === 'parsing' || doc.status === 'pending') {
+          connectDocParseSSE(doc.id)
+          pollDocumentStatus(doc.id)
+        }
+      }
     } finally {
       loading.value = false
     }
@@ -110,7 +117,11 @@ export const useProjectStore = defineStore('project', () => {
         const updatedDoc = await documentsApi.get(currentProject.value!.id, documentId)
         const index = documents.value.findIndex(d => d.id === documentId)
         if (index !== -1) {
-          documents.value[index] = updatedDoc
+          // Preserve parse_progress from SSE while updating other fields from API
+          documents.value[index] = {
+            ...updatedDoc,
+            parse_progress: documents.value[index].parse_progress
+          }
         }
 
         // Stop polling if status is final
@@ -137,7 +148,11 @@ export const useProjectStore = defineStore('project', () => {
 
   function connectDocParseSSE(documentId: string) {
     disconnectDocParseSSE(documentId)
-    const url = `${API_BASE}/events/documents/${documentId}/stream`
+    const token = getAccessToken()
+    const url = token
+      ? `${API_BASE}/events/documents/${documentId}/stream?token=${encodeURIComponent(token)}`
+      : `${API_BASE}/events/documents/${documentId}/stream`
+    console.log('[connectDocParseSSE] Connecting to SSE URL:', url, 'documentId:', documentId)
     const es = new EventSource(url)
     es.onmessage = (event) => {
       try {
@@ -149,7 +164,8 @@ export const useProjectStore = defineStore('project', () => {
         console.error('[connectDocParseSSE] Failed to parse SSE event:', err)
       }
     }
-    es.onerror = () => {
+    es.onerror = (err) => {
+      console.error('[connectDocParseSSE] SSE error for documentId:', documentId, err)
       // Silently ignore SSE errors — frontend falls back to polling
       disconnectDocParseSSE(documentId)
     }
@@ -165,14 +181,23 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   function updateDocumentParseProgress(documentId: string, data: { stage: string; processed: number; total: number; eta_seconds: number }) {
-    const doc = documents.value.find(d => d.id === documentId)
-    if (doc) {
-      doc.parse_progress = {
-        stage: data.stage,
-        processed: data.processed,
-        total: data.total,
-        etaSeconds: data.eta_seconds,
+    const index = documents.value.findIndex(d => d.id === documentId)
+    if (index !== -1) {
+      // Create new document object with updated parse_progress to ensure Vue reactivity
+      const updatedDoc = {
+        ...documents.value[index],
+        parse_progress: {
+          stage: data.stage,
+          processed: data.processed,
+          total: data.total,
+          etaSeconds: data.eta_seconds,
+        }
       }
+      documents.value = [
+        ...documents.value.slice(0, index),
+        updatedDoc,
+        ...documents.value.slice(index + 1)
+      ]
     }
   }
 

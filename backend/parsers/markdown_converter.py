@@ -53,19 +53,13 @@ class MarkdownConverter:
         if doc.title:
             parts.append(f"# {doc.title}\n")
 
-        # Convert sections
+        # Convert sections - sections now contain all content (lists, tables, images)
+        # so we don't need to add from all_* again to avoid duplicates
         if doc.sections:
             for section in doc.sections:
                 parts.append(self._convert_section(section, base_level=2))
-            # Also include flat elements that weren't captured in sections
-            for lst in doc.all_lists:
-                parts.append(self._convert_list(lst))
-            for table in doc.all_tables:
-                parts.append(self._convert_table(table))
-            for img in doc.all_images:
-                parts.append(self._convert_image(img))
         else:
-            # If no sections, convert flat elements
+            # If no sections, convert flat elements from all_*
             for para in doc.all_paragraphs:
                 parts.append(self._convert_paragraph(para))
 
@@ -150,20 +144,24 @@ class MarkdownConverter:
             return ""
 
         lines = []
+        header_count = len(table.headers)
 
         # Header row
         header_line = "| " + " | ".join(table.headers) + " |"
         lines.append(header_line)
 
         # Separator row
-        separator = "| " + " | ".join(["---"] * len(table.headers)) + " |"
+        separator = "| " + " | ".join(["---"] * header_count) + " |"
         lines.append(separator)
 
-        # Data rows
+        # Data rows - pad with empty cells if row is incomplete
         for row in table.rows:
             row_cells = []
             for cell in row.cells:
                 row_cells.append(cell.content)
+            # Pad with empty cells if row is shorter than header
+            while len(row_cells) < header_count:
+                row_cells.append("")
             lines.append("| " + " | ".join(row_cells) + " |")
 
         return "\n".join(lines)

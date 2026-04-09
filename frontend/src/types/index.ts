@@ -40,11 +40,17 @@ export interface Document {
   word_count: number | null
   status: 'pending' | 'parsing' | 'parsed' | 'failed'
   parse_error: string | null
+  parse_progress?: {
+    stage: string
+    processed: number
+    total: number
+    etaSeconds: number
+  }
   created_at: string
 }
 
 export interface DocumentContent {
-  md_content: string
+  html_content: string
   images: string[]
 }
 

@@ -14,7 +14,7 @@ from backend.models import Document
 logger = logging.getLogger(__name__)
 
 
-Stage = Literal["converting", "extracting", "saving"]
+Stage = Literal["extracting_text", "processing_images", "saving"]
 
 def _publish_parse_progress(document_id: str, stage: Stage, processed: int, total: int, eta_seconds: int) -> None:
     """Publish a parse progress event to Redis Stream.
@@ -172,6 +172,9 @@ def _insert_missing_img_tags(html_content: str, images_dir: Path) -> str:
 
 async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Document, settings, document_id: str) -> dict:
     """Save parsed content to disk and update document record."""
+    # Publish saving progress: start
+    _publish_parse_progress(document_id, "saving", 1, 3, 0)
+
     parsed_dir = file_path.parent
     html_path = parsed_dir / f"{file_path.stem}_parsed.html"
     images_dir = parsed_dir / f"{file_path.stem}_images"
@@ -205,6 +208,9 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
     document.word_count = len(html_content.split())
     document.status = "parsed"
 
+    # Publish saving progress: complete
+    _publish_parse_progress(document_id, "saving", 3, 3, 0)
+
     return {
         "status": "success",
         "document_id": document.id,
@@ -216,19 +222,43 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
 
 async def _parse_document_internal(document: Document, file_path: Path, settings) -> dict:
     """Internal document parsing logic."""
+    import time as time_module
+
     suffix = file_path.suffix.lower()
+    start_time = time_module.time()
+    total_steps = 3
+
+    # Publish initial progress: 0/3, starting text extraction
+    _publish_parse_progress(document.id, "extracting_text", 0, total_steps, 0)
 
     if suffix == ".pdf":
-        _publish_parse_progress(document.id, "extracting", 0, 0, 0)
         parsed_data = await _parse_pdf(file_path)
+        # Mark text extraction complete, start processing images
+        elapsed = time_module.time() - start_time
+        eta = int(elapsed * 2)  # Rough estimate: 2x elapsed for remaining steps
+        _publish_parse_progress(document.id, "processing_images", 1, total_steps, eta)
+        # Mark image processing complete
+        elapsed = time_module.time() - start_time
+        eta = int(elapsed * 1)  # One more step remaining
+        _publish_parse_progress(document.id, "processing_images", 2, total_steps, eta)
     elif suffix in [".docx", ".doc"]:
-        _publish_parse_progress(document.id, "converting", 0, 0, 0)
         parsed_data = await _parse_docx(file_path)
-        _publish_parse_progress(document.id, "extracting", 0, 0, 0)
+        # Mark text extraction complete, start processing images
+        elapsed = time_module.time() - start_time
+        eta = int(elapsed * 2)
+        _publish_parse_progress(document.id, "processing_images", 1, total_steps, eta)
+        # Mark image processing complete
+        elapsed = time_module.time() - start_time
+        eta = int(elapsed * 1)
+        _publish_parse_progress(document.id, "processing_images", 2, total_steps, eta)
     else:
         document.status = "failed"
         document.parse_error = f"Unsupported file type: {suffix}"
         return {"status": "error", "message": f"Unsupported file type: {suffix}"}
+
+    # Mark saving complete (final step)
+    elapsed = time_module.time() - start_time
+    _publish_parse_progress(document.id, "saving", 3, total_steps, 0)
 
     return await _save_parsed_content(file_path, parsed_data, document, settings, document.id)
 
@@ -282,8 +312,6 @@ def parse_document(self, document_id: str) -> dict:
 
             try:
                 result = await _parse_document_internal(document, file_path, settings)
-                # Publish final progress: saving stage
-                _publish_parse_progress(document_id, "saving", 0, 0, 0)
                 await db.commit()
                 return result
             except Exception as e:

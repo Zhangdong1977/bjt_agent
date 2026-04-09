@@ -1,9 +1,12 @@
 """Parsers module for document conversion and parsing.
 
-This module provides a pipeline for converting DOCX/DOC files to Markdown:
+This module provides a pipeline for converting DOCX/DOC files to HTML:
 1. LibreOfficeConverter - Convert DOCX/DOC to HTML using LibreOffice
 2. HTMLParser - Parse HTML and extract structural elements
-3. MarkdownConverter - Convert parsed structure to Markdown
+3. MarkdownConverter - Convert parsed structure to Markdown (optional, for backward compatibility)
+
+The system now stores documents as HTML rather than Markdown to preserve
+full structural information and reduce conversion losses.
 
 Example usage:
     from backend.parsers import LibreOfficeConverter, HTMLParser, MarkdownConverter
@@ -11,12 +14,13 @@ Example usage:
     # Convert DOCX to HTML
     converter = LibreOfficeConverter()
     result = await converter.convert(Path("document.docx"))
+    html_content = result["text"]  # HTML content ready to save
 
-    # Parse HTML structure
+    # Parse HTML structure (for structured access)
     parser = HTMLParser(result["text"])
     doc = parser.parse()
 
-    # Convert to Markdown
+    # Convert to Markdown (optional, for backward compatibility)
     md_converter = MarkdownConverter()
     markdown = md_converter.convert_document(doc)
 """
