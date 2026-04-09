@@ -14,18 +14,20 @@ mock_insert = MagicMock(return_value=MagicMock())
 from backend.services.merge_service import MergeService
 
 
+@pytest.fixture
+def mock_agent():
+    agent = MagicMock()
+    agent.decide_merge = AsyncMock()
+    return agent
+
+
+@pytest.fixture
+def mock_db():
+    return MagicMock()
+
+
 class TestMergeServiceLLMDecision:
     """Test MergeService with LLM-based merge decisions."""
-
-    @pytest.fixture
-    def mock_agent(self):
-        agent = MagicMock()
-        agent.decide_merge = AsyncMock()
-        return agent
-
-    @pytest.fixture
-    def mock_db(self):
-        return MagicMock()
 
     @pytest.mark.asyncio
     async def test_llm_decision_keep(self, mock_agent, mock_db):
@@ -252,3 +254,102 @@ class TestMergeServiceLLMDecision:
         assert len(call_log) == 2, f"Expected 2 LLM calls, got {len(call_log)}"
         assert call_log[0]["key"] == "new_001"
         assert call_log[1]["key"] == "new_002"
+
+
+class TestIsDuplicateContent:
+    """Test _is_duplicate_content method for detecting duplicate findings."""
+
+    @pytest.fixture
+    def service(self, mock_db):
+        return MergeService(mock_db)
+
+    def test_same_compliant_true_is_duplicate(self, service):
+        """Both compliant with same bid_content should be duplicate."""
+        new = {
+            "is_compliant": True,
+            "bid_content": "已取得ISO9001认证",
+            "explanation": "证书齐全",
+        }
+        existing = {
+            "is_compliant": True,
+            "bid_content": "已取得ISO9001认证",
+            "explanation": "证书齐全",
+        }
+        assert service._is_duplicate_content(new, existing) is True
+
+    def test_different_bid_content_not_duplicate(self, service):
+        """Different bid_content should not be duplicate."""
+        new = {
+            "is_compliant": True,
+            "bid_content": "已取得ISO9001认证",
+            "explanation": "证书齐全",
+        }
+        existing = {
+            "is_compliant": True,
+            "bid_content": "已取得ISO14001认证",
+            "explanation": "证书齐全",
+        }
+        assert service._is_duplicate_content(new, existing) is False
+
+    def test_different_compliance_not_duplicate(self, service):
+        """One compliant one not should not be duplicate."""
+        new = {
+            "is_compliant": False,
+            "severity": "major",
+            "bid_content": "交货期45天",
+            "explanation": "超过要求",
+        }
+        existing = {
+            "is_compliant": True,
+            "bid_content": "交货期45天",
+            "explanation": "超过要求",
+        }
+        assert service._is_duplicate_content(new, existing) is False
+
+    def test_different_severity_not_duplicate(self, service):
+        """Different severity should not be duplicate."""
+        new = {
+            "is_compliant": False,
+            "severity": "critical",
+            "bid_content": "缺少资质证书",
+            "explanation": "未提供",
+        }
+        existing = {
+            "is_compliant": False,
+            "severity": "major",
+            "bid_content": "缺少资质证书",
+            "explanation": "未提供",
+        }
+        assert service._is_duplicate_content(new, existing) is False
+
+    def test_different_explanation_not_duplicate(self, service):
+        """Different explanation should not be duplicate."""
+        new = {
+            "is_compliant": False,
+            "severity": "major",
+            "bid_content": "交货期45天",
+            "explanation": "超过要求30天",
+        }
+        existing = {
+            "is_compliant": False,
+            "severity": "major",
+            "bid_content": "交货期45天",
+            "explanation": "超过要求15天",
+        }
+        assert service._is_duplicate_content(new, existing) is False
+
+    def test_same_non_compliant_is_duplicate(self, service):
+        """Same non-compliant findings should be duplicate."""
+        new = {
+            "is_compliant": False,
+            "severity": "major",
+            "bid_content": "交货期45天",
+            "explanation": "超过要求30天",
+        }
+        existing = {
+            "is_compliant": False,
+            "severity": "major",
+            "bid_content": "交货期45天",
+            "explanation": "超过要求30天",
+        }
+        assert service._is_duplicate_content(new, existing) is True

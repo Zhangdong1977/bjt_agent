@@ -189,9 +189,24 @@ Returns structured comparison result with compliance status, severity, explanati
                 "location_line": result.get("location_line"),
             }
 
+            # Generate human-readable content summary
+            if formatted_result["is_compliant"]:
+                friendly_content = f"✅ 满足要求"
+            else:
+                severity_text = {
+                    "critical": "严重",
+                    "major": "较大",
+                    "minor": "一般",
+                }.get(formatted_result["severity"] or "major", "一般")
+                friendly_content = f"❌ 不满足要求（严重程度：{severity_text}）"
+                if formatted_result["explanation"]:
+                    friendly_content += f"\n📝 {formatted_result['explanation']}"
+                if formatted_result["suggestion"]:
+                    friendly_content += f"\n💡 建议：{formatted_result['suggestion']}"
+
             return ToolResult(
                 success=True,
-                content=json.dumps(formatted_result, ensure_ascii=False, indent=2),
+                content=friendly_content,
                 data=formatted_result,
             )
 

@@ -83,6 +83,50 @@ class MergeService:
                     pass
         return f"req_{max_num + 1:03d}"
 
+    def _is_duplicate_content(self, new_finding: dict, existing_finding: dict) -> bool:
+        """判断新旧发现是否实质内容相同。
+
+        实质内容相同意味着：
+        - is_compliant 相同
+        - severity 相同（如果不是 compliant）
+        - bid_content 相似
+        - explanation 相似
+
+        Args:
+            new_finding: 新发现
+            existing_finding: 现有发现
+
+        Returns:
+            True 如果实质内容相同（应该 discard），False 如果不同（应该 compare further）
+        """
+        # is_compliant 必须相同才可能是重复
+        if new_finding.get("is_compliant") != existing_finding.get("is_compliant"):
+            return False
+
+        # 如果是不合规的，severity 必须相同
+        if not new_finding.get("is_compliant", True):
+            new_severity = new_finding.get("severity") or ""
+            existing_severity = existing_finding.get("severity") or ""
+            if new_severity != existing_severity:
+                return False
+
+        # 比较 bid_content（忽略微小差异）
+        new_bid = (new_finding.get("bid_content") or "").strip()
+        existing_bid = (existing_finding.get("bid_content") or "").strip()
+        if new_bid != existing_bid:
+            # 如果 bid_content 不同，可能不是重复
+            return False
+
+        # 比较 explanation（允许一定差异）
+        new_exp = (new_finding.get("explanation") or "").strip()
+        existing_exp = (existing_finding.get("explanation") or "").strip()
+        if new_exp != existing_exp:
+            # explanation 不同，可能是不同的评估
+            return False
+
+        # 所有关键字段都相同，判断为重复
+        return True
+
     async def merge_project_results(
         self,
         project_id: str,
@@ -173,55 +217,56 @@ class MergeService:
             req_key = new_result.get("requirement_key", "")
 
             if req_key in existing_by_key:
+                # 当 requirement_key 相同时，说明新旧发现可能评估的是同一个招标要求
+                # 此时 "keep" 语义不明确，需要特殊处理
+
+                # 快速检查：比较新旧发现的实质内容是否相同
                 existing = existing_by_key[req_key]
+                if self._is_duplicate_content(new_result, existing):
+                    # 实质内容相同，直接 discard
+                    logger.info(f"[merge] key={req_key}: 发现实质内容重复，自动 discard")
+                    continue
 
-                # 构建所有现有记录的列表（用于 LLM 对比）
+                # 内容不同，需要决定是 replace 还是 keep_as_new
                 all_existing = list(new_merged_records)
-
-                # 使用 LLM 决策
-                decision = await self._get_llm_merge_decision(
-                    new_result,
-                    all_existing
-                )
+                decision = await self._get_llm_merge_decision(new_result, all_existing)
                 logger.info(f"[merge] LLM decision for key={req_key}: action={decision['action']}, reason={decision.get('reason', '')[:100]}")
 
                 if decision["action"] == "keep":
-                    # keep = 新发现是全新的，生成新 key 添加
+                    # keep = 作为独立条目添加（不同的招标要求）
                     new_key = self._generate_new_requirement_key(new_merged_records)
                     merged_record = {**new_result, "requirement_key": new_key, "merged_from_count": 1}
                     new_merged_records.append(merged_record)
                     merge_count += 1
                 elif decision["action"] == "replace":
-                    replace_key = decision.get("replace_key")
-                    if not replace_key:
-                        logger.warning(f"[merge] replace action but no replace_key specified, using keep")
+                    # replace = 更新现有的那条记录
+                    replace_key = decision.get("replace_key") or req_key
+                    target_record = None
+                    for rec in new_merged_records:
+                        if rec.get("requirement_key") == replace_key:
+                            target_record = rec
+                            break
+                    if target_record:
+                        target_record.update({
+                            **new_result,
+                            "requirement_key": replace_key,
+                            "merged_from_count": target_record.get("merged_from_count", 1) + 1,
+                        })
+                        merge_count += 1
+                    else:
+                        logger.warning(f"[merge] replace target {replace_key} not found, treating as keep")
                         new_key = self._generate_new_requirement_key(new_merged_records)
                         merged_record = {**new_result, "requirement_key": new_key, "merged_from_count": 1}
                         new_merged_records.append(merged_record)
-                    else:
-                        target_record = None
-                        for rec in new_merged_records:
-                            if rec.get("requirement_key") == replace_key:
-                                target_record = rec
-                                break
-                        if target_record:
-                            target_record.update({
-                                **new_result,
-                                "requirement_key": replace_key,
-                                "merged_from_count": target_record.get("merged_from_count", 1) + 1,
-                            })
-                        else:
-                            logger.warning(f"[merge] replace target {replace_key} not found, treating as keep")
-                            new_key = self._generate_new_requirement_key(new_merged_records)
-                            merged_record = {**new_result, "requirement_key": new_key, "merged_from_count": 1}
-                            new_merged_records.append(merged_record)
-                    merge_count += 1
+                        merge_count += 1
                 elif decision["action"] == "discard":
-                    # discard = 丢弃新发现，什么都不做
+                    # discard = 丢弃新发现（已通过快速检查排除了实质重复的）
                     pass
                 elif decision["action"] == "keep_both":
-                    new_record_copy = {**new_result, "merged_from_count": 1}
-                    new_merged_records.append(new_record_copy)
+                    # keep_both = 保留两条记录
+                    new_key = self._generate_new_requirement_key(new_merged_records)
+                    merged_record = {**new_result, "requirement_key": new_key, "merged_from_count": 1}
+                    new_merged_records.append(merged_record)
                     merge_count += 1
             else:
                 # 新 key，但需要与所有现有记录对比
