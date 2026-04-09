@@ -2,7 +2,6 @@
 
 import json
 import asyncio
-from pathlib import Path
 from typing import Optional, Callable
 
 from backend.agent.master.tools.rule_parser import RuleParserTool, RuleLibraryScannerTool
@@ -114,7 +113,7 @@ class MasterAgent:
             "merged_result": merged_result,
         }
 
-    async def _run_sub_agents_parallel(self, todo_service):
+    async def _run_sub_agents_parallel(self, todo_service) -> None:
         """并行执行所有子代理."""
         semaphore = asyncio.Semaphore(self.max_parallel)
 
