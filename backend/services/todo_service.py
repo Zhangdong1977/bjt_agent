@@ -1,7 +1,7 @@
 """TodoService for TodoItem and ReviewSession CRUD operations."""
 
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,26 +50,26 @@ class TodoService:
         session_id: str,
         status: str,
         merged_result: Optional[dict] = None,
-    ):
+    ) -> None:
         """Update session status."""
-        update_data = {"status": status, "updated_at": datetime.utcnow()}
+        update_data = {"status": status, "updated_at": datetime.now(timezone.utc)}
         if merged_result is not None:
             update_data["merged_result"] = merged_result
         if status == "completed":
-            update_data["completed_at"] = datetime.utcnow()
+            update_data["completed_at"] = datetime.now(timezone.utc)
         await self.db.execute(
             update(ReviewSession).where(ReviewSession.id == session_id).values(**update_data)
         )
         await self.db.commit()
 
-    async def increment_completed_todos(self, session_id: str):
+    async def increment_completed_todos(self, session_id: str) -> None:
         """Increment the completed todos count."""
         await self.db.execute(
             update(ReviewSession)
             .where(ReviewSession.id == session_id)
             .values(
                 completed_todos=ReviewSession.completed_todos + 1,
-                updated_at=datetime.utcnow(),
+                updated_at=datetime.now(timezone.utc),
             )
         )
         await self.db.commit()
@@ -120,13 +120,13 @@ class TodoService:
         status: str,
         result: Optional[dict] = None,
         error_message: Optional[str] = None,
-    ):
+    ) -> None:
         """Update todo status."""
-        update_data = {"status": status, "updated_at": datetime.utcnow()}
+        update_data = {"status": status, "updated_at": datetime.now(timezone.utc)}
         if status == "running":
-            update_data["started_at"] = datetime.utcnow()
+            update_data["started_at"] = datetime.now(timezone.utc)
         if status == "completed":
-            update_data["completed_at"] = datetime.utcnow()
+            update_data["completed_at"] = datetime.now(timezone.utc)
         if result is not None:
             update_data["result"] = result
         if error_message is not None:
@@ -136,7 +136,7 @@ class TodoService:
         )
         await self.db.commit()
 
-    async def reset_todo_for_retry(self, todo_id: str, retry_count: int):
+    async def reset_todo_for_retry(self, todo_id: str, retry_count: int) -> None:
         """Reset todo for retry."""
         await self.db.execute(
             update(TodoItem)
@@ -146,7 +146,7 @@ class TodoService:
                 result=None,
                 error_message=None,
                 retry_count=retry_count,
-                updated_at=datetime.utcnow(),
+                updated_at=datetime.now(timezone.utc),
             )
         )
         await self.db.commit()

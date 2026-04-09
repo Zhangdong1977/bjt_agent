@@ -4,7 +4,7 @@ Test cases for TodoService CRUD operations.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from backend.services.todo_service import TodoService
 from backend.models.todo_item import TodoItem
 from backend.models.review_session import ReviewSession
@@ -73,33 +73,66 @@ class TestGetSession:
         assert session is None
 
 
+def create_capturing_update_mock():
+    """Create an update statement mock that captures values passed to .values()."""
+    captured_values = {}
+
+    class UpdateMock:
+        def where(self, *args, **kwargs):
+            return self
+
+        def values(self, **kwargs):
+            captured_values.update(kwargs)
+            return self
+
+        async def execute(self):
+            pass
+
+    return UpdateMock(), captured_values
+
+
 class TestUpdateSessionStatus:
     """Tests for update_session_status method."""
 
     @pytest.mark.asyncio
     async def test_update_session_status(self, mock_db):
         """Test updating session status."""
-        mock_db.execute = AsyncMock()
-        mock_db.commit = AsyncMock()
+        mock_stmt, captured = create_capturing_update_mock()
 
-        service = TodoService(mock_db)
-        await service.update_session_status("s1", "completed")
+        with patch('backend.services.todo_service.update', return_value=mock_stmt):
+            mock_db.execute = AsyncMock()
+            mock_db.commit = AsyncMock()
 
-        mock_db.execute.assert_called_once()
-        mock_db.commit.assert_called_once()
+            service = TodoService(mock_db)
+            await service.update_session_status("s1", "completed")
+
+            mock_db.execute.assert_called_once()
+            mock_db.commit.assert_called_once()
+
+            # Verify key update values were passed
+            assert captured["status"] == "completed"
+            assert "updated_at" in captured
+            assert "completed_at" in captured
 
     @pytest.mark.asyncio
     async def test_update_session_status_with_result(self, mock_db):
         """Test updating session status with merged result."""
-        mock_db.execute = AsyncMock()
-        mock_db.commit = AsyncMock()
+        mock_stmt, captured = create_capturing_update_mock()
 
-        service = TodoService(mock_db)
-        merged_result = {"total": 10, "passed": 8}
-        await service.update_session_status("s1", "completed", merged_result=merged_result)
+        with patch('backend.services.todo_service.update', return_value=mock_stmt):
+            mock_db.execute = AsyncMock()
+            mock_db.commit = AsyncMock()
 
-        mock_db.execute.assert_called_once()
-        mock_db.commit.assert_called_once()
+            service = TodoService(mock_db)
+            merged_result = {"total": 10, "passed": 8}
+            await service.update_session_status("s1", "completed", merged_result=merged_result)
+
+            mock_db.execute.assert_called_once()
+            mock_db.commit.assert_called_once()
+
+            # Verify key update values were passed
+            assert captured["status"] == "completed"
+            assert captured["merged_result"] == merged_result
 
 
 class TestIncrementCompletedTodos:
@@ -108,14 +141,21 @@ class TestIncrementCompletedTodos:
     @pytest.mark.asyncio
     async def test_increment_completed_todos(self, mock_db):
         """Test incrementing completed todos count."""
-        mock_db.execute = AsyncMock()
-        mock_db.commit = AsyncMock()
+        mock_stmt, captured = create_capturing_update_mock()
 
-        service = TodoService(mock_db)
-        await service.increment_completed_todos("s1")
+        with patch('backend.services.todo_service.update', return_value=mock_stmt):
+            mock_db.execute = AsyncMock()
+            mock_db.commit = AsyncMock()
 
-        mock_db.execute.assert_called_once()
-        mock_db.commit.assert_called_once()
+            service = TodoService(mock_db)
+            await service.increment_completed_todos("s1")
+
+            mock_db.execute.assert_called_once()
+            mock_db.commit.assert_called_once()
+
+            # Verify key update values were passed
+            assert "completed_todos" in captured
+            assert "updated_at" in captured
 
 
 class TestCreateTodo:
@@ -218,39 +258,61 @@ class TestUpdateTodoStatus:
     @pytest.mark.asyncio
     async def test_update_todo_status(self, mock_db):
         """Test updating todo status."""
-        mock_db.execute = AsyncMock()
-        mock_db.commit = AsyncMock()
+        mock_stmt, captured = create_capturing_update_mock()
 
-        service = TodoService(mock_db)
-        await service.update_todo_status("t1", "completed")
+        with patch('backend.services.todo_service.update', return_value=mock_stmt):
+            mock_db.execute = AsyncMock()
+            mock_db.commit = AsyncMock()
 
-        mock_db.execute.assert_called_once()
-        mock_db.commit.assert_called_once()
+            service = TodoService(mock_db)
+            await service.update_todo_status("t1", "completed")
+
+            mock_db.execute.assert_called_once()
+            mock_db.commit.assert_called_once()
+
+            # Verify key update values were passed
+            assert captured["status"] == "completed"
+            assert "updated_at" in captured
+            assert "completed_at" in captured
 
     @pytest.mark.asyncio
     async def test_update_todo_status_with_result(self, mock_db):
         """Test updating todo status with result."""
-        mock_db.execute = AsyncMock()
-        mock_db.commit = AsyncMock()
+        mock_stmt, captured = create_capturing_update_mock()
 
-        service = TodoService(mock_db)
-        result = {"findings": ["发现1", "发现2"]}
-        await service.update_todo_status("t1", "completed", result=result)
+        with patch('backend.services.todo_service.update', return_value=mock_stmt):
+            mock_db.execute = AsyncMock()
+            mock_db.commit = AsyncMock()
 
-        mock_db.execute.assert_called_once()
-        mock_db.commit.assert_called_once()
+            service = TodoService(mock_db)
+            result = {"findings": ["发现1", "发现2"]}
+            await service.update_todo_status("t1", "completed", result=result)
+
+            mock_db.execute.assert_called_once()
+            mock_db.commit.assert_called_once()
+
+            # Verify key update values were passed
+            assert captured["status"] == "completed"
+            assert captured["result"] == result
 
     @pytest.mark.asyncio
     async def test_update_todo_status_with_error(self, mock_db):
         """Test updating todo status with error message."""
-        mock_db.execute = AsyncMock()
-        mock_db.commit = AsyncMock()
+        mock_stmt, captured = create_capturing_update_mock()
 
-        service = TodoService(mock_db)
-        await service.update_todo_status("t1", "failed", error_message="Something went wrong")
+        with patch('backend.services.todo_service.update', return_value=mock_stmt):
+            mock_db.execute = AsyncMock()
+            mock_db.commit = AsyncMock()
 
-        mock_db.execute.assert_called_once()
-        mock_db.commit.assert_called_once()
+            service = TodoService(mock_db)
+            await service.update_todo_status("t1", "failed", error_message="Something went wrong")
+
+            mock_db.execute.assert_called_once()
+            mock_db.commit.assert_called_once()
+
+            # Verify key update values were passed
+            assert captured["status"] == "failed"
+            assert captured["error_message"] == "Something went wrong"
 
 
 class TestResetTodoForRetry:
@@ -259,11 +321,20 @@ class TestResetTodoForRetry:
     @pytest.mark.asyncio
     async def test_reset_todo_for_retry(self, mock_db):
         """Test resetting todo for retry."""
-        mock_db.execute = AsyncMock()
-        mock_db.commit = AsyncMock()
+        mock_stmt, captured = create_capturing_update_mock()
 
-        service = TodoService(mock_db)
-        await service.reset_todo_for_retry("t1", retry_count=1)
+        with patch('backend.services.todo_service.update', return_value=mock_stmt):
+            mock_db.execute = AsyncMock()
+            mock_db.commit = AsyncMock()
 
-        mock_db.execute.assert_called_once()
-        mock_db.commit.assert_called_once()
+            service = TodoService(mock_db)
+            await service.reset_todo_for_retry("t1", retry_count=1)
+
+            mock_db.execute.assert_called_once()
+            mock_db.commit.assert_called_once()
+
+            # Verify key update values were passed
+            assert captured["status"] == "pending"
+            assert captured["result"] is None
+            assert captured["error_message"] is None
+            assert captured["retry_count"] == 1
