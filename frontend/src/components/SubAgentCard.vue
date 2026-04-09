@@ -1,22 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-
-interface CheckItem {
-  id: string
-  title: string
-  status?: 'pending' | 'running' | 'completed' | 'failed'
-}
-
-interface TodoItem {
-  id: string
-  rule_doc_name: string
-  check_items: CheckItem[]
-  status: 'pending' | 'running' | 'completed' | 'failed'
-  result?: {
-    findings: any[]
-  }
-  error_message?: string
-}
+import type { TodoItem } from '@/types/review'
 
 const props = defineProps<{
   todo: TodoItem
@@ -35,9 +19,7 @@ const cardClass = computed(() => {
 
 const progress = computed(() => {
   if (!props.todo.check_items?.length) return 0
-  const completed = props.todo.check_items.filter(
-    c => c.status === 'completed' || props.todo.status === 'completed'
-  ).length
+  const completed = props.todo.check_items.filter(c => c.status === 'completed').length
   return Math.round((completed / props.todo.check_items.length) * 100)
 })
 
@@ -52,21 +34,16 @@ const statusText = computed(() => {
   }
 })
 
-const findingsSummary = computed(() => {
-  if (!props.todo.result?.findings) return []
-  return props.todo.result.findings
-})
-
 const criticalFindings = computed(() =>
-  findingsSummary.value.filter(f => f.severity === 'critical')
+  (props.todo.result?.findings ?? []).filter(f => f.severity === 'critical')
 )
 
 const majorFindings = computed(() =>
-  findingsSummary.value.filter(f => f.severity === 'major')
+  (props.todo.result?.findings ?? []).filter(f => f.severity === 'major')
 )
 
 const passedCount = computed(() =>
-  findingsSummary.value.filter(f => f.is_compliant).length
+  (props.todo.result?.findings ?? []).filter(f => f.is_compliant).length
 )
 
 function toggle() {
@@ -86,7 +63,7 @@ function toggle() {
         <div class="pbar-outer">
           <div class="pbar-inner" :style="{ width: `${progress}%` }"></div>
         </div>
-        <span :class="['chip', `chip-${todo.status === 'completed' ? 'done' : todo.status === 'running' ? 'run' : 'wait'}`]">
+        <span :class="['chip', `chip-${todo.status === 'completed' ? 'done' : todo.status === 'running' ? 'run' : todo.status === 'failed' ? 'fail' : 'wait'}`]">
           {{ statusText }}
         </span>
         <span class="chevron">›</span>
@@ -114,7 +91,7 @@ function toggle() {
         正在执行检查项...
       </div>
 
-      <div v-if="findingsSummary.length" class="findings">
+      <div v-if="props.todo.result?.findings?.length" class="findings">
         <span v-for="f in criticalFindings" :key="f.requirement_key" class="finding-tag ft-crit">
           <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#f87171" opacity=".3"/><circle cx="4" cy="4" r="1.5" fill="#f87171"/></svg>
           严重: {{ f.requirement_content?.slice(0, 20) }}...
@@ -181,6 +158,7 @@ function toggle() {
 .chip-done { background: var(--green-bg); border-color: var(--green-dim); color: var(--green); }
 .chip-run { background: var(--purple-bg); border-color: var(--purple-dim); color: var(--purple); }
 .chip-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }
+.chip-fail { background: var(--red-bg); border-color: var(--red-dim); color: var(--red); }
 
 .chevron { font-size: 10px; color: var(--dim); transition: transform 0.2s; }
 .agent-card.open .chevron { transform: rotate(90deg); }
