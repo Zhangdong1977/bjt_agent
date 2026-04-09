@@ -18,14 +18,17 @@ class TodoItem(Base):
     session_id: Mapped[str] = mapped_column(String(36), index=True)
     rule_doc_path: Mapped[str] = mapped_column(String(500))
     rule_doc_name: Mapped[str] = mapped_column(String(255))
-    check_items: Mapped[Optional[list]] = mapped_column(JSON, default=list)  # 检查项列表
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending/running/completed/failed
+    check_items: Mapped[Optional[list]] = mapped_column(JSON, default=None)  # 检查项列表
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)  # pending/running/completed/failed
     result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<TodoItem(id={self.id}, status={self.status})>"
 
     def to_dict(self) -> dict:
         return {
