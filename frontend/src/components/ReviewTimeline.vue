@@ -8,6 +8,9 @@ import {
   CloseCircleOutlined,
 } from '@ant-design/icons-vue'
 import { Tag } from 'ant-design-vue'
+// Components for todo list display - to be integrated
+// import TodoListCard from './TodoListCard.vue'
+// import SubAgentCard from './SubAgentCard.vue'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
@@ -42,9 +45,27 @@ interface TimelineStep {
   tool_result?: {
     tool_results?: ToolResult[]
   }
+  data?: Record<string, any>
+}
+
+interface TodoItemState {
+  id: string
+  rule_doc_name: string
+  check_items: CheckItemState[]
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  findings_count?: number
+  error_message?: string
+}
+
+interface CheckItemState {
+  id: string
+  title: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
 }
 
 const steps = ref<TimelineStep[]>([])
+const phase = ref<'master' | 'todo' | 'sub_agents' | 'merging' | 'completed'>('master')
+const todos = ref<Map<string, TodoItemState>>(new Map())
 const isMerging = ref(false)
 const mergeProgress = ref('')
 let eventSource: EventSource | null = null
@@ -99,6 +120,62 @@ watch(() => props.historicalMode, (isHistorical) => {
 })
 
 function handleSSEEvent(event: SSEEvent) {
+  // Master agent events
+  if (event.type === 'master_started') {
+    // 主代理开始解析
+    steps.value = []
+    phase.value = 'master'
+  }
+
+  if (event.type === 'master_scan_completed') {
+    // 扫描完成，添加到时间轴
+    steps.value.push({
+      step_number: 1,
+      step_type: 'master',
+      content: `扫描规则库完成，发现 ${(event as any).total_docs} 个规则文档`,
+      timestamp: new Date(),
+      data: { rule_docs: (event as any).rule_docs }
+    })
+  }
+
+  if (event.type === 'todo_created') {
+    // 新建 Todo 项
+    addTodoItem(event as any)
+  }
+
+  if (event.type === 'todo_list_completed') {
+    // Todo 列表完成
+    phase.value = 'sub_agents'
+  }
+
+  if (event.type === 'sub_agent_started') {
+    // 子代理开始
+    updateTodoStatus((event as any).todo_id, 'running')
+  }
+
+  if (event.type === 'sub_agent_progress') {
+    // 子代理进度
+    updateTodoProgress((event as any).todo_id, (event as any).progress, (event as any).current_check)
+  }
+
+  if (event.type === 'sub_agent_completed') {
+    // 子代理完成
+    updateTodoStatus((event as any).todo_id, 'completed', (event as any).findings_count)
+  }
+
+  if (event.type === 'sub_agent_failed') {
+    // 子代理失败
+    updateTodoStatus((event as any).todo_id, 'failed', 0, (event as any).error)
+  }
+
+  if (event.type === 'merging_started') {
+    phase.value = 'merging'
+  }
+
+  if (event.type === 'merging_completed') {
+    phase.value = 'completed'
+  }
+
   if (event.type === 'step' && event.step_number !== undefined) {
     if (event.step_type === 'tool_result') {
       // tool_result: 查找对应的 step 并合并 tool_results
@@ -183,6 +260,48 @@ function disconnect() {
 
 function reset() {
   steps.value = []
+}
+
+// Helper methods for todo management
+function addTodoItem(event: SSEEvent) {
+  const todoItem: TodoItemState = {
+    id: event.todo_id || '',
+    rule_doc_name: event.rule_doc_name || '',
+    check_items: (event.check_items || []).map((item: any) => ({
+      id: item.id || '',
+      title: item.title || '',
+      status: 'pending' as const
+    })),
+    status: 'pending'
+  }
+  todos.value.set(todoItem.id, todoItem)
+}
+
+function updateTodoStatus(todoId: string, status: TodoItemState['status'], findingsCount?: number, error?: string) {
+  const todo = todos.value.get(todoId)
+  if (todo) {
+    todo.status = status
+    if (findingsCount !== undefined) {
+      todo.findings_count = findingsCount
+    }
+    if (error) {
+      todo.error_message = error
+    }
+    todos.value.set(todoId, { ...todo })
+  }
+}
+
+function updateTodoProgress(todoId: string, _progress: number, currentCheck: string) {
+  const todo = todos.value.get(todoId)
+  if (todo) {
+    // Update check items status
+    todo.check_items.forEach(item => {
+      if (item.title === currentCheck) {
+        item.status = 'running'
+      }
+    })
+    todos.value.set(todoId, { ...todo })
+  }
 }
 
 function getStepColor(stepType: string): string {

@@ -127,6 +127,10 @@ export interface ToolResult {
 // SSE Event types
 export interface SSEEvent {
   type: 'status' | 'progress' | 'step' | 'complete' | 'error' | 'merging' | 'merged'
+  | 'master_started' | 'master_scan_completed'
+  | 'todo_created' | 'todo_list_completed'
+  | 'sub_agent_started' | 'sub_agent_progress' | 'sub_agent_completed' | 'sub_agent_failed'
+  | 'merging_started' | 'merging_completed'
   task_id: string
   status?: string
   message?: string
@@ -142,6 +146,16 @@ export interface SSEEvent {
   findings_count?: number
   merged_count?: number
   total_count?: number
+  // Master agent event properties
+  total_docs?: number
+  rule_docs?: string[]
+  // Todo/sub-agent event properties
+  todo_id?: string
+  rule_doc_name?: string
+  check_items?: Array<{ id: string; title: string }>
+  progress?: number
+  current_check?: string
+  error?: string
 }
 
 // Upload types
