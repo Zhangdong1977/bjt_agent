@@ -56,42 +56,93 @@ class RuleParserTool(Tool):
             return ToolResult(success=False, content="", error=str(e))
 
     def _parse_markdown(self, content: str, doc_name: str) -> list[dict]:
-        """解析 Markdown 格式的规则文档"""
+        """解析 Markdown 格式的规则文档.
+
+        文档结构：
+        - # 文档标题
+        - # 响应文件检查项定义
+          - ## 检查项1 / ## 检查项2 / ... 作为检查项分隔
+            - ### 检查项名称
+            - ### 检查项规则描述
+            - ### 正例
+            - ### 反例
+        """
         check_items = []
         current_item = None
-        current_lines = []
+        current_section = None
+        section_lines = []
 
         lines = content.split("\n")
+        in_check_items_section = False
+
         for line in lines:
-            line = line.strip()
+            line_stripped = line.strip()
 
-            # 检查是否是新检查项的标题（## 开头的标题）
-            header_match = re.match(r"^##\s+(.+)$", line)
-            if header_match:
-                # 保存之前的检查项
-                if current_item:
-                    current_item["rule_content"] = "\n".join(current_lines).strip()
-                    check_items.append(current_item)
-
-                current_item = {
-                    "check_item_id": f"{doc_name}_{len(check_items) + 1:03d}",
-                    "title": header_match.group(1).strip(),
-                    "description": "",
-                    "rule_content": "",
-                }
-                current_lines = []
+            # 检查是否进入"响应文件检查项定义"章节
+            if re.match(r"^#\s+响应文件检查项定义\s*$", line_stripped):
+                in_check_items_section = True
                 continue
 
-            # 如果有当前检查项，收集内容
-            if current_item is not None:
-                current_lines.append(line)
+            # 如果不在检查项定义章节，跳过
+            if not in_check_items_section:
+                continue
+
+            # 检查是否是新的检查项标题（## 检查项N）
+            check_item_match = re.match(r"^##\s+检查项(\d+)\s*$", line_stripped)
+            if check_item_match:
+                # 保存之前的检查项
+                if current_item and current_section is not None:
+                    self._add_section_content(current_item, current_section, section_lines)
+                    if current_item.get("check_item_name"):
+                        check_items.append(current_item)
+
+                # 创建新检查项
+                current_item = {
+                    "check_item_id": f"{doc_name}_{int(check_item_match.group(1)):03d}",
+                    "check_item_name": "",
+                    "check_item_rule_desc": "",
+                    "positive_example": "",
+                    "negative_example": "",
+                }
+                current_section = None
+                section_lines = []
+                continue
+
+            # 检查是否是检查项的子章节（### 检查项名称 / ### 检查项规则描述 / ### 正例 / ### 反例）
+            section_match = re.match(r"^###\s+(检查项名称|检查项规则描述|正例|反例)\s*$", line_stripped)
+            if section_match and current_item is not None:
+                # 保存之前的 section 内容
+                if current_section:
+                    self._add_section_content(current_item, current_section, section_lines)
+
+                current_section = section_match.group(1)
+                section_lines = []
+                continue
+
+            # 收集 section 内容
+            if current_section is not None and current_item is not None:
+                section_lines.append(line)
 
         # 保存最后一个检查项
-        if current_item:
-            current_item["rule_content"] = "\n".join(current_lines).strip()
-            check_items.append(current_item)
+        if current_item and current_section is not None:
+            self._add_section_content(current_item, current_section, section_lines)
+            if current_item.get("check_item_name"):
+                check_items.append(current_item)
 
         return check_items
+
+    def _add_section_content(self, current_item: dict, current_section: str, section_lines: list):
+        """将 section 内容添加到检查项"""
+        content = "\n".join(section_lines).strip()
+
+        if current_section == "检查项名称":
+            current_item["check_item_name"] = content
+        elif current_section == "检查项规则描述":
+            current_item["check_item_rule_desc"] = content
+        elif current_section == "正例":
+            current_item["positive_example"] = content
+        elif current_section == "反例":
+            current_item["negative_example"] = content
 
 
 class RuleLibraryScannerTool(Tool):

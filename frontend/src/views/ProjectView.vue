@@ -5,12 +5,25 @@ import { useProjectStore } from '@/stores/project'
 import { documentsApi } from '@/api/client'
 import type { DocumentContent } from '@/types'
 import { ElMessage } from 'element-plus'
+import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { VMarkdownView } from 'vue3-markdown'
-import 'vue3-markdown/dist/vue3-markdown.css'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 import TimelineArea from '@/components/TimelineArea.vue'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
+
+// Configure DOMPurify to allow base64 images and table tags
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'TABLE') {
+    node.setAttribute('border', '1')
+    node.setAttribute('style', 'border-collapse: collapse; width: 100%; margin: 0.5em 0;')
+  }
+  if (node.tagName === 'TH' || node.tagName === 'TD') {
+    node.setAttribute('style', 'border: 1px solid #ddd; padding: 6px 10px;')
+  }
+  if (node.tagName === 'IMG') {
+    node.setAttribute('style', 'max-width: 100%; height: auto; display: block; margin: 0.5em 0;')
+  }
+})
 
 const route = useRoute()
 const router = useRouter()
@@ -39,6 +52,14 @@ async function handleTaskComplete(_taskId: string) {
   await projectStore.fetchReviewResults()
   // 刷新任务列表
   await projectStore.fetchReviewTasks()
+}
+
+function renderMarkdown(content: string): string {
+  const html = marked.parse(content) as string
+  return DOMPurify.sanitize(html, {
+    ADD_TAGS: ['table', 'thead', 'tbody', 'tr', 'th', 'td', 'img'],
+    ADD_ATTR: ['border', 'style', 'src', 'alt', 'width', 'height']
+  })
 }
 
 function goBack() {
@@ -276,10 +297,10 @@ function getStatusClass(status: string) {
           <div v-if="docViewerLoading" class="loading">正在加载文档...</div>
           <div v-else-if="docViewerContent" class="doc-content">
             <!-- Markdown 渲染 (DOCX/DOC) -->
-            <VMarkdownView
+            <div
               v-if="docViewerContent.format === 'markdown'"
-              :source="docViewerContent.content"
-              class="markdown-content"
+              class="markdown-body markdown-content"
+              v-html="renderMarkdown(docViewerContent.content)"
             />
             <!-- HTML 渲染 (PDF) -->
             <div

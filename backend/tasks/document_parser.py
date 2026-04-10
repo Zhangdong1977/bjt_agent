@@ -454,7 +454,7 @@ async def _parse_docx(file_path: Path) -> dict:
     # Determine the target images directory in workspace
     workspace_images_dir = file_path.parent / f"{file_path.stem}_images"
 
-    # Save images to workspace
+    # Save images to workspace and build image mapping
     images = []
     if result.images:
         workspace_images_dir.mkdir(parents=True, exist_ok=True)
@@ -466,6 +466,51 @@ async def _parse_docx(file_path: Path) -> dict:
                 "data": img_info.data,
             })
         logger.info(f"Saved {len(images)} images to {workspace_images_dir}")
+
+    # Replace image placeholders in markdown with actual base64 data
+    # markitdown uses format: ![](data:image/png;base64...) with literal "base64..."
+    # We need to check if images were extracted and replace placeholders
+    import re
+    # Find all base64 placeholders in the markdown
+    placeholder_pattern = r'!\[\]\(data:image/([^;]+);base64\.\.\.\)'
+    placeholders = re.findall(placeholder_pattern, markdown_content)
+
+    if placeholders and workspace_images_dir.exists():
+        # Get all image files from the images directory
+        image_files = list(workspace_images_dir.glob('*'))
+        image_files = [f for f in image_files if f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']]
+
+        if image_files:
+            logger.info(f"Found {len(image_files)} images in {workspace_images_dir}, replacing placeholders")
+
+            # Build a mapping of extension to MIME type
+            ext_to_mime = {
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.gif': 'image/gif',
+                '.bmp': 'image/bmp',
+                '.webp': 'image/webp',
+            }
+
+            # Replace each placeholder with actual image data
+            placeholder_idx = 0
+            for match in re.finditer(placeholder_pattern, markdown_content):
+                if placeholder_idx < len(image_files):
+                    img_file = image_files[placeholder_idx]
+                    img_data = img_file.read_bytes()
+                    import base64
+                    base64_data = base64.b64encode(img_data).decode('utf-8')
+                    mime_type = ext_to_mime.get(img_file.suffix.lower(), 'image/png')
+                    actual_data_uri = f"data:{mime_type};base64,{base64_data}"
+                    # Replace only the first occurrence
+                    markdown_content = markdown_content.replace(
+                        match.group(0),
+                        f"![]({actual_data_uri})",
+                        1
+                    )
+                    logger.info(f"Replaced placeholder with {img_file.name}")
+                    placeholder_idx += 1
 
     logger.info(f"Extracted {len(images)} images from DOCX")
 

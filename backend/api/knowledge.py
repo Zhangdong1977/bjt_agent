@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .deps import get_current_user, get_db_session
 from backend.config import get_settings
 from backend.models import User
-from schemas.knowledge import KnowledgeDocumentResponse, KnowledgeDocumentListResponse
-from schemas.auth import TokenData
+from backend.schemas.knowledge import KnowledgeDocumentResponse, KnowledgeDocumentListResponse
+from backend.schemas.auth import TokenData
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 

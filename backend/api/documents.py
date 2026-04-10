@@ -168,10 +168,35 @@ async def get_document_content(
     images = []
 
     if file_ext in [".docx", ".doc"]:
-        # Return Markdown content
+        # Return Markdown content if available, otherwise fallback to HTML
         content_format = "markdown"
         if document.parsed_markdown_path and Path(document.parsed_markdown_path).exists():
             content = Path(document.parsed_markdown_path).read_text(encoding="utf-8")
+        elif document.parsed_html_path and Path(document.parsed_html_path).exists():
+            # Fallback to HTML if markdown is not available
+            content_format = "html"
+            html_content = Path(document.parsed_html_path).read_text(encoding="utf-8")
+
+            # Fix relative image paths in HTML to use /files/ URLs
+            workspace_dir = settings.workspace_path
+            if document.parsed_images_dir and Path(document.parsed_images_dir).exists():
+                import re
+
+                workspace_rel_path = Path(document.parsed_images_dir).relative_to(workspace_dir).parent
+
+                def fix_img_src(match):
+                    img_tag = match.group(0)
+                    src_match = re.search(r'src=["\']([^"\']+)["\']', img_tag)
+                    if not src_match:
+                        return img_tag
+                    src = src_match.group(1)
+                    if src.startswith(('http://', 'https://', '/')):
+                        return img_tag
+                    new_src = f"/files/{workspace_rel_path}/{src}"
+                    return img_tag.replace(f'"{src}"', f'"{new_src}"').replace(f"'{src}'", f"'{new_src}'")
+
+                html_content = re.sub(r'<img[^>]+>', fix_img_src, html_content)
+            content = html_content
 
         # Get image paths
         workspace_dir = settings.workspace_path

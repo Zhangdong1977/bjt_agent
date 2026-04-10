@@ -96,16 +96,19 @@ class SubAgentExecutor:
         """构建检查项文本."""
         lines = []
         for i, item in enumerate(self.todo_item.check_items, 1):
-            title = item.get("title", "未命名检查项")
-            description = item.get("description", "")
-            rule_content = item.get("rule_content", "")
-            lines.append(f"{i}. {title}")
-            if description:
-                lines.append(f"   描述: {description}")
-            if rule_content:
-                truncated = rule_content[:200]
-                suffix = "..." if len(rule_content) > 200 else ""
-                lines.append(f"   规则: {truncated}{suffix}")
+            name = item.get("check_item_name", "未命名检查项")
+            rule_desc = item.get("check_item_rule_desc", "")
+            positive = item.get("positive_example", "")
+            negative = item.get("negative_example", "")
+
+            lines.append(f"### 检查项{i}: {name}")
+            if rule_desc:
+                lines.append(f"检查规则:\n{rule_desc}")
+            if positive:
+                lines.append(f"正例:\n{positive}")
+            if negative:
+                lines.append(f"反例:\n{negative}")
+            lines.append("")  # 空行分隔
         return "\n".join(lines)
 
     async def close(self):

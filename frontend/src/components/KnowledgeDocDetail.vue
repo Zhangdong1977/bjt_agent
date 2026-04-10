@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { knowledgeApi } from '@/api/client'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -32,14 +32,32 @@ const allShards = ref<Shard[]>([])
 const filteredShards = ref<Shard[]>([])
 const shardFilter = ref('')
 
-// Debounce timer for shard filtering
-let filterDebounceTimer: ReturnType<typeof setTimeout> | null = null
+// Configure DOMPurify for base64 images and tables
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'TABLE') {
+    node.setAttribute('border', '1')
+    node.setAttribute('style', 'border-collapse: collapse; width: 100%; margin: 0.5em 0;')
+  }
+  if (node.tagName === 'TH' || node.tagName === 'TD') {
+    node.setAttribute('style', 'border: 1px solid #ddd; padding: 6px 10px;')
+  }
+  if (node.tagName === 'IMG') {
+    node.setAttribute('style', 'max-width: 100%; height: auto; display: block; margin: 0.5em 0;')
+  }
+})
 
 // 将 Markdown 转换为 HTML 并消毒
 const htmlContent = computed(() => {
   if (!content.value?.content) return ''
-  return DOMPurify.sanitize(marked.parse(content.value.content) as string)
+  const html = marked.parse(content.value.content) as string
+  return DOMPurify.sanitize(html, {
+    ADD_TAGS: ['table', 'thead', 'tbody', 'tr', 'th', 'td', 'img'],
+    ADD_ATTR: ['border', 'style', 'src', 'alt', 'width', 'height']
+  })
 })
+
+// Debounce timer for shard filtering
+let filterDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 // 加载文档内容
 async function loadContent() {
@@ -175,7 +193,14 @@ function close() {
 
 .content-view :deep(h1) { font-size: 1.5em; margin: 0.5em 0; }
 .content-view :deep(h2) { font-size: 1.3em; margin: 0.5em 0; }
+.content-view :deep(h3) { font-size: 1.1em; margin: 0.5em 0; }
 .content-view :deep(p) { margin: 0.5em 0; }
+.content-view :deep(img) { max-width: 100%; height: auto; display: block; margin: 0.5em 0; }
+.content-view :deep(table) { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
+.content-view :deep(th), .content-view :deep(td) { border: 1px solid #ddd; padding: 6px 10px; }
+.content-view :deep(th) { background-color: #f0f0f0; font-weight: 600; }
+.content-view :deep(pre) { background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; }
+.content-view :deep(code) { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }
 
 .rag-search {
   padding: 16px 0;

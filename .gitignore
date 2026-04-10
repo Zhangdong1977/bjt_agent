@@ -17,3 +17,38 @@ Mini-Agent/
 frontend/dist/
 docs/superpowers
 docs/questiontobefixed.md
+.superpowers/
+doc_viewer_test.png
+docs/rules/
+
+# Python
+.pytest_cache/
+.mypy_cache/
+.coverage
+*.egg-info/
+celerybeat-schedule.db
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg
+
+# Vue/Node
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Environment
+.env.local
+.env.*.local

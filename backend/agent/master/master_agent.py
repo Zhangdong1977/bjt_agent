@@ -4,8 +4,8 @@ import json
 import asyncio
 from typing import Optional, Callable
 
-from backend.agent.master.tools.rule_parser import RuleParserTool, RuleLibraryScannerTool
-from backend.agent.master.sub_agent_executor import SubAgentExecutor, detect_anomaly
+from .tools.rule_parser import RuleParserTool, RuleLibraryScannerTool
+from .sub_agent_executor import SubAgentExecutor, detect_anomaly
 
 
 class MasterAgent:

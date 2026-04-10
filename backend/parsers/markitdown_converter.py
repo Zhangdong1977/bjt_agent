@@ -69,14 +69,15 @@ class MarkitdownConverter:
         try:
             # Add markitdown to path
             import sys
-            markitdown_path = Path(__file__).parent.parent.parent / "third_party" / "markitdown"
+            markitdown_path = Path(__file__).parent.parent.parent / "third_party" / "markitdown" / "packages" / "markitdown" / "src"
             if str(markitdown_path) not in sys.path:
                 sys.path.insert(0, str(markitdown_path))
 
             from markitdown import MarkItDown
 
             markitdown = MarkItDown()
-            result = markitdown.convert(str(file_path.resolve()))
+            # keep_data_uris=True preserves full base64 image data instead of truncating to "base64..."
+            result = markitdown.convert(str(file_path.resolve()), keep_data_uris=True)
 
             # Extract images from result
             images = self._extract_images(result)
