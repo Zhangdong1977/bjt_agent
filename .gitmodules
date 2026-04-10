@@ -1,3 +1,6 @@
 [submodule "Mini-Agent"]
 	path = Mini-Agent
 	url = https://github.com/MiniMax-AI/Mini-Agent.git
+[submodule "third_party/markitdown"]
+	path = third_party/markitdown
+	url = https://github.com/microsoft/markitdown.git
