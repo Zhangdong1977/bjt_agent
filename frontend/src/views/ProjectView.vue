@@ -6,6 +6,8 @@ import { documentsApi } from '@/api/client'
 import type { DocumentContent } from '@/types'
 import { ElMessage } from 'element-plus'
 import DOMPurify from 'dompurify'
+import { VMarkdownView } from 'vue3-markdown'
+import 'vue3-markdown/dist/vue3-markdown.css'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 import TimelineArea from '@/components/TimelineArea.vue'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
@@ -273,11 +275,18 @@ function getStatusClass(status: string) {
         <div class="doc-viewer-body">
           <div v-if="docViewerLoading" class="loading">正在加载文档...</div>
           <div v-else-if="docViewerContent" class="doc-content">
+            <!-- Markdown 渲染 (DOCX/DOC) -->
+            <VMarkdownView
+              v-if="docViewerContent.format === 'markdown'"
+              :source="docViewerContent.content"
+              class="markdown-content"
+            />
+            <!-- HTML 渲染 (PDF) -->
             <div
-              v-if="docViewerContent.html_content"
+              v-else-if="docViewerContent.content"
               class="html-content"
-              v-html="DOMPurify.sanitize(docViewerContent.html_content)"
-            ></div>
+              v-html="DOMPurify.sanitize(docViewerContent.content)"
+            />
             <div v-else class="no-content">无内容</div>
           </div>
         </div>
@@ -628,6 +637,82 @@ function getStatusClass(status: string) {
   color: #999;
   text-align: center;
   padding: 2rem;
+}
+
+/* Markdown styles */
+.markdown-content {
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3 {
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+}
+
+.markdown-content h1 { font-size: 1.75em; }
+.markdown-content h2 { font-size: 1.5em; }
+.markdown-content h3 { font-size: 1.25em; }
+
+.markdown-content p {
+  margin-bottom: 1em;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin-bottom: 1em;
+  padding-left: 2em;
+}
+
+.markdown-content li {
+  margin-bottom: 0.5em;
+}
+
+.markdown-content img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1em 0;
+}
+
+.markdown-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 1em;
+}
+
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid #ddd;
+  padding: 8px;
+}
+
+.markdown-content th {
+  background-color: #f5f5f5;
+  font-weight: 600;
+}
+
+.markdown-content code {
+  background-color: #f5f5f5;
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.markdown-content pre {
+  background-color: #f5f5f5;
+  padding: 1em;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin-bottom: 1em;
+}
+
+.markdown-content pre code {
+  background: none;
+  padding: 0;
 }
 
 </style>

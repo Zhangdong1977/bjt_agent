@@ -50,8 +50,9 @@ export interface Document {
 }
 
 export interface DocumentContent {
-  html_content: string
+  content: string
   images: string[]
+  format: 'markdown' | 'html'
 }
 
 // Review types
