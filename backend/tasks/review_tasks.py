@@ -372,9 +372,9 @@ async def _run_agent_review(
     """
     from backend.agent.bid_review_agent import BidReviewAgent
 
-    # Get document paths
-    tender_path = tender_doc.parsed_html_path or ""
-    bid_path = bid_doc.parsed_html_path or ""
+    # Get document paths - prefer markdown, fallback to html
+    tender_path = tender_doc.parsed_markdown_path or tender_doc.parsed_html_path or ""
+    bid_path = bid_doc.parsed_markdown_path or bid_doc.parsed_html_path or ""
 
     if not tender_path or not Path(tender_path).exists():
         raise FileNotFoundError("Tender document not parsed")
