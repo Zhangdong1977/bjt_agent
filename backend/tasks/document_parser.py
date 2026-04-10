@@ -176,48 +176,81 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
     _publish_parse_progress(document_id, "saving", 1, 3, 0)
 
     parsed_dir = file_path.parent
-    html_path = parsed_dir / f"{file_path.stem}_parsed.html"
-    images_dir = parsed_dir / f"{file_path.stem}_images"
+    suffix = file_path.suffix.lower()
 
-    html_content = parsed_data["text"]
+    # For DOCX/DOC: save as Markdown
+    if suffix in [".docx", ".doc"]:
+        md_path = parsed_dir / f"{file_path.stem}_parsed.md"
+        images_dir = parsed_dir / f"{file_path.stem}_images"
 
-    # Fix image paths in HTML to point to the images directory
-    # MUST be done BEFORE embedding descriptions so that filenames match
-    images_dir_name = f"{file_path.stem}_images"
-    # For DOCX files, images are extracted to workspace_images_dir but parsed_data["images"]
-    # may be empty if the file read failed, so check workspace_images_dir directly
-    has_images = parsed_data["images"] or images_dir.exists()
-    if has_images:
-        html_content = _fix_html_image_paths(html_content, images_dir_name)
-        # Also insert img tags for images that exist in directory but aren't referenced in HTML
-        # This handles LibreOffice cases where images are extracted but not referenced in HTML
-        html_content = _insert_missing_img_tags(html_content, images_dir)
+        md_content = parsed_data["text"]
 
-    # Save images
-    if parsed_data["images"]:
-        images_dir.mkdir(exist_ok=True)
-        for img_info in parsed_data["images"]:
-            img_path = images_dir / img_info["filename"]
-            img_path.write_bytes(img_info["data"])
-        document.parsed_images_dir = str(images_dir)
+        # Save Markdown content
+        md_path.write_text(md_content, encoding="utf-8")
 
-    # Write HTML and update document
-    html_path.write_text(html_content, encoding="utf-8")
-    document.parsed_html_path = str(html_path)
-    document.page_count = parsed_data.get("page_count")
-    document.word_count = len(html_content.split())
-    document.status = "parsed"
+        # Handle images - copy from markitdown result
+        if parsed_data["images"]:
+            images_dir.mkdir(exist_ok=True)
+            for img_info in parsed_data["images"]:
+                img_path = images_dir / img_info["filename"]
+                if not img_path.exists():
+                    img_path.write_bytes(img_info["data"])
+            document.parsed_images_dir = str(images_dir)
 
-    # Publish saving progress: complete
-    _publish_parse_progress(document_id, "saving", 3, 3, 0)
+        document.parsed_markdown_path = str(md_path)
+        document.word_count = len(md_content.split())
+        document.status = "parsed"
 
-    return {
-        "status": "success",
-        "document_id": document.id,
-        "parsed_html_path": str(html_path),
-        "page_count": document.page_count,
-        "word_count": document.word_count,
-    }
+        # Publish saving progress: complete
+        _publish_parse_progress(document_id, "saving", 3, 3, 0)
+
+        return {
+            "status": "success",
+            "document_id": document.id,
+            "parsed_markdown_path": str(md_path),
+            "page_count": None,
+            "word_count": document.word_count,
+        }
+
+    # For PDF: keep existing HTML logic
+    elif suffix == ".pdf":
+        html_path = parsed_dir / f"{file_path.stem}_parsed.html"
+        images_dir = parsed_dir / f"{file_path.stem}_images"
+
+        html_content = parsed_data["text"]
+
+        # Fix image paths in HTML to point to the images directory
+        images_dir_name = f"{file_path.stem}_images"
+        has_images = parsed_data["images"] or images_dir.exists()
+        if has_images:
+            html_content = _fix_html_image_paths(html_content, images_dir_name)
+            html_content = _insert_missing_img_tags(html_content, images_dir)
+
+        # Save images
+        if parsed_data["images"]:
+            images_dir.mkdir(exist_ok=True)
+            for img_info in parsed_data["images"]:
+                img_path = images_dir / img_info["filename"]
+                img_path.write_bytes(img_info["data"])
+            document.parsed_images_dir = str(images_dir)
+
+        # Write HTML and update document
+        html_path.write_text(html_content, encoding="utf-8")
+        document.parsed_html_path = str(html_path)
+        document.page_count = parsed_data.get("page_count")
+        document.word_count = len(html_content.split())
+        document.status = "parsed"
+
+        # Publish saving progress: complete
+        _publish_parse_progress(document_id, "saving", 3, 3, 0)
+
+        return {
+            "status": "success",
+            "document_id": document.id,
+            "parsed_html_path": str(html_path),
+            "page_count": document.page_count,
+            "word_count": document.word_count,
+        }
 
 
 async def _parse_document_internal(document: Document, file_path: Path, settings) -> dict:
@@ -399,75 +432,45 @@ async def _parse_pdf(file_path: Path) -> dict:
 
 
 async def _parse_docx(file_path: Path) -> dict:
-    """Parse DOCX file using LibreOffice in HTML mode.
-
-    Uses LibreOffice to convert DOCX to HTML. Returns the HTML content directly
-    without converting to Markdown, preserving full HTML structure and reducing
-    information loss.
+    """Parse DOCX file using markitdown.
 
     Args:
         file_path: Path to the DOCX file
 
     Returns:
-        Dict with text (HTML), images, and page_count (None)
-
-    Raises:
-        ValueError: If LibreOffice conversion fails
+        Dict with text (Markdown), images, and page_count (None)
     """
-    import shutil
-    from backend.parsers import LibreOfficeConverter
+    from backend.parsers.markitdown_converter import MarkitdownConverter
 
     file_size = file_path.stat().st_size
-    logger.info(f"LibreOffice HTML parsing: {file_path} ({file_size / (1024*1024):.2f}MB)")
+    logger.info(f"Markitdown parsing: {file_path} ({file_size / (1024*1024):.2f}MB)")
 
-    # Convert DOCX to HTML using the parser module
-    converter = LibreOfficeConverter()
-    result = await converter.convert(file_path)
+    converter = MarkitdownConverter()
+    result = converter.convert(file_path)
 
-    html_content = result["text"]
-    lo_images_dir = result["images_dir"]  # LibreOffice temp directory with extracted images
-
-    # Clean up sd-abs-pos elements (LibreOffice absolute positioning artifacts)
-    # These elements cause layout issues in web view as they use absolute positioning
-    # that doesn't flow with the document structure
-    html_content = _clean_sd_abs_pos_elements(html_content)
-
-    logger.info(f"LibreOffice HTML conversion successful: {len(html_content)} characters")
+    markdown_content = result.markdown_content
+    logger.info(f"Markitdown conversion successful: {len(markdown_content)} characters")
 
     # Determine the target images directory in workspace
     workspace_images_dir = file_path.parent / f"{file_path.stem}_images"
 
-    # Copy images from LibreOffice temp directory to workspace
-    if lo_images_dir and lo_images_dir.exists():
-        workspace_images_dir.mkdir(parents=True, exist_ok=True)
-        for img_path in lo_images_dir.iterdir():
-            if img_path.is_file() and img_path.suffix.lower() in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"]:
-                dest_path = workspace_images_dir / img_path.name
-                if not dest_path.exists():
-                    shutil.copy2(img_path, dest_path)
-        logger.info(f"Copied images from {lo_images_dir} to {workspace_images_dir}")
-
-    # Extract images from the workspace images directory
+    # Save images to workspace
     images = []
-    if workspace_images_dir.exists():
-        for img_path in workspace_images_dir.iterdir():
-            if img_path.is_file() and img_path.suffix.lower() in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"]:
-                try:
-                    # Limit image size to 10MB
-                    if img_path.stat().st_size > 10 * 1024 * 1024:
-                        logger.warning(f"Skipping large image ({img_path.stat().st_size} bytes): {img_path.name}")
-                        continue
-                    images.append({
-                        "filename": img_path.name,
-                        "data": img_path.read_bytes(),
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to read image {img_path}: {e}")
+    if result.images:
+        workspace_images_dir.mkdir(parents=True, exist_ok=True)
+        for img_info in result.images:
+            img_path = workspace_images_dir / img_info.filename
+            img_path.write_bytes(img_info.data)
+            images.append({
+                "filename": img_info.filename,
+                "data": img_info.data,
+            })
+        logger.info(f"Saved {len(images)} images to {workspace_images_dir}")
 
     logger.info(f"Extracted {len(images)} images from DOCX")
 
     return {
-        "text": html_content,
+        "text": markdown_content,  # Markdown content
         "images": images,
         "page_count": None,
     }
