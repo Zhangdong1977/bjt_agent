@@ -32,5 +32,6 @@ class DocumentListResponse(BaseModel):
 class DocumentContentResponse(BaseModel):
     """Schema for document content response."""
 
-    html_content: str
+    content: str  # renamed from html_content
     images: list[str]
+    format: str  # "markdown" or "html"
