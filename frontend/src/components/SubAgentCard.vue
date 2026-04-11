@@ -1,13 +1,23 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { TodoItem } from '@/types/review'
+import SubAgentTimeline from '@/components/execution/SubAgentTimeline.vue'
 
 const props = defineProps<{
   todo: TodoItem
   agentIndex: number
+  steps?: Array<{
+    step_number: number
+    step_type: string
+    content: string
+    timestamp: Date
+    tool_args?: { tool_calls?: Array<{ name: string; arguments: Record<string, any> }> }
+    tool_result?: { tool_results?: Array<{ name: string; result: any }> }
+  }>
 }>()
 
 const isOpen = ref(false)
+const showTimeline = ref(false)
 
 const cardClass = computed(() => {
   switch (props.todo.status) {
@@ -48,6 +58,10 @@ const passedCount = computed(() =>
 
 function toggle() {
   isOpen.value = !isOpen.value
+}
+
+function toggleTimeline() {
+  showTimeline.value = !showTimeline.value
 }
 </script>
 
@@ -105,6 +119,18 @@ function toggle() {
           通过: {{ passedCount }} 项
         </span>
       </div>
+
+      <div v-if="todo.status === 'completed'" class="timeline-toggle">
+        <button class="timeline-btn" @click.stop="toggleTimeline">
+          {{ showTimeline ? '收起时间线' : '查看时间线' }}
+          <span class="btn-icon">{{ showTimeline ? '↑' : '↓' }}</span>
+        </button>
+      </div>
+
+      <SubAgentTimeline
+        v-if="showTimeline"
+        :steps="steps || []"
+      />
     </div>
   </div>
 </template>
@@ -248,6 +274,34 @@ function toggle() {
 .ft-crit { background: var(--red-bg); border-color: var(--red-dim); color: var(--red); }
 .ft-major { background: var(--amber-bg); border-color: var(--amber-dim); color: var(--amber); }
 .ft-pass { background: var(--green-bg); border-color: var(--green-dim); color: var(--green); }
+
+.timeline-toggle {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.timeline-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg3);
+  border: 1px solid var(--line2);
+  border-radius: var(--r);
+  color: var(--sub);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.timeline-btn:hover {
+  background: var(--bg4);
+  color: var(--text);
+}
+
+.btn-icon {
+  font-size: 10px;
+}
 
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
 </style>
