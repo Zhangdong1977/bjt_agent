@@ -60,6 +60,12 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: '/projects/:id/review-execution',
+      name: 'review-execution',
+      component: () => import('@/views/ReviewExecutionView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/projects/:id/results',
       name: 'review-results',
       component: () => import('@/views/ResultsView.vue'),

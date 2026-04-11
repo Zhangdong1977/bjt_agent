@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { reviewApi } from '@/api/client'
 import ReviewTimeline from '@/components/ReviewTimeline.vue'
@@ -14,6 +15,7 @@ const emit = defineEmits<{
 }>()
 
 const projectStore = useProjectStore()
+const router = useRouter()
 
 const timelineRef = ref<InstanceType<typeof ReviewTimeline> | null>(null)
 const historicalSteps = ref<any[]>([])
@@ -83,11 +85,14 @@ async function startReview() {
     historicalSteps.value = []
 
     await projectStore.startReview()
-    ElMessage.info('审查已启动，正在连接事件流...')
+    ElMessage.success('审查已启动，正在跳转...')
 
-    // Connect to SSE via ReviewTimeline component
-    if (projectStore.currentTask?.id) {
-      timelineRef.value?.connect(projectStore.currentTask.id)
+    // Navigate to review execution page
+    if (projectStore.currentProject?.id) {
+      router.push({
+        name: 'review-execution',
+        params: { id: projectStore.currentProject.id }
+      })
     }
   } catch (error) {
     console.error('Failed to start review:', error)
