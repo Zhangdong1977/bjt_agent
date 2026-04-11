@@ -3,11 +3,14 @@ import { onMounted } from 'vue'
 import { RouterView } from 'vue-router'
 import { ConfigProvider } from 'ant-design-vue'
 import { useAuthStore } from '@/stores/auth'
+import { useTheme } from '@/composables/useTheme'
 
 const authStore = useAuthStore()
+const { initTheme } = useTheme()
 
 onMounted(() => {
   authStore.initialize()
+  initTheme()
 })
 </script>
 
