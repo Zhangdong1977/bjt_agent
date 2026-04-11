@@ -1,0 +1,51 @@
+/* 浅色主题变量 */
+:root {
+  /* 背景色系 */
+  --bg: #f5f5f5;
+  --bg1: #ffffff;
+  --bg2: #fafafa;
+  --bg3: #f0f0f0;
+  --bg4: #e8e8e8;
+
+  /* 边框线系 */
+  --line: #e0e0e0;
+  --line2: #d0d0d0;
+  --dim: #b0b0b0;
+
+  /* 文字色系 */
+  --muted: #888888;
+  --sub: #666666;
+  --text: #333333;
+  --bright: #111111;
+  --white: #ffffff;
+
+  /* 状态色系 */
+  --green: #52c41a;
+  --green-dim: #d9f7be;
+  --green-bg: #f6ffed;
+
+  --amber: #faad14;
+  --amber-dim: #ffe58f;
+  --amber-bg: #fffbe6;
+
+  --blue: #1890ff;
+  --blue-dim: #91d5ff;
+  --blue-bg: #e6f7ff;
+
+  --purple: #722ed1;
+  --purple-dim: #d3adf7;
+  --purple-bg: #f9f0ff;
+
+  --red: #ff4d4f;
+  --red-dim: #ffccc7;
+  --red-bg: #fff1f0;
+
+  --teal: #13c2c2;
+  --teal-dim: #87e8de;
+  --teal-bg: #e6fffb;
+
+  /* 基础变量 */
+  --mono: 'JetBrains Mono', 'Geist Mono', 'Fira Code', monospace;
+  --r: 6px;
+  --r2: 10px;
+}
