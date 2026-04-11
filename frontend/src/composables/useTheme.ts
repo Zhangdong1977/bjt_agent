@@ -1,0 +1,68 @@
+import { ref, watch, onMounted } from 'vue'
+
+type Theme = 'dark' | 'light'
+
+const STORAGE_KEY = 'app-theme'
+
+// 全局主题状态
+const theme = ref<Theme>('dark')
+
+// 初始化主题
+function initTheme() {
+  const stored = localStorage.getItem(STORAGE_KEY) as Theme | null
+  if (stored === 'dark' || stored === 'light') {
+    theme.value = stored
+  } else {
+    // 默认使用深色主题
+    theme.value = 'dark'
+  }
+  applyTheme(theme.value)
+}
+
+// 应用主题到 DOM
+function applyTheme(t: Theme) {
+  document.body.classList.remove('theme-dark', 'theme-light')
+  document.body.classList.add(`theme-${t}`)
+
+  // 动态加载主题 CSS
+  const existingLink = document.getElementById('theme-css')
+  if (existingLink) {
+    existingLink.remove()
+  }
+  const link = document.createElement('link')
+  link.id = 'theme-css'
+  link.rel = 'stylesheet'
+  link.href = `/src/assets/themes/${t}.css`
+  document.head.appendChild(link)
+}
+
+// 切换主题
+function toggleTheme() {
+  theme.value = theme.value === 'dark' ? 'light' : 'dark'
+  localStorage.setItem(STORAGE_KEY, theme.value)
+  applyTheme(theme.value)
+}
+
+// 设置特定主题
+function setTheme(t: Theme) {
+  theme.value = t
+  localStorage.setItem(STORAGE_KEY, t)
+  applyTheme(t)
+}
+
+export function useTheme() {
+  onMounted(() => {
+    initTheme()
+  })
+
+  watch(theme, (newTheme) => {
+    applyTheme(newTheme)
+  })
+
+  return {
+    theme,
+    toggleTheme,
+    setTheme,
+    initTheme
+  }
+}
