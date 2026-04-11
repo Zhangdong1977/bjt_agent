@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTheme } from '@/composables/useTheme'
 
-const props = defineProps<{
+defineProps<{
   projectName: string
   status: 'running' | 'completed' | 'pending' | 'failed'
 }>()

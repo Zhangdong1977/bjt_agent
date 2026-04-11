@@ -11,11 +11,7 @@ const props = defineProps<{
     totalDocs: number
     totalItems: number
     ruleDocs: Array<{ name: string; items: number }>
-  }
-}>()
-
-const emit = defineEmits<{
-  (e: 'toggleTimeline', todoId: string): void
+  } | null
 }>()
 
 const agentIndexMap = computed(() => {

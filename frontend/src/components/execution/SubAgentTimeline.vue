@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-
 interface ToolCall {
   name: string
   arguments: Record<string, any>
@@ -24,7 +22,7 @@ interface TimelineStep {
   }
 }
 
-const props = defineProps<{
+defineProps<{
   steps: TimelineStep[]
 }>()
 
