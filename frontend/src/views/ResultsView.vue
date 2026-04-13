@@ -66,8 +66,7 @@ function goToTimeline() {
   justify-content: space-between;
   align-items: center;
   padding: 1rem 2rem;
-  background: white;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  background: var(--bg1);
 }
 
 .header-left {
@@ -78,29 +77,29 @@ function goToTimeline() {
 
 .back-btn {
   padding: 0.5rem 1rem;
-  background: #ddd;
-  color: #333;
+  background: var(--bg3);
+  color: var(--text);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--r);
   cursor: pointer;
 }
 
 .header h1 {
-  color: #333;
+  color: var(--text);
   font-size: 1.5rem;
 }
 
 .timeline-btn {
   padding: 0.5rem 1rem;
-  background: #667eea;
-  color: white;
+  background: var(--purple);
+  color: var(--white);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--r);
   cursor: pointer;
 }
 
 .timeline-btn:hover {
-  background: #5568d3;
+  filter: brightness(1.1);
 }
 
 .content {
@@ -110,29 +109,41 @@ function goToTimeline() {
 }
 
 .section {
-  background: white;
+  background: var(--bg1);
   padding: 1.5rem;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  border-radius: var(--r2);
 }
 
 .section h2 {
-  color: #333;
+  color: var(--text);
   margin-bottom: 1rem;
   padding-bottom: 0.5rem;
-  border-bottom: 2px solid #667eea;
+  border-bottom: 2px solid var(--purple);
 }
 
 .no-results {
   text-align: center;
   padding: 3rem;
-  color: #666;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  color: var(--sub);
+  background: var(--bg1);
+  border-radius: var(--r2);
 }
 
 .no-results p {
   margin: 0.5rem 0;
+}
+
+@media (max-width: 767px) {
+  .header {
+    padding: 0.75rem 1rem;
+  }
+
+  .content {
+    padding: 0 1rem;
+  }
+
+  .section {
+    padding: 1rem;
+  }
 }
 </style>
