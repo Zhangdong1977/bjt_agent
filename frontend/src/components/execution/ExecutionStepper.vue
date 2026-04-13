@@ -1,19 +1,26 @@
 <script setup lang="ts">
 defineProps<{
-  phase: 'master' | 'todo' | 'sub_agents' | 'merging' | 'completed'
+  phase: 'pending' | 'running' | 'completed' | 'failed'
 }>()
 
 const steps = [
-  { key: 'master', label: '解析规则库' },
-  { key: 'todo', label: '生成待办' },
-  { key: 'sub_agents', label: '子代理执行' },
-  { key: 'merging', label: '合并质检' }
+  { key: 'pending', label: '等待开始' },
+  { key: 'running', label: '审查中' },
+  { key: 'completed', label: '已完成' }
 ]
 
 function getStepClass(stepKey: string, currentPhase: string) {
-  const phaseOrder = ['master', 'todo', 'sub_agents', 'merging', 'completed']
+  const phaseOrder = ['pending', 'running', 'completed', 'failed']
   const currentIndex = phaseOrder.indexOf(currentPhase)
   const stepIndex = phaseOrder.indexOf(stepKey)
+
+  if (currentPhase === 'failed') {
+    // All steps are done, last one is failed
+    if (stepKey === 'completed') return 's-done'
+    if (stepKey === 'running') return 's-done'
+    if (stepKey === 'pending') return 's-done'
+    return 's-wait'
+  }
 
   if (stepIndex < currentIndex) return 's-done'
   if (stepIndex === currentIndex) return 's-active'
@@ -33,6 +40,11 @@ function getStepClass(stepKey: string, currentPhase: string) {
         <span v-else>{{ index + 1 }}</span>
       </div>
       <span class="step-label">{{ step.label }}</span>
+    </div>
+    <!-- Failed state indicator -->
+    <div v-if="phase === 'failed'" class="step step-failed">
+      <div class="step-n">✗</div>
+      <span class="step-label">失败</span>
     </div>
   </div>
 </template>
@@ -87,12 +99,19 @@ function getStepClass(stepKey: string, currentPhase: string) {
   background: var(--purple-bg);
   border-color: var(--purple-dim);
   color: var(--purple);
+  animation: pulse 1.4s ease-in-out infinite;
 }
 
 .s-wait .step-n {
   background: var(--bg2);
   border-color: var(--line2);
   color: var(--muted);
+}
+
+.step-failed .step-n {
+  background: var(--red-bg);
+  border-color: var(--red-dim);
+  color: var(--red);
 }
 
 .step-label {
@@ -112,11 +131,20 @@ function getStepClass(stepKey: string, currentPhase: string) {
   color: var(--muted);
 }
 
+.step-failed .step-label {
+  color: var(--red);
+}
+
 .s-done::after {
   background: var(--green-dim);
 }
 
 .s-active::after {
   background: var(--line2);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.9); }
 }
 </style>

@@ -1,39 +1,64 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 
 const props = defineProps<{
-  totalDocs: number
-  totalItems: number
+  totalSteps: number
   completedCount: number
-  runningCount: number
-  pendingCount: number
-  criticalCount: number
-  majorCount: number
-  passedCount: number
-  uncheckedCount: number
-  progress: number
+  findingsCount: number
+  phase: 'pending' | 'running' | 'completed' | 'failed'
 }>()
 
-const overallProgress = computed(() => {
-  if (props.totalItems === 0) return 0
-  return Math.round((props.completedCount / props.totalItems) * 100)
+const router = useRouter()
+
+const progress = computed(() => {
+  if (props.totalSteps === 0) return 0
+  return Math.round((props.completedCount / props.totalSteps) * 100)
 })
+
+const statusText = computed(() => {
+  switch (props.phase) {
+    case 'pending': return '等待开始'
+    case 'running': return '审查中'
+    case 'completed': return '已完成'
+    case 'failed': return '失败'
+    default: return '未知'
+  }
+})
+
+function goBack() {
+  router.push({ name: 'project', params: { id: router.currentRoute.value.params.id } })
+}
 </script>
 
 <template>
   <div class="right-sidebar">
-    <!-- 整体进度 -->
+    <!-- 状态指示 -->
     <div class="sidebar-section">
-      <div class="section-title">整体进度</div>
+      <div class="section-title">审查状态</div>
+      <div :class="['status-indicator', `status-${phase}`]">
+        <div class="status-dot"></div>
+        <span class="status-text">{{ statusText }}</span>
+      </div>
+    </div>
+
+    <!-- 执行进度 -->
+    <div class="sidebar-section">
+      <div class="section-title">执行进度</div>
       <div class="overall-progress">
         <div class="progress-label">
-          <span>子代理完成率</span>
-          <span class="progress-pct">{{ overallProgress }}%</span>
+          <span>智能体步骤</span>
+          <span class="progress-pct">{{ progress }}%</span>
         </div>
         <div class="progress-bar-outer">
-          <div class="progress-bar-inner" :style="{ width: `${overallProgress}%` }">
-            <div class="progress-shine"></div>
-          </div>
+          <div
+            class="progress-bar-inner"
+            :style="{ width: `${progress}%` }"
+            :class="{ 'animate': phase === 'running' }"
+          ></div>
+        </div>
+        <div class="progress-stats">
+          <span>{{ completedCount }} / {{ totalSteps }} 步骤</span>
         </div>
       </div>
     </div>
@@ -43,46 +68,21 @@ const overallProgress = computed(() => {
       <div class="section-title">执行统计</div>
       <div class="stats-grid">
         <div class="stat-box">
-          <div class="stat-val sv-purple">{{ totalDocs }}</div>
-          <div class="stat-lbl">规则文档</div>
+          <div class="stat-val sv-purple">{{ totalSteps }}</div>
+          <div class="stat-lbl">总步骤数</div>
         </div>
         <div class="stat-box">
-          <div class="stat-val sv-blue">{{ totalItems }}</div>
-          <div class="stat-lbl">检查项总数</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-val sv-green">{{ completedCount }}</div>
+          <div class="stat-val sv-blue">{{ completedCount }}</div>
           <div class="stat-lbl">已完成</div>
         </div>
         <div class="stat-box">
-          <div class="stat-val sv-amber">{{ runningCount + pendingCount }}</div>
-          <div class="stat-lbl">进行中/等待</div>
+          <div class="stat-val sv-amber">{{ totalSteps - completedCount }}</div>
+          <div class="stat-lbl">进行中</div>
         </div>
-      </div>
-    </div>
-
-    <!-- 发现问题汇总 -->
-    <div class="sidebar-section">
-      <div class="section-title">已发现不符合项</div>
-      <div class="finding-row fr-crit">
-        <div class="fr-dot"></div>
-        <div class="fr-label">严重缺陷</div>
-        <div class="fr-count">{{ criticalCount }}</div>
-      </div>
-      <div class="finding-row fr-major">
-        <div class="fr-dot"></div>
-        <div class="fr-label">一般缺陷</div>
-        <div class="fr-count">{{ majorCount }}</div>
-      </div>
-      <div class="finding-row fr-pass">
-        <div class="fr-dot"></div>
-        <div class="fr-label">已通过</div>
-        <div class="fr-count">{{ passedCount }}</div>
-      </div>
-      <div class="finding-row fr-wait">
-        <div class="fr-dot"></div>
-        <div class="fr-label">未检查</div>
-        <div class="fr-count">{{ uncheckedCount }}</div>
+        <div class="stat-box">
+          <div class="stat-val sv-green">{{ findingsCount }}</div>
+          <div class="stat-lbl">发现问题</div>
+        </div>
       </div>
     </div>
 
@@ -92,27 +92,23 @@ const overallProgress = computed(() => {
       <div class="legend-list">
         <div class="leg">
           <div class="leg-swatch" style="background: var(--purple)"></div>
-          <span>主代理 (Master)</span>
-        </div>
-        <div class="leg">
-          <div class="leg-swatch" style="background: var(--amber)"></div>
-          <span>待办列表 (Todo)</span>
+          <span>思考过程</span>
         </div>
         <div class="leg">
           <div class="leg-swatch" style="background: var(--blue)"></div>
-          <span>子代理 (Sub-Agent)</span>
+          <span>观察</span>
         </div>
         <div class="leg">
-          <div class="leg-swatch" style="background: var(--teal)"></div>
-          <span>合并质检 (Merging)</span>
+          <div class="leg-swatch" style="background: #fa8c16"></div>
+          <span>工具调用</span>
         </div>
         <div class="leg">
           <div class="leg-swatch" style="background: var(--green)"></div>
-          <span>完成 / 通过</span>
+          <span>完成</span>
         </div>
         <div class="leg">
           <div class="leg-swatch" style="background: var(--red)"></div>
-          <span>严重缺陷</span>
+          <span>失败</span>
         </div>
       </div>
     </div>
@@ -121,8 +117,7 @@ const overallProgress = computed(() => {
     <div class="sidebar-section">
       <div class="section-title">操作</div>
       <div class="actions">
-        <button class="btn btn-ghost">取消审查</button>
-        <button class="btn btn-primary">查看结果 →</button>
+        <button class="btn btn-ghost" @click="goBack">返回项目</button>
       </div>
     </div>
   </div>
@@ -159,6 +154,44 @@ const overallProgress = computed(() => {
   background: var(--line);
 }
 
+/* 状态指示 */
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.status-pending .status-dot { background: var(--muted); }
+.status-running .status-dot { background: var(--purple); animation: pulse 1.4s ease-in-out infinite; }
+.status-completed .status-dot { background: var(--green); }
+.status-failed .status-dot { background: var(--red); }
+
+.status-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.status-pending .status-text { color: var(--muted); }
+.status-running .status-text { color: var(--purple); }
+.status-completed .status-text { color: var(--green); }
+.status-failed .status-text { color: var(--red); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
 /* 进度条 */
 .overall-progress {
   background: var(--bg2);
@@ -191,22 +224,24 @@ const overallProgress = computed(() => {
   height: 100%;
   border-radius: 3px;
   background: var(--purple);
-  position: relative;
-  overflow: hidden;
+  transition: width 0.3s ease;
 }
 
-.progress-shine {
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 60%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(167,139,250,.5), transparent);
+.progress-bar-inner.animate {
   animation: shine 1.8s ease-in-out infinite;
 }
 
 @keyframes shine {
-  to { left: 160%; }
+  0% { opacity: 0.8; }
+  50% { opacity: 1; }
+  100% { opacity: 0.8; }
+}
+
+.progress-stats {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--muted);
+  text-align: right;
 }
 
 /* 统计网格 */
@@ -241,45 +276,6 @@ const overallProgress = computed(() => {
   color: var(--muted);
   margin-top: 4px;
 }
-
-/* 发现行 */
-.finding-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: var(--r);
-  font-size: 12px;
-  background: var(--bg2);
-  border: 1px solid var(--line);
-  margin-bottom: 5px;
-}
-
-.fr-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.fr-label {
-  flex: 1;
-  color: var(--text);
-}
-
-.fr-count {
-  font-weight: 600;
-}
-
-.fr-crit .fr-dot { background: var(--red); }
-.fr-major .fr-dot { background: var(--amber); }
-.fr-pass .fr-dot { background: var(--green); }
-.fr-wait .fr-dot { background: var(--dim); }
-
-.fr-crit .fr-count { color: var(--red); }
-.fr-major .fr-count { color: var(--amber); }
-.fr-pass .fr-count { color: var(--green); }
-.fr-wait .fr-count { color: var(--muted); }
 
 /* 图例 */
 .legend-list {
@@ -333,16 +329,5 @@ const overallProgress = computed(() => {
   background: var(--bg2);
   border-color: var(--dim);
   color: var(--text);
-}
-
-.btn-primary {
-  background: var(--purple-bg);
-  border: 1px solid var(--purple-dim);
-  color: var(--purple);
-}
-
-.btn-primary:hover {
-  background: var(--purple-dim);
-  border-color: var(--purple);
 }
 </style>
