@@ -127,6 +127,7 @@ def run_review(self, task_id: str) -> dict:
                 task.status = "running"
                 task.started_at = datetime.utcnow()
                 await db.flush()
+                await db.commit()  # Commit immediately so API can see status change
 
                 # Send SSE event (Redis Streams handles reliability - no sleep needed)
                 _publish_event(task_id, "status", {"status": "running"})
@@ -368,9 +369,10 @@ async def _run_agent_review(
 ) -> list[dict]:
     """Run the agent review process and return findings.
 
-    Uses BidReviewAgent with Mini-Max LLM for actual comparison.
+    Uses MasterAgent with SubAgentExecutor for multi-agent review.
     """
-    from backend.agent.bid_review_agent import BidReviewAgent
+    from backend.agent.master import MasterAgent
+    from backend.services.todo_service import TodoService
 
     # Get document paths - prefer markdown, fallback to html
     tender_path = tender_doc.parsed_markdown_path or tender_doc.parsed_html_path or ""
@@ -382,6 +384,9 @@ async def _run_agent_review(
     if not bid_path or not Path(bid_path).exists():
         raise FileNotFoundError("Bid document not parsed")
 
+    # Fixed rule library path
+    rule_library_path = "/home/openclaw/bjt_agent/docs/rules"
+
     # Create event callback for SSE
     def event_cb(event_type: str, data: dict):
         _publish_event(task_id, event_type, data)
@@ -391,37 +396,28 @@ async def _run_agent_review(
     if hasattr(tender_doc.project, 'user_id'):
         user_id = str(tender_doc.project.user_id)
 
-    agent = BidReviewAgent(
+    master = MasterAgent(
         project_id=str(tender_doc.project_id),
+        rule_library_path=rule_library_path,
         tender_doc_path=tender_path,
         bid_doc_path=bid_path,
         user_id=user_id,
         event_callback=event_cb,
-        max_steps=200,
     )
-    await agent.initialize()
 
-    # Note: BidReviewAgent.run_review() sends its own initialization event internally
-    # Run the agent
-    step_number = 1
-    tool_results_start_idx = 0  # Track starting index for each step's tool results
+    # Create TodoService for MasterAgent
+    todo_service = TodoService(db)
+
     try:
-        result = await agent.run_review()
+        result = await master.run(todo_service, session_id=task_id)
 
-        # Record agent steps from message history
-        for msg in agent.get_history():
-            if msg.role == "assistant":
-                # Compute how many tool results belong to this step
-                num_tool_calls = len(msg.tool_calls) if msg.tool_calls else 0
-                step_tool_results = agent._tool_results[tool_results_start_idx:tool_results_start_idx + num_tool_calls]
-                step_number = _record_agent_step(db, task_id, step_number, msg, step_tool_results)
-                tool_results_start_idx += num_tool_calls
-
-        await db.flush()
-        return _parse_findings_result(result)
+        if result.get("success"):
+            return result.get("merged_result", {}).get("findings", [])
+        else:
+            error_msg = result.get("error", "Unknown error")
+            event_cb("error", {"message": f"MasterAgent error: {error_msg}"})
+            return _create_error_finding(error_msg)
 
     except Exception as e:
         event_cb("error", {"message": f"Agent error: {str(e)}"})
         return _create_error_finding(str(e))
-    finally:
-        await agent.close()
