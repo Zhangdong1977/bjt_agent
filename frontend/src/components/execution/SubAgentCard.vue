@@ -99,7 +99,7 @@ function getFindingClass(type: string) {
   overflow: hidden;
   margin-bottom: 8px;
 }
-.agent-card.ac-active { border-color: var(--purple-dim); }
+.agent-card.ac-running { border-color: var(--purple-dim); }
 .agent-card.ac-done { border-color: var(--green-dim); }
 
 .agent-card-head {
@@ -112,7 +112,7 @@ function getFindingClass(type: string) {
   cursor: pointer;
   user-select: none;
 }
-.agent-card.ac-active .agent-card-head { background: #160f28; }
+.agent-card.ac-running .agent-card-head { background: #160f28; }
 .agent-card.ac-done .agent-card-head { background: #0c1d14; }
 
 .ac-avt {
@@ -123,7 +123,7 @@ function getFindingClass(type: string) {
   flex-shrink: 0;
 }
 .ac-done .ac-avt { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-dim); }
-.ac-active .ac-avt { background: var(--purple-bg); color: var(--purple); border: 1px solid var(--purple-dim); }
+.ac-running .ac-avt { background: var(--purple-bg); color: var(--purple); border: 1px solid var(--purple-dim); }
 .ac-wait .ac-avt { background: var(--bg3); color: var(--muted); border: 1px solid var(--line2); }
 
 .ac-info { flex: 1; min-width: 0; }
@@ -139,7 +139,7 @@ function getFindingClass(type: string) {
 }
 .pbar-inner { height: 100%; border-radius: 2px; transition: width 0.5s ease; }
 .ac-done .pbar-inner { background: var(--green); }
-.ac-active .pbar-inner { background: var(--purple); }
+.ac-running .pbar-inner { background: var(--purple); }
 .ac-wait .pbar-inner { background: var(--dim); }
 
 .chevron { font-size: 10px; color: var(--dim); transition: transform 0.2s; }
