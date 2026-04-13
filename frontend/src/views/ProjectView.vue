@@ -8,7 +8,6 @@ import { ElMessage } from 'element-plus'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
-import TimelineArea from '@/components/TimelineArea.vue'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
 
 // Configure DOMPurify to allow base64 images and table tags
@@ -18,7 +17,7 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     node.setAttribute('style', 'border-collapse: collapse; width: 100%; margin: 0.5em 0;')
   }
   if (node.tagName === 'TH' || node.tagName === 'TD') {
-    node.setAttribute('style', 'border: 1px solid #ddd; padding: 6px 10px;')
+    node.setAttribute('style', 'border: 1px solid var(--line); padding: 6px 10px;')
   }
   if (node.tagName === 'IMG') {
     node.setAttribute('style', 'max-width: 100%; height: auto; display: block; margin: 0.5em 0;')
@@ -41,18 +40,9 @@ const docViewerTitle = ref('')
 
 onMounted(async () => {
   await projectStore.selectProject(projectId.value)
-  // Fetch review tasks for TimelineArea to use
-  await projectStore.fetchReviewTasks()
   // Fetch latest review results
   await projectStore.fetchReviewResults()
 })
-
-async function handleTaskComplete(_taskId: string) {
-  // 任务完成时刷新审查结果
-  await projectStore.fetchReviewResults()
-  // 刷新任务列表
-  await projectStore.fetchReviewTasks()
-}
 
 function renderMarkdown(content: string): string {
   const html = marked.parse(content) as string
@@ -106,6 +96,15 @@ function closeDocViewer() {
 async function handleDeleteDoc(docId: string) {
   if (confirm('确定要删除此文档吗？')) {
     await projectStore.deleteDocument(docId)
+  }
+}
+
+async function handleStartReview() {
+  try {
+    await projectStore.startReview()
+    router.push({ name: 'review-execution', params: { id: projectId.value } })
+  } catch {
+    ElMessage.error('启动审查失败')
   }
 }
 
@@ -270,18 +269,18 @@ function getStatusClass(status: string) {
         </div>
       </section>
 
-      <!-- Timeline Section -->
-      <section class="section">
-        <h2>时间线</h2>
-        <TimelineArea
-          :project-id="projectId"
-          @task-complete="handleTaskComplete"
-        />
-      </section>
-
       <!-- Results Section -->
       <section class="section">
         <h2>审查结果</h2>
+        <div class="review-actions">
+          <button
+            class="start-review-btn"
+            :disabled="!tenderDoc || !bidDoc || tenderDoc.status !== 'parsed' || bidDoc.status !== 'parsed'"
+            @click="handleStartReview"
+          >
+            {{ projectStore.reviewLoading ? '启动中...' : '开始审查' }}
+          </button>
+        </div>
         <ReviewResultsArea :review-results="projectStore.reviewResults" />
       </section>
     </main>
@@ -326,7 +325,7 @@ function getStatusClass(status: string) {
   justify-content: space-between;
   align-items: center;
   padding: 1rem 2rem;
-  background: white;
+  background: var(--bg1);
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
@@ -338,15 +337,15 @@ function getStatusClass(status: string) {
 
 .back-btn {
   padding: 0.5rem 1rem;
-  background: #ddd;
-  color: #333;
+  background: var(--line);
+  color: var(--text);
   border: none;
   border-radius: 4px;
   cursor: pointer;
 }
 
 .header h1 {
-  color: #333;
+  color: var(--text);
   font-size: 1.5rem;
 }
 
@@ -357,7 +356,7 @@ function getStatusClass(status: string) {
 }
 
 .section {
-  background: white;
+  background: var(--white);
   padding: 1.5rem;
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
@@ -365,10 +364,10 @@ function getStatusClass(status: string) {
 }
 
 .section h2 {
-  color: #1e1b4b;
+  color: var(--text);
   margin-bottom: 1.5rem;
   padding-bottom: 0.5rem;
-  border-bottom: 2px solid #6366f1;
+  border-bottom: 2px solid var(--purple);
 }
 
 .documents-grid {
@@ -378,10 +377,10 @@ function getStatusClass(status: string) {
 }
 
 .document-card {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--line);
   border-radius: 12px;
   padding: 1.25rem;
-  background: #fff;
+  background: var(--white);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   transition: box-shadow 0.2s ease;
 }
@@ -391,14 +390,14 @@ function getStatusClass(status: string) {
 }
 
 .document-card h3 {
-  color: #1e1b4b;
+  color: var(--text);
   font-size: 0.85rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-bottom: 1rem;
   padding-bottom: 0.75rem;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--bg3);
 }
 
 .document-info {
@@ -416,7 +415,7 @@ function getStatusClass(status: string) {
   flex-shrink: 0;
   width: 36px;
   height: 36px;
-  background: #f5f3ff;
+  background: var(--bg);
   border-radius: 8px;
   display: flex;
   align-items: center;
@@ -430,7 +429,7 @@ function getStatusClass(status: string) {
 }
 
 .filename {
-  color: #111827;
+  color: var(--text);
   font-weight: 600;
   font-size: 0.95rem;
   word-break: break-all;
@@ -439,7 +438,7 @@ function getStatusClass(status: string) {
 }
 
 .doc-meta {
-  color: #6b7280;
+  color: var(--muted);
   font-size: 0.8rem;
   margin: 0.25rem 0 0 0;
 }
@@ -461,15 +460,15 @@ function getStatusClass(status: string) {
 .upload-label {
   display: block;
   padding: 2rem;
-  border: 2px dashed #6366f1;
+  border: 2px dashed var(--purple);
   border-radius: 8px;
-  color: #6366f1;
+  color: var(--purple);
   cursor: pointer;
   transition: background-color 0.2s ease;
 }
 
 .upload-label:hover {
-  background: #f5f3ff;
+  background: var(--bg);
 }
 
 .status {
@@ -482,23 +481,23 @@ function getStatusClass(status: string) {
 }
 
 .status-pending {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--bg3);
+  color: var(--muted);
 }
 
 .status-running {
-  background: #fef9c3;
-  color: #854d0e;
+  background: var(--amber-bg);
+  color: var(--amber);
 }
 
 .status-success {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--green-bg);
+  color: var(--green);
 }
 
 .status-error {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--red-bg);
+  color: var(--red);
 }
 
 .doc-actions {
@@ -519,22 +518,23 @@ function getStatusClass(status: string) {
 }
 
 .view-btn {
-  background: #6366f1;
+  background: var(--purple);
   color: white;
 }
 
 .view-btn:hover {
-  background: #4f46e5;
+  background: var(--purple);
+  filter: brightness(1.1);
 }
 
 .delete-btn {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--bg3);
+  color: var(--muted);
 }
 
 .delete-btn:hover {
-  background: #fee2e2;
-  color: #dc2626;
+  background: var(--red-bg);
+  color: var(--red);
 }
 
 /* Document Viewer Modal */
@@ -552,7 +552,7 @@ function getStatusClass(status: string) {
 }
 
 .doc-viewer-modal {
-  background: white;
+  background: var(--bg1);
   border-radius: 8px;
   width: 90%;
   max-width: 900px;
@@ -567,13 +567,13 @@ function getStatusClass(status: string) {
   justify-content: space-between;
   align-items: center;
   padding: 1rem 1.5rem;
-  border-bottom: 1px solid #ddd;
-  background: #f8f8f8;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
 }
 
 .doc-viewer-header h3 {
   margin: 0;
-  color: #333;
+  color: var(--text);
   font-size: 1.1rem;
 }
 
@@ -582,7 +582,7 @@ function getStatusClass(status: string) {
   border: none;
   font-size: 1.5rem;
   cursor: pointer;
-  color: #666;
+  color: var(--sub);
   padding: 0;
   width: 2rem;
   height: 2rem;
@@ -592,7 +592,7 @@ function getStatusClass(status: string) {
 }
 
 .close-btn:hover {
-  color: #333;
+  color: var(--text);
 }
 
 .doc-viewer-body {
@@ -604,7 +604,7 @@ function getStatusClass(status: string) {
 .loading {
   text-align: center;
   padding: 2rem;
-  color: #666;
+  color: var(--sub);
 }
 
 .doc-content {
@@ -612,7 +612,7 @@ function getStatusClass(status: string) {
 }
 
 .html-content {
-  color: #333;
+  color: var(--text);
   line-height: 1.6;
   margin: 0;
 }
@@ -645,7 +645,7 @@ function getStatusClass(status: string) {
 
 .html-content :deep(th),
 .html-content :deep(td) {
-  border: 1px solid #ddd;
+  border: 1px solid var(--line);
   padding: 0.4em 0.8em;
 }
 
@@ -655,7 +655,7 @@ function getStatusClass(status: string) {
 }
 
 .no-content {
-  color: #999;
+  color: var(--muted);
   text-align: center;
   padding: 2rem;
 }
@@ -707,24 +707,24 @@ function getStatusClass(status: string) {
 
 .markdown-content th,
 .markdown-content td {
-  border: 1px solid #ddd;
+  border: 1px solid var(--line);
   padding: 8px;
 }
 
 .markdown-content th {
-  background-color: #f5f5f5;
+  background-color: var(--bg2);
   font-weight: 600;
 }
 
 .markdown-content code {
-  background-color: #f5f5f5;
+  background-color: var(--bg2);
   padding: 0.2em 0.4em;
   border-radius: 3px;
   font-size: 0.9em;
 }
 
 .markdown-content pre {
-  background-color: #f5f5f5;
+  background-color: var(--bg2);
   padding: 1em;
   border-radius: 6px;
   overflow-x: auto;
@@ -734,6 +734,50 @@ function getStatusClass(status: string) {
 .markdown-content pre code {
   background: none;
   padding: 0;
+}
+
+.review-actions {
+  margin-bottom: 1rem;
+}
+
+.start-review-btn {
+  padding: 0.6rem 1.5rem;
+  background: var(--purple);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.start-review-btn:hover:not(:disabled) {
+  background: var(--purple);
+  filter: brightness(1.1);
+}
+
+.start-review-btn:disabled {
+  background: var(--muted);
+  cursor: not-allowed;
+}
+
+@media (max-width: 767px) {
+  .documents-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .header {
+    padding: 0.75rem 1rem;
+  }
+
+  .content {
+    padding: 0 1rem;
+  }
+
+  .section {
+    padding: 1rem;
+  }
 }
 
 </style>
