@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router'
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { FileSearchOutlined, HistoryOutlined, BookOutlined } from '@ant-design/icons-vue'
+import { useTheme } from '@/composables/useTheme'
 
 const router = useRouter()
 const route = useRoute()
+const { theme } = useTheme()
 
 const menuItems = [
   { key: '/home/check', label: '标书检查', icon: FileSearchOutlined },
@@ -31,7 +33,7 @@ function handleMenuClick(e: { key: string }) {
   <a-menu
     v-model:selectedKeys="selectedKeys"
     mode="inline"
-    theme="light"
+    :theme="theme"
     class="app-sidebar"
     @click="handleMenuClick"
   >
@@ -47,8 +49,8 @@ function handleMenuClick(e: { key: string }) {
 <style scoped>
 .app-sidebar {
   height: 100%;
-  background: #fafafa;
-  border-right: 1px solid #e8e8e8;
+  background: var(--bg2);
+  border-right: 1px solid var(--line);
 }
 
 .app-sidebar :deep(.ant-menu-item) {
@@ -58,6 +60,6 @@ function handleMenuClick(e: { key: string }) {
 
 .app-sidebar :deep(.ant-menu-item-selected) {
   background: linear-gradient(90deg, rgba(99, 102, 241, 0.1) 0%, transparent 100%);
-  border-left: 2px solid #6366f1;
+  border-left: 2px solid var(--purple);
 }
 </style>
