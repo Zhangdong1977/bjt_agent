@@ -231,7 +231,7 @@ function getScoreColor(score: number): string {
                 @click="openDocFromSearch(result.docId)"
               >
                 <div class="result-header">
-                  <file-text-outlined style="color: #6366f1" />
+                  <file-text-outlined :style="{ color: 'var(--purple)' }" />
                   <span class="result-source">{{ result.source }}</span>
                   <a-tag :color="getScoreColor(result.score)">{{ result.score.toFixed(2) }}</a-tag>
                 </div>
@@ -358,7 +358,7 @@ function getScoreColor(score: number): string {
   display: flex;
   flex-direction: column;
   padding: 24px;
-  background: white;
+  background: var(--white);
   border-radius: 12px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
@@ -371,11 +371,11 @@ function getScoreColor(score: number): string {
 .search-header h1 {
   font-size: 32px;
   margin-bottom: 8px;
-  color: #1a1a1a;
+  color: var(--text);
 }
 
 .search-subtitle {
-  color: #666;
+  color: var(--sub);
   margin-bottom: 0;
 }
 
@@ -385,6 +385,21 @@ function getScoreColor(score: number): string {
   width: 100%;
 }
 
+.search-box :deep(.ant-input),
+.search-box :deep(.ant-input-affix-wrapper) {
+  border: 1px solid var(--line);
+}
+
+.search-box :deep(.ant-input:focus),
+.search-box :deep(.ant-input-affix-wrapper:focus),
+.search-box :deep(.ant-input-affix-wrapper-focused) {
+  border-color: var(--purple);
+}
+
+.search-box :deep(.ant-btn-primary) {
+  background: var(--purple);
+}
+
 .search-results {
   flex: 1;
   overflow-y: auto;
@@ -392,12 +407,12 @@ function getScoreColor(score: number): string {
 }
 
 .results-count {
-  color: #666;
+  color: var(--sub);
   margin-bottom: 16px;
 }
 
 .result-item {
-  background: #fafafa;
+  background: var(--bg);
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 12px;
@@ -408,7 +423,7 @@ function getScoreColor(score: number): string {
 }
 
 .result-item:hover {
-  background: #f0f0f0;
+  background: var(--bg);
 }
 
 .result-header {
@@ -421,13 +436,13 @@ function getScoreColor(score: number): string {
 .result-source {
   flex: 1;
   font-weight: 500;
-  color: #1890ff;
+  color: var(--blue);
 }
 
 .result-snippet {
   font-size: 13px;
   line-height: 1.6;
-  color: #333;
+  color: var(--text);
   margin: 0;
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -440,7 +455,7 @@ function getScoreColor(score: number): string {
 
 .search-hint {
   text-align: center;
-  color: #999;
+  color: var(--muted);
   padding: 60px 0;
 }
 
@@ -449,7 +464,7 @@ function getScoreColor(score: number): string {
   display: flex;
   flex-direction: column;
   padding: 24px;
-  background: white;
+  background: var(--white);
   border-radius: 12px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   min-width: 320px;
@@ -464,18 +479,20 @@ function getScoreColor(score: number): string {
 
 .doc-panel-header h3 {
   margin: 0;
+  color: var(--text);
 }
 
 .doc-panel :deep(.ant-list-item) {
   padding: 12px 0;
+  border-bottom: 1px solid var(--line);
 }
 
 .delete-link {
-  color: #ff4d4f;
+  color: var(--red);
 }
 
 .delete-link:hover {
-  color: #d9363e;
+  color: var(--red);
 }
 
 .upload-progress {
@@ -485,7 +502,7 @@ function getScoreColor(score: number): string {
 
 .upload-progress p {
   margin-top: 16px;
-  color: #666;
+  color: var(--sub);
 }
 
 .index-status {
@@ -524,7 +541,27 @@ function getScoreColor(score: number): string {
 }
 
 .status-detail {
-  color: #666;
+  color: var(--sub);
   margin-left: 8px;
+}
+
+@media (max-width: 767px) {
+  .knowledge-view {
+    padding: 0 1rem 1rem;
+  }
+
+  .knowledge-container {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .search-panel {
+    flex: none;
+  }
+
+  .doc-panel {
+    flex: none;
+    display: none;
+  }
 }
 </style>
