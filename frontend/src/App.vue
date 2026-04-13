@@ -32,8 +32,8 @@ onMounted(() => {
 
 body {
   font-family: 'Open Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #f5f3ff;
-  color: #1e1b4b;
+  background: var(--bg);
+  color: var(--text);
   line-height: 1.6;
 }
 
