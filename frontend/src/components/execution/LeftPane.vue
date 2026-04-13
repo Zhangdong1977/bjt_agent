@@ -48,6 +48,7 @@ interface Props {
   steps: TimelineStep[]
   errorMessage?: string | null
   todos?: TodoItemState[]
+  subAgentStepsMap?: Record<string, TimelineStep[]>
 }
 
 const props = defineProps<Props>()
@@ -55,11 +56,6 @@ const props = defineProps<Props>()
 // BidReviewAgent 模式检测
 const isBidReviewAgentMode = computed(() => {
   return (!props.todos || props.todos.length === 0) && props.steps.length > 0
-})
-
-// 主代理步骤
-const masterSteps = computed(() => {
-  return props.steps.filter(s => s.step_type !== 'observation')
 })
 
 // 观察列表
@@ -175,7 +171,7 @@ function formatTime(date: Date): string {
         <div class="phase-label">MasterAgent · 规则解析</div>
         <div class="master-timeline">
           <AgentTimelineItem
-            v-for="step in masterSteps"
+            v-for="step in observations"
             :key="step.step_number"
             :step-number="step.step_number"
             :step-type="step.step_type as any"
@@ -189,7 +185,7 @@ function formatTime(date: Date): string {
 
       <!-- SubAgentExecutor -->
       <div v-if="hasSubAgentExecutor" class="phase-block">
-        <SubAgentExecutorBlock :agents="subAgents" />
+        <SubAgentExecutorBlock :agents="subAgents" :sub-agent-steps-map="subAgentStepsMap" />
       </div>
     </template>
 
