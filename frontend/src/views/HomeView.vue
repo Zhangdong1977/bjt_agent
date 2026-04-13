@@ -140,12 +140,12 @@ function logout() {
   justify-content: space-between;
   align-items: center;
   padding: 1rem 2rem;
-  background: white;
+  background: var(--bg1);
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .header h1 {
-  color: #6366f1;
+  color: var(--purple);
   font-size: 1.5rem;
   font-weight: 600;
 }
@@ -158,8 +158,8 @@ function logout() {
 
 .logout-btn {
   padding: 0.5rem 1rem;
-  background: #e53e3e;
-  color: white;
+  background: var(--red);
+  color: var(--white);
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -167,7 +167,8 @@ function logout() {
 }
 
 .logout-btn:hover {
-  background: #c53030;
+  background: var(--red);
+  filter: brightness(1.1);
 }
 
 .content {
@@ -184,13 +185,13 @@ function logout() {
 }
 
 .projects-header h2 {
-  color: #333;
+  color: var(--text);
 }
 
 .primary-btn {
   padding: 0.75rem 1.5rem;
-  background: #6366f1;
-  color: white;
+  background: var(--purple);
+  color: var(--white);
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -199,21 +200,18 @@ function logout() {
 }
 
 .primary-btn:hover {
-  background: #4f46e5;
+  background: var(--purple);
+  filter: brightness(1.1);
 }
 
 .primary-btn:active {
   transform: scale(0.98);
 }
 
-.primary-btn:hover {
-  background: #5568d3;
-}
-
 .loading, .empty-state {
   text-align: center;
   padding: 3rem;
-  color: #666;
+  color: var(--sub);
 }
 
 .projects-grid {
@@ -223,7 +221,7 @@ function logout() {
 }
 
 .project-card {
-  background: white;
+  background: var(--bg1);
   padding: 1.5rem;
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
@@ -240,25 +238,25 @@ function logout() {
 }
 
 .project-info h3 {
-  color: #333;
+  color: var(--text);
   margin-bottom: 0.5rem;
 }
 
 .project-info p {
-  color: #666;
+  color: var(--sub);
   font-size: 0.9rem;
   margin-bottom: 0.5rem;
 }
 
 .project-date {
-  color: #999;
+  color: var(--muted);
   font-size: 0.8rem;
 }
 
 .delete-btn {
   padding: 0.5rem 1rem;
-  background: #e53e3e;
-  color: white;
+  background: var(--red);
+  color: var(--white);
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -267,7 +265,7 @@ function logout() {
 }
 
 .delete-btn:hover {
-  background: #c53030;
+  filter: brightness(1.1);
 }
 
 /* Modal */
@@ -285,7 +283,7 @@ function logout() {
 }
 
 .modal {
-  background: white;
+  background: var(--bg1);
   padding: 2rem;
   border-radius: 8px;
   width: 100%;
@@ -294,7 +292,7 @@ function logout() {
 
 .modal h3 {
   margin-bottom: 1.5rem;
-  color: #333;
+  color: var(--text);
 }
 
 .form-group {
@@ -304,14 +302,14 @@ function logout() {
 .form-group label {
   display: block;
   margin-bottom: 0.5rem;
-  color: #555;
+  color: var(--sub);
 }
 
 .form-group input,
 .form-group textarea {
   width: 100%;
   padding: 0.75rem;
-  border: 1px solid #ddd;
+  border: 1px solid var(--line);
   border-radius: 4px;
   font-size: 1rem;
 }
@@ -319,7 +317,7 @@ function logout() {
 .form-group input:focus,
 .form-group textarea:focus {
   outline: none;
-  border-color: #6366f1;
+  border-color: var(--purple);
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
 
@@ -339,16 +337,31 @@ function logout() {
 }
 
 .modal-actions button[type="button"] {
-  background: #ddd;
-  color: #333;
+  background: var(--bg3);
+  color: var(--text);
 }
 
 .modal-actions .primary-btn {
-  background: #6366f1;
-  color: white;
+  background: var(--purple);
+  color: var(--white);
 }
 
 .modal-actions .primary-btn:hover {
-  background: #4f46e5;
+  background: var(--purple);
+  filter: brightness(1.1);
+}
+
+@media (max-width: 767px) {
+  .projects-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .header {
+    padding: 0.75rem 1rem;
+  }
+
+  .content {
+    padding: 0 1rem;
+  }
 }
 </style>
