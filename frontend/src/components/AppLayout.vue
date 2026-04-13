@@ -2,6 +2,7 @@
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import AppSidebar from './AppSidebar.vue'
+import ThemeToggle from './ThemeToggle.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -19,6 +20,7 @@ function logout() {
         <h1 class="logo">标书审查智能体</h1>
       </div>
       <div class="header-right">
+        <ThemeToggle />
         <span class="username">{{ authStore.user?.username }}</span>
         <a-button type="text" danger @click="logout">退出</a-button>
       </div>
@@ -43,14 +45,14 @@ function logout() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: white;
+  background: var(--bg1);
   padding: 0 24px;
-  border-bottom: 1px solid #e8e8e8;
+  border-bottom: 1px solid var(--line);
   height: 64px;
 }
 
 .header-left .logo {
-  color: #6366f1;
+  color: var(--purple);
   font-size: 1.25rem;
   font-weight: 600;
   margin: 0;
@@ -63,16 +65,16 @@ function logout() {
 }
 
 .username {
-  color: #666;
+  color: var(--sub);
 }
 
 .app-sider {
-  background: #fafafa;
+  background: var(--bg2);
 }
 
 .app-content {
   padding: 24px;
-  background: #f5f3ff;
+  background: var(--bg);
   min-height: calc(100vh - 64px);
 }
 </style>
