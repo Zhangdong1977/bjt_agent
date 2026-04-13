@@ -159,7 +159,7 @@ function logout() {
 .logout-btn {
   padding: 0.5rem 1rem;
   background: var(--red);
-  color: var(--white);
+  color: #ffffff;
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -191,7 +191,7 @@ function logout() {
 .primary-btn {
   padding: 0.75rem 1.5rem;
   background: var(--purple);
-  color: var(--white);
+  color: #ffffff;
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -256,7 +256,7 @@ function logout() {
 .delete-btn {
   padding: 0.5rem 1rem;
   background: var(--red);
-  color: var(--white);
+  color: #ffffff;
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -343,7 +343,7 @@ function logout() {
 
 .modal-actions .primary-btn {
   background: var(--purple);
-  color: var(--white);
+  color: #ffffff;
 }
 
 .modal-actions .primary-btn:hover {
