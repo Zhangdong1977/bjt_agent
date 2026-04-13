@@ -112,7 +112,7 @@ const mockSubAgents = [
     checkItems: [
       { name: '合同条款', status: 'done' as const },
       { name: '付款方式', status: 'done' as const },
-      { name: '投标有效期', status: 'run' as const },
+      { name: '投标有效期', status: 'running' as const },
       { name: '保证金条款', status: 'wait' as const }
     ],
     status: 'running' as const,
