@@ -175,12 +175,12 @@ function handleSSEEvent(event: SSEEvent) {
 
   if (event.type === 'sub_agent_completed') {
     // 子代理完成
-    updateTodoStatus((event as any).todo_id, 'completed', (event as any).findings_count)
+    updateTodoStatus((event as any).todo_id, 'completed', (event as any).findings)
   }
 
   if (event.type === 'sub_agent_failed') {
     // 子代理失败
-    updateTodoStatus((event as any).todo_id, 'failed', 0, (event as any).error)
+    updateTodoStatus((event as any).todo_id, 'failed', undefined, (event as any).error)
   }
 
   if (event.type === 'merging_started') {
@@ -292,12 +292,12 @@ function addTodoItem(event: SSEEvent) {
   todos.value.set(todoItem.id, todoItem)
 }
 
-function updateTodoStatus(todoId: string, status: TodoItemState['status'], _findingsCount?: number, error?: string) {
+function updateTodoStatus(todoId: string, status: TodoItemState['status'], findings?: any[], error?: string) {
   const todo = todos.value.get(todoId)
   if (todo) {
     todo.status = status
-    if (status === 'completed') {
-      todo.result = { findings: [] }
+    if (status === 'completed' && findings) {
+      todo.result = { findings }
     }
     if (error) {
       todo.error_message = error
