@@ -1,4 +1,7 @@
 <script setup lang="ts">
+const MAX_CONTENT_LENGTH = 100
+const MAX_ARGS_DISPLAY_LENGTH = 50
+
 interface ToolCall {
   name: string
   arguments: Record<string, any>
@@ -28,10 +31,22 @@ function formatTime(date: Date): string {
 function formatToolResult(result: any): string {
   if (!result) return ''
   if (result.status === 'success' && result.content) {
-    return result.content.slice(0, 100) + (result.content.length > 100 ? '...' : '')
+    return result.content.slice(0, MAX_CONTENT_LENGTH) + (result.content.length > MAX_CONTENT_LENGTH ? '...' : '')
   }
   if (result.status === 'error') return `失败: ${result.error || 'unknown'}`
-  return JSON.stringify(result).slice(0, 100)
+  try {
+    return JSON.stringify(result).slice(0, MAX_CONTENT_LENGTH)
+  } catch {
+    return String(result).slice(0, MAX_CONTENT_LENGTH)
+  }
+}
+
+function formatArgs(args: Record<string, any>): string {
+  try {
+    return JSON.stringify(args).slice(0, MAX_ARGS_DISPLAY_LENGTH)
+  } catch {
+    return String(args).slice(0, MAX_ARGS_DISPLAY_LENGTH)
+  }
 }
 </script>
 
@@ -58,7 +73,7 @@ function formatToolResult(result: any): string {
       <div v-if="steps.length > 0 && steps[0].tool_calls?.length" class="tool-call">
         <span class="tool-call-fn">{{ steps[0].tool_calls[0].name }}</span>
         <span class="tool-call-arrow">·</span>
-        <span class="tool-call-arg">{{ JSON.stringify(steps[0].tool_calls[0].arguments).slice(0, 50) }}...</span>
+        <span class="tool-call-arg">{{ formatArgs(steps[0].tool_calls[0].arguments) }}...</span>
         <span class="tool-call-arrow">→</span>
         <span class="tool-call-result" v-if="steps[0].tool_results?.[0]">
           {{ formatToolResult(steps[0].tool_results[0].result) }}
