@@ -42,9 +42,19 @@ interface SubAgentData {
 
 interface Props {
   agents: SubAgentData[]
+  subAgentStepsMap?: Record<string, TimelineStep[]>
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
+
+const agentsWithSteps = computed(() => {
+  if (!props.subAgentStepsMap) return props.agents
+  const stepsValues = Object.values(props.subAgentStepsMap)
+  return props.agents.map((agent, idx) => ({
+    ...agent,
+    steps: stepsValues[idx] || agent.steps
+  }))
+})
 </script>
 
 <template>
@@ -57,11 +67,11 @@ defineProps<Props>()
         </svg>
       </div>
       <span class="executor-title">SubAgentExecutor</span>
-      <span class="executor-count">{{ agents.length }} 个子代理</span>
+      <span class="executor-count">{{ agentsWithSteps.length }} 个子代理</span>
     </div>
     <div class="executor-body">
       <BidReviewAgentBlock
-        v-for="agent in agents"
+        v-for="agent in agentsWithSteps"
         :key="agent.agentId"
         :agent-id="agent.agentId"
         :title="agent.title"
