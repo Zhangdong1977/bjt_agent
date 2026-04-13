@@ -286,7 +286,7 @@ function getScoreColor(score: number): string {
               </template>
               <a-list-item-meta>
                 <template #avatar>
-                  <file-text-outlined style="font-size: 24px; color: #6366f1" />
+                  <file-text-outlined style="font-size: 24px; color: var(--purple)" />
                 </template>
                 <template #title>{{ item.filename }}</template>
                 <template #description>
