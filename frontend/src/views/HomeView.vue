@@ -233,7 +233,7 @@ function logout() {
 }
 
 .project-card:hover {
-  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--purple) 15%, transparent);
   transform: translateY(-2px);
 }
 
@@ -318,7 +318,7 @@ function logout() {
 .form-group textarea:focus {
   outline: none;
   border-color: var(--purple);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--purple) 15%, transparent);
 }
 
 .modal-actions {
