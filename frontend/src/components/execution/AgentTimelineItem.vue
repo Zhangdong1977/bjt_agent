@@ -64,13 +64,17 @@ function formatToolArg(key: string, value: any): string {
 }
 
 function formatToolResult(result: any): string {
+  if (result === undefined || result === null) {
+    return ''
+  }
   if (result?.status === 'success' && result?.content) {
     return result.content.slice(0, 200) + (result.content.length > 200 ? '...' : '')
   }
   if (result?.status === 'error') {
     return `失败: ${result.error || 'unknown'}`
   }
-  return JSON.stringify(result).slice(0, 100)
+  const str = JSON.stringify(result)
+  return str ? str.slice(0, 100) : String(result)
 }
 </script>
 

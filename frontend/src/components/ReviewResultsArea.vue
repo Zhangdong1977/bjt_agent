@@ -93,7 +93,7 @@ function getSeverityClass(severity: string) {
 .summary-item {
   text-align: center;
   padding: 1rem;
-  background: #f5f5f5;
+  background: var(--bg2);
   border-radius: 8px;
 }
 
@@ -101,19 +101,19 @@ function getSeverityClass(severity: string) {
   display: block;
   font-size: 2rem;
   font-weight: bold;
-  color: #333;
+  color: var(--text);
 }
 
 .summary-label {
-  color: #666;
+  color: var(--sub);
   font-size: 0.9rem;
 }
 
-.summary-item.success .summary-value { color: #68d391; }
-.summary-item.error .summary-value { color: #e53e3e; }
-.summary-item.critical .summary-value { color: #c53030; }
-.summary-item.major .summary-value { color: #dd6b20; }
-.summary-item.minor .summary-value { color: #d69e2e; }
+.summary-item.success .summary-value { color: var(--green); }
+.summary-item.error .summary-value { color: var(--red); }
+.summary-item.critical .summary-value { color: var(--red); }
+.summary-item.major .summary-value { color: var(--amber); }
+.summary-item.minor .summary-value { color: var(--amber); }
 
 .findings-list {
   display: flex;
@@ -122,14 +122,14 @@ function getSeverityClass(severity: string) {
 }
 
 .finding-card {
-  border: 1px solid #ddd;
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 1rem;
 }
 
 .finding-card.non-compliant {
-  border-color: #fc8181;
-  background: #fff5f5;
+  border-color: var(--red-dim);
+  background: var(--red-bg);
 }
 
 .finding-header {
@@ -145,30 +145,30 @@ function getSeverityClass(severity: string) {
   font-weight: 500;
 }
 
-.severity-critical { background: #c53030; color: white; }
-.severity-major { background: #dd6b20; color: white; }
-.severity-minor { background: #d69e2e; color: white; }
+.severity-critical { background: var(--red); color: var(--white); }
+.severity-major { background: var(--amber); color: var(--white); }
+.severity-minor { background: var(--amber); color: var(--white); }
 
-.compliance-badge.compliant { background: #68d391; color: white; }
-.compliance-badge.non-compliant { background: #fc8181; color: white; }
+.compliance-badge.compliant { background: var(--green); color: var(--white); }
+.compliance-badge.non-compliant { background: var(--red); color: var(--white); }
 
 .finding-body p {
   margin: 0.5rem 0;
-  color: #333;
+  color: var(--text);
 }
 
 .explanation {
-  color: #666;
+  color: var(--sub);
   font-style: italic;
 }
 
 .suggestion {
-  color: #6366f1;
+  color: var(--purple);
 }
 
 .no-results {
   text-align: center;
   padding: 2rem;
-  color: #666;
+  color: var(--sub);
 }
 </style>

@@ -185,7 +185,7 @@ function close() {
   max-height: 60vh;
   overflow-y: auto;
   padding: 16px;
-  background: #f5f5f5;
+  background: var(--bg2);
   border-radius: 8px;
   font-size: 14px;
   line-height: 1.6;
@@ -197,10 +197,10 @@ function close() {
 .content-view :deep(p) { margin: 0.5em 0; }
 .content-view :deep(img) { max-width: 100%; height: auto; display: block; margin: 0.5em 0; }
 .content-view :deep(table) { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
-.content-view :deep(th), .content-view :deep(td) { border: 1px solid #ddd; padding: 6px 10px; }
-.content-view :deep(th) { background-color: #f0f0f0; font-weight: 600; }
-.content-view :deep(pre) { background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; }
-.content-view :deep(code) { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }
+.content-view :deep(th), .content-view :deep(td) { border: 1px solid var(--line) !important; padding: 6px 10px; }
+.content-view :deep(th) { background-color: var(--bg3) !important; font-weight: 600; }
+.content-view :deep(pre) { background: var(--bg3); padding: 10px; border-radius: 4px; overflow-x: auto; }
+.content-view :deep(code) { background: var(--bg3); padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }
 
 .rag-search {
   padding: 16px 0;
@@ -212,12 +212,12 @@ function close() {
 }
 
 .shard-info {
-  color: #666;
+  color: var(--sub);
   margin-bottom: 12px;
 }
 
 .shard-item {
-  background: #fafafa;
+  background: var(--bg2);
   border-radius: 8px;
   padding: 12px;
   margin-bottom: 12px;
@@ -232,7 +232,7 @@ function close() {
 
 .shard-lines {
   font-size: 12px;
-  color: #999;
+  color: var(--muted);
 }
 
 .shard-content {
@@ -240,7 +240,7 @@ function close() {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
-  background: white;
+  background: var(--bg1);
   padding: 8px;
   border-radius: 4px;
   max-height: 200px;

@@ -1,21 +1,34 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { RouterView } from 'vue-router'
-import { ConfigProvider } from 'ant-design-vue'
+import { ConfigProvider, theme } from 'ant-design-vue'
 import { useAuthStore } from '@/stores/auth'
 import { useTheme } from '@/composables/useTheme'
 
 const authStore = useAuthStore()
-const { initTheme } = useTheme()
+const { theme: appTheme, initTheme } = useTheme()
 
 onMounted(() => {
   authStore.initialize()
   initTheme()
 })
+
+const isDark = ref(appTheme.value === 'dark')
+
+watch(appTheme, (newTheme) => {
+  isDark.value = newTheme === 'dark'
+})
+
+const antdTheme = {
+  token: {
+    colorPrimary: '#a78bfa',
+  },
+  algorithm: isDark.value ? theme.darkAlgorithm : theme.defaultAlgorithm,
+}
 </script>
 
 <template>
-  <ConfigProvider :theme="{ token: { colorPrimary: '#6366f1' } }">
+  <ConfigProvider :theme="antdTheme">
     <RouterView />
   </ConfigProvider>
 </template>

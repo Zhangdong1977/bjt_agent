@@ -28,6 +28,7 @@ const router = createRouter({
       children: [
         {
           path: '',
+          name: 'home-index',
           redirect: '/home/check'
         },
         {

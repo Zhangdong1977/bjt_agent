@@ -105,28 +105,28 @@ async function handleRegister() {
   justify-content: center;
   align-items: center;
   min-height: 100vh;
-  background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+  background: linear-gradient(135deg, var(--purple) 0%, var(--purple-dim) 100%);
 }
 
 .auth-card {
-  background: white;
+  background: var(--bg1);
   padding: 2rem;
   border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.2);
+  box-shadow: 0 8px 24px rgba(167, 139, 250, 0.2);
   width: 100%;
   max-width: 400px;
 }
 
 h1 {
   text-align: center;
-  color: #6366f1;
+  color: var(--purple);
   margin-bottom: 0.5rem;
   font-size: 1.5rem;
 }
 
 h2 {
   text-align: center;
-  color: #1e1b4b;
+  color: var(--text);
   margin-bottom: 1.5rem;
   font-weight: 500;
 }
@@ -138,28 +138,30 @@ h2 {
 label {
   display: block;
   margin-bottom: 0.5rem;
-  color: #555;
+  color: var(--sub);
 }
 
 input {
   width: 100%;
   padding: 0.75rem;
-  border: 1px solid #ddd;
+  border: 1px solid var(--line);
   border-radius: 4px;
   font-size: 1rem;
+  background: var(--bg2);
+  color: var(--text);
 }
 
 input:focus {
   outline: none;
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  border-color: var(--purple);
+  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.15);
 }
 
 button {
   width: 100%;
   padding: 0.75rem;
-  background: #6366f1;
-  color: white;
+  background: var(--purple);
+  color: var(--white);
   border: none;
   border-radius: 6px;
   font-size: 1rem;
@@ -175,7 +177,7 @@ button:disabled {
 }
 
 button:hover:not(:disabled) {
-  background: #4f46e5;
+  background: var(--purple-dim);
 }
 
 button:active:not(:disabled) {
@@ -183,7 +185,7 @@ button:active:not(:disabled) {
 }
 
 .error {
-  color: #e53e3e;
+  color: var(--red);
   margin-top: 1rem;
   text-align: center;
 }
@@ -191,11 +193,11 @@ button:active:not(:disabled) {
 .switch-auth {
   text-align: center;
   margin-top: 1rem;
-  color: #666;
+  color: var(--sub);
 }
 
 .switch-auth a {
-  color: #6366f1;
+  color: var(--purple);
   text-decoration: none;
   font-weight: 500;
 }

@@ -112,8 +112,8 @@ function getFindingClass(type: string) {
   cursor: pointer;
   user-select: none;
 }
-.agent-card.ac-running .agent-card-head { background: #160f28; }
-.agent-card.ac-done .agent-card-head { background: #0c1d14; }
+.agent-card.ac-running .agent-card-head { background: var(--purple-bg); }
+.agent-card.ac-done .agent-card-head { background: var(--green-bg); }
 
 .ac-avt {
   width: 26px; height: 26px;

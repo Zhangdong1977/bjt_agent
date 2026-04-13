@@ -99,7 +99,7 @@ function goBack() {
           <span>观察</span>
         </div>
         <div class="leg">
-          <div class="leg-swatch" style="background: #fa8c16"></div>
+          <div class="leg-swatch" style="background: var(--amber)"></div>
           <span>工具调用</span>
         </div>
         <div class="leg">

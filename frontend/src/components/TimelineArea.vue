@@ -173,7 +173,7 @@ function getStatusClass(status: string) {
 .timeline-area {
   margin-top: 1.5rem;
   padding-top: 1rem;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--line);
 }
 
 .task-selector {
@@ -182,18 +182,18 @@ function getStatusClass(status: string) {
   gap: 0.75rem;
   margin-bottom: 1rem;
   padding: 0.75rem;
-  background: #f5f5f5;
+  background: var(--bg2);
   border-radius: 8px;
 }
 
 .task-selector label {
   font-weight: 500;
-  color: #333;
+  color: var(--text);
 }
 
 .task-selector select {
   padding: 0.5rem;
-  border: 1px solid #ddd;
+  border: 1px solid var(--line);
   border-radius: 4px;
   min-width: 200px;
 }
@@ -207,8 +207,8 @@ function getStatusClass(status: string) {
 
 .primary-btn {
   padding: 0.75rem 1.5rem;
-  background: #6366f1;
-  color: white;
+  background: var(--purple);
+  color: var(--white);
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -217,7 +217,7 @@ function getStatusClass(status: string) {
 }
 
 .primary-btn:hover {
-  background: #4f46e5;
+  background: var(--purple-dim);
 }
 
 .primary-btn:active {
@@ -225,7 +225,7 @@ function getStatusClass(status: string) {
 }
 
 .primary-btn:disabled {
-  background: #d1d5db;
+  background: var(--dim);
   cursor: not-allowed;
 }
 
@@ -245,27 +245,27 @@ function getStatusClass(status: string) {
 }
 
 .status-pending {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--bg4);
+  color: var(--muted);
 }
 
 .status-running {
-  background: #fef9c3;
-  color: #854d0e;
+  background: var(--amber-bg);
+  color: var(--amber);
 }
 
 .status-success {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--green-bg);
+  color: var(--green);
 }
 
 .status-error {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--red-bg);
+  color: var(--red);
 }
 
 .error-msg {
-  color: #dc2626;
+  color: var(--red);
   font-size: 0.85rem;
   margin: 0;
 }

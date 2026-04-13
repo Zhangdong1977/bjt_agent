@@ -107,15 +107,15 @@ function toggleTimeline() {
 
       <div v-if="props.todo.result?.findings?.length" class="findings">
         <span v-for="f in criticalFindings" :key="f.requirement_key" class="finding-tag ft-crit">
-          <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#f87171" opacity=".3"/><circle cx="4" cy="4" r="1.5" fill="#f87171"/></svg>
+          <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="var(--red)" opacity=".3"/><circle cx="4" cy="4" r="1.5" fill="var(--red)"/></svg>
           严重: {{ f.requirement_content?.slice(0, 20) }}...
         </span>
         <span v-for="f in majorFindings" :key="f.requirement_key" class="finding-tag ft-major">
-          <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#f0a429" opacity=".3"/><circle cx="4" cy="4" r="1.5" fill="#f0a429"/></svg>
+          <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="var(--amber)" opacity=".3"/><circle cx="4" cy="4" r="1.5" fill="var(--amber)"/></svg>
           一般: {{ f.requirement_content?.slice(0, 20) }}...
         </span>
         <span v-if="passedCount" class="finding-tag ft-pass">
-          <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#3dd68c" opacity=".3"/><circle cx="4" cy="4" r="1.5" fill="#3dd68c"/></svg>
+          <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="var(--green)" opacity=".3"/><circle cx="4" cy="4" r="1.5" fill="var(--green)"/></svg>
           通过: {{ passedCount }} 项
         </span>
       </div>
@@ -155,8 +155,8 @@ function toggleTimeline() {
   cursor: pointer;
   user-select: none;
 }
-.agent-card.ac-active .agent-card-head { background: #160f28; }
-.agent-card.ac-done .agent-card-head { background: #0c1d14; }
+.agent-card.ac-active .agent-card-head { background: var(--purple-bg); }
+.agent-card.ac-done .agent-card-head { background: var(--green-bg); }
 
 .ac-avt {
   width: 26px; height: 26px;

@@ -46,17 +46,17 @@ function getSeverityLabel(severity: string) {
 }
 
 .severity-critical {
-  background: #c53030;
-  color: white;
+  background: var(--red);
+  color: var(--white);
 }
 
 .severity-major {
-  background: #dd6b20;
-  color: white;
+  background: var(--amber);
+  color: var(--white);
 }
 
 .severity-minor {
-  background: #d69e2e;
-  color: white;
+  background: var(--amber);
+  color: var(--white);
 }
 </style>

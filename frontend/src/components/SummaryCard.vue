@@ -46,7 +46,7 @@ defineProps<{
 .summary-item {
   text-align: center;
   padding: 1rem;
-  background: #f5f5f5;
+  background: var(--bg2);
   border-radius: 8px;
 }
 
@@ -54,32 +54,32 @@ defineProps<{
   display: block;
   font-size: 2rem;
   font-weight: bold;
-  color: #333;
+  color: var(--text);
 }
 
 .summary-label {
-  color: #666;
+  color: var(--sub);
   font-size: 0.9rem;
 }
 
 .summary-item.success .summary-value {
-  color: #68d391;
+  color: var(--green);
 }
 
 .summary-item.error .summary-value {
-  color: #e53e3e;
+  color: var(--red);
 }
 
 .summary-item.critical .summary-value {
-  color: #c53030;
+  color: var(--red);
 }
 
 .summary-item.major .summary-value {
-  color: #dd6b20;
+  color: var(--amber);
 }
 
 .summary-item.minor .summary-value {
-  color: #d69e2e;
+  color: var(--amber);
 }
 
 @media (max-width: 768px) {

@@ -17,7 +17,7 @@ const steps = [
     <div class="output-header transparent">
       <div class="output-header-icon teal">
         <svg viewBox="0 0 11 11" fill="none">
-          <path d="M2 5.5h7M5.5 2l3.5 3.5-3.5 3.5" stroke="#2dd4bf" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M2 5.5h7M5.5 2l3.5 3.5-3.5 3.5" stroke="var(--teal)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </div>
       <span class="output-header-title">结果合并与质检</span>

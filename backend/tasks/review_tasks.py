@@ -173,8 +173,8 @@ def run_review(self, task_id: str) -> dict:
                 # Send progress event
                 _publish_event(task_id, "progress", {"message": "Starting document analysis..."})
 
-                # Run the agent review
-                findings = await _run_agent_review(task_id, tender_doc, bid_doc, db)
+                # Run the agent review (pass session_factory for parallel sub-agent session isolation)
+                findings = await _run_agent_review(task_id, tender_doc, bid_doc, session_factory)
 
                 # Store only non-compliant findings (ReviewResult is for non-compliance)
                 non_compliant_findings = [f for f in findings if not f.get("is_compliant", False)]
@@ -365,16 +365,25 @@ async def _run_agent_review(
     task_id: str,
     tender_doc,
     bid_doc,
-    db,
+    session_factory,
 ) -> list[dict]:
     """Run the agent review process and return findings.
 
     Uses MasterAgent with SubAgentExecutor for multi-agent review.
+
+    Args:
+        task_id: Review task ID
+        tender_doc: Tender document model
+        bid_doc: Bid document model
+        session_factory: Async session factory for database operations.
+                       Phase 2 uses a single session, Phase 3 creates fresh sessions per parallel task.
     """
     from backend.agent.master import MasterAgent
     from backend.services.todo_service import TodoService
 
-    # Get document paths - prefer markdown, fallback to html
+    # Create a session for Phase 2 sequential operations (todo creation)
+    db = session_factory()
+    todo_service = TodoService(db)
     tender_path = tender_doc.parsed_markdown_path or tender_doc.parsed_html_path or ""
     bid_path = bid_doc.parsed_markdown_path or bid_doc.parsed_html_path or ""
 
@@ -405,11 +414,9 @@ async def _run_agent_review(
         event_callback=event_cb,
     )
 
-    # Create TodoService for MasterAgent
-    todo_service = TodoService(db)
-
     try:
-        result = await master.run(todo_service, session_id=task_id)
+        # Pass session_factory so parallel sub-agents can create their own sessions
+        result = await master.run(todo_service, session_id=task_id, session_factory=session_factory)
 
         if result.get("success"):
             return result.get("merged_result", {}).get("findings", [])
@@ -422,3 +429,5 @@ async def _run_agent_review(
         logger.exception(f"MasterAgent execution failed for task {task_id}: {e}")
         event_cb("error", {"message": f"Agent error: {str(e)}"})
         return _create_error_finding(str(e))
+    finally:
+        await db.close()

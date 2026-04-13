@@ -60,33 +60,33 @@ table {
 }
 
 thead {
-  background: #f5f5f5;
+  background: var(--bg3);
 }
 
 th {
   text-align: left;
   padding: 0.75rem;
-  border-bottom: 2px solid #ddd;
-  color: #333;
+  border-bottom: 2px solid var(--line);
+  color: var(--text);
   font-weight: 600;
 }
 
 td {
   padding: 0.75rem;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--line);
   vertical-align: top;
 }
 
 tr:hover {
-  background: #fafafa;
+  background: var(--bg3);
 }
 
 tr.non-compliant {
-  background: #fff5f5;
+  background: var(--red-bg);
 }
 
 tr.non-compliant:hover {
-  background: #fff0f0;
+  background: var(--red-bg);
 }
 
 .compliance-badge {
@@ -97,13 +97,13 @@ tr.non-compliant:hover {
 }
 
 .compliance-badge.compliant {
-  background: #68d391;
-  color: white;
+  background: var(--green);
+  color: var(--white);
 }
 
 .compliance-badge.non-compliant {
-  background: #fc8181;
-  color: white;
+  background: var(--red);
+  color: var(--white);
 }
 
 .requirement-cell,
@@ -114,7 +114,7 @@ tr.non-compliant:hover {
 }
 
 .suggestion-cell {
-  color: #667eea;
+  color: var(--purple);
   font-style: italic;
 }
 </style>

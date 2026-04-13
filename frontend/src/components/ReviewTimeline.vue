@@ -321,11 +321,11 @@ function updateTodoProgress(todoId: string, _progress: number, currentCheck: str
 
 function getStepColor(stepType: string): string {
   const colorMap: Record<string, string> = {
-    tool_call: '#fa8c16',    // 橙色
-    observation: '#52c41a',  // 绿色
-    thought: '#1890ff',       // 蓝色
+    tool_call: 'var(--amber)',    // 橙色
+    observation: 'var(--green)',  // 绿色
+    thought: 'var(--blue)',       // 蓝色
   }
-  return colorMap[stepType] || '#d9d9d9'
+  return colorMap[stepType] || 'var(--dim)'
 }
 
 function getTagColor(stepType: string): string {
@@ -579,18 +579,18 @@ onUnmounted(() => {
 .review-timeline {
   margin-top: 1.5rem;
   padding-top: 1rem;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--line);
 }
 
 .review-timeline h3 {
-  color: #555;
+  color: var(--sub);
   font-size: 1rem;
   margin-bottom: 1rem;
 }
 
 .historical-badge {
-  background: #8b5cf6;
-  color: white;
+  background: var(--purple);
+  color: var(--white);
   padding: 0.2rem 0.5rem;
   border-radius: 4px;
   font-size: 0.75rem;
@@ -640,18 +640,18 @@ onUnmounted(() => {
 
 /* 渐变背景卡片 */
 .card-tool_call {
-  background: linear-gradient(135deg, rgb(249, 240, 255) 0%, rgb(253, 250, 255) 100%);
-  border-left: 4px solid rgb(211, 173, 247);
+  background: var(--purple-bg);
+  border-left: 4px solid var(--purple);
 }
 
 .card-observation {
-  background: linear-gradient(135deg, rgb(246, 255, 250) 0%, rgb(250, 255, 252) 100%);
-  border-left: 4px solid rgb(183, 235, 200);
+  background: var(--green-bg);
+  border-left: 4px solid var(--green);
 }
 
 .card-thought {
-  background: linear-gradient(135deg, rgb(240, 248, 255) 0%, rgb(245, 250, 255) 100%);
-  border-left: 4px solid rgb(187, 224, 255);
+  background: var(--blue-bg);
+  border-left: 4px solid var(--blue);
 }
 
 /* 头部样式 */
@@ -665,7 +665,7 @@ onUnmounted(() => {
 
 .step-label {
   font-weight: 600;
-  color: #333;
+  color: var(--text);
 }
 
 .status-running {
@@ -673,12 +673,12 @@ onUnmounted(() => {
 }
 
 .duration {
-  color: rgb(153, 153, 153);
+  color: var(--muted);
   font-size: 0.85rem;
 }
 
 .timestamp {
-  color: rgb(153, 153, 153);
+  color: var(--muted);
   font-size: 0.85rem;
 }
 
@@ -686,16 +686,16 @@ onUnmounted(() => {
 .tool-calls-section {
   margin-top: 0.75rem;
   padding: 0.5rem;
-  background: rgba(0, 0, 0, 0.02);
+  background: var(--bg3);
   border-radius: 4px;
 }
 
 .tool-call-item {
   margin-bottom: 0.5rem;
   padding: 0.5rem;
-  background: white;
+  background: var(--bg1);
   border-radius: 4px;
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--line);
 }
 
 .tool-call-item:last-child {
@@ -708,7 +708,7 @@ onUnmounted(() => {
 
 .tool-call-args {
   font-size: 0.85rem;
-  color: #666;
+  color: var(--sub);
   margin-bottom: 0.3rem;
 }
 
@@ -719,21 +719,21 @@ onUnmounted(() => {
   font-size: 0.85rem;
   line-height: 1.4;
   padding-top: 0.3rem;
-  border-top: 1px dashed #f0f0f0;
+  border-top: 1px dashed var(--line);
 }
 
 .row-label {
-  color: #888;
+  color: var(--muted);
   min-width: 36px;
   flex-shrink: 0;
 }
 
 .row-content {
-  color: #555;
+  color: var(--text);
 }
 
 .row-content.result {
-  color: #666;
+  color: var(--sub);
 }
 
 .param-tag {
@@ -757,8 +757,8 @@ onUnmounted(() => {
 
 /* Merge progress card */
 .merge-progress-card {
-  background: linear-gradient(135deg, rgb(255, 251, 235) 0%, rgb(255, 252, 245) 100%);
-  border-left: 4px solid rgb(255, 189, 46);
+  background: var(--amber-bg);
+  border-left: 4px solid var(--amber);
   border-radius: 6px;
   padding: 1rem 1.25rem;
   margin-bottom: 0.75rem;
@@ -773,12 +773,12 @@ onUnmounted(() => {
 
 .merge-progress-text {
   font-weight: 600;
-  color: #d46b08;
+  color: var(--amber);
 }
 
 .merge-progress-hint {
   font-size: 0.85rem;
-  color: #8c8c8c;
+  color: var(--muted);
 }
 
 /* Phase cards */
@@ -789,13 +789,13 @@ onUnmounted(() => {
 }
 
 .phase-todo {
-  background: linear-gradient(135deg, rgb(255, 251, 235) 0%, rgb(255, 252, 245) 100%);
-  border-left: 4px solid rgb(255, 189, 46);
+  background: var(--amber-bg);
+  border-left: 4px solid var(--amber);
 }
 
 .phase-agents {
-  background: linear-gradient(135deg, rgb(249, 240, 255) 0%, rgb(253, 250, 255) 100%);
-  border-left: 4px solid rgb(211, 173, 247);
+  background: var(--purple-bg);
+  border-left: 4px solid var(--purple);
 }
 
 .phase-header {
@@ -807,11 +807,11 @@ onUnmounted(() => {
 
 .phase-title {
   font-weight: 600;
-  color: #333;
+  color: var(--text);
 }
 
 .phase-count {
-  color: #8c8c8c;
+  color: var(--muted);
   font-size: 0.85rem;
   margin-left: auto;
 }

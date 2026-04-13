@@ -113,7 +113,7 @@ async function createProject() {
 .card-title {
   font-size: 18px;
   font-weight: 600;
-  color: #1e1b4b;
+  color: var(--text);
 }
 
 .help-card {
@@ -125,7 +125,7 @@ async function createProject() {
 .help-list {
   margin: 0;
   padding-left: 20px;
-  color: #666;
+  color: var(--sub);
   line-height: 2;
 }
 </style>

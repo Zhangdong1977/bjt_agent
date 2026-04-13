@@ -62,7 +62,7 @@ const progressText = computed(() => `${stageNumber.value}/3`)
           cy="48"
           :r="RADIUS"
           fill="none"
-          stroke="#e5e7eb"
+          stroke="var(--bg4)"
           stroke-width="8"
         />
         <!-- Progress fill -->
@@ -72,7 +72,7 @@ const progressText = computed(() => `${stageNumber.value}/3`)
           cy="48"
           :r="RADIUS"
           fill="none"
-          stroke="#6366f1"
+          stroke="var(--purple)"
           stroke-width="8"
           stroke-linecap="round"
           :stroke-dasharray="CIRCUMFERENCE"
@@ -125,7 +125,7 @@ const progressText = computed(() => `${stageNumber.value}/3`)
 .progress-text {
   font-size: 0.9rem;
   font-weight: 700;
-  color: #1e1b4b;
+  color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
@@ -138,11 +138,11 @@ const progressText = computed(() => `${stageNumber.value}/3`)
 .stage-label {
   font-size: 0.85rem;
   font-weight: 500;
-  color: #374151;
+  color: var(--sub);
 }
 
 .eta-label {
   font-size: 0.75rem;
-  color: #6b7280;
+  color: var(--muted);
 }
 </style>

@@ -70,7 +70,7 @@ function goBack() {
   justify-content: space-between;
   align-items: center;
   padding: 1rem 2rem;
-  background: white;
+  background: var(--bg1);
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
@@ -82,15 +82,15 @@ function goBack() {
 
 .back-btn {
   padding: 0.5rem 1rem;
-  background: #ddd;
-  color: #333;
+  background: var(--bg3);
+  color: var(--text);
   border: none;
   border-radius: 4px;
   cursor: pointer;
 }
 
 .header h1 {
-  color: #333;
+  color: var(--text);
   font-size: 1.5rem;
 }
 
@@ -101,17 +101,17 @@ function goBack() {
 }
 
 .section {
-  background: white;
+  background: var(--bg1);
   padding: 1.5rem;
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .section h2 {
-  color: #333;
+  color: var(--text);
   margin-bottom: 1.5rem;
   padding-bottom: 0.5rem;
-  border-bottom: 2px solid #667eea;
+  border-bottom: 2px solid var(--purple);
 }
 
 .task-info {
@@ -130,33 +130,33 @@ function goBack() {
 }
 
 .status-pending {
-  background: #ddd;
-  color: #666;
+  background: var(--bg4);
+  color: var(--muted);
 }
 
 .status-running {
-  background: #f6e05e;
-  color: #744210;
+  background: var(--amber-bg);
+  color: var(--amber);
 }
 
 .status-completed {
-  background: #68d391;
-  color: #22543d;
+  background: var(--green-bg);
+  color: var(--green);
 }
 
 .status-failed {
-  background: #fc8181;
-  color: #742a2a;
+  background: var(--red-bg);
+  color: var(--red);
 }
 
 .error-msg {
-  color: #e53e3e;
+  color: var(--red);
   font-size: 0.9rem;
 }
 
 .no-task {
   text-align: center;
   padding: 3rem;
-  color: #666;
+  color: var(--sub);
 }
 </style>

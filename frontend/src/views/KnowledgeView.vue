@@ -186,21 +186,21 @@ function getScoreColor(score: number): string {
         <!-- 索引状态指示器 -->
         <div class="index-status">
           <div v-if="indexStatus.status === 'ready'" class="status-item status-ready">
-            <check-circle-outlined style="color: #52c41a" />
+            <check-circle-outlined style="color: var(--green)" />
             <span>索引就绪</span>
             <span class="status-detail">{{ indexStatus.files }} 个文件, {{ indexStatus.chunks }} 个分片</span>
           </div>
           <div v-else-if="indexStatus.status === 'indexing'" class="status-item status-indexing">
-            <sync-outlined spin style="color: #1890ff" />
+            <sync-outlined spin style="color: var(--blue)" />
             <span>正在索引...</span>
             <span class="status-detail">{{ indexStatus.files }} 个文件</span>
           </div>
           <div v-else-if="indexStatus.status === 'error'" class="status-item status-error">
-            <exclamation-circle-outlined style="color: #ff4d4f" />
+            <exclamation-circle-outlined style="color: var(--red)" />
             <span>索引错误</span>
           </div>
           <div v-else class="status-item status-unavailable">
-            <exclamation-circle-outlined style="color: #faad14" />
+            <exclamation-circle-outlined style="color: var(--amber)" />
             <span>索引服务不可用</span>
           </div>
         </div>
@@ -358,7 +358,7 @@ function getScoreColor(score: number): string {
   display: flex;
   flex-direction: column;
   padding: 24px;
-  background: var(--white);
+  background: var(--bg1);
   border-radius: 12px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
@@ -464,7 +464,7 @@ function getScoreColor(score: number): string {
   display: flex;
   flex-direction: column;
   padding: 24px;
-  background: var(--white);
+  background: var(--bg1);
   border-radius: 12px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   min-width: 320px;
@@ -521,23 +521,23 @@ function getScoreColor(score: number): string {
 }
 
 .status-ready {
-  background: #f6ffed;
-  border: 1px solid #b7eb8f;
+  background: var(--green-bg);
+  border: 1px solid var(--green-dim);
 }
 
 .status-indexing {
-  background: #e6f7ff;
-  border: 1px solid #91d5ff;
+  background: var(--blue-bg);
+  border: 1px solid var(--blue-dim);
 }
 
 .status-error {
-  background: #fff2f0;
-  border: 1px solid #ffccc7;
+  background: var(--red-bg);
+  border: 1px solid var(--red-dim);
 }
 
 .status-unavailable {
-  background: #fffbe6;
-  border: 1px solid #ffe58f;
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-dim);
 }
 
 .status-detail {

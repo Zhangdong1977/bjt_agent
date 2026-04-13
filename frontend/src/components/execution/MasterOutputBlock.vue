@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { watch } from 'vue'
+
 const MAX_CONTENT_LENGTH = 100
 const MAX_ARGS_DISPLAY_LENGTH = 50
 
@@ -15,9 +17,15 @@ interface MasterStep {
   tool_results?: any[]
 }
 
-defineProps<{
+const props = defineProps<{
   steps: MasterStep[]
 }>()
+
+// 调试日志
+console.log('[MasterOutputBlock] Props received, steps:', props.steps)
+watch(() => props.steps, (newSteps) => {
+  console.log('[MasterOutputBlock] Steps updated:', newSteps.length, newSteps)
+}, { deep: true })
 
 function formatTime(date: Date): string {
   return new Date(date).toLocaleTimeString('zh-CN', {
@@ -55,8 +63,8 @@ function formatArgs(args: Record<string, any>): string {
     <div class="output-header">
       <div class="output-header-icon" style="background:var(--purple-bg);border:1px solid var(--purple-dim)">
         <svg viewBox="0 0 11 11" fill="none">
-          <circle cx="5.5" cy="5.5" r="4" stroke="#a78bfa" stroke-width="1.2"/>
-          <path d="M5.5 3.5v2.5l1.5 1" stroke="#a78bfa" stroke-width="1.1" stroke-linecap="round"/>
+          <circle cx="5.5" cy="5.5" r="4" stroke="var(--purple)" stroke-width="1.2"/>
+          <path d="M5.5 3.5v2.5l1.5 1" stroke="var(--purple)" stroke-width="1.1" stroke-linecap="round"/>
         </svg>
       </div>
       <span class="output-header-title">主代理 — 规则解析</span>

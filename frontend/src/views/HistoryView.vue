@@ -127,19 +127,19 @@ async function deleteProject(projectId: string, event: Event) {
 }
 
 .project-link {
-  color: #6366f1;
+  color: var(--purple);
   font-weight: 500;
 }
 
 .project-link:hover {
-  color: #4f46e5;
+  color: var(--purple-dim);
 }
 
 .delete-link {
-  color: #ff4d4f;
+  color: var(--red);
 }
 
 .delete-link:hover {
-  color: #d9363e;
+  color: var(--red-dim);
 }
 </style>
