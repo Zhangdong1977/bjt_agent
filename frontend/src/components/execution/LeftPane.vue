@@ -16,7 +16,7 @@ interface ToolResult {
 
 interface TimelineStep {
   step_number: number
-  step_type: string
+  step_type: 'master' | 'observation' | 'tool_call' | 'thought' | 'tool_result'
   content: string
   timestamp: Date
   tool_args?: {
