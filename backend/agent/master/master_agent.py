@@ -206,6 +206,7 @@ class MasterAgent:
                 self._send_event("sub_agent_completed", {
                     "todo_id": todo.id,
                     "findings_count": len(findings),
+                    "findings": findings,
                 })
 
                 return result
