@@ -39,16 +39,34 @@ const masterSteps = computed(() =>
   props.steps.filter(s => s.step_type === 'master')
 )
 
-// TODO: 从 props.steps 解析子代理步骤
-const todoItems = computed(() => [
+// Mock data for fallback
+const mockTodoItems = [
   { id: '1', name: '检查投标方资质合规性', ruleFile: 'rule_001_资质要求.md', checkItemsCount: 5, depsType: 'sequential' as const, status: 'done' as const, agentId: 'A1' },
   { id: '2', name: '核验技术方案规格参数', ruleFile: 'rule_002_技术规格.md', checkItemsCount: 8, depsType: 'branching' as const, status: 'done' as const, agentId: 'A2' },
   { id: '3', name: '审核商务条款与合同约定', ruleFile: 'rule_003_商务条款.md', checkItemsCount: 4, depsType: 'sequential' as const, status: 'running' as const, agentId: 'A3' },
   { id: '4', name: '验证环保合规与节能指标', ruleFile: 'rule_004_环保要求.md', checkItemsCount: 3, depsType: 'sequential' as const, status: 'wait' as const, agentId: 'A4' }
-])
+]
 
-// TODO: 从 props.steps 解析子代理数据
-const subAgents = computed(() => [
+const todoItems = computed(() => {
+  const agentSteps = props.steps.filter(s => s.step_type === 'sub_agent')
+
+  if (agentSteps.length === 0) {
+    return mockTodoItems
+  }
+
+  return agentSteps.map((step, idx) => ({
+    id: String(idx + 1),
+    name: step.content || `任务 ${idx + 1}`,
+    ruleFile: 'rule file',
+    checkItemsCount: 0,
+    depsType: 'sequential' as const,
+    status: 'running' as const,
+    agentId: `A${idx + 1}`
+  }))
+})
+
+// Mock data for fallback
+const mockSubAgents = [
   {
     agentId: 'A1',
     title: '检查投标方资质合规性',
@@ -115,7 +133,24 @@ const subAgents = computed(() => [
     status: 'wait' as const,
     findings: []
   }
-])
+]
+
+const subAgents = computed(() => {
+  const agentSteps = props.steps.filter(s => s.step_type === 'sub_agent')
+
+  if (agentSteps.length === 0) {
+    return mockSubAgents
+  }
+
+  return agentSteps.map((step, idx) => ({
+    agentId: `A${idx + 1}`,
+    title: step.content || `子代理 ${idx + 1}`,
+    ruleFile: 'rule file',
+    checkItems: [],
+    status: 'running' as const,
+    findings: []
+  }))
+})
 </script>
 
 <template>
