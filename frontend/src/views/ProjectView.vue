@@ -356,7 +356,7 @@ function getStatusClass(status: string) {
 }
 
 .section {
-  background: var(--white);
+  background: var(--bg1);
   padding: 1.5rem;
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
@@ -380,7 +380,7 @@ function getStatusClass(status: string) {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 1.25rem;
-  background: var(--white);
+  background: var(--bg1);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   transition: box-shadow 0.2s ease;
 }
