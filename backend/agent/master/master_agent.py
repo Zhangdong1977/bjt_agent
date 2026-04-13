@@ -2,10 +2,13 @@
 
 import json
 import asyncio
+import logging
 from typing import Optional, Callable
 
 from .tools.rule_parser import RuleParserTool, RuleLibraryScannerTool
 from .sub_agent_executor import SubAgentExecutor, detect_anomaly
+
+logger = logging.getLogger(__name__)
 
 
 class MasterAgent:
@@ -115,6 +118,7 @@ class MasterAgent:
 
     async def _run_sub_agents_parallel(self, todo_service) -> None:
         """并行执行所有子代理."""
+        logger.info(f"[_run_sub_agents_parallel] Starting with {len(self._todo_items)} todos")
         semaphore = asyncio.Semaphore(self.max_parallel)
 
         async def run_with_semaphore(todo):
@@ -122,15 +126,22 @@ class MasterAgent:
                 return await self._run_single_sub_agent(todo, todo_service)
 
         tasks = [run_with_semaphore(todo) for todo in self._todo_items]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Log any exceptions captured by return_exceptions=True
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"[_run_sub_agents_parallel] Task {i} raised exception: {result}")
+        logger.info(f"[_run_sub_agents_parallel] All tasks completed")
 
     async def _run_single_sub_agent(self, todo, todo_service) -> dict:
         """执行单个子代理."""
+        logger.info(f"[_run_single_sub_agent] Starting for todo_id={todo.id}, rule_doc_name={todo.rule_doc_name}")
         retry_count = 0
 
         while retry_count <= self.max_retries:
             try:
                 # 更新状态为 running
+                logger.info(f"[_run_single_sub_agent] Updating todo {todo.id} status to running")
                 await todo_service.update_todo_status(todo.id, "running")
 
                 # 执行子代理
@@ -141,10 +152,13 @@ class MasterAgent:
                     user_id=self.user_id,
                     event_callback=self._create_sub_agent_callback(todo.id),
                 )
+                logger.info(f"[_run_single_sub_agent] Calling executor.execute() for todo {todo.id}")
                 result = await executor.execute()
+                logger.info(f"[_run_single_sub_agent] executor.execute() returned for todo {todo.id}, success={result.get('success')}, findings_count={len(result.get('findings', []))}")
 
                 # 检测异常
                 if detect_anomaly(result, todo):
+                    logger.info(f"[_run_single_sub_agent] Anomaly detected for todo {todo.id}, retry_count={retry_count}")
                     if retry_count < self.max_retries:
                         retry_count += 1
                         await todo_service.reset_todo_for_retry(todo.id, retry_count)
@@ -174,6 +188,7 @@ class MasterAgent:
                 return result
 
             except Exception as e:
+                logger.error(f"[_run_single_sub_agent] Exception for todo {todo.id}: {e}")
                 if retry_count < self.max_retries:
                     retry_count += 1
                     await todo_service.reset_todo_for_retry(todo.id, retry_count)
