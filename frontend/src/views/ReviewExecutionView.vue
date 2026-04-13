@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import ExecutionHeader from '@/components/execution/ExecutionHeader.vue'
@@ -20,8 +20,30 @@ let eventSource: EventSource | null = null
 // phase: 根据实际事件流转 - pending -> running -> completed/failed
 const phase = ref<'pending' | 'running' | 'completed' | 'failed'>('pending')
 const steps = ref<any[]>([])
+const subAgentSteps = ref<Map<string, any[]>>(new Map())
 const errorMessage = ref<string | null>(null)
 const findingsCount = ref<number>(0)
+
+// Todo items state (mirrors ReviewTimeline.vue)
+interface CheckItemState {
+  id: string
+  title: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+}
+
+interface TodoItemState {
+  id: string
+  rule_doc_name: string
+  check_items: CheckItemState[]
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  result?: {
+    findings: any[]
+  }
+  error_message?: string
+}
+
+const todos = ref<Map<string, TodoItemState>>(new Map())
+const todoList = computed(() => Array.from(todos.value.values()))
 
 // 统计数据
 const totalSteps = computed(() => steps.value.length)
@@ -31,18 +53,70 @@ const completedCount = computed(() =>
 
 // SSE 事件处理 - 适配实际后端事件
 function handleSSEEvent(event: any) {
-  console.log('[ReviewExecutionView] SSE event received:', event.type, event)
+  // 详细日志，方便调试 SSE 数据
+  console.log('[ReviewExecutionView] SSE event received:', event)
 
   switch (event.type) {
     case 'status':
       // 状态更新事件
+      console.log('[ReviewExecutionView] status event received, status:', event.status, 'current phase:', phase.value)
       if (event.status === 'running') {
-        phase.value = 'running'
+        if (phase.value !== 'running') {
+          phase.value = 'running'
+          console.log('[ReviewExecutionView] phase set to running')
+        }
       } else if (event.status === 'completed') {
         phase.value = 'completed'
       } else if (event.status === 'failed') {
         phase.value = 'failed'
       }
+      break
+
+    case 'master_started':
+      // 主代理开始解析，重置 steps 和 subAgentSteps
+      steps.value = []
+      subAgentSteps.value = new Map()
+      break
+
+    case 'master_scan_completed':
+      // 扫描完成
+      break
+
+    case 'todo_created':
+      // 新建 Todo 项
+      addTodoItem(event)
+      break
+
+    case 'todo_list_completed':
+      // Todo 列表完成
+      break
+
+    case 'sub_agent_started':
+    case 'sub_agent_sub_agent_started':
+      // 子代理开始
+      updateTodoStatus(event.todo_id, 'running')
+      break
+
+    case 'sub_agent_progress':
+      // 子代理进度
+      updateTodoProgress(event.todo_id, event.progress, event.current_check)
+      break
+
+    case 'sub_agent_completed':
+      // 子代理完成
+      updateTodoStatus(event.todo_id, 'completed', event.findings_count)
+      break
+
+    case 'sub_agent_failed':
+      // 子代理失败
+      updateTodoStatus(event.todo_id, 'failed', 0, event.error)
+      break
+
+    case 'merging_started':
+      break
+
+    case 'merging_completed':
+      phase.value = 'completed'
       break
 
     case 'progress':
@@ -53,10 +127,8 @@ function handleSSEEvent(event: any) {
     case 'step':
       // Agent 执行步骤事件 - 这是核心事件
       if (event.step_number !== undefined) {
-        // 跳过空的 step
-        if (!event.content && !event.tool_calls?.length) {
-          break
-        }
+        // 不过滤任何 step 类型，即使是 observation 也要添加
+        // 移除原来的 content/tool_calls 检查，确保所有 step 都被记录
 
         // 检查是否已存在该 step（去重）
         const existingIndex = steps.value.findIndex(
@@ -74,6 +146,7 @@ function handleSSEEvent(event: any) {
             tool_calls: event.tool_calls || [],
             tool_results: event.tool_results || [],
           }
+          console.log('[ReviewExecutionView] Step updated:', event.step_number, event.step_type)
         } else {
           // 添加新 step
           steps.value.push({
@@ -84,12 +157,52 @@ function handleSSEEvent(event: any) {
             tool_calls: event.tool_calls || [],
             tool_results: event.tool_results || [],
           })
+          console.log('[ReviewExecutionView] Step added, total steps:', steps.value.length)
         }
 
         // 如果收到第一个 step 事件，说明 agent 已开始运行
         if (phase.value === 'pending') {
           phase.value = 'running'
         }
+      }
+      break
+
+    case 'sub_agent_step':
+      // 子代理执行步骤事件 - 存储到独立的 subAgentSteps Map
+      if (event.step_number !== undefined && event.todo_id) {
+        const todoId = event.todo_id
+        const existingSteps = subAgentSteps.value.get(todoId) || []
+
+        // 检查是否已存在该 step（去重）
+        const existingIndex = existingSteps.findIndex(
+          s => s.step_number === event.step_number && s.step_type !== 'tool_result'
+        )
+
+        if (existingIndex >= 0) {
+          // 更新现有 step
+          existingSteps[existingIndex] = {
+            ...existingSteps[existingIndex],
+            step_number: event.step_number,
+            step_type: event.step_type || 'unknown',
+            content: event.content || '',
+            timestamp: new Date(),
+            tool_calls: event.tool_calls || [],
+            tool_results: event.tool_results || [],
+          }
+        } else {
+          // 添加新 step
+          existingSteps.push({
+            step_number: event.step_number,
+            step_type: event.step_type || 'unknown',
+            content: event.content || '',
+            timestamp: new Date(),
+            tool_calls: event.tool_calls || [],
+            tool_results: event.tool_results || [],
+          })
+        }
+
+        subAgentSteps.value.set(todoId, [...existingSteps])
+        console.log('[ReviewExecutionView] Sub-agent step added for', todoId, 'total steps:', existingSteps.length)
       }
       break
 
@@ -114,6 +227,58 @@ function handleSSEEvent(event: any) {
       // 合并完成
       console.log('[ReviewExecutionView] Merge complete')
       break
+
+    default:
+      // 记录所有未处理的事件类型
+      console.log('[ReviewExecutionView] Unhandled event type:', event.type, 'event:', event)
+  }
+}
+
+// Helper methods for todo management
+function addTodoItem(event: any) {
+  const checkItemsCount = event.check_items_count || 0
+  const checkItems: CheckItemState[] = []
+  for (let i = 0; i < checkItemsCount; i++) {
+    checkItems.push({
+      id: `${event.todo_id}-${i}`,
+      title: `检查项 ${i + 1}`,
+      status: 'pending'
+    })
+  }
+
+  const todoItem: TodoItemState = {
+    id: event.todo_id || '',
+    rule_doc_name: event.rule_doc_name || '',
+    check_items: checkItems,
+    status: 'pending'
+  }
+  todos.value.set(todoItem.id, todoItem)
+}
+
+function updateTodoStatus(todoId: string, status: TodoItemState['status'], _findingsCount?: number, error?: string) {
+  const todo = todos.value.get(todoId)
+  if (todo) {
+    todo.status = status
+    if (status === 'completed') {
+      todo.result = { findings: [] }
+    }
+    if (error) {
+      todo.error_message = error
+    }
+    todos.value.set(todoId, { ...todo })
+  }
+}
+
+function updateTodoProgress(todoId: string, _progress: number, currentCheck: string) {
+  const todo = todos.value.get(todoId)
+  if (todo) {
+    // Update check items status
+    todo.check_items.forEach(item => {
+      if (item.title === currentCheck) {
+        item.status = 'running'
+      }
+    })
+    todos.value.set(todoId, { ...todo })
   }
 }
 
@@ -172,6 +337,32 @@ const timelineSteps = computed(() => steps.value.map(s => ({
   tool_result: s.tool_results ? { tool_results: s.tool_results } : undefined,
 })))
 
+// 格式化 subAgentSteps 用于 LeftPane
+const subAgentStepsMap = computed(() => {
+  const map: Record<string, any[]> = {}
+  subAgentSteps.value.forEach((stepsArr, todoId) => {
+    map[todoId] = stepsArr.map(s => ({
+      step_number: s.step_number,
+      step_type: s.step_type,
+      content: s.content,
+      timestamp: s.timestamp,
+      tool_args: s.tool_calls ? { tool_calls: s.tool_calls } : undefined,
+      tool_result: s.tool_results ? { tool_results: s.tool_results } : undefined,
+    }))
+  })
+  return map
+})
+
+// 调试：监控 phase 变化
+watch(phase, (newPhase) => {
+  console.log('[ReviewExecutionView] phase changed to:', newPhase)
+})
+
+// 调试：监控 timelineSteps 变化
+watch(timelineSteps, (newSteps) => {
+  console.log('[ReviewExecutionView] timelineSteps changed, count:', newSteps.length, 'types:', [...new Set(newSteps.map(s => s.step_type))])
+}, { deep: true })
+
 onMounted(async () => {
   console.log('[ReviewExecutionView] onMounted, projectId:', projectId.value)
 
@@ -226,6 +417,8 @@ onUnmounted(() => {
           :phase="phase"
           :steps="timelineSteps"
           :error-message="errorMessage"
+          :todos="todoList"
+          :sub-agent-steps-map="subAgentStepsMap"
         />
 
         <RightSidebar
