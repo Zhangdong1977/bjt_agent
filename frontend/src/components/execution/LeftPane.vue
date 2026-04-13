@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import TodoList from './TodoList.vue'
-import MasterOutputBlock from './MasterOutputBlock.vue'
-import SubAgentTimeline from './SubAgentTimeline.vue'
-import MergeBlock from './MergeBlock.vue'
+import AgentTimelineItem from './AgentTimelineItem.vue'
+import BidReviewAgentBlock from './BidReviewAgentBlock.vue'
+import SubAgentExecutorBlock from './SubAgentExecutorBlock.vue'
 
 interface ToolCall {
   name: string
@@ -28,129 +27,115 @@ interface TimelineStep {
   }
 }
 
-const props = defineProps<{
+interface TodoItemState {
+  id: string
+  rule_doc_name: string
+  check_items: CheckItemState[]
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  result?: {
+    findings: any[]
+  }
+}
+
+interface CheckItemState {
+  id: string
+  title: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+}
+
+interface Props {
   phase: 'pending' | 'running' | 'completed' | 'failed'
   steps: TimelineStep[]
   errorMessage?: string | null
-}>()
+  todos?: TodoItemState[]
+}
 
-// 从 steps 解析数据
-const masterSteps = computed(() =>
-  props.steps.filter(s => s.step_type === 'master')
-)
+const props = defineProps<Props>()
 
-// Mock data for fallback
-const mockTodoItems = [
-  { id: '1', name: '检查投标方资质合规性', ruleFile: 'rule_001_资质要求.md', checkItemsCount: 5, depsType: 'sequential' as const, status: 'done' as const, agentId: 'A1' },
-  { id: '2', name: '核验技术方案规格参数', ruleFile: 'rule_002_技术规格.md', checkItemsCount: 8, depsType: 'branching' as const, status: 'done' as const, agentId: 'A2' },
-  { id: '3', name: '审核商务条款与合同约定', ruleFile: 'rule_003_商务条款.md', checkItemsCount: 4, depsType: 'sequential' as const, status: 'running' as const, agentId: 'A3' },
-  { id: '4', name: '验证环保合规与节能指标', ruleFile: 'rule_004_环保要求.md', checkItemsCount: 3, depsType: 'sequential' as const, status: 'wait' as const, agentId: 'A4' }
-]
-
-const todoItems = computed(() => {
-  const agentSteps = props.steps.filter(s => s.step_type === 'sub_agent')
-
-  if (agentSteps.length === 0) {
-    return mockTodoItems
-  }
-
-  return agentSteps.map((step, idx) => ({
-    id: String(idx + 1),
-    name: step.content || `任务 ${idx + 1}`,
-    ruleFile: 'rule file',
-    checkItemsCount: 0,
-    depsType: 'sequential' as const,
-    status: 'running' as const,
-    agentId: `A${idx + 1}`
-  }))
+// BidReviewAgent 模式检测
+const isBidReviewAgentMode = computed(() => {
+  return (!props.todos || props.todos.length === 0) && props.steps.length > 0
 })
 
-// Mock data for fallback
-const mockSubAgents = [
-  {
-    agentId: 'A1',
-    title: '检查投标方资质合规性',
-    ruleFile: 'rule_001_资质要求.md · 5 个检查项',
-    checkItems: [
-      { name: '营业执照', status: 'done' as const },
-      { name: '资质等级', status: 'done' as const },
-      { name: '信用评级', status: 'done' as const },
-      { name: '业绩证明', status: 'done' as const },
-      { name: '人员配置', status: 'fail' as const }
-    ],
-    status: 'done' as const,
-    findings: [
-      { type: 'crit' as const, text: '严重: 项目经理资质证书缺失' },
-      { type: 'major' as const, text: '一般: 业绩年限不足 1 项' },
-      { type: 'pass' as const, text: '通过: 3 项' }
-    ]
-  },
-  {
-    agentId: 'A2',
-    title: '核验技术方案规格参数',
-    ruleFile: 'rule_002_技术规格.md · 8 个检查项',
-    checkItems: [
-      { name: '基础架构', status: 'done' as const },
-      { name: '网络带宽', status: 'done' as const },
-      { name: '安全等级', status: 'done' as const },
-      { name: '灾备方案', status: 'done' as const },
-      { name: '响应时间', status: 'done' as const },
-      { name: '+3项', status: 'done' as const }
-    ],
-    status: 'done' as const,
-    findings: [
-      { type: 'major' as const, text: '一般: 灾备恢复时间超标' },
-      { type: 'major' as const, text: '一般: 带宽冗余描述不清' },
-      { type: 'major' as const, text: '一般: 数据加密方案缺细节' },
-      { type: 'pass' as const, text: '通过: 5 项' }
-    ]
-  },
-  {
-    agentId: 'A3',
-    title: '审核商务条款与合同约定',
-    ruleFile: 'rule_003_商务条款.md · 4 个检查项',
-    checkItems: [
-      { name: '合同条款', status: 'done' as const },
-      { name: '付款方式', status: 'done' as const },
-      { name: '投标有效期', status: 'running' as const },
-      { name: '保证金条款', status: 'wait' as const }
-    ],
-    status: 'running' as const,
-    runningLog: '正在比对"投标有效期"条款 — 检查是否满足 ≥ 90 天要求...',
-    findings: [
-      { type: 'pass' as const, text: '通过: 合同条款 · 付款方式' }
-    ]
-  },
-  {
-    agentId: 'A4',
-    title: '验证环保合规与节能指标',
-    ruleFile: 'rule_004_环保要求.md · 3 个检查项',
-    checkItems: [
-      { name: '环保认证', status: 'wait' as const },
-      { name: '碳排放指标', status: 'wait' as const },
-      { name: '废料处理方案', status: 'wait' as const }
-    ],
-    status: 'wait' as const,
-    findings: []
-  }
-]
+// 主代理步骤
+const masterSteps = computed(() => {
+  return props.steps.filter(s => s.step_type !== 'observation')
+})
 
+// 观察列表
+const observations = computed(() => {
+  return props.steps.filter(s => s.step_type === 'observation')
+})
+
+// 子代理列表
 const subAgents = computed(() => {
-  const agentSteps = props.steps.filter(s => s.step_type === 'sub_agent')
-
-  if (agentSteps.length === 0) {
-    return mockSubAgents
+  if (props.todos && props.todos.length > 0) {
+    return props.todos.map((todo, idx) => ({
+      agentId: `A${idx + 1}`,
+      title: todo.rule_doc_name.replace('.md', ''),
+      ruleFile: `${todo.rule_doc_name} · ${todo.check_items?.length || 0} 个检查项`,
+      checkItems: todo.check_items?.map(item => ({
+        name: item.title,
+        status: mapCheckItemStatus(item.status)
+      })) || [],
+      status: mapSubAgentStatus(todo.status),
+      findings: todo.result?.findings?.map((f: any) => ({
+        type: f.severity === 'critical' ? 'crit' as const : f.severity === 'major' ? 'major' as const : 'pass' as const,
+        text: f.is_compliant ? '通过' : `${f.severity || '问题'}: ${f.explanation || ''}`
+      })) || [],
+      steps: []  // 内部时间线数据
+    }))
   }
-
-  return agentSteps.map((step, idx) => ({
-    agentId: `A${idx + 1}`,
-    title: step.content || `子代理 ${idx + 1}`,
-    ruleFile: 'rule file',
-    checkItems: [],
-    status: 'running' as const,
-    findings: []
-  }))
+  return []
 })
+
+const hasSubAgentExecutor = computed(() => {
+  return subAgents.value.length > 0
+})
+
+// BidReviewAgent 模式：创建合成代理对象来展示观察结果
+const bidReviewAgentData = computed(() => {
+  if (isBidReviewAgentMode.value && observations.value.length > 0) {
+    return [{
+      agentId: 'BR',
+      title: 'BidReviewAgent',
+      ruleFile: '审查执行中',
+      status: mapSubAgentStatus(props.phase === 'completed' ? 'completed' : props.phase === 'running' ? 'running' : 'pending'),
+      checkItems: [],
+      steps: observations.value,
+      findings: []
+    }]
+  }
+  return []
+})
+
+function mapStatus(status: string): 'done' | 'running' | 'wait' {
+  if (status === 'completed') return 'done'
+  if (status === 'running') return 'running'
+  return 'wait'
+}
+
+function mapCheckItemStatus(status: string): 'done' | 'run' | 'wait' | 'fail' {
+  if (status === 'completed') return 'done'
+  if (status === 'running') return 'run'
+  if (status === 'failed') return 'fail'
+  return 'wait'
+}
+
+function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' {
+  if (status === 'completed') return 'done'
+  if (status === 'running') return 'running'
+  return 'wait'
+}
+
+function formatTime(date: Date): string {
+  return new Date(date).toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  })
+}
 </script>
 
 <template>
@@ -167,42 +152,56 @@ const subAgents = computed(() => {
       </div>
     </div>
 
-    <!-- 待办任务列表 -->
-    <div v-if="phase === 'running' || phase === 'completed'" class="phase-block">
-      <div class="phase-label">待办任务列表</div>
-      <div class="output-block">
-        <div class="output-header">
-          <div class="output-header-icon" style="background:var(--amber-bg);border:1px solid var(--amber-dim)">
-            <svg viewBox="0 0 11 11" fill="none">
-              <path d="M2 3h7M2 5.5h7M2 8h4.5" stroke="#f0a429" stroke-width="1.2" stroke-linecap="round"/>
-            </svg>
-          </div>
-          <span class="output-header-title">待办任务列表</span>
-          <div class="output-header-meta">
-            <span class="chip chip-todo">TODO · {{ todoItems.length }} tasks</span>
-          </div>
-        </div>
-        <div class="output-body">
-          <TodoList :items="todoItems" />
+    <!-- BidReviewAgent 模式 -->
+    <div v-if="isBidReviewAgentMode" class="phase-block">
+      <div class="phase-label">BidReviewAgent 执行</div>
+      <BidReviewAgentBlock
+        v-for="agent in bidReviewAgentData"
+        :key="agent.agentId"
+        :agent-id="agent.agentId"
+        :title="agent.title"
+        :rule-file="agent.ruleFile"
+        :status="agent.status"
+        :check-items="agent.checkItems"
+        :steps="agent.steps"
+        :findings="agent.findings"
+      />
+    </div>
+
+    <!-- MasterAgent 模式 -->
+    <template v-if="!isBidReviewAgentMode && (phase === 'running' || phase === 'completed')">
+      <!-- MasterAgent 时间线 -->
+      <div class="phase-block">
+        <div class="phase-label">MasterAgent · 规则解析</div>
+        <div class="master-timeline">
+          <AgentTimelineItem
+            v-for="step in masterSteps"
+            :key="step.step_number"
+            :step-number="step.step_number"
+            :step-type="step.step_type as any"
+            :content="step.content"
+            :timestamp="step.timestamp"
+            :tool-calls="step.tool_args?.tool_calls"
+            :tool-results="step.tool_result?.tool_results"
+          />
         </div>
       </div>
-    </div>
 
-    <!-- 主代理输出 -->
-    <div v-if="masterSteps.length > 0" class="phase-block">
-      <div class="phase-label">主代理 · 解析阶段</div>
-      <MasterOutputBlock :steps="masterSteps" />
-    </div>
-
-    <!-- 子代理时间线 -->
-    <div v-if="phase === 'running' || phase === 'completed'" class="phase-block">
-      <SubAgentTimeline :agents="subAgents" />
-    </div>
+      <!-- SubAgentExecutor -->
+      <div v-if="hasSubAgentExecutor" class="phase-block">
+        <SubAgentExecutorBlock :agents="subAgents" />
+      </div>
+    </template>
 
     <!-- 合并阶段 -->
-    <div v-if="phase === 'running' || phase === 'completed'" class="phase-block">
+    <div v-if="!isBidReviewAgentMode && phase === 'completed'" class="phase-block">
       <div class="phase-label">合并与质检阶段</div>
-      <MergeBlock :status="phase === 'completed' ? 'done' : phase === 'running' ? 'running' : 'wait'" />
+      <div class="merge-block">
+        <div class="merge-status">
+          <span class="merge-icon">✓</span>
+          <span>MasterAgent 已汇总所有子代理结果</span>
+        </div>
+      </div>
     </div>
 
     <!-- 空状态 -->
@@ -230,7 +229,6 @@ const subAgents = computed(() => {
 </template>
 
 <style scoped>
-/* 复用现有样式 */
 .left-pane {
   padding: 20px 24px;
   border-right: 1px solid var(--line);
@@ -261,6 +259,31 @@ const subAgents = computed(() => {
   background: var(--line);
 }
 
+.master-timeline {
+  padding-left: 8px;
+  border-left: 2px solid var(--purple-dim);
+}
+
+.merge-block {
+  background: var(--green-bg);
+  border: 1px solid var(--green-dim);
+  border-radius: var(--r2);
+  padding: 14px;
+}
+
+.merge-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--green);
+}
+
+.merge-icon {
+  font-size: 16px;
+}
+
+/* Reuse existing styles from old LeftPane */
 .output-block {
   background: var(--bg1);
   border: 1px solid var(--line);
@@ -299,19 +322,14 @@ const subAgents = computed(() => {
   flex: 1;
 }
 
-.output-header-meta { display: flex; align-items: center; gap: 8px; }
-
-.chip {
-  font-size: 10px;
-  font-weight: 500;
-  padding: 2px 7px;
-  border-radius: 3px;
-  border: 1px solid;
+.output-body {
+  padding: 12px 14px;
 }
-.chip-todo { background: var(--amber-bg); border-color: var(--amber-dim); color: var(--amber); }
-.chip-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }
 
-.output-body { padding: 12px 14px; }
+.wait-status {
+  font-size: 12px;
+  color: var(--muted);
+}
 
 .error-block {
   background: var(--red-bg);
@@ -342,8 +360,13 @@ const subAgents = computed(() => {
   color: var(--text);
 }
 
-.wait-status {
-  font-size: 12px;
-  color: var(--muted);
+.chip {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 3px;
+  border: 1px solid;
 }
+
+.chip-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }
 </style>
