@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
+import { getAccessToken } from '@/api/client'
 import ExecutionHeader from '@/components/execution/ExecutionHeader.vue'
 import ExecutionStepper from '@/components/execution/ExecutionStepper.vue'
 import LeftPane from '@/components/execution/LeftPane.vue'
@@ -104,12 +105,12 @@ function handleSSEEvent(event: any) {
 
     case 'sub_agent_completed':
       // 子代理完成
-      updateTodoStatus(event.todo_id, 'completed', event.findings_count)
+      updateTodoStatus(event.todo_id, 'completed', event.findings)
       break
 
     case 'sub_agent_failed':
       // 子代理失败
-      updateTodoStatus(event.todo_id, 'failed', 0, event.error)
+      updateTodoStatus(event.todo_id, 'failed', undefined, event.error)
       break
 
     case 'merging_started':
@@ -255,12 +256,12 @@ function addTodoItem(event: any) {
   todos.value.set(todoItem.id, todoItem)
 }
 
-function updateTodoStatus(todoId: string, status: TodoItemState['status'], _findingsCount?: number, error?: string) {
+function updateTodoStatus(todoId: string, status: TodoItemState['status'], findings?: any[], error?: string) {
   const todo = todos.value.get(todoId)
   if (todo) {
     todo.status = status
-    if (status === 'completed') {
-      todo.result = { findings: [] }
+    if (status === 'completed' && findings) {
+      todo.result = { findings }
     }
     if (error) {
       todo.error_message = error
@@ -289,7 +290,10 @@ function connect() {
   }
 
   disconnect()
-  const url = `${API_BASE}/events/tasks/${projectStore.currentTask.id}/stream`
+  const token = getAccessToken()
+  const url = token
+    ? `${API_BASE}/events/tasks/${projectStore.currentTask.id}/stream?token=${encodeURIComponent(token)}`
+    : `${API_BASE}/events/tasks/${projectStore.currentTask.id}/stream`
   console.log('[ReviewExecutionView] Connecting to SSE:', url)
 
   eventSource = new EventSource(url)
@@ -347,7 +351,19 @@ const subAgentStepsMap = computed(() => {
       content: s.content,
       timestamp: s.timestamp,
       tool_args: s.tool_calls ? { tool_calls: s.tool_calls } : undefined,
-      tool_result: s.tool_results ? { tool_results: s.tool_results } : undefined,
+      // 转换 tool_results 格式：从 SSE 扁平结构 {id, name, status, content, error}
+      // 转换为组件期望的嵌套结构 {name, result: {status, content, error, count}}
+      tool_result: s.tool_results ? {
+        tool_results: s.tool_results.map((r: any) => ({
+          name: r.name,
+          result: {
+            status: r.status,
+            content: r.content,
+            error: r.error,
+            count: r.count,
+          }
+        }))
+      } : undefined,
     }))
   })
   return map
