@@ -91,14 +91,15 @@ async function handleUpload(event: Event) {
 
 <style scoped>
 .document-card {
-  border: 2px dashed #ddd;
-  border-radius: 8px;
+  border: 2px dashed var(--line);
+  border-radius: var(--r2);
   padding: 1.5rem;
   text-align: center;
+  background: var(--bg1);
 }
 
 .document-card h3 {
-  color: #333;
+  color: var(--text);
   margin-bottom: 1rem;
 }
 
@@ -114,13 +115,13 @@ async function handleUpload(event: Event) {
 }
 
 .filename {
-  color: #333;
+  color: var(--text);
   font-weight: 500;
   word-break: break-all;
 }
 
 .doc-meta {
-  color: #666;
+  color: var(--muted);
   font-size: 0.9rem;
   margin: 0.5rem 0;
 }
@@ -142,15 +143,15 @@ async function handleUpload(event: Event) {
 .upload-label {
   display: block;
   padding: 2rem;
-  border: 2px dashed #6366f1;
-  border-radius: 8px;
-  color: #6366f1;
+  border: 2px dashed var(--purple);
+  border-radius: var(--r2);
+  color: var(--purple);
   cursor: pointer;
   transition: background-color 0.2s ease;
 }
 
 .upload-label:hover {
-  background: #f5f3ff;
+  background: var(--purple-bg);
 }
 
 .status {
@@ -162,23 +163,23 @@ async function handleUpload(event: Event) {
 }
 
 .status-pending {
-  background: #ddd;
-  color: #666;
+  background: var(--bg3);
+  color: var(--muted);
 }
 
 .status-running {
-  background: #f6e05e;
-  color: #744210;
+  background: var(--amber-bg);
+  color: var(--amber);
 }
 
 .status-success {
-  background: #68d391;
-  color: #22543d;
+  background: var(--green-bg);
+  color: var(--green);
 }
 
 .status-error {
-  background: #fc8181;
-  color: #742a2a;
+  background: var(--red-bg);
+  color: var(--red);
 }
 
 .button-group {
@@ -191,28 +192,29 @@ async function handleUpload(event: Event) {
 .delete-btn {
   padding: 0.5rem 1rem;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--r);
   cursor: pointer;
   font-size: 0.85rem;
+  flex: 1;
 }
 
 .view-btn {
-  background: #6366f1;
-  color: white;
-  transition: background-color 0.2s ease;
+  background: var(--purple);
+  color: var(--white);
+  transition: filter 0.2s ease;
 }
 
 .delete-btn {
-  background: #e53e3e;
-  color: white;
-  transition: background-color 0.2s ease;
+  background: var(--red);
+  color: var(--white);
+  transition: filter 0.2s ease;
 }
 
 .view-btn:hover {
-  background: #4f46e5;
+  filter: brightness(1.1);
 }
 
 .delete-btn:hover {
-  background: #c53030;
+  filter: brightness(1.1);
 }
 </style>
