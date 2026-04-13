@@ -14,8 +14,8 @@ const steps = [
 
 <template>
   <div class="merge-block">
-    <div class="output-header" style="background:transparent;padding:0 0 10px 0;border-bottom:1px solid var(--line);">
-      <div class="output-header-icon" style="background:var(--teal-bg);border:1px solid var(--teal-dim)">
+    <div class="output-header transparent">
+      <div class="output-header-icon teal">
         <svg viewBox="0 0 11 11" fill="none">
           <path d="M2 5.5h7M5.5 2l3.5 3.5-3.5 3.5" stroke="#2dd4bf" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
@@ -49,6 +49,15 @@ const steps = [
   align-items: center;
   gap: 10px;
   margin-bottom: 10px;
+}
+.output-header.transparent {
+  background: transparent;
+  padding: 0 0 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.output-header-icon.teal {
+  background: var(--teal-bg);
+  border: 1px solid var(--teal-dim);
 }
 
 .output-header-icon {
