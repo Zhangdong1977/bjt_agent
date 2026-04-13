@@ -34,18 +34,20 @@ const props = defineProps<{
   errorMessage?: string | null
 }>()
 
-// 模拟数据 - 实际应从 steps 解析
+// 从 steps 解析数据
 const masterSteps = computed(() =>
   props.steps.filter(s => s.step_type === 'master')
 )
 
-const todoItems = [
+// TODO: 从 props.steps 解析子代理步骤
+const todoItems = computed(() => [
   { id: '1', name: '检查投标方资质合规性', ruleFile: 'rule_001_资质要求.md', checkItemsCount: 5, depsType: 'sequential' as const, status: 'done' as const, agentId: 'A1' },
   { id: '2', name: '核验技术方案规格参数', ruleFile: 'rule_002_技术规格.md', checkItemsCount: 8, depsType: 'branching' as const, status: 'done' as const, agentId: 'A2' },
   { id: '3', name: '审核商务条款与合同约定', ruleFile: 'rule_003_商务条款.md', checkItemsCount: 4, depsType: 'sequential' as const, status: 'running' as const, agentId: 'A3' },
   { id: '4', name: '验证环保合规与节能指标', ruleFile: 'rule_004_环保要求.md', checkItemsCount: 3, depsType: 'sequential' as const, status: 'wait' as const, agentId: 'A4' }
-]
+])
 
+// TODO: 从 props.steps 解析子代理数据
 const subAgents = computed(() => [
   {
     agentId: 'A1',
