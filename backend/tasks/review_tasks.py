@@ -419,5 +419,6 @@ async def _run_agent_review(
             return _create_error_finding(error_msg)
 
     except Exception as e:
+        logger.exception(f"MasterAgent execution failed for task {task_id}: {e}")
         event_cb("error", {"message": f"Agent error: {str(e)}"})
         return _create_error_finding(str(e))
