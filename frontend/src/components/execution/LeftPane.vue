@@ -1,128 +1,191 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import TodoListCard from '@/components/TodoListCard.vue'
-import SubAgentCard from '@/components/SubAgentCard.vue'
-import type { TodoItem } from '@/types/review'
+import TodoList from './TodoList.vue'
+import MasterOutputBlock from './MasterOutputBlock.vue'
+import SubAgentTimeline from './SubAgentTimeline.vue'
+import MergeBlock from './MergeBlock.vue'
+
+interface ToolCall {
+  name: string
+  arguments: Record<string, any>
+}
+
+interface ToolResult {
+  name: string
+  result: any
+}
+
+interface TimelineStep {
+  step_number: number
+  step_type: string
+  content: string
+  timestamp: Date
+  tool_args?: {
+    tool_calls?: ToolCall[]
+  }
+  tool_result?: {
+    tool_results?: ToolResult[]
+  }
+}
 
 const props = defineProps<{
-  phase: 'master' | 'todo' | 'sub_agents' | 'merging' | 'completed'
-  todos: TodoItem[]
-  masterOutput?: {
-    totalDocs: number
-    totalItems: number
-    ruleDocs: Array<{ name: string; items: number }>
-  } | null
+  phase: 'pending' | 'running' | 'completed' | 'failed'
+  steps: TimelineStep[]
+  errorMessage?: string | null
 }>()
 
-const agentIndexMap = computed(() => {
-  const map = new Map<string, number>()
-  let idx = 1
-  for (const todo of props.todos) {
-    map.set(todo.id, idx++)
+// 模拟数据 - 实际应从 steps 解析
+const masterSteps = computed(() =>
+  props.steps.filter(s => s.step_type === 'master')
+)
+
+const todoItems = [
+  { id: '1', name: '检查投标方资质合规性', ruleFile: 'rule_001_资质要求.md', checkItemsCount: 5, depsType: 'sequential' as const, status: 'done' as const, agentId: 'A1' },
+  { id: '2', name: '核验技术方案规格参数', ruleFile: 'rule_002_技术规格.md', checkItemsCount: 8, depsType: 'branching' as const, status: 'done' as const, agentId: 'A2' },
+  { id: '3', name: '审核商务条款与合同约定', ruleFile: 'rule_003_商务条款.md', checkItemsCount: 4, depsType: 'sequential' as const, status: 'running' as const, agentId: 'A3' },
+  { id: '4', name: '验证环保合规与节能指标', ruleFile: 'rule_004_环保要求.md', checkItemsCount: 3, depsType: 'sequential' as const, status: 'wait' as const, agentId: 'A4' }
+]
+
+const subAgents = computed(() => [
+  {
+    agentId: 'A1',
+    title: '检查投标方资质合规性',
+    ruleFile: 'rule_001_资质要求.md · 5 个检查项',
+    checkItems: [
+      { name: '营业执照', status: 'done' as const },
+      { name: '资质等级', status: 'done' as const },
+      { name: '信用评级', status: 'done' as const },
+      { name: '业绩证明', status: 'done' as const },
+      { name: '人员配置', status: 'fail' as const }
+    ],
+    status: 'done' as const,
+    findings: [
+      { type: 'crit' as const, text: '严重: 项目经理资质证书缺失' },
+      { type: 'major' as const, text: '一般: 业绩年限不足 1 项' },
+      { type: 'pass' as const, text: '通过: 3 项' }
+    ]
+  },
+  {
+    agentId: 'A2',
+    title: '核验技术方案规格参数',
+    ruleFile: 'rule_002_技术规格.md · 8 个检查项',
+    checkItems: [
+      { name: '基础架构', status: 'done' as const },
+      { name: '网络带宽', status: 'done' as const },
+      { name: '安全等级', status: 'done' as const },
+      { name: '灾备方案', status: 'done' as const },
+      { name: '响应时间', status: 'done' as const },
+      { name: '+3项', status: 'done' as const }
+    ],
+    status: 'done' as const,
+    findings: [
+      { type: 'major' as const, text: '一般: 灾备恢复时间超标' },
+      { type: 'major' as const, text: '一般: 带宽冗余描述不清' },
+      { type: 'major' as const, text: '一般: 数据加密方案缺细节' },
+      { type: 'pass' as const, text: '通过: 5 项' }
+    ]
+  },
+  {
+    agentId: 'A3',
+    title: '审核商务条款与合同约定',
+    ruleFile: 'rule_003_商务条款.md · 4 个检查项',
+    checkItems: [
+      { name: '合同条款', status: 'done' as const },
+      { name: '付款方式', status: 'done' as const },
+      { name: '投标有效期', status: 'run' as const },
+      { name: '保证金条款', status: 'wait' as const }
+    ],
+    status: 'running' as const,
+    runningLog: '正在比对"投标有效期"条款 — 检查是否满足 ≥ 90 天要求...',
+    findings: [
+      { type: 'pass' as const, text: '通过: 合同条款 · 付款方式' }
+    ]
+  },
+  {
+    agentId: 'A4',
+    title: '验证环保合规与节能指标',
+    ruleFile: 'rule_004_环保要求.md · 3 个检查项',
+    checkItems: [
+      { name: '环保认证', status: 'wait' as const },
+      { name: '碳排放指标', status: 'wait' as const },
+      { name: '废料处理方案', status: 'wait' as const }
+    ],
+    status: 'wait' as const,
+    findings: []
   }
-  return map
-})
+])
 </script>
 
 <template>
   <div class="left-pane">
-    <!-- 主代理输出块 - 解析阶段 -->
-    <div v-if="phase !== 'master' || masterOutput" class="phase-block">
-      <div class="phase-label">主代理 · 解析阶段</div>
-      <div class="output-block">
-        <div class="output-header">
-          <div class="output-header-icon master-icon">
-            <svg viewBox="0 0 11 11" fill="none">
-              <circle cx="5.5" cy="5.5" r="4" stroke="var(--purple)" stroke-width="1.2"/>
-              <path d="M5.5 3.5v2.5l1.5 1" stroke="var(--purple)" stroke-width="1.1" stroke-linecap="round"/>
-            </svg>
-          </div>
-          <span class="output-title">主代理 — 规则解析</span>
-          <span class="chip chip-master">MASTER</span>
-        </div>
-        <div class="output-body">
-          <div v-if="masterOutput" class="output-line">
-            <span class="prompt">›</span>
-            <span class="cmd">
-              <span class="keyword">Scanning</span>
-              <span class="path">{{ masterOutput.ruleDocs.length }} rule documents</span>
-              <span class="ok">found {{ masterOutput.totalDocs }} docs</span>
-            </span>
-          </div>
-          <div v-if="masterOutput" v-for="doc in masterOutput.ruleDocs" :key="doc.name" class="output-line">
-            <span class="prompt">›</span>
-            <span class="cmd">
-              <span class="keyword">Parsing</span>
-              <span class="path">{{ doc.name }}</span>
-              <span class="val">→ {{ doc.items }} items</span>
-            </span>
-          </div>
+    <!-- 错误信息块 -->
+    <div v-if="errorMessage" class="phase-block">
+      <div class="phase-label">错误</div>
+      <div class="error-block">
+        <div class="error-icon">⚠️</div>
+        <div class="error-content">
+          <span class="error-label">审查失败:</span>
+          <span class="error-message">{{ errorMessage }}</span>
         </div>
       </div>
     </div>
 
-    <!-- 待办列表 -->
-    <div v-if="phase !== 'master'" class="phase-block">
+    <!-- 待办任务列表 -->
+    <div v-if="phase === 'running' || phase === 'completed'" class="phase-block">
       <div class="phase-label">待办任务列表</div>
       <div class="output-block">
         <div class="output-header">
-          <div class="output-header-icon todo-icon">
+          <div class="output-header-icon" style="background:var(--amber-bg);border:1px solid var(--amber-dim)">
             <svg viewBox="0 0 11 11" fill="none">
-              <path d="M2 3h7M2 5.5h7M2 8h4.5" stroke="var(--amber)" stroke-width="1.2" stroke-linecap="round"/>
+              <path d="M2 3h7M2 5.5h7M2 8h4.5" stroke="#f0a429" stroke-width="1.2" stroke-linecap="round"/>
             </svg>
           </div>
-          <span class="output-title">待办任务列表</span>
-          <span class="chip chip-todo">TODO · {{ todos.length }} tasks</span>
+          <span class="output-header-title">待办任务列表</span>
+          <div class="output-header-meta">
+            <span class="chip chip-todo">TODO · {{ todoItems.length }} tasks</span>
+          </div>
         </div>
         <div class="output-body">
-          <TodoListCard
-            v-for="todo in todos"
-            :key="todo.id"
-            :todo="todo"
-            class="todo-item-wrapper"
-          />
+          <TodoList :items="todoItems" />
         </div>
       </div>
     </div>
 
-    <!-- 子代理卡片组 -->
-    <div v-if="phase === 'sub_agents' || phase === 'merging' || phase === 'completed'" class="phase-block">
-      <div class="phase-label">子代理并行执行</div>
-      <div class="agent-list">
-        <SubAgentCard
-          v-for="todo in todos"
-          :key="todo.id"
-          :todo="todo"
-          :agent-index="agentIndexMap.get(todo.id) || 1"
-        />
-      </div>
+    <!-- 主代理输出 -->
+    <div v-if="masterSteps.length > 0" class="phase-block">
+      <div class="phase-label">主代理 · 解析阶段</div>
+      <MasterOutputBlock :steps="masterSteps" />
     </div>
 
-    <!-- 合并块 -->
+    <!-- 子代理时间线 -->
+    <div v-if="phase === 'running' || phase === 'completed'" class="phase-block">
+      <SubAgentTimeline :agents="subAgents" />
+    </div>
+
+    <!-- 合并阶段 -->
     <div v-if="phase === 'merging' || phase === 'completed'" class="phase-block">
       <div class="phase-label">合并与质检阶段</div>
-      <div class="merge-block">
-        <div class="merge-header">
-          <div class="output-header-icon merge-icon">
+      <MergeBlock :status="phase === 'completed' ? 'done' : phase === 'merging' ? 'running' : 'wait'" />
+    </div>
+
+    <!-- 空状态 -->
+    <div v-if="phase === 'pending'" class="phase-block">
+      <div class="phase-label">等待开始</div>
+      <div class="output-block">
+        <div class="output-header">
+          <div class="output-header-icon wait-icon">
             <svg viewBox="0 0 11 11" fill="none">
-              <path d="M2 5.5h7M5.5 2l3.5 3.5-3.5 3.5" stroke="var(--teal)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="5.5" cy="5.5" r="4" stroke="var(--muted)" stroke-width="1.2"/>
+              <path d="M5.5 4v2l1.5 1" stroke="var(--muted)" stroke-width="1.1" stroke-linecap="round"/>
             </svg>
           </div>
-          <span class="output-title">结果合并与质检</span>
-          <span :class="['chip', phase === 'completed' ? 'chip-done' : 'chip-wait']">
-            {{ phase === 'completed' ? '完成' : '等待中' }}
-          </span>
+          <span class="output-title">等待智能体启动</span>
+          <span class="chip chip-wait">等待</span>
         </div>
-        <div class="merge-steps">
-          <div class="merge-step"><div class="m-dot"></div>汇总子代理结果</div>
-          <span class="merge-arr">→</span>
-          <div class="merge-step"><div class="m-dot"></div>去重与标准化</div>
-          <span class="merge-arr">→</span>
-          <div class="merge-step"><div class="m-dot"></div>优先级排序</div>
-          <span class="merge-arr">→</span>
-          <div class="merge-step"><div class="m-dot"></div>异常二次校验</div>
-          <span class="merge-arr">→</span>
-          <div class="merge-step"><div class="m-dot"></div>生成审查报告</div>
+        <div class="output-body">
+          <div class="wait-status">
+            <span>正在等待服务器响应...</span>
+          </div>
         </div>
       </div>
     </div>
@@ -130,6 +193,7 @@ const agentIndexMap = computed(() => {
 </template>
 
 <style scoped>
+/* 复用现有样式 */
 .left-pane {
   padding: 20px 24px;
   border-right: 1px solid var(--line);
@@ -160,7 +224,6 @@ const agentIndexMap = computed(() => {
   background: var(--line);
 }
 
-/* 输出块 */
 .output-block {
   background: var(--bg1);
   border: 1px solid var(--line);
@@ -184,21 +247,12 @@ const agentIndexMap = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 
-.master-icon {
-  background: var(--purple-bg);
-  border: 1px solid var(--purple-dim);
-}
-
-.todo-icon {
-  background: var(--amber-bg);
-  border: 1px solid var(--amber-dim);
-}
-
-.merge-icon {
-  background: var(--teal-bg);
-  border: 1px solid var(--teal-dim);
+.wait-icon {
+  background: var(--bg3);
+  border: 1px solid var(--line2);
 }
 
 .output-title {
@@ -208,104 +262,8 @@ const agentIndexMap = computed(() => {
   flex: 1;
 }
 
-.output-body {
-  padding: 12px 14px;
-}
+.output-header-meta { display: flex; align-items: center; gap: 8px; }
 
-.output-line {
-  font-size: 12px;
-  color: var(--sub);
-  line-height: 1.7;
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.prompt {
-  color: var(--dim);
-  flex-shrink: 0;
-}
-
-.cmd {
-  color: var(--text);
-}
-
-.keyword {
-  color: var(--purple);
-}
-
-.path {
-  color: var(--blue);
-}
-
-.val {
-  color: var(--amber);
-}
-
-.ok {
-  color: var(--green);
-}
-
-.todo-item-wrapper {
-  margin-bottom: 4px;
-}
-
-/* 代理列表 */
-.agent-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-/* 合并块 */
-.merge-block {
-  background: var(--bg1);
-  border: 1px solid var(--line);
-  border-radius: var(--r2);
-  padding: 14px;
-}
-
-.merge-block.opacity-50 {
-  opacity: 0.5;
-}
-
-.merge-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 10px;
-}
-
-.merge-steps {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.merge-step {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.m-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--line2);
-}
-
-.merge-arr {
-  color: var(--dim);
-  font-size: 11px;
-}
-
-/* Chip 样式 */
 .chip {
   font-size: 10px;
   font-weight: 500;
@@ -313,28 +271,42 @@ const agentIndexMap = computed(() => {
   border-radius: 3px;
   border: 1px solid;
 }
+.chip-todo { background: var(--amber-bg); border-color: var(--amber-dim); color: var(--amber); }
+.chip-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }
 
-.chip-master {
-  background: var(--purple-bg);
-  border-color: var(--purple-dim);
-  color: var(--purple);
+.output-body { padding: 12px 14px; }
+
+.error-block {
+  background: var(--red-bg);
+  border: 1px solid var(--red-dim);
+  border-radius: var(--r2);
+  padding: 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
 }
 
-.chip-todo {
-  background: var(--amber-bg);
-  border-color: var(--amber-dim);
-  color: var(--amber);
+.error-icon { font-size: 20px; }
+
+.error-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.chip-done {
-  background: var(--green-bg);
-  border-color: var(--green-dim);
-  color: var(--green);
+.error-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--red);
 }
 
-.chip-wait {
-  background: var(--bg3);
-  border-color: var(--line2);
+.error-message {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.wait-status {
+  font-size: 12px;
   color: var(--muted);
 }
 </style>
