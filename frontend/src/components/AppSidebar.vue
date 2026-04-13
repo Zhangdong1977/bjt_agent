@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router'
-import { ref, watch, computed } from 'vue'
+import { ref, watch } from 'vue'
 import { FileSearchOutlined, HistoryOutlined, BookOutlined } from '@ant-design/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 
