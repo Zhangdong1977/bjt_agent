@@ -30,7 +30,7 @@ const toolNameMap: Record<string, string> = {
 }
 
 function formatTime(date: Date): string {
-  return new Date(date).toLocaleTimeString('zh-CN', {
+  return date.toLocaleTimeString('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -44,6 +44,7 @@ function getStepColor(stepType: string): string {
     tool_call: 'var(--amber)',
     observation: 'var(--green)',
     thought: 'var(--blue)',
+    tool_result: 'var(--green)',
   }
   return colorMap[stepType] || 'var(--dim)'
 }
@@ -79,8 +80,9 @@ function formatToolResult(result: any): string {
     <div :class="['timeline-card', getCardClass(stepType)]">
       <div class="card-header">
         <span class="step-number">#{{ stepNumber }}</span>
-        <span class="step-label">{{ stepType === 'master' ? '主代理' : stepType === 'observation' ? '观察' : stepType === 'tool_call' ? '工具调用' : '思考' }}</span>
+        <span class="step-label">{{ stepType === 'master' ? '主代理' : stepType === 'observation' ? '观察' : stepType === 'tool_call' ? '工具调用' : stepType === 'tool_result' ? '工具结果' : '思考' }}</span>
         <span v-if="status === 'running'" class="status-running">RUNNING</span>
+        <span v-if="duration !== undefined" class="duration">{{ duration }}ms</span>
         <span class="timestamp">{{ formatTime(timestamp) }}</span>
       </div>
       <p v-if="content" class="step-text">{{ content }}</p>
@@ -142,6 +144,7 @@ function formatToolResult(result: any): string {
 .card-observation { background: var(--green-bg); border-color: var(--green); }
 .card-tool_call { background: var(--amber-bg); border-color: var(--amber); }
 .card-thought { background: var(--blue-bg); border-color: var(--blue); }
+.card-tool_result { background: var(--green-bg); border-color: var(--green); }
 
 .card-header {
   display: flex;
@@ -172,6 +175,11 @@ function formatToolResult(result: any): string {
 
 .timestamp {
   margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.duration {
   font-size: 10px;
   color: var(--muted);
 }
