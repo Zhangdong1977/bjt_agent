@@ -163,9 +163,9 @@ const subAgents = computed(() => [
     </div>
 
     <!-- 合并阶段 -->
-    <div v-if="phase === 'merging' || phase === 'completed'" class="phase-block">
+    <div v-if="phase === 'running' || phase === 'completed'" class="phase-block">
       <div class="phase-label">合并与质检阶段</div>
-      <MergeBlock :status="phase === 'completed' ? 'done' : phase === 'merging' ? 'running' : 'wait'" />
+      <MergeBlock :status="phase === 'completed' ? 'done' : phase === 'running' ? 'running' : 'wait'" />
     </div>
 
     <!-- 空状态 -->
