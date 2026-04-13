@@ -663,7 +663,7 @@ function getStatusClass(status: string) {
 /* Markdown styles */
 .markdown-content {
   line-height: 1.6;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .markdown-content h1,
