@@ -1,0 +1,35 @@
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests/e2e',
+  fullyParallel: false,
+  forbidOnly: !!process.env.CI,
+  retries: 0,
+  workers: 1,
+  reporter: 'list',
+
+  use: {
+    baseURL: 'http://localhost:3000',
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+  },
+
+  projects: [
+    {
+      name: 'chromium',
+      use: {
+        browserName: 'chromium',
+        channel: undefined,
+        launchOptions: {
+          executablePath: '/usr/bin/google-chrome',
+          args: [
+            '--remote-debugging-port=9222',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+          ],
+        },
+      },
+    },
+  ],
+});
