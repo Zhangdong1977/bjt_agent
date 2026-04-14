@@ -1,8 +1,14 @@
 import { test, expect } from '@playwright/test';
+import path from 'path';
 
 const TEST_ACCOUNTS = {
   username: 'zhangdong',
   password: '7745duck',
+};
+
+const TEST_DOCUMENTS = {
+  tender: path.resolve(__dirname, '../../testdocuments/迪维勒普招标文件.docx'),
+  bid: path.resolve(__dirname, '../../testdocuments/迪维勒普投标文件.docx'),
 };
 
 test.describe('标书审查系统 E2E 测试', () => {
@@ -42,5 +48,69 @@ test.describe('标书审查系统 E2E 测试', () => {
     // 等待跳转到项目页面
     await expect(page).toHaveURL(/\/projects\/[a-f0-9-]+/, { timeout: 10000 });
     await expect(page.locator('.start-review-btn')).toBeVisible();
+  });
+
+  test('步骤4: 上传招标书并等待解析完成', async ({ page }) => {
+    // 登录并创建项目
+    await page.goto('/login');
+    await page.fill('#username', TEST_ACCOUNTS.username);
+    await page.fill('#password', TEST_ACCOUNTS.password);
+    await page.click('button[type="submit"]');
+    await expect(page).toHaveURL(/\/home\/check/, { timeout: 10000 });
+
+    const projectName = `测试项目_${Date.now()}`;
+    await page.fill('input[placeholder="请输入项目名称"]', projectName);
+    await page.click('.ant-btn-primary');
+    await expect(page).toHaveURL(/\/projects\/[a-f0-9-]+/, { timeout: 10000 });
+
+    // 上传招标书
+    const tenderInput = page.locator('#tender-upload');
+    await tenderInput.setInputFiles(TEST_DOCUMENTS.tender);
+
+    // 等待文件显示
+    await expect(page.locator('.filename').first()).toContainText('迪维勒普招标文件', { timeout: 5000 });
+
+    // 等待解析完成（最多60秒）
+    await page.waitForFunction(() => {
+      const statusElements = document.querySelectorAll('.status');
+      for (const el of statusElements) {
+        if (el.textContent?.trim() === 'parsed') {
+          return true;
+        }
+      }
+      return false;
+    }, { timeout: 60000 });
+  });
+
+  test('步骤5: 上传应标书并等待解析完成', async ({ page }) => {
+    // 登录并创建项目
+    await page.goto('/login');
+    await page.fill('#username', TEST_ACCOUNTS.username);
+    await page.fill('#password', TEST_ACCOUNTS.password);
+    await page.click('button[type="submit"]');
+    await expect(page).toHaveURL(/\/home\/check/, { timeout: 10000 });
+
+    const projectName = `测试项目_${Date.now()}`;
+    await page.fill('input[placeholder="请输入项目名称"]', projectName);
+    await page.click('.ant-btn-primary');
+    await expect(page).toHaveURL(/\/projects\/[a-f0-9-]+/, { timeout: 10000 });
+
+    // 上传应标书
+    const bidInput = page.locator('#bid-upload');
+    await bidInput.setInputFiles(TEST_DOCUMENTS.bid);
+
+    // 等待文件显示
+    await expect(page.locator('.filename').first()).toContainText('迪维勒普投标文件', { timeout: 5000 });
+
+    // 等待解析完成（最多60秒）
+    await page.waitForFunction(() => {
+      const statusElements = document.querySelectorAll('.status');
+      for (const el of statusElements) {
+        if (el.textContent?.trim() === 'parsed') {
+          return true;
+        }
+      }
+      return false;
+    }, { timeout: 60000 });
   });
 });
