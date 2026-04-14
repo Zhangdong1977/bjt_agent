@@ -40,7 +40,7 @@ const docViewerTitle = ref('')
 
 onMounted(async () => {
   await projectStore.selectProject(projectId.value)
-  // Fetch latest review results
+  await projectStore.fetchReviewTasks()
   await projectStore.fetchReviewResults()
 })
 
@@ -121,6 +121,32 @@ function getStatusClass(status: string) {
     default:
       return 'status-pending'
   }
+}
+
+const selectedTaskId = ref<string>('')
+
+function getStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    pending: '待处理',
+    running: '进行中',
+    completed: '已完成',
+    failed: '失败'
+  }
+  return labels[status] || status
+}
+
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return 'N/A'
+  return new Date(dateStr).toLocaleString('zh-CN')
+}
+
+function goToTaskExecution() {
+  if (!selectedTaskId.value) return
+  router.push({
+    name: 'review-execution',
+    params: { id: projectId.value },
+    query: { taskId: selectedTaskId.value }
+  })
 }
 </script>
 
@@ -273,6 +299,18 @@ function getStatusClass(status: string) {
       <section class="section">
         <h2>审查结果</h2>
         <div class="review-actions">
+          <!-- 任务选择器 -->
+          <div v-if="projectStore.reviewTasks.length > 0" class="task-selector">
+            <label>选择审查任务:</label>
+            <select v-model="selectedTaskId" class="task-select">
+              <option v-for="task in projectStore.reviewTasks" :key="task.id" :value="task.id">
+                {{ getStatusLabel(task.status) }} - {{ formatDate(task.created_at) }}
+              </option>
+            </select>
+            <button class="view-task-btn" @click="goToTaskExecution">
+              查看
+            </button>
+          </div>
           <button
             class="start-review-btn"
             :disabled="!tenderDoc || !bidDoc || tenderDoc.status !== 'parsed' || bidDoc.status !== 'parsed'"
@@ -519,7 +557,7 @@ function getStatusClass(status: string) {
 
 .view-btn {
   background: var(--purple);
-  color: white;
+  color: var(--white);
 }
 
 .view-btn:hover {
@@ -743,7 +781,7 @@ function getStatusClass(status: string) {
 .start-review-btn {
   padding: 0.6rem 1.5rem;
   background: var(--purple);
-  color: white;
+  color: var(--white);
   border: none;
   border-radius: 8px;
   cursor: pointer;
@@ -760,6 +798,45 @@ function getStatusClass(status: string) {
 .start-review-btn:disabled {
   background: var(--muted);
   cursor: not-allowed;
+}
+
+.task-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: var(--bg2);
+  border-radius: 8px;
+}
+
+.task-selector label {
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.task-select {
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  min-width: 200px;
+  background: var(--bg1);
+  color: var(--text);
+}
+
+.view-task-btn {
+  padding: 0.5rem 1rem;
+  background: var(--purple);
+  color: var(--white);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.view-task-btn:hover {
+  filter: brightness(1.1);
 }
 
 @media (max-width: 767px) {
