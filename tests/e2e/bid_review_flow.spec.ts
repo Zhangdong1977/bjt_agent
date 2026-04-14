@@ -113,4 +113,52 @@ test.describe('标书审查系统 E2E 测试', () => {
       return false;
     }, { timeout: 60000 });
   });
+
+  test('完整流程: 登录 -> 创建项目 -> 上传文档 -> 启动审查 -> 验证审查详情页', async ({ page }) => {
+    // 1. 登录
+    await page.goto('/login');
+    await page.fill('#username', TEST_ACCOUNTS.username);
+    await page.fill('#password', TEST_ACCOUNTS.password);
+    await page.click('button[type="submit"]');
+    await expect(page).toHaveURL(/\/home\/check/, { timeout: 10000 });
+
+    // 2. 创建项目
+    const projectName = `测试项目_${Date.now()}`;
+    await page.fill('input[placeholder="请输入项目名称"]', projectName);
+    await page.click('.ant-btn-primary');
+    await expect(page).toHaveURL(/\/projects\/[a-f0-9-]+/, { timeout: 10000 });
+
+    // 3. 上传招标书
+    const tenderInput = page.locator('#tender-upload');
+    await tenderInput.setInputFiles(TEST_DOCUMENTS.tender);
+    await expect(page.locator('.filename').first()).toContainText('迪维勒普招标文件', { timeout: 5000 });
+
+    // 4. 上传应标书
+    const bidInput = page.locator('#bid-upload');
+    await bidInput.setInputFiles(TEST_DOCUMENTS.bid);
+    await expect(page.locator('.filename').nth(1)).toContainText('迪维勒普投标文件', { timeout: 5000 });
+
+    // 5. 等待两个文档都解析完成
+    await page.waitForFunction(() => {
+      const statusElements = document.querySelectorAll('.status');
+      if (statusElements.length >= 2) {
+        return Array.from(statusElements).every(el => el.textContent?.trim() === 'parsed');
+      }
+      return false;
+    }, { timeout: 120000 });
+
+    // 6. 点击开始审查
+    const startButton = page.locator('.start-review-btn');
+    await expect(startButton).toBeEnabled();
+    await startButton.click();
+
+    // 7. 验证跳转到审查详情页
+    await expect(page).toHaveURL(/\/review-execution/, { timeout: 10000 });
+
+    // 8. 验证 LeftPane 组件存在
+    await expect(page.locator('.left-pane')).toBeVisible({ timeout: 10000 });
+
+    // 9. 验证页面包含必要的组件
+    await expect(page.locator('.phase-block')).toBeVisible({ timeout: 10000 });
+  });
 });
