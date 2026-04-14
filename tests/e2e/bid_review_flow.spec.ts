@@ -29,4 +29,22 @@ test.describe('标书审查系统 E2E 测试', () => {
     await page.click('button[type="submit"]');
     await expect(page).toHaveURL(/\/home\/check/, { timeout: 10000 });
   });
+
+  test('步骤3: 创建新项目', async ({ page }) => {
+    // 先登录
+    await page.goto('/login');
+    await page.fill('#username', TEST_ACCOUNTS.username);
+    await page.fill('#password', TEST_ACCOUNTS.password);
+    await page.click('button[type="submit"]');
+    await expect(page).toHaveURL(/\/home\/check/, { timeout: 10000 });
+
+    // 创建项目
+    const projectName = `测试项目_${Date.now()}`;
+    await page.fill('input[placeholder="请输入项目名称"]', projectName);
+    await page.click('.ant-btn-primary');
+
+    // 等待跳转到项目页面
+    await expect(page).toHaveURL(/\/projects\/[a-f0-9-]+/, { timeout: 10000 });
+    await expect(page.locator('.start-review-btn')).toBeVisible();
+  });
 });
