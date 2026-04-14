@@ -19,15 +19,16 @@ export default defineConfig({
       name: 'chromium',
       use: {
         browserName: 'chromium',
-        channel: undefined,
         launchOptions: {
           executablePath: '/usr/bin/google-chrome',
           args: [
-            '--remote-debugging-port=9222',
             '--no-sandbox',
             '--disable-dev-shm-usage',
             '--disable-gpu',
           ],
+          env: {
+            DISPLAY: ':2',
+          },
         },
       },
     },

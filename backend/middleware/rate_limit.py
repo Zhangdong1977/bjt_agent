@@ -18,8 +18,29 @@ def get_client_ip(request: Request) -> str:
     return get_remote_address(request)
 
 
-# Create limiter instance with custom key function
-limiter = Limiter(key_func=get_client_ip)
+def create_limiter() -> Limiter:
+    """Create limiter instance with Redis storage for multi-worker support.
+
+    In production with uvicorn --workers N, each worker is a separate process.
+    Using in-memory storage causes rate limits to be inconsistent across workers.
+    Redis storage ensures all workers share the same rate limit counters.
+    """
+    from backend.config import get_settings
+    settings = get_settings()
+
+    if settings.redis_url:
+        # Use Redis storage for multi-worker support via storage_uri
+        return Limiter(
+            key_func=get_client_ip,
+            storage_uri=settings.redis_url,
+        )
+    else:
+        # Fallback to in-memory storage (single worker mode)
+        return Limiter(key_func=get_client_ip)
+
+
+# Create limiter instance - storage initialized at module load
+limiter = create_limiter()
 
 
 def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):

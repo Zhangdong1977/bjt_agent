@@ -52,6 +52,9 @@ class SubAgentExecutor:
 
     async def execute(self, max_steps: int = 100) -> dict:
         """执行子代理检查任务."""
+        import logging
+        logger = logging.getLogger(__name__)
+
         try:
             # 发送开始事件
             self._send_event("sub_agent_started", {
@@ -83,6 +86,7 @@ class SubAgentExecutor:
             }
 
         except Exception as e:
+            logger.exception(f"[SubAgentExecutor.execute] Exception: {e}")
             return {
                 "success": False,
                 "error": str(e),

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, computed } from 'vue'
 import { RouterView } from 'vue-router'
 import { ConfigProvider, theme } from 'ant-design-vue'
 import { useAuthStore } from '@/stores/auth'
@@ -13,18 +13,14 @@ onMounted(() => {
   initTheme()
 })
 
-const isDark = ref(appTheme.value === 'dark')
+const isDark = computed(() => appTheme.value === 'dark')
 
-watch(appTheme, (newTheme) => {
-  isDark.value = newTheme === 'dark'
-})
-
-const antdTheme = {
+const antdTheme = computed(() => ({
   token: {
     colorPrimary: '#a78bfa',
   },
   algorithm: isDark.value ? theme.darkAlgorithm : theme.defaultAlgorithm,
-}
+}))
 </script>
 
 <template>

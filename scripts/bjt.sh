@@ -100,7 +100,7 @@ start_celery_review() {
 start_celery_parser() {
     log "Starting Celery Worker (parser queue)..."
     cd "$BACKEND_DIR"
-    celery -A celery_app worker --loglevel=info --concurrency=2 -Q parser > "$SCRIPT_DIR/logs/celery_parser.log" 2>&1 &
+    celery -A celery_app worker --loglevel=info --concurrency=2 -Q parser --max-memory-per-child=2000000 > "$SCRIPT_DIR/logs/celery_parser.log" 2>&1 &
     save_pid "celery_parser" "$!"
     log "Celery Parser started (PID: $(get_pid celery_parser))"
 }

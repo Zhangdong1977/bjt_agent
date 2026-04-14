@@ -59,7 +59,7 @@ function handleMenuClick(e: { key: string }) {
 }
 
 .app-sidebar :deep(.ant-menu-item-selected) {
-  background: linear-gradient(90deg, rgba(99, 102, 241, 0.1) 0%, transparent 100%);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--purple) 10%, transparent) 0%, transparent 100%);
   border-left: 2px solid var(--purple);
 }
 </style>

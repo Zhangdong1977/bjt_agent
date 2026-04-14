@@ -33,18 +33,19 @@ def strip_html_tags(text: str) -> str:
     return text
 
 
-def smart_truncate(text: str, max_length: int = 150) -> str:
+def smart_truncate(text: str, max_length: int = 400) -> str:
     """智能截断，优先保留完整句子"""
     text = text.strip()
     if not text:
         return ""
     if len(text) <= max_length:
         return text
-    # 在句号、逗号处截断
+    # 优先在句号处截断，保留完整句子
     truncated = text[:max_length]
+    # 按优先级查找分隔符：句号 > 逗号 > 英文句号/逗号
     for sep in ['。', '，', '. ', ', ']:
         idx = truncated.rfind(sep)
-        if idx > max_length * 0.6:
+        if idx > max_length * 0.5:
             return truncated[:idx+1]
     return truncated + '...'
 
@@ -152,12 +153,12 @@ class DocSearchTool(BaseTool):
             if query_lower in line.lower():
                 # Get some context (previous and next lines if available)
                 # Strip HTML first, then truncate to avoid cutting mid-tag
-                context_before = smart_truncate(strip_html_tags(lines[max(0, i - 1)].strip()), 100) if i > 0 else ""
-                context_after = smart_truncate(strip_html_tags(lines[min(len(lines) - 1, i + 1)].strip()), 100) if i < len(lines) - 1 else ""
+                context_before = smart_truncate(strip_html_tags(lines[max(0, i - 1)].strip()), 150) if i > 0 else ""
+                context_after = smart_truncate(strip_html_tags(lines[min(len(lines) - 1, i + 1)].strip()), 150) if i < len(lines) - 1 else ""
 
                 results.append({
                     "line_number": i + 1,  # 1-indexed
-                    "line_content": smart_truncate(strip_html_tags(line.strip()), 200),
+                    "line_content": smart_truncate(strip_html_tags(line.strip()), 400),
                     "context_before": context_before,
                     "context_after": context_after,
                 })
@@ -300,6 +301,20 @@ Returns matching lines with line numbers and surrounding context."""
 
 [完整文档已加载]"""
 
+                # If query also provided, include keyword match summary
+                query_match_info = ""
+                if query:
+                    keyword_matches = self._search_by_keyword(lines, query)
+                    if keyword_matches:
+                        query_match_info = f"\n\n📌 关键词\"{query}\"匹配情况：找到 **{len(keyword_matches)}** 处"
+                        # Show first 3 matches as examples
+                        for i, m in enumerate(keyword_matches[:3], 1):
+                            query_match_info += f"\n   {i}. {m['line_content'][:80]}..."
+                    else:
+                        query_match_info = f"\n\n📌 关键词\"{query}\"未在正文匹配（可能在分类标题中）"
+                    # Append query info to content
+                    friendly_content += query_match_info
+
                 return ToolResult(
                     success=True,
                     content=friendly_content,
@@ -309,6 +324,7 @@ Returns matching lines with line numbers and surrounding context."""
                         "total_chunks": total_chunks,
                         "current_chunk_lines": current_chunk_lines,
                         "full_content": full_text,
+                        "query_matches": len(keyword_matches) if query else 0,
                     },
                 )
 
@@ -318,11 +334,37 @@ Returns matching lines with line numbers and surrounding context."""
 
                 if not matches:
                     doc_label = "招标" if doc_type == "tender" else "投标"
-                    return ToolResult(
-                        success=True,
-                        content=f"抱歉，未在{doc_label}书中找到与\"{query}\"相关的内容。",
-                        data={"query": query, "matches": 0},
-                    )
+                    # Check if query might be in a category header
+                    query_lower = query.lower()
+                    header_matches = []
+                    category_indicators = ["技术", "工期", "预算", "资质", "要求", "规格", "标准", "条件"]
+                    for i, line in enumerate(lines):
+                        line_stripped = strip_html_tags(line.strip()).lower()
+                        if query_lower in line_stripped:
+                            # Check if this looks like a header (contains category indicators)
+                            if any(cat in line_stripped for cat in category_indicators):
+                                header_matches.append(strip_html_tags(line.strip())[:100])
+                            if len(header_matches) >= 3:
+                                break
+
+                    if header_matches:
+                        hint_lines = "\n".join(f"   • {h}" for h in header_matches[:3])
+                        return ToolResult(
+                            success=True,
+                            content=f"""抱歉，未在{doc_label}书中找到与"{query}"直接匹配的内容。
+
+💡 可能匹配的场景：
+{hint_lines}
+
+这表明"{query}"可能出现在分类标题中，而非正文内容。建议使用 full_content=true 获取完整文档后人工查阅相关章节。""",
+                            data={"query": query, "matches": 0, "search_mode": "keyword", "header_matches": header_matches},
+                        )
+                    else:
+                        return ToolResult(
+                            success=True,
+                            content=f"抱歉，未在{doc_label}书中找到与\"{query}\"相关的内容。",
+                            data={"query": query, "matches": 0, "search_mode": "keyword"},
+                        )
 
                 # Format results with context and citations
                 doc_label = "招标" if doc_type == "tender" else "投标"

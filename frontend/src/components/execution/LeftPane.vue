@@ -75,10 +75,10 @@ const subAgents = computed(() => {
         status: mapCheckItemStatus(item.status)
       })) || [],
       status: mapSubAgentStatus(todo.status),
-      findings: todo.result?.findings?.map((f: any) => ({
-        type: f.severity === 'critical' ? 'crit' as const : f.severity === 'major' ? 'major' as const : 'pass' as const,
-        text: f.is_compliant ? '通过' : `${f.severity || '问题'}: ${f.explanation || ''}`
-      })) || [],
+      findings: (todo.result?.findings?.filter((f: any) => !f.is_compliant) || []).map((f: any) => ({
+        type: f.severity === 'critical' ? 'crit' as const : f.severity === 'major' ? 'major' as const : f.severity === 'minor' ? 'minor' as const : 'pass' as const,
+        text: f.explanation || f.message || ''
+      })),
       steps: []  // 内部时间线数据
     }))
   }
@@ -88,6 +88,46 @@ const subAgents = computed(() => {
 const hasSubAgentExecutor = computed(() => {
   return subAgents.value.length > 0
 })
+
+// 合并阶段统计
+const mergeStats = computed(() => {
+  if (!props.todos || props.todos.length === 0) {
+    return { total: 0, critical: 0, major: 0, minor: 0, compliant: 0 }
+  }
+
+  let critical = 0
+  let major = 0
+  let minor = 0
+  let compliant = 0
+  let totalFindings = 0
+
+  for (const todo of props.todos) {
+    const findings = todo.result?.findings || []
+    for (const f of findings) {
+      totalFindings++
+      if (f.is_compliant) {
+        compliant++
+      } else if (f.severity === 'critical') {
+        critical++
+      } else if (f.severity === 'major') {
+        major++
+      } else {
+        minor++
+      }
+    }
+  }
+
+  return { total: totalFindings, critical, major, minor, compliant }
+})
+
+// 合并步骤
+const mergeSteps = [
+  '汇总子代理结果',
+  '去重与标准化',
+  '优先级排序',
+  '异常二次校验',
+  '生成审查报告'
+]
 
 // BidReviewAgent 模式：创建合成代理对象来展示观察结果
 const bidReviewAgentData = computed(() => {
@@ -193,9 +233,46 @@ function formatTime(date: Date): string {
     <div v-if="!isBidReviewAgentMode && phase === 'completed'" class="phase-block">
       <div class="phase-label">合并与质检阶段</div>
       <div class="merge-block">
-        <div class="merge-status">
-          <span class="merge-icon">✓</span>
-          <span>MasterAgent 已汇总所有子代理结果</span>
+        <div class="merge-block-header">
+          <div class="merge-status">
+            <span class="merge-icon">✓</span>
+            <span>MasterAgent 已汇总所有子代理结果</span>
+          </div>
+          <span class="chip chip-done">完成</span>
+        </div>
+        <!-- 合并步骤 -->
+        <div class="merge-steps">
+          <div v-for="(step, idx) in mergeSteps" :key="idx" class="merge-step">
+            <div class="m-dot md-done"></div>
+            <span>{{ step }}</span>
+            <span v-if="idx < mergeSteps.length - 1" class="merge-step-arr">→</span>
+          </div>
+        </div>
+        <!-- 合并结果统计 -->
+        <div class="merge-result-summary">
+          <div class="summary-title">合并结果摘要</div>
+          <div class="summary-stats">
+            <div class="stat-item">
+              <span class="stat-num">{{ mergeStats.total }}</span>
+              <span class="stat-label">发现问题</span>
+            </div>
+            <div class="stat-item stat-critical" v-if="mergeStats.critical > 0">
+              <span class="stat-num">{{ mergeStats.critical }}</span>
+              <span class="stat-label">严重</span>
+            </div>
+            <div class="stat-item stat-major" v-if="mergeStats.major > 0">
+              <span class="stat-num">{{ mergeStats.major }}</span>
+              <span class="stat-label">重要</span>
+            </div>
+            <div class="stat-item stat-minor" v-if="mergeStats.minor > 0">
+              <span class="stat-num">{{ mergeStats.minor }}</span>
+              <span class="stat-label">一般</span>
+            </div>
+            <div class="stat-item stat-compliant" v-if="mergeStats.compliant > 0">
+              <span class="stat-num">{{ mergeStats.compliant }}</span>
+              <span class="stat-label">通过</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -278,6 +355,87 @@ function formatTime(date: Date): string {
 .merge-icon {
   font-size: 16px;
 }
+
+.merge-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.merge-steps {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--green-dim);
+}
+
+.merge-step {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--green);
+}
+
+.m-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.merge-step-arr {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.merge-result-summary {
+  background: var(--bg1);
+  border-radius: var(--r);
+  padding: 12px;
+}
+
+.summary-title {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--sub);
+  margin-bottom: 10px;
+}
+
+.summary-stats {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.stat-num {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.stat-label {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.stat-critical .stat-num { color: var(--red); }
+.stat-major .stat-num { color: var(--amber); }
+.stat-minor .stat-num { color: var(--blue); }
+.stat-compliant .stat-num { color: var(--green); }
+
+.chip-done { background: var(--green-bg); border-color: var(--green-dim); color: var(--green); }
 
 /* Reuse existing styles from old LeftPane */
 .output-block {

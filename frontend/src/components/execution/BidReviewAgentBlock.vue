@@ -19,7 +19,7 @@ interface CheckItem {
 }
 
 interface Finding {
-  type: 'crit' | 'major' | 'pass'
+  type: 'crit' | 'major' | 'minor' | 'pass'
   text: string
 }
 

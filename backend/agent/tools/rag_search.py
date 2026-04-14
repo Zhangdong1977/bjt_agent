@@ -86,7 +86,12 @@ Returns relevant knowledge base entries with source information."""
                         return ToolResult(
                             success=True,
                             content="No relevant knowledge base entries found for this query.",
-                            data={"results": [], "query": query},
+                            data={
+                                "results": [],
+                                "query": query,
+                                "has_knowledge": False,
+                                "suggestion": "Proceed with general compliance criteria and mandatory legal requirements from the tender document",
+                            },
                         )
 
                     # Format results for better readability
@@ -109,13 +114,18 @@ Returns relevant knowledge base entries with source information."""
                             "results": results,
                             "count": len(results),
                             "query": query,
+                            "has_knowledge": True,
                         },
                     )
                 elif response.status_code == 404:
                     return ToolResult(
                         success=True,
                         content="Knowledge base endpoint not found. Please check RAG service configuration.",
-                        data={"error": "endpoint_not_found"},
+                        data={
+                            "error": "endpoint_not_found",
+                            "has_knowledge": False,
+                            "suggestion": "Proceed with general compliance criteria and mandatory legal requirements",
+                        },
                     )
                 else:
                     return ToolResult(

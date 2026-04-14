@@ -23,6 +23,7 @@ const router = createRouter({
     {
       path: '/home',
       name: 'home',
+      redirect: '/home/check',
       component: () => import('@/components/AppLayout.vue'),
       meta: { requiresAuth: true },
       children: [

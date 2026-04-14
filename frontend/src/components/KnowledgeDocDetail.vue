@@ -39,7 +39,7 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     node.setAttribute('style', 'border-collapse: collapse; width: 100%; margin: 0.5em 0;')
   }
   if (node.tagName === 'TH' || node.tagName === 'TD') {
-    node.setAttribute('style', 'border: 1px solid #ddd; padding: 6px 10px;')
+    node.setAttribute('style', `border: 1px solid var(--line); padding: 6px 10px;`)
   }
   if (node.tagName === 'IMG') {
     node.setAttribute('style', 'max-width: 100%; height: auto; display: block; margin: 0.5em 0;')

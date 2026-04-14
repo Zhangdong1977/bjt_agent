@@ -23,16 +23,31 @@ Compare the following tender requirement against the bid document content and de
 ## Bid Document Content:
 {bid_content}
 
+## Severity Definition (MUST follow exactly):
+- **critical（严重）**：缺失必须文件、主要资质不符合、法规强制要求未满足
+  - Examples: missing mandatory documents, key certifications not obtained, legal requirements not met
+- **major（主要）**：技术指标偏差、商务条款不符、文档不完整
+  - Examples: technical spec deviation, commercial terms mismatch, incomplete documentation
+- **minor（次要）**：格式不规范、表述不清晰、优化建议
+  - Examples: format issues, unclear wording, optimization suggestions
+
+## Special Handling for Optional Requirements:
+- If the tender uses "可" (may/can), "可选" (optional), or "可给予补充说明" (may provide supplementary explanation) language, this indicates the requirement is OPTIONAL
+- For OPTIONAL requirements: if bid fails to provide, rate as **minor**
+- However, if the OPTIONAL requirement references a mandatory standard (e.g., "可补充说明行业/强制性标准"), rate based on the underlying standard's severity
+- If the tender uses "必须" (must), "应当" (shall), "以...为准" (shall prevail), or "强制" (mandatory) language, this is a COMPULSORY requirement
+
 ## Your Task:
 Analyze whether the bid content satisfies the tender requirement. Consider:
 1. Does the bid explicitly address the requirement?
 2. Is the response complete and detailed?
 3. Are there any gaps or missing information?
+4. Is this a compulsory or optional requirement based on tender language?
 
 ## Output Format (JSON):
 {{
     "is_compliant": true/false,
-    "severity": "critical/major/minor" (only if non-compliant, default to "major"),
+    "severity": "critical/major/minor" (only if non-compliant),
     "explanation": "Brief explanation of your analysis (1-3 sentences)",
     "suggestion": "Specific, actionable suggestion for improvement if non-compliant",
     "location_page": null or integer (page number in bid document where relevant content was found),
@@ -41,7 +56,8 @@ Analyze whether the bid content satisfies the tender requirement. Consider:
 
 Notes:
 - If the requirement is met, set is_compliant=true and omit severity
-- If the requirement is NOT met, set is_compliant=false and specify severity
+- If the requirement is NOT met, set is_compliant=false and specify severity based on the definitions above
+- Default severity is "major" if uncertain, but always apply the severity definitions above
 - location_page/location_line are optional but help in locating findings in the original document
 - Be precise and thorough in your analysis"""
 

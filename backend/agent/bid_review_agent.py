@@ -125,6 +125,10 @@ class BidReviewAgent(BaseAgent):
         Returns:
             List of findings with requirement, bid content, compliance status, etc.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[BidReviewAgent.run_review] Starting, tender={self.tender_doc_path}, bid={self.bid_doc_path}")
+
         # Build the review task description with clear expectations
         task = f"""请审查投标文件相对于招标文件的不符合项。
 
@@ -144,34 +148,99 @@ class BidReviewAgent(BaseAgent):
 
         # Run the agent loop manually
         tool_list = list(self.tools.values())
+        logger.info(f"[BidReviewAgent.run_review] tools count: {len(tool_list)}, messages: {len(self.messages)}")
 
         # Use a dedicated step counter instead of len(messages)-1 to ensure
         # step numbers are sequential starting from 1
         step_counter = 1
 
-        while len(self.messages) - 1 < self.max_steps:  # -1 for system message
-            # Check for cancellation
-            if self.cancel_event and self.cancel_event.is_set():
-                break
+        try:
+            while len(self.messages) - 1 < self.max_steps:  # -1 for system message
+                # Check for cancellation
+                if self.cancel_event and self.cancel_event.is_set():
+                    break
 
-            # Summarize if needed
-            await self._summarize_messages()
+                # Summarize if needed
+                await self._summarize_messages()
 
-            # Get LLM response
-            response = await self.llm.generate(messages=self.messages, tools=tool_list)
+                logger.info(f"[BidReviewAgent.run_review] Calling LLM.generate() at step {step_counter}")
+                # Get LLM response (max_tokens=8192 ensures full JSON output without truncation)
+                response = await self.llm.generate(messages=self.messages, tools=tool_list, max_tokens=8192)
+                logger.info(f"[BidReviewAgent.run_review] LLM response received, content length: {len(response.content) if response.content else 0}, tool_calls: {len(response.tool_calls) if response.tool_calls else 0}")
 
-            # Add assistant message
-            assistant_msg = Message(
-                role="assistant",
-                content=response.content,
-                thinking=response.thinking,
-                tool_calls=response.tool_calls,
-            )
-            self.messages.append(assistant_msg)
+                # Add assistant message
+                assistant_msg = Message(
+                    role="assistant",
+                    content=response.content,
+                    thinking=response.thinking,
+                    tool_calls=response.tool_calls,
+                )
+                self.messages.append(assistant_msg)
 
-            # Check if task is complete
-            if not response.tool_calls:
-                # Send final response event without tool calls
+                # Check if task is complete
+                if not response.tool_calls:
+                    # Send final response event without tool calls
+                    raw_content = response.content
+                    if raw_content is None:
+                        content_preview = ""
+                    elif isinstance(raw_content, str):
+                        content_preview = raw_content[:200]
+                    else:
+                        content_preview = str(raw_content)[:200]
+                    self._send_event("step", {
+                        "step_number": step_counter,
+                        "step_type": "thought",
+                        "tool_name": None,
+                        "content": content_preview,
+                        "tool_calls": [],
+                        "tool_results": [],
+                    })
+                    break
+
+                # Execute tools and collect results
+                for tool_call in response.tool_calls:
+                    function_name = tool_call.function.name
+
+                    # Validate arguments before executing
+                    if tool_call.function.arguments is None:
+                        tool_call.function.arguments = {}
+
+                    # Execute tool first
+                    if function_name in self.tools:
+                        result = await self.tools[function_name].execute(**tool_call.function.arguments)
+
+                        # Store tool result for persistence (append to list, don't overwrite)
+                        self._tool_results.append({
+                            "id": tool_call.id,
+                            "name": function_name,
+                            "status": "success" if result.success else "error",
+                            "content": result.content if result.success and result.content else None,
+                            "error": result.error if not result.success else None,
+                            "count": getattr(result, 'count', None),
+                        })
+
+                        # Add tool message
+                        tool_msg_content = result.content if result.success else f"Error: {result.error}"
+                        if tool_msg_content is None:
+                            tool_msg_content = ""
+                        tool_msg = Message(
+                            role="tool",
+                            content=tool_msg_content,
+                            tool_call_id=tool_call.id,
+                            name=function_name,
+                        )
+                        self.messages.append(tool_msg)
+                    else:
+                        # Add error tool message for unknown tool
+                        tool_msg = Message(
+                            role="tool",
+                            content=f"Error: Unknown tool {function_name}",
+                            tool_call_id=tool_call.id,
+                            name=function_name,
+                        )
+                        self.messages.append(tool_msg)
+
+                # Send single step event with content + tool_calls + tool_results
                 raw_content = response.content
                 if raw_content is None:
                     content_preview = ""
@@ -179,90 +248,34 @@ class BidReviewAgent(BaseAgent):
                     content_preview = raw_content[:200]
                 else:
                     content_preview = str(raw_content)[:200]
+                step_type = "observation" if response.tool_calls else "thought"
+                # Only send tool_results that belong to this step (from _tool_results_step_start onwards)
+                step_tool_results = self._tool_results[self._tool_results_step_start:] if self._tool_results else []
                 self._send_event("step", {
                     "step_number": step_counter,
-                    "step_type": "thought",
+                    "step_type": step_type,
                     "tool_name": None,
                     "content": content_preview,
-                    "tool_calls": [],
-                    "tool_results": [],
+                    "tool_calls": [
+                        {"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments}
+                        for tc in response.tool_calls
+                    ] if response.tool_calls else [],
+                    "tool_results": step_tool_results,
                 })
-                break
+                # Update tracker for next step
+                self._tool_results_step_start = len(self._tool_results)
+                step_counter += 1
 
-            # Execute tools and collect results
-            for tool_call in response.tool_calls:
-                function_name = tool_call.function.name
-
-                # Validate arguments before executing
-                if tool_call.function.arguments is None:
-                    tool_call.function.arguments = {}
-
-                # Execute tool first
-                if function_name in self.tools:
-                    result = await self.tools[function_name].execute(**tool_call.function.arguments)
-
-                    # Store tool result for persistence (append to list, don't overwrite)
-                    self._tool_results.append({
-                        "id": tool_call.id,
-                        "name": function_name,
-                        "status": "success" if result.success else "error",
-                        "content": result.content if result.success and result.content else None,
-                        "error": result.error if not result.success else None,
-                        "count": getattr(result, 'count', None),
-                    })
-
-                    # Add tool message
-                    tool_msg_content = result.content if result.success else f"Error: {result.error}"
-                    if tool_msg_content is None:
-                        tool_msg_content = ""
-                    tool_msg = Message(
-                        role="tool",
-                        content=tool_msg_content,
-                        tool_call_id=tool_call.id,
-                        name=function_name,
-                    )
-                    self.messages.append(tool_msg)
-                else:
-                    # Add error tool message for unknown tool
-                    tool_msg = Message(
-                        role="tool",
-                        content=f"Error: Unknown tool {function_name}",
-                        tool_call_id=tool_call.id,
-                        name=function_name,
-                    )
-                    self.messages.append(tool_msg)
-
-            # Send single step event with content + tool_calls + tool_results
-            raw_content = response.content
-            if raw_content is None:
-                content_preview = ""
-            elif isinstance(raw_content, str):
-                content_preview = raw_content[:200]
-            else:
-                content_preview = str(raw_content)[:200]
-            step_type = "observation" if response.tool_calls else "thought"
-            # Only send tool_results that belong to this step (from _tool_results_step_start onwards)
-            step_tool_results = self._tool_results[self._tool_results_step_start:] if self._tool_results else []
-            self._send_event("step", {
-                "step_number": step_counter,
-                "step_type": step_type,
-                "tool_name": None,
-                "content": content_preview,
-                "tool_calls": [
-                    {"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments}
-                    for tc in response.tool_calls
-                ] if response.tool_calls else [],
-                "tool_results": step_tool_results,
-            })
-            # Update tracker for next step
-            self._tool_results_step_start = len(self._tool_results)
-            step_counter += 1
+        except Exception as e:
+            logger.exception(f"[BidReviewAgent.run_review] Exception in run_review loop: {e}")
+            return []
 
         # Extract findings
         findings = self._extract_findings_from_messages()
         if not findings:
             findings = self._parse_findings_from_text(self.messages[-1].content if self.messages else "")
 
+        logger.info(f"[BidReviewAgent.run_review] Completed with {len(findings)} findings")
         return findings
 
     def _extract_findings_from_messages(self) -> list[dict]:
@@ -325,6 +338,22 @@ class BidReviewAgent(BaseAgent):
         ):
             return None
 
+        # Reject table headers and pipe-delimited content (e.g., "要求 | 符合状态 | 严重程度")
+        # Table headers typically have multiple | delimiters with short values
+        if '|' in requirement_str:
+            # Count pipe characters - table headers usually have 2+ pipes
+            pipe_count = requirement_str.count('|')
+            if pipe_count >= 2:
+                return None
+            # Also reject if it's primarily pipe-delimited structure
+            parts = requirement_str.split('|')
+            if len(parts) >= 3 and all(len(p.strip()) < 20 for p in parts):
+                return None
+
+        # Reject if requirement looks like a table separator line (dashes, equals, etc.)
+        if re.match(r'^[-=]{3,}$', requirement_str):
+            return None
+
         # Validate that this looks like a finding, not a random JSON object
         # A proper finding should have either is_compliant or severity
         if "is_compliant" not in item and "severity" not in item:
@@ -332,12 +361,33 @@ class BidReviewAgent(BaseAgent):
             if not any(key in item for key in ["bid_content", "explanation", "suggestion", "location_page", "location_line"]):
                 return None
 
+        # Determine severity with validation
+        is_compliant = item.get("is_compliant", True)
+        severity = item.get("severity")
+
+        if not is_compliant and not severity:
+            # Non-compliant but missing severity - default to "major"
+            severity = "major"
+        elif not is_compliant and severity:
+            # Validate severity against requirement type
+            requirement_str = str(requirement_content).lower()
+            # Check for optional requirement language
+            is_optional_req = any(kw in requirement_str for kw in ["可", "可选", "可给予补充", "可以"])
+            # Check for mandatory requirement language
+            is_mandatory_req = any(kw in requirement_str for kw in ["必须", "应当", "以", "为准", "强制", "严禁", "不得"])
+
+            if is_optional_req and not is_mandatory_req:
+                # Optional requirement should be minor if not provided
+                if severity not in ["minor"]:
+                    # Override to minor for optional requirements
+                    severity = "minor"
+
         return {
             "requirement_key": item.get("requirement_key") or f"req_{counter:03d}",
             "requirement_content": requirement_content,
             "bid_content": item.get("bid_content"),
-            "is_compliant": item.get("is_compliant", True),
-            "severity": item.get("severity") if not item.get("is_compliant", True) else None,
+            "is_compliant": is_compliant,
+            "severity": severity if not is_compliant else None,
             "location_page": item.get("location_page"),
             "location_line": item.get("location_line"),
             "suggestion": item.get("suggestion"),

@@ -177,7 +177,8 @@ class MasterAgent:
                 )
                 logger.info(f"[_run_single_sub_agent] Calling executor.execute() for todo {todo.id}")
                 result = await executor.execute()
-                logger.info(f"[_run_single_sub_agent] executor.execute() returned for todo {todo.id}, success={result.get('success')}, findings_count={len(result.get('findings', []))}")
+                error_msg = result.get('error', '')
+                logger.info(f"[_run_single_sub_agent] executor.execute() returned for todo {todo.id}, success={result.get('success')}, error={error_msg}, findings_count={len(result.get('findings', []))}")
 
                 # 检测异常
                 if detect_anomaly(result, todo):

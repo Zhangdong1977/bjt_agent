@@ -25,8 +25,10 @@ const props = defineProps<Props>()
 // 工具名称映射
 const toolNameMap: Record<string, string> = {
   search_tender_doc: '搜索文档',
+  search_doc: '搜索文档',
   rag_search: '搜索知识库',
   comparator: '内容比对',
+  compare_bid: '标书比对',
 }
 
 function formatTime(date: Date): string {
@@ -66,6 +68,14 @@ function formatToolArg(key: string, value: any): string {
 function formatToolResult(result: any): string {
   if (result === undefined || result === null) {
     return ''
+  }
+  // 处理 compare_bid 的结构化结果
+  if (result.is_compliant !== undefined) {
+    const emoji = result.is_compliant ? '✅' : '❌'
+    const severity = result.severity || ''
+    const explanation = result.explanation || ''
+    const text = `${emoji} ${severity ? `(${severity}) ` : ''}${explanation}`
+    return text.slice(0, 200) + (text.length > 200 ? '...' : '')
   }
   if (result?.status === 'success' && result?.content) {
     return result.content.slice(0, 200) + (result.content.length > 200 ? '...' : '')
