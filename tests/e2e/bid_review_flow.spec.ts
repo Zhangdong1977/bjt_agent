@@ -1,29 +1,17 @@
-import { test, expect, type Page } from '@playwright/test';
-import path from 'path';
+import { test, expect } from '@playwright/test';
 
 const TEST_ACCOUNTS = {
   username: 'zhangdong',
   password: '7745duck',
 };
 
-const TEST_DOCUMENTS = {
-  tender: path.resolve(__dirname, '../../testdocuments/迪维勒普招标文件.docx'),
-  bid: path.resolve(__dirname, '../../testdocuments/迪维勒普投标文件.docx'),
-};
-
 test.describe('标书审查系统 E2E 测试', () => {
-  let page: Page;
-
-  test.beforeEach(async ({ browser }) => {
-    // 连接到已启动的 Chrome（remote debugging）
-    const context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-    });
-    page = await context.newPage();
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1920, height: 1080 });
   });
 
   test.afterEach(async () => {
-    await page.close();
+    // Playwright 会自动清理，无需手动关闭
   });
 
   test('步骤1: 登录页面显示正确', async ({ page }) => {
