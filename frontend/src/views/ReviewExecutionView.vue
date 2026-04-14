@@ -388,20 +388,36 @@ onMounted(async () => {
   // 获取当前项目的审查任务
   await projectStore.fetchReviewTasks()
 
-  // 查找最新的任务（可能是刚创建的或正在运行的）
-  if (projectStore.reviewTasks.length > 0) {
-    // 使用最新的任务
-    const latestTask = projectStore.reviewTasks[0]
-    console.log('[ReviewExecutionView] Latest task:', latestTask.id, latestTask.status)
+  // 检查是否有指定的 taskId
+  if (route.query.taskId) {
+    // 有指定 taskId，使用指定任务
+    console.log('[ReviewExecutionView] Using specified taskId:', route.query.taskId)
+    await projectStore.selectReviewTask(route.query.taskId as string)
+    const task = projectStore.currentTask
+    if (task) {
+      if (task.status === 'completed') {
+        phase.value = 'completed'
+      } else if (task.status === 'failed') {
+        phase.value = 'failed'
+        errorMessage.value = task.error_message || '审查失败'
+      }
+    }
+  } else {
+    // 无指定，使用最新任务（现有逻辑）
+    if (projectStore.reviewTasks.length > 0) {
+      // 使用最新的任务
+      const latestTask = projectStore.reviewTasks[0]
+      console.log('[ReviewExecutionView] Latest task:', latestTask.id, latestTask.status)
 
-    await projectStore.selectReviewTask(latestTask.id)
+      await projectStore.selectReviewTask(latestTask.id)
 
-    // 如果任务已完成或失败，设置相应状态
-    if (latestTask.status === 'completed') {
-      phase.value = 'completed'
-    } else if (latestTask.status === 'failed') {
-      phase.value = 'failed'
-      errorMessage.value = projectStore.currentTask?.error_message || '审查失败'
+      // 如果任务已完成或失败，设置相应状态
+      if (latestTask.status === 'completed') {
+        phase.value = 'completed'
+      } else if (latestTask.status === 'failed') {
+        phase.value = 'failed'
+        errorMessage.value = projectStore.currentTask?.error_message || '审查失败'
+      }
     }
   }
 
