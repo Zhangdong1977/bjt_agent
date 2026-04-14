@@ -10,10 +10,6 @@ test.describe('标书审查系统 E2E 测试', () => {
     await page.setViewportSize({ width: 1920, height: 1080 });
   });
 
-  test.afterEach(async () => {
-    // Playwright 会自动清理，无需手动关闭
-  });
-
   test('步骤1: 登录页面显示正确', async ({ page }) => {
     await page.goto('/login');
     await expect(page).toHaveURL(/\/login/);
