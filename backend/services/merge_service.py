@@ -8,8 +8,7 @@ from datetime import datetime
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mini_agent.llm import LLMClient
-from mini_agent.schema import Message, LLMProvider
+from mini_agent.schema import Message
 
 from backend.models import Project, ReviewTask, ReviewResult, ProjectReviewResult
 
@@ -134,12 +133,10 @@ class MergeService:
             List of parsed decision dicts, one per new finding
         """
         from backend.services.merge_decision_parser import parse_batch_merge_decisions
-        from backend.config import get_settings
 
         if not new_findings:
             return []
 
-        settings = get_settings()
         new_findings_keys = [f.get("requirement_key", f"unknown_{i}") for i, f in enumerate(new_findings)]
         logger.info(f"[MergeService._batch_get_llm_merge_decisions] {len(new_findings)} findings, existing count={len(existing_findings)}")
 
@@ -161,17 +158,8 @@ class MergeService:
                 Message(role="user", content=prompt),
             ]
 
-            # Use LLMClient directly (same as TaskMergeService)
-            llm_client = LLMClient(
-                api_key=settings.mini_agent_api_key,
-                provider=LLMProvider.OPENAI,
-                api_base=settings.mini_agent_api_base,
-                model=settings.mini_agent_model,
-                timeout=120.0,
-            )
-
-            logger.info(f"[MergeService._batch_get_llm_merge_decisions] Calling LLM for {len(new_findings)} findings...")
-            response = await llm_client.generate(messages=messages)
+            logger.info(f"[MergeService._batch_get_llm_merge_decisions] Calling agent._call_llm_with_retry for {len(new_findings)} findings...")
+            response = await self.agent._call_llm_with_retry(messages=messages)
             logger.info(f"[MergeService._batch_get_llm_merge_decisions] Raw LLM response length: {len(response.content)}")
 
             # Parse batch response
@@ -393,18 +381,23 @@ class MergeService:
                     # replace = 更新现有的那条记录
                     replace_key = decision.get("replace_key") or req_key
                     target_record = None
-                    for rec in new_merged_records:
+                    target_idx = None
+                    for idx, rec in enumerate(new_merged_records):
                         if rec.get("requirement_key") == replace_key:
                             target_record = rec
+                            target_idx = idx
                             break
                     if target_record:
-                        target_record.update({
+                        # Immutable update: create new record instead of mutating existing
+                        new_record = {
+                            **target_record,
                             **new_result,
                             "requirement_key": replace_key,
                             "merged_from_count": target_record.get("merged_from_count", 1) + 1,
-                        })
+                        }
+                        new_merged_records[target_idx] = new_record
                         merge_count += 1
-                        logger.info(f"[merge] ACTION=replace: updated record at key={replace_key}, new merged_from_count={target_record.get('merged_from_count')}")
+                        logger.info(f"[merge] ACTION=replace: updated record at key={replace_key}, new merged_from_count={new_record.get('merged_from_count')}")
                     else:
                         logger.warning(f"[merge] replace target {replace_key} not found, treating as keep")
                         new_key = self._generate_new_requirement_key(new_merged_records)
