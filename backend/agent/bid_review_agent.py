@@ -9,7 +9,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # Add Mini-Agent to path
 mini_agent_path = Path(__file__).parent.parent.parent / "Mini-Agent"
