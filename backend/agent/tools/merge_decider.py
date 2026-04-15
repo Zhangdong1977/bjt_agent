@@ -2,7 +2,10 @@
 
 import asyncio
 import json
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from mini_agent.llm import LLMClient
 from mini_agent.schema import LLMProvider, Message
@@ -81,8 +84,6 @@ class MergeDeciderTool(BaseTool):
         Raises:
             Exception: If all retries fail
         """
-        import logging
-        logger = logging.getLogger(__name__)
         last_exception = None
 
         for attempt in range(1, max_retries + 1):
@@ -145,8 +146,6 @@ class MergeDeciderTool(BaseTool):
         Returns:
             ToolResult with natural language decision
         """
-        import logging
-        logger = logging.getLogger(__name__)
         logger.info(f"[MergeDeciderTool.execute] new_finding req_key={new_finding.get('requirement_key')}, existing_findings count={len(existing_findings)}")
         try:
             # Build prompt
