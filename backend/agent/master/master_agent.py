@@ -8,6 +8,7 @@ from typing import Optional, Callable
 from .tools.rule_parser import RuleParserTool, RuleLibraryScannerTool
 from .sub_agent_executor import SubAgentExecutor, detect_anomaly
 from backend.services.todo_service import TodoService
+from backend.services.task_merge_service import TaskMergeService
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +242,7 @@ class MasterAgent:
     async def _merge_results(self, todo_service) -> dict:
         """合并所有子代理结果.
 
+        Uses TaskMergeService with LLM to intelligently merge findings from sub-agents.
         Uses a fresh session to ensure we can see all sub-agent committed updates.
         """
         # Create a fresh session to query todos with their updated results
@@ -253,51 +255,43 @@ class MasterAgent:
         try:
             todos = await merge_todo_service.get_session_todos(self._session_id)
 
+            # Collect all findings from all sub-agents
             all_findings = []
-            critical_count = 0
-            major_count = 0
-            minor_count = 0
-            passed_count = 0
-
-            seen_requirements = set()
-
             for todo in todos:
                 if todo.result and "findings" in todo.result:
                     for finding in todo.result["findings"]:
-                        req_key = finding.get("requirement_key", "")
-                        if req_key and req_key in seen_requirements:
-                            continue
-                        seen_requirements.add(req_key)
-
                         all_findings.append(finding)
 
-                        if finding.get("is_compliant", True):
-                            passed_count += 1
-                        else:
-                            severity = finding.get("severity", "minor")
-                            if severity == "critical":
-                                critical_count += 1
-                            elif severity == "major":
-                                major_count += 1
-                            else:
-                                minor_count += 1
+            logger.info(f"[_merge_results] Collected {len(all_findings)} findings from {len(todos)} sub-agents")
 
-            # 按 severity 排序
-            def sort_key(f):
-                severity_order = {"critical": 0, "major": 1, "minor": 2, None: 3}
-                return severity_order.get(f.get("severity"), 3)
+            # Use LLM-based merge service
+            agent = None
+            try:
+                # Import here to avoid circular imports
+                from backend.agent.bid_review_agent import BidReviewAgent
 
-            all_findings.sort(key=sort_key)
+                # Create BidReviewAgent for merge decisions (paths don't matter since we only use MergeDeciderTool)
+                agent = BidReviewAgent(
+                    project_id=self.project_id,
+                    tender_doc_path="",
+                    bid_doc_path="",
+                    user_id=self.user_id,
+                    event_callback=None,
+                    max_steps=1,
+                )
+                await agent.initialize()
 
-            result = {
-                "total_findings": len(all_findings),
-                "critical_count": critical_count,
-                "major_count": major_count,
-                "minor_count": minor_count,
-                "passed_count": passed_count,
-                "findings": all_findings,
-            }
+                task_merge_service = TaskMergeService(agent)
+                result = await task_merge_service.merge_sub_agent_results(
+                    findings=all_findings,
+                    event_callback=self._send_event,
+                )
+                logger.info(f"[_merge_results] TaskMergeService returned: total={result['total_findings']}, critical={result['critical_count']}, major={result['major_count']}, minor={result['minor_count']}, passed={result['passed_count']}")
+            finally:
+                if agent is not None:
+                    await agent.close()
+
+            return result
         finally:
             if merge_session is not None:
                 await merge_session.close()
-        return result

@@ -4,6 +4,10 @@ import json
 import logging
 from typing import Optional
 
+# Ensure Mini-Agent path is in sys.path before importing mini_agent modules
+from backend.utils.mini_agent_utils import setup_mini_agent_path
+setup_mini_agent_path()
+
 from mini_agent.schema import Message
 
 logger = logging.getLogger(__name__)

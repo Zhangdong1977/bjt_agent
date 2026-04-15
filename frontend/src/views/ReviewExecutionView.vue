@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
-import { getAccessToken } from '@/api/client'
+import { getAccessToken, reviewApi } from '@/api/client'
 import ExecutionHeader from '@/components/execution/ExecutionHeader.vue'
 import ExecutionStepper from '@/components/execution/ExecutionStepper.vue'
 import LeftPane from '@/components/execution/LeftPane.vue'
@@ -24,6 +24,7 @@ const steps = ref<any[]>([])
 const subAgentSteps = ref<Map<string, any[]>>(new Map())
 const errorMessage = ref<string | null>(null)
 const findingsCount = ref<number>(0)
+const mergedStats = ref<{ total: number; critical: number; major: number; minor: number; compliant: number } | null>(null)
 
 // Todo items state (mirrors ReviewTimeline.vue)
 interface CheckItemState {
@@ -53,7 +54,7 @@ const completedCount = computed(() =>
 )
 
 // SSE 事件处理 - 适配实际后端事件
-function handleSSEEvent(event: any) {
+async function handleSSEEvent(event: any) {
   // 详细日志，方便调试 SSE 数据
   console.log('[ReviewExecutionView] SSE event received:', event)
 
@@ -225,8 +226,28 @@ function handleSSEEvent(event: any) {
       break
 
     case 'merged':
-      // 合并完成
-      console.log('[ReviewExecutionView] Merge complete')
+      // 合并完成 - 获取合并后的统计数据
+      console.log('[ReviewExecutionView] Merge complete', event)
+      // findingsCount 显示不合规问题数（从 summary.non_compliant 获取）
+      findingsCount.value = event.non_compliant_count ?? event.total_count ?? event.merged_count ?? findingsCount.value
+      // 获取合并后的详细结果
+      if (projectStore.currentTask?.id) {
+        try {
+          const response = await reviewApi.getResults(projectId.value)
+          if (response.summary) {
+            // total 应该是 non_compliant，不是 total_requirements
+            mergedStats.value = {
+              total: response.summary.non_compliant || 0,
+              critical: response.summary.critical || 0,
+              major: response.summary.major || 0,
+              minor: response.summary.minor || 0,
+              compliant: response.summary.compliant || 0
+            }
+          }
+        } catch (err) {
+          console.error('[ReviewExecutionView] Failed to fetch merged results:', err)
+        }
+      }
       break
 
     default:
@@ -424,6 +445,25 @@ onMounted(async () => {
   // 建立 SSE 连接以接收实时更新
   if (projectStore.currentTask?.id) {
     connect()
+
+    // 如果任务已完成，主动拉取合并结果（处理 SSE 事件丢失的情况）
+    if (projectStore.currentTask.status === 'completed') {
+      try {
+        const response = await reviewApi.getResults(projectId.value)
+        if (response.summary) {
+          mergedStats.value = {
+            total: response.summary.non_compliant || 0,
+            critical: response.summary.critical || 0,
+            major: response.summary.major || 0,
+            minor: response.summary.minor || 0,
+            compliant: response.summary.compliant || 0
+          }
+          findingsCount.value = response.summary.non_compliant || 0
+        }
+      } catch (err) {
+        console.error('[ReviewExecutionView] Failed to fetch merged results on mount:', err)
+      }
+    }
   } else {
     console.log('[ReviewExecutionView] No currentTask, SSE will not connect')
   }
@@ -451,6 +491,7 @@ onUnmounted(() => {
           :error-message="errorMessage"
           :todos="todoList"
           :sub-agent-steps-map="subAgentStepsMap"
+          :merged-stats="mergedStats"
         />
 
         <RightSidebar

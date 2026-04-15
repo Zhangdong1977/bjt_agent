@@ -8,6 +8,10 @@ from datetime import datetime
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Ensure Mini-Agent path is in sys.path before importing mini_agent modules
+from backend.utils.mini_agent_utils import setup_mini_agent_path
+setup_mini_agent_path()
+
 from mini_agent.schema import Message
 
 from backend.models import Project, ReviewTask, ReviewResult, ProjectReviewResult

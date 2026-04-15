@@ -7,14 +7,12 @@ and identifying non-compliant items.
 import asyncio
 import json
 import re
-import sys
 from pathlib import Path
 from typing import Any, Optional
 
-# Add Mini-Agent to path
-mini_agent_path = Path(__file__).parent.parent.parent / "Mini-Agent"
-if mini_agent_path.exists() and str(mini_agent_path) not in sys.path:
-    sys.path.insert(0, str(mini_agent_path))
+# Ensure Mini-Agent path is in sys.path before importing mini_agent modules
+from backend.utils.mini_agent_utils import setup_mini_agent_path
+setup_mini_agent_path()
 
 from mini_agent.agent import Agent as BaseAgent
 from mini_agent.llm import LLMClient

@@ -43,12 +43,21 @@ interface CheckItemState {
   status: 'pending' | 'running' | 'completed' | 'failed'
 }
 
+interface MergedStats {
+  total: number
+  critical: number
+  major: number
+  minor: number
+  compliant: number
+}
+
 interface Props {
   phase: 'pending' | 'running' | 'completed' | 'failed'
   steps: TimelineStep[]
   errorMessage?: string | null
   todos?: TodoItemState[]
   subAgentStepsMap?: Record<string, TimelineStep[]>
+  mergedStats?: MergedStats | null
 }
 
 const props = defineProps<Props>()
@@ -89,8 +98,13 @@ const hasSubAgentExecutor = computed(() => {
   return subAgents.value.length > 0
 })
 
-// 合并阶段统计
+// 合并阶段统计 - 如果有合并后的统计数据则使用，否则从todos计算
 const mergeStats = computed(() => {
+  // 如果有合并后的统计数据，直接使用
+  if (props.mergedStats) {
+    return props.mergedStats
+  }
+
   if (!props.todos || props.todos.length === 0) {
     return { total: 0, critical: 0, major: 0, minor: 0, compliant: 0 }
   }
