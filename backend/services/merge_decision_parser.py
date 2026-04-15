@@ -113,19 +113,24 @@ def parse_batch_merge_decisions(text: str, new_findings_keys: list[str]) -> list
         logger.warning("[parse_batch_merge_decisions] No markers found, using entire text as block 0")
         blocks = [text.strip()] if text.strip() else []
 
-    # Filter out empty blocks (e.g., from consecutive markers)
-    # Maintain correspondence: blocks[i] corresponds to new_findings_keys[i]
-    # For empty slots, parse_merge_decision will return keep_both via its own logic
-    # But we also need to skip empty blocks at the END that would cause misalignment
-    # Actually, let's keep empty blocks as-is and let parse_merge_decision handle them
-
     decisions = []
+    # Mapping is by position order (block[i] corresponds to new_findings_keys[i]),
+    # NOT by marker index. This handles cases where LLM skips indices or uses
+    # different numbering schemes. When using Pattern 1 (新发现[N]), validate indices.
     for i, key in enumerate(new_findings_keys):
-        if i < len(blocks) and blocks[i]:
-            decision = parse_merge_decision(blocks[i])
-            decisions.append(decision)
-        elif i < len(blocks):
-            # Empty block - still parse it (will return keep_both)
+        if i < len(blocks):
+            # Validate marker index for Pattern 1 (新发现[N]) to catch LLM errors.
+            # Pattern 1 has lastindex==1 (m.group(1) is the index).
+            # Pattern 2 has lastindex==2 (m.group(2) is the index, m.group(1) is "序号").
+            if matches and i < len(matches):
+                m = matches[i]
+                if m.lastindex == 1:  # Pattern 1 only
+                    expected_idx = int(m.group(1))
+                    if expected_idx != i + 1:
+                        logger.warning(
+                            f"[parse_batch_merge_decisions] Marker index mismatch at position {i}: "
+                            f"found index {expected_idx}, expected {i + 1}. Using position-order mapping."
+                        )
             decision = parse_merge_decision(blocks[i])
             decisions.append(decision)
         else:
