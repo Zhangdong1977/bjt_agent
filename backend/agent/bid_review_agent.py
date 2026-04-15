@@ -4,6 +4,7 @@ This agent is responsible for comparing tender documents against bid documents
 and identifying non-compliant items.
 """
 
+import asyncio
 import json
 import re
 import sys
@@ -71,6 +72,7 @@ class BidReviewAgent(BaseAgent):
             api_base=settings.mini_agent_api_base,
             model=settings.mini_agent_model,
         )
+        self.llm_client = llm_client  # Store for _call_llm_with_retry
 
         # Initialize tools
         tools = [
@@ -660,3 +662,40 @@ class BidReviewAgent(BaseAgent):
     async def close(self):
         """Close MCP connections and cleanup resources."""
         await cleanup_mcp_connections()
+
+    async def _call_llm_with_retry(
+        self,
+        messages: list,
+        max_retries: int = 3,
+    ) -> Any:
+        """Call LLM with retry mechanism.
+
+        Args:
+            messages: LLM messages
+            max_retries: Maximum retry attempts (default 3)
+
+        Returns:
+            LLM response
+
+        Raises:
+            Exception: If all retries fail
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        last_exception = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"[BidReviewAgent] LLM attempt {attempt}/{max_retries}")
+                response = await self.llm_client.generate(messages=messages)
+                logger.info(f"[BidReviewAgent] LLM attempt {attempt} succeeded")
+                return response
+            except Exception as e:
+                last_exception = e
+                logger.warning(f"[BidReviewAgent] LLM attempt {attempt} failed: {e}")
+                if attempt < max_retries:
+                    await asyncio.sleep(1)
+
+        # All retries failed
+        logger.error(f"[BidReviewAgent] All {max_retries} LLM attempts failed")
+        raise last_exception
