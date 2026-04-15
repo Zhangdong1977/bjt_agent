@@ -9,6 +9,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
+import ExecutionHeader from '@/components/execution/ExecutionHeader.vue'
 
 // Configure DOMPurify to allow base64 images and table tags
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -53,7 +54,7 @@ function renderMarkdown(content: string): string {
 }
 
 function goBack() {
-  router.back()
+  router.push({ name: 'home' })
 }
 
 async function handleUpload(event: Event, docType: 'tender' | 'bid') {
@@ -152,12 +153,10 @@ function goToTaskExecution() {
 
 <template>
   <div class="project-view">
-    <header class="header">
-      <div class="header-left">
-        <button @click="goBack" class="back-btn">← 返回</button>
-        <h1>{{ projectStore.currentProject?.name || '项目' }}</h1>
-      </div>
-    </header>
+    <ExecutionHeader
+      :project-name="projectStore.currentProject?.name || '项目'"
+      status="pending"
+    />
 
     <main class="content">
       <!-- Documents Section -->
@@ -358,46 +357,17 @@ function goToTaskExecution() {
   min-height: 100vh;
 }
 
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 1rem 2rem;
-  background: var(--bg1);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.back-btn {
-  padding: 0.5rem 1rem;
-  background: var(--line);
-  color: var(--text);
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.header h1 {
-  color: var(--text);
-  font-size: 1.5rem;
-}
-
 .content {
   max-width: 1200px;
-  margin: 2rem auto;
-  padding: 0 2rem;
+  margin: 20px auto;
+  padding: 0 20px;
 }
 
 .section {
   background: var(--bg1);
   padding: 1.5rem;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  border-radius: var(--r2);
+  border: 1px solid var(--line);
   margin-bottom: 2rem;
 }
 
@@ -416,15 +386,14 @@ function goToTaskExecution() {
 
 .document-card {
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--r2);
   padding: 1.25rem;
   background: var(--bg1);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   transition: box-shadow 0.2s ease;
 }
 
 .document-card:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
 .document-card h3 {
@@ -454,7 +423,7 @@ function goToTaskExecution() {
   width: 36px;
   height: 36px;
   background: var(--bg);
-  border-radius: 8px;
+  border-radius: var(--r);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -499,7 +468,7 @@ function goToTaskExecution() {
   display: block;
   padding: 2rem;
   border: 2px dashed var(--purple);
-  border-radius: 8px;
+  border-radius: var(--r2);
   color: var(--purple);
   cursor: pointer;
   transition: background-color 0.2s ease;
@@ -548,11 +517,11 @@ function goToTaskExecution() {
   flex: 1;
   padding: 0.5rem 0.75rem;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--r);
   cursor: pointer;
   font-size: 0.8rem;
   font-weight: 500;
-  transition: all 0.2s ease;
+  transition: filter 0.2s ease;
 }
 
 .view-btn {
@@ -561,7 +530,6 @@ function goToTaskExecution() {
 }
 
 .view-btn:hover {
-  background: var(--purple);
   filter: brightness(1.1);
 }
 
@@ -591,7 +559,8 @@ function goToTaskExecution() {
 
 .doc-viewer-modal {
   background: var(--bg1);
-  border-radius: 8px;
+  border-radius: var(--r2);
+  border: 1px solid var(--line);
   width: 90%;
   max-width: 900px;
   max-height: 80vh;
@@ -764,7 +733,7 @@ function goToTaskExecution() {
 .markdown-content pre {
   background-color: var(--bg2);
   padding: 1em;
-  border-radius: 6px;
+  border-radius: var(--r);
   overflow-x: auto;
   margin-bottom: 1em;
 }
@@ -783,15 +752,14 @@ function goToTaskExecution() {
   background: var(--purple);
   color: var(--white);
   border: none;
-  border-radius: 8px;
+  border-radius: var(--r);
   cursor: pointer;
   font-size: 0.9rem;
   font-weight: 500;
-  transition: background-color 0.2s;
+  transition: filter 0.2s;
 }
 
 .start-review-btn:hover:not(:disabled) {
-  background: var(--purple);
   filter: brightness(1.1);
 }
 
@@ -807,7 +775,8 @@ function goToTaskExecution() {
   margin-bottom: 1rem;
   padding: 0.75rem;
   background: var(--bg2);
-  border-radius: 8px;
+  border-radius: var(--r);
+  border: 1px solid var(--line);
 }
 
 .task-selector label {
@@ -819,7 +788,7 @@ function goToTaskExecution() {
 .task-select {
   padding: 0.5rem;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--r);
   min-width: 200px;
   background: var(--bg1);
   color: var(--text);
@@ -830,7 +799,7 @@ function goToTaskExecution() {
   background: var(--purple);
   color: var(--white);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--r);
   cursor: pointer;
   font-size: 0.85rem;
 }
@@ -842,10 +811,6 @@ function goToTaskExecution() {
 @media (max-width: 767px) {
   .documents-grid {
     grid-template-columns: 1fr;
-  }
-
-  .header {
-    padding: 0.75rem 1rem;
   }
 
   .content {
