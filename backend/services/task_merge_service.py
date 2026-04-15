@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Optional
 
-from mini_agent.schema import Message, LLMProvider
+from mini_agent.schema import Message
 
 logger = logging.getLogger(__name__)
 
@@ -123,13 +123,10 @@ class TaskMergeService:
             List of parsed decision dicts, one per new finding
         """
         from backend.services.merge_decision_parser import parse_batch_merge_decisions
-        from mini_agent.llm import LLMClient
-        from backend.config import get_settings
 
         if not new_findings:
             return []
 
-        settings = get_settings()
         new_findings_keys = [f.get("requirement_key", f"unknown_{i}") for i, f in enumerate(new_findings)]
         logger.info(f"[TaskMergeService._batch_get_llm_merge_decisions] {len(new_findings)} findings, existing count={len(existing_findings)}")
 
@@ -151,17 +148,8 @@ class TaskMergeService:
                 Message(role="user", content=prompt),
             ]
 
-            # Use LLMClient directly (same as MergeDeciderTool)
-            llm_client = LLMClient(
-                api_key=settings.mini_agent_api_key,
-                provider=LLMProvider.OPENAI,
-                api_base=settings.mini_agent_api_base,
-                model=settings.mini_agent_model,
-                timeout=120.0,
-            )
-
             logger.info(f"[TaskMergeService._batch_get_llm_merge_decisions] Calling LLM for {len(new_findings)} findings...")
-            response = await llm_client.generate(messages=messages)
+            response = await self.agent._call_llm_with_retry(messages)
             logger.info(f"[TaskMergeService._batch_get_llm_merge_decisions] Raw LLM response length: {len(response.content)}")
 
             # Parse batch response
