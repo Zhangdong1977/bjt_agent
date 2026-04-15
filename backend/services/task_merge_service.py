@@ -2,7 +2,6 @@
 
 import json
 import logging
-import uuid
 from typing import Optional
 
 from mini_agent.schema import Message, LLMProvider
