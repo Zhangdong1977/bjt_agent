@@ -1,5 +1,6 @@
 """Merge decider tool for LLM-powered merge decisions."""
 
+import asyncio
 import json
 from typing import Any
 
@@ -60,7 +61,44 @@ class MergeDeciderTool(BaseTool):
             provider=LLMProvider.OPENAI,
             api_base=settings.mini_agent_api_base,
             model=settings.mini_agent_model,
+            timeout=60.0,
         )
+
+    async def _call_llm_with_retry(
+        self,
+        messages: list,
+        max_retries: int = 3,
+    ) -> Any:
+        """Call LLM with retry mechanism.
+
+        Args:
+            messages: LLM messages
+            max_retries: Maximum retry attempts (default 3)
+
+        Returns:
+            LLM response
+
+        Raises:
+            Exception: If all retries fail
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        last_exception = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"[MergeDeciderTool] LLM attempt {attempt}/{max_retries}")
+                response = await self._llm_client.generate(messages=messages)
+                logger.info(f"[MergeDeciderTool] LLM attempt {attempt} succeeded")
+                return response
+            except Exception as e:
+                last_exception = e
+                logger.warning(f"[MergeDeciderTool] LLM attempt {attempt} failed: {e}")
+                if attempt < max_retries:
+                    await asyncio.sleep(1)
+
+        logger.error(f"[MergeDeciderTool] All {max_retries} LLM attempts failed")
+        raise last_exception
 
     @property
     def name(self) -> str:
@@ -107,6 +145,9 @@ class MergeDeciderTool(BaseTool):
         Returns:
             ToolResult with natural language decision
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[MergeDeciderTool.execute] new_finding req_key={new_finding.get('requirement_key')}, existing_findings count={len(existing_findings)}")
         try:
             # Build prompt
             prompt = MERGE_DECISION_PROMPT.format(
@@ -118,7 +159,9 @@ class MergeDeciderTool(BaseTool):
                 Message(role="user", content=prompt),
             ]
 
-            response = await self._llm_client.generate(messages=messages)
+            logger.info(f"[MergeDeciderTool.execute] Calling LLM...")
+            response = await self._call_llm_with_retry(messages=messages)
+            logger.info(f"[MergeDeciderTool.execute] LLM response:\n{response.content[:500]}")
 
             return ToolResult(
                 success=True,
@@ -127,4 +170,5 @@ class MergeDeciderTool(BaseTool):
             )
 
         except Exception as e:
+            logger.warning(f"[MergeDeciderTool.execute] Error: {e}")
             return ToolResult(success=False, content="", error=str(e))
