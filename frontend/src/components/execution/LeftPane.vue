@@ -58,9 +58,14 @@ interface Props {
   todos?: TodoItemState[]
   subAgentStepsMap?: Record<string, TimelineStep[]>
   mergedStats?: MergedStats | null
+  isMerging?: boolean
+  mergeProgress?: string
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  isMerging: false,
+  mergeProgress: ''
+})
 
 // BidReviewAgent 模式检测
 const isBidReviewAgentMode = computed(() => {
@@ -243,8 +248,29 @@ function formatTime(date: Date): string {
       </div>
     </template>
 
-    <!-- 合并阶段 -->
-    <div v-if="!isBidReviewAgentMode && phase === 'completed'" class="phase-block">
+    <!-- 正在合并状态 -->
+    <div v-if="phase !== 'completed' && phase !== 'failed' && isMerging" class="phase-block">
+      <div class="phase-label">合并与质检阶段</div>
+      <div class="merge-block merge-block-running">
+        <div class="merge-block-header">
+          <div class="merge-status">
+            <span class="merge-icon spin">⟳</span>
+            <span>{{ mergeProgress || '正在合并历史结果...' }}</span>
+          </div>
+          <span class="chip chip-run">进行中</span>
+        </div>
+        <div class="merge-steps">
+          <div v-for="(step, idx) in mergeSteps" :key="idx" class="merge-step">
+            <div :class="['m-dot', idx === 0 ? 'md-run' : 'md-wait']"></div>
+            <span>{{ step }}</span>
+            <span v-if="idx < mergeSteps.length - 1" class="merge-step-arr">→</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 已完成状态 -->
+    <div v-if="phase === 'completed'" class="phase-block">
       <div class="phase-label">合并与质检阶段</div>
       <div class="merge-block">
         <div class="merge-block-header">
@@ -356,6 +382,45 @@ function formatTime(date: Date): string {
   border: 1px solid var(--green-dim);
   border-radius: var(--r2);
   padding: 14px;
+}
+
+.merge-block-running {
+  background: var(--amber-bg);
+  border-color: var(--amber-dim);
+}
+
+.merge-block-running .merge-status {
+  color: var(--amber);
+}
+
+.merge-block-running .m-dot.md-run {
+  background: var(--amber);
+  animation: blink 1s infinite;
+}
+
+.merge-block-running .m-dot.md-wait {
+  background: var(--line2);
+}
+
+.chip-run {
+  background: var(--purple-bg);
+  border-color: var(--purple-dim);
+  color: var(--purple);
+}
+
+.merge-icon.spin {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
 .merge-status {
