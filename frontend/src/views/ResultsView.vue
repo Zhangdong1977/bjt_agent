@@ -67,6 +67,7 @@ function goToTimeline() {
   align-items: center;
   padding: 1rem 2rem;
   background: var(--bg1);
+  border-bottom: 1px solid var(--line);
 }
 
 .header-left {
@@ -77,11 +78,15 @@ function goToTimeline() {
 
 .back-btn {
   padding: 0.5rem 1rem;
-  background: var(--bg3);
+  background: transparent;
   color: var(--text);
-  border: none;
+  border: 1px solid var(--line);
   border-radius: var(--r);
   cursor: pointer;
+}
+
+.back-btn:hover {
+  background: var(--bg3);
 }
 
 .header h1 {

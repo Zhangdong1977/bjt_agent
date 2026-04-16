@@ -141,7 +141,7 @@ function logout() {
   align-items: center;
   padding: 1rem 2rem;
   background: var(--bg1);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  border-bottom: 1px solid var(--line);
 }
 
 .header h1 {
@@ -161,13 +161,12 @@ function logout() {
   background: var(--red);
   color: var(--white);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--r);
   cursor: pointer;
-  transition: background-color 0.2s ease;
+  transition: filter 0.2s ease;
 }
 
 .logout-btn:hover {
-  background: var(--red);
   filter: brightness(1.1);
 }
 
@@ -193,14 +192,13 @@ function logout() {
   background: var(--purple);
   color: var(--white);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--r);
   cursor: pointer;
   font-weight: 500;
-  transition: background-color 0.2s ease, transform 0.1s ease;
+  transition: filter 0.2s ease, transform 0.1s ease;
 }
 
 .primary-btn:hover {
-  background: var(--purple);
   filter: brightness(1.1);
 }
 
@@ -223,8 +221,8 @@ function logout() {
 .project-card {
   background: var(--bg1);
   padding: 1.5rem;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+  border-radius: var(--r2);
+  border: 1px solid var(--line);
   cursor: pointer;
   transition: box-shadow 0.2s ease, transform 0.2s ease;
   display: flex;
@@ -233,7 +231,7 @@ function logout() {
 }
 
 .project-card:hover {
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--purple) 15%, transparent);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--purple) 15%, transparent);
   transform: translateY(-2px);
 }
 
@@ -258,10 +256,10 @@ function logout() {
   background: var(--red);
   color: var(--white);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--r);
   cursor: pointer;
   font-size: 0.85rem;
-  transition: background-color 0.2s ease;
+  transition: filter 0.2s ease;
 }
 
 .delete-btn:hover {
@@ -285,7 +283,8 @@ function logout() {
 .modal {
   background: var(--bg1);
   padding: 2rem;
-  border-radius: 8px;
+  border-radius: var(--r2);
+  border: 1px solid var(--line);
   width: 100%;
   max-width: 500px;
 }
@@ -310,8 +309,10 @@ function logout() {
   width: 100%;
   padding: 0.75rem;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--r);
   font-size: 1rem;
+  background: var(--bg2);
+  color: var(--text);
 }
 
 .form-group input:focus,
@@ -331,9 +332,9 @@ function logout() {
 .modal-actions button {
   padding: 0.75rem 1.5rem;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--r);
   cursor: pointer;
-  transition: background-color 0.2s ease;
+  transition: filter 0.2s ease;
 }
 
 .modal-actions button[type="button"] {
@@ -347,7 +348,6 @@ function logout() {
 }
 
 .modal-actions .primary-btn:hover {
-  background: var(--purple);
   filter: brightness(1.1);
 }
 
