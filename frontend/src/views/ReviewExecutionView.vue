@@ -21,6 +21,10 @@ let eventSource: EventSource | null = null
 // phase: 根据实际事件流转 - pending -> running -> completed/failed
 const phase = ref<'pending' | 'running' | 'completed' | 'failed'>('pending')
 const steps = ref<any[]>([])
+
+// 合并阶段状态
+const isMerging = ref(false)
+const mergeProgress = ref('')
 const subAgentSteps = ref<Map<string, any[]>>(new Map())
 const errorMessage = ref<string | null>(null)
 const findingsCount = ref<number>(0)
@@ -221,12 +225,17 @@ async function handleSSEEvent(event: any) {
       break
 
     case 'merging':
-      // 合并历史结果（不影响 phase）
+      // 合并历史结果
+      isMerging.value = true
+      mergeProgress.value = event.message || '正在合并历史结果...'
       console.log('[ReviewExecutionView] Merging historical results...')
       break
 
     case 'merged':
-      // 合并完成 - 获取合并后的统计数据
+      // 合并完成
+      isMerging.value = false
+      mergeProgress.value = ''
+      // 获取合并后的统计数据
       console.log('[ReviewExecutionView] Merge complete', event)
       // findingsCount 显示不合规问题数（从 summary.non_compliant 获取）
       findingsCount.value = event.non_compliant_count ?? event.total_count ?? event.merged_count ?? findingsCount.value
@@ -492,6 +501,8 @@ onUnmounted(() => {
           :todos="todoList"
           :sub-agent-steps-map="subAgentStepsMap"
           :merged-stats="mergedStats"
+          :is-merging="isMerging"
+          :merge-progress="mergeProgress"
         />
 
         <RightSidebar
