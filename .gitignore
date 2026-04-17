@@ -19,7 +19,6 @@ docs/superpowers
 docs/questiontobefixed.md
 .superpowers/
 doc_viewer_test.png
-docs/rules/
 
 # Python
 .pytest_cache/
