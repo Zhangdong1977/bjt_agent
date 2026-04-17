@@ -126,6 +126,9 @@ async def upload_document(
     await db.flush()
     await db.refresh(document)
 
+    # Commit transaction before triggering async task to ensure document is visible
+    await db.commit()
+
     # Trigger document parsing task
     from backend.tasks.document_parser import parse_document
     parse_document.delay(document.id)
