@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { TodoItem } from '@/types/review'
-import SubAgentTimeline from '@/components/execution/SubAgentTimeline.vue'
+import AgentTimelineItem from '@/components/execution/AgentTimelineItem.vue'
 
 const props = defineProps<{
   todo: TodoItem
@@ -62,6 +62,26 @@ function toggle() {
 
 function toggleTimeline() {
   showTimeline.value = !showTimeline.value
+}
+
+type Step = {
+  step_number: number
+  step_type: string
+  content: string
+  timestamp: Date
+  tool_args?: { tool_calls?: Array<{ name: string; arguments: Record<string, any> }> }
+  tool_result?: { tool_results?: Array<{ name: string; result: any }> }
+}
+
+function transformStep(step: Step) {
+  return {
+    stepNumber: step.step_number,
+    stepType: step.step_type as 'master' | 'observation' | 'tool_call' | 'thought' | 'tool_result',
+    content: step.content,
+    timestamp: step.timestamp,
+    toolCalls: step.tool_args?.tool_calls,
+    toolResults: step.tool_result?.tool_results,
+  }
 }
 </script>
 
@@ -127,9 +147,11 @@ function toggleTimeline() {
         </button>
       </div>
 
-      <SubAgentTimeline
+      <AgentTimelineItem
         v-if="showTimeline"
-        :steps="steps || []"
+        v-for="(step, idx) in (steps || [])"
+        :key="idx"
+        v-bind="transformStep(step)"
       />
     </div>
   </div>
