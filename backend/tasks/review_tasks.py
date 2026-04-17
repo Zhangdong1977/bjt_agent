@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from backend.celery_app import celery_app
+from backend.config import get_settings
 from backend.models import ReviewTask, ReviewResult, AgentStep
 
 logger = logging.getLogger(__name__)
@@ -393,8 +394,8 @@ async def _run_agent_review(
     if not bid_path or not Path(bid_path).exists():
         raise FileNotFoundError("Bid document not parsed")
 
-    # Fixed rule library path
-    rule_library_path = "/home/openclaw/bjt_agent/docs/rules"
+    # Rule library path from config
+    rule_library_path = str(get_settings().rule_library_dir)
 
     # Create event callback for SSE
     def event_cb(event_type: str, data: dict):

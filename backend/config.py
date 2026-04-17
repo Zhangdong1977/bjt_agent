@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     workspace_dir: Path = Path("./workspace")
     knowledge_base_dir: Path = Path("./workspace/knowledge")
 
+    # Rule Library
+    rule_library_dir: Path = Path(__file__).parent.parent / "docs" / "rules"
+
     @property
     def knowledge_base_path(self) -> Path:
         """Get absolute knowledge base path."""
