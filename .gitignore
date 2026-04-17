@@ -12,7 +12,7 @@ node_modules/
 *.swo
 *.log
 *.err
-Mini-Agent/
+/Mini-Agent/
 .worktrees/
 frontend/dist/
 docs/superpowers
