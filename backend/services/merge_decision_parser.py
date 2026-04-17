@@ -5,6 +5,41 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _is_valid_finding(finding: dict) -> bool:
+    """Check if a finding has valid content for merging.
+
+    Args:
+        finding: Finding dict to validate
+
+    Returns:
+        True if finding has meaningful content, False if invalid
+    """
+    requirement_content = (finding.get("requirement_content") or "").strip()
+    bid_content = (finding.get("bid_content") or "").strip()
+
+    # Empty requirement_content is invalid
+    if not requirement_content:
+        logger.info(f"[_is_valid_finding] Invalid: empty requirement_content, key={finding.get('requirement_key')}")
+        return False
+
+    # Single punctuation mark is not meaningful content
+    if len(requirement_content) <= 1 and requirement_content in '.。,，;；:：':
+        logger.info(f"[_is_valid_finding] Invalid: requirement_content is just punctuation, key={finding.get('requirement_key')}")
+        return False
+
+    # JSON-like bid_content suggests parsing error
+    if bid_content.startswith('{') or bid_content.startswith('[') or bid_content.startswith('suggestion'):
+        logger.info(f"[_is_valid_finding] Invalid: bid_content looks like JSON fragment, key={finding.get('requirement_key')}")
+        return False
+
+    # "文件对此技术要求未提供任何说明" type messages are placeholder/incomplete, not real findings
+    if "文件对此" in bid_content and "未提供" in bid_content:
+        logger.info(f"[_is_valid_finding] Invalid: bid_content is a placeholder message, key={finding.get('requirement_key')}")
+        return False
+
+    return True
+
+
 def parse_merge_decision(text: str) -> dict:
     """Parse natural language decision from LLM.
 
@@ -90,8 +125,14 @@ def parse_batch_merge_decisions(text: str, new_findings_keys: list[str]) -> list
     """
     logger.info(f"[parse_batch_merge_decisions] text length={len(text)}, new_findings_keys count={len(new_findings_keys)}")
 
-    # Find all "新发现[N]" markers
+    # Find all "新发现[N]" markers with robust pattern
+    # Handle both 新发现[1] and 新发现[21] formats
     matches = list(re.finditer(r'新发现\[(\d+)\]', text))
+
+    # Log marker indices to detect LLM skipping
+    if matches:
+        indices = [int(m.group(1)) if m.lastindex == 1 else int(m.group(2)) for m in matches]
+        logger.info(f"[parse_batch_merge_decisions] Found {len(matches)} markers with indices: {indices}")
 
     if not matches:
         # No markers found, try numbered rule pattern "序号N:" or "N. " at line start

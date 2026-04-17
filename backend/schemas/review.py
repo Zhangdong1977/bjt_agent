@@ -86,3 +86,24 @@ class ReviewTaskListItem(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class TodoItemResponse(BaseModel):
+    """Schema for a todo item (sub-agent execution unit)."""
+
+    id: str
+    project_id: str
+    session_id: str
+    rule_doc_path: str
+    rule_doc_name: str
+    check_items: list | None = None
+    status: str
+    result: dict | None = None
+    error_message: str | None = None
+    retry_count: int
+    max_retries: int
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

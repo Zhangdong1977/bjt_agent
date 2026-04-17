@@ -116,3 +116,28 @@ class TestParseBatchMergeDecisions:
         assert results[2]["reason"] == "no corresponding decision block"
         assert results[3]["action"] == "keep_both"
         assert results[3]["parse_failed"] is True
+
+    def test_parse_batch_marker_skip(self):
+        """Test when LLM skips marker numbers (新发现[21] instead of 新发现[3])."""
+        text = """新发现[1]：
+    决策：keep
+    理由：第一个发现是全新的。
+    替换key：无
+
+    新发现[21]：
+    决策：keep
+    理由：第二个发现也是全新的。
+    替换key：无
+
+    新发现[22]：
+    决策：discard
+    理由：第三个发现与第二个重复。
+    替换key：无"""
+        keys = ["finding_001", "finding_002", "finding_003"]
+        results = parse_batch_merge_decisions(text, keys)
+
+        assert len(results) == 3
+        # All should be parsed via position-order mapping despite skipped indices
+        assert results[0]["action"] == "keep"
+        assert results[1]["action"] == "keep"
+        assert results[2]["action"] == "discard"

@@ -12,6 +12,57 @@ from mini_agent.schema import Message
 
 logger = logging.getLogger(__name__)
 
+
+def _format_finding_for_log(finding: dict, max_len: int = 200) -> str:
+    """Format a finding dict for detailed audit logging.
+
+    Args:
+        finding: Finding dict to format
+        max_len: Maximum length for string fields
+
+    Returns:
+        Formatted string with finding details
+    """
+    def truncate(s, length=max_len):
+        if s is None:
+            return "None"
+        s = str(s)
+        return s[:length] + "..." if len(s) > length else s
+
+    req_key = finding.get("requirement_key", "N/A")
+    req_content = truncate(finding.get("requirement_content"))
+    bid_content = truncate(finding.get("bid_content"))
+    compliant = finding.get("is_compliant", "N/A")
+    severity = finding.get("severity", "N/A")
+    explanation = truncate(finding.get("explanation", ""))
+
+    return (
+        f"Finding[{req_key}]: "
+        f"compliant={compliant}, severity={severity}, "
+        f"req_content={req_content}, "
+        f"bid_content={bid_content}, "
+        f"explanation={explanation}"
+    )
+
+
+def _format_findings_for_log(findings: list[dict], max_len: int = 200) -> str:
+    """Format a list of findings for detailed audit logging.
+
+    Args:
+        findings: List of finding dicts to format
+        max_len: Maximum length for string fields
+
+    Returns:
+        Formatted multi-line string with all findings
+    """
+    if not findings:
+        return "  (empty)"
+
+    lines = []
+    for i, f in enumerate(findings):
+        lines.append(f"  [{i}] {_format_finding_for_log(f, max_len)}")
+    return "\n".join(lines)
+
 # Batch merge prompt for processing multiple findings in one LLM call
 BATCH_MERGE_PROMPT = """你是专业的标书审查结果合并决策专家，负责将多个新的审查发现与历史发现进行批量合并。
 
@@ -280,6 +331,13 @@ class TaskMergeService:
         # First pass: collect findings that need LLM decisions (after fast-path checks)
         findings_needing_llm: list[tuple[int, dict]] = []  # (index, finding)
 
+        # Filter out invalid findings before processing
+        from backend.services.merge_decision_parser import _is_valid_finding
+        valid_findings = [f for f in findings if _is_valid_finding(f)]
+        if len(valid_findings) < len(findings):
+            logger.info(f"[TaskMergeService] Filtered out {len(findings) - len(valid_findings)} invalid findings, {len(valid_findings)} remain")
+        findings = valid_findings
+
         for idx, finding in enumerate(findings):
             req_key = finding.get("requirement_key", "")
 
@@ -310,14 +368,40 @@ class TaskMergeService:
         # Batch call LLM for all findings needing decisions
         if findings_needing_llm:
             findings_to_decide = [f for _, f in findings_needing_llm]
-            logger.info(f"[TaskMergeService] Batch calling LLM for {len(findings_to_decide)} findings")
+
+            # Audit log: all findings to be decided
+            logger.info(f"[TaskMergeService] ========== LLM MERGE AUDIT START ==========")
+            logger.info(f"[TaskMergeService] Findings to decide: {len(findings_to_decide)}")
+            logger.info(f"[TaskMergeService] Existing merged findings: {len(merged_findings)}")
+            logger.info(f"[TaskMergeService] --- NEW FINDINGS TO DECIDE ---")
+            for i, f in enumerate(findings_to_decide):
+                logger.info(f"[TaskMergeService]   [AUDIT] NewFinding[{i}]: {_format_finding_for_log(f)}")
+
+            if merged_findings:
+                logger.info(f"[TaskMergeService] --- EXISTING MERGED FINDINGS ---")
+                for i, f in enumerate(merged_findings):
+                    logger.info(f"[TaskMergeService]   [AUDIT] Existing[{i}]: {_format_finding_for_log(f)}")
+
+            logger.info(f"[TaskMergeService] Calling LLM for {len(findings_to_decide)} findings...")
             decisions = await self._batch_get_llm_merge_decisions(findings_to_decide, merged_findings)
 
             # Apply decisions in order
+            logger.info(f"[TaskMergeService] --- LLM DECISIONS ---")
             for i, (idx, finding) in enumerate(findings_needing_llm):
                 req_key = finding.get("requirement_key", "")
                 decision = decisions[i]
-                logger.info(f"[TaskMergeService] Batch LLM decision for key={req_key}: action={decision['action']}")
+                reason = decision.get("reason", "")[:100] if decision.get("reason") else "N/A"
+                replace_key = decision.get("replace_key", "N/A")
+                logger.info(
+                    f"[TaskMergeService] [AUDIT] Decision[{i}] key={req_key}: "
+                    f"action={decision['action']}, reason={reason}..., replace_key={replace_key}"
+                )
+                logger.debug(f"[TaskMergeService] [AUDIT] Decision[{i}] full content: {_format_finding_for_log(finding, 300)}")
+
+                # If merged_findings is empty (first batch), auto-keep instead of discard
+                if len(merged_findings) == 0 and decision["action"] == "discard":
+                    logger.info(f"[TaskMergeService] First finding auto-kept despite discard: key={req_key}")
+                    decision = {"action": "keep_both", "reason": "first finding, auto-keep", "replace_key": None}
 
                 if decision["action"] == "keep":
                     # keep = new finding is independent, add as new entry
@@ -325,7 +409,11 @@ class TaskMergeService:
                     merged = {**finding, "requirement_key": new_key}
                     merged_findings.append(merged)
                     seen_content_keys.add(self._content_hash(merged))
-                    logger.info(f"[TaskMergeService] ACTION=keep: new key={new_key}")
+                    logger.info(
+                        f"[TaskMergeService] [AUDIT] ACTION=keep: "
+                        f"original_key={req_key} -> new_key={new_key}, "
+                        f"finding={_format_finding_for_log(merged)}"
+                    )
                 elif decision["action"] == "replace":
                     replace_key = decision.get("replace_key")
                     target = None
@@ -342,22 +430,41 @@ class TaskMergeService:
                         merged_findings[idx_in_list] = new_target
                         seen_content_keys.discard(self._content_hash(target))
                         seen_content_keys.add(self._content_hash(new_target))
-                        logger.info(f"[TaskMergeService] ACTION=replace: updated key={replace_key}")
+                        logger.info(
+                            f"[TaskMergeService] [AUDIT] ACTION=replace: "
+                            f"new_key={replace_key}, "
+                            f"original_key={req_key}, "
+                            f"target_removed={_format_finding_for_log(target)}, "
+                            f"new_content={_format_finding_for_log(new_target)}"
+                        )
                     else:
                         # Target not found, treat as keep
                         new_key = self._generate_new_requirement_key(merged_findings)
                         merged = {**finding, "requirement_key": new_key}
                         merged_findings.append(merged)
                         seen_content_keys.add(self._content_hash(merged))
-                        logger.info(f"[TaskMergeService] ACTION=replace target not found: new key={new_key}")
+                        logger.warning(
+                            f"[TaskMergeService] [AUDIT] ACTION=replace_target_not_found: "
+                            f"original_key={req_key} -> new_key={new_key}, "
+                            f"finding={_format_finding_for_log(merged)}"
+                        )
                 elif decision["action"] == "keep_both":
                     new_key = self._generate_new_requirement_key(merged_findings)
                     merged = {**finding, "requirement_key": new_key}
                     merged_findings.append(merged)
                     seen_content_keys.add(self._content_hash(merged))
-                    logger.info(f"[TaskMergeService] ACTION=keep_both: new key={new_key}")
+                    logger.info(
+                        f"[TaskMergeService] [AUDIT] ACTION=keep_both: "
+                        f"original_key={req_key} -> new_key={new_key}, "
+                        f"finding={_format_finding_for_log(merged)}"
+                    )
                 elif decision["action"] == "discard":
-                    logger.info(f"[TaskMergeService] ACTION=discard: discarded finding key={req_key}")
+                    logger.info(
+                        f"[TaskMergeService] [AUDIT] ACTION=discard: "
+                        f"key={req_key}, "
+                        f"reason={decision.get('reason', 'N/A')}, "
+                        f"finding={_format_finding_for_log(finding)}"
+                    )
 
         # Sort by severity
         def sort_key(f):
@@ -367,6 +474,16 @@ class TaskMergeService:
         merged_findings.sort(key=sort_key)
 
         result = self._build_result(merged_findings)
+
+        # Final audit summary
+        logger.info(f"[TaskMergeService] ========== LLM MERGE AUDIT SUMMARY ==========")
+        logger.info(f"[TaskMergeService] Input findings: {result['total_findings']}")
+        logger.info(f"[TaskMergeService]   critical={result['critical_count']}, major={result['major_count']}, minor={result['minor_count']}, passed={result['passed_count']}")
+        logger.info(f"[TaskMergeService] --- FINAL MERGED FINDINGS ---")
+        for i, f in enumerate(merged_findings):
+            logger.info(f"[TaskMergeService]   [FINAL] [{i}] {_format_finding_for_log(f)}")
+        logger.info(f"[TaskMergeService] =============================================")
+
         logger.info(f"[TaskMergeService.merge_sub_agent_results] Completed: {result['total_findings']} total findings")
 
         if event_callback:

@@ -10,7 +10,8 @@ import type {
   ReviewTaskListItem,
   ReviewResponse,
   AgentStep,
-  ReviewResult
+  ReviewResult,
+  TodoItem
 } from '@/types'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
@@ -319,6 +320,11 @@ export const reviewApi = {
 
   async getTasks(projectId: string): Promise<ReviewTaskListItem[]> {
     const response = await apiClient.get(`/projects/${projectId}/review/tasks`)
+    return response.data
+  },
+
+  async getTodosByTask(projectId: string, taskId: string): Promise<TodoItem[]> {
+    const response = await apiClient.get(`/projects/${projectId}/review/tasks/${taskId}/todos`)
     return response.data
   }
 }

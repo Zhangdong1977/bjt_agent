@@ -116,6 +116,24 @@ export interface AgentStep {
   created_at: string
 }
 
+// TodoItem type - represents a sub-agent execution unit
+export interface TodoItem {
+  id: string
+  project_id: string
+  session_id: string
+  rule_doc_path: string
+  rule_doc_name: string
+  check_items: Array<{ id: string; title: string }> | null
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  result: { findings: ReviewResult[] } | null
+  error_message: string | null
+  retry_count: number
+  max_retries: number
+  started_at: string | null
+  completed_at: string | null
+  created_at: string
+}
+
 // Tool Result type
 export interface ToolResult {
   status: 'success' | 'error'

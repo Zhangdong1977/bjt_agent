@@ -353,3 +353,18 @@ class TestIsDuplicateContent:
             "explanation": "超过要求30天",
         }
         assert service._is_duplicate_content(new, existing) is True
+
+
+class TestMergeServiceValidation:
+    """Test validation in MergeService."""
+
+    def test_filter_invalid_findings(self):
+        """Invalid findings should be filtered before merge decision."""
+        from backend.services.merge_decision_parser import _is_valid_finding
+
+        findings = [
+            {"requirement_key": "req_001", "requirement_content": "valid", "bid_content": "bid"},
+            {"requirement_key": "req_002", "requirement_content": "", "bid_content": "bid"},  # Invalid
+        ]
+        valid = [f for f in findings if _is_valid_finding(f)]
+        assert len(valid) == 1

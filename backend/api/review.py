@@ -11,13 +11,14 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from backend.api.deps import DBSession, CurrentUser
-from backend.models import Project, ReviewTask, ReviewResult, AgentStep, ProjectReviewResult
+from backend.models import Project, ReviewTask, ReviewResult, AgentStep, ProjectReviewResult, TodoItem
 from backend.schemas.review import (
     ReviewResponse,
     ReviewResultResponse,
     ReviewTaskResponse,
     ReviewTaskListItem,
     AgentStepResponse,
+    TodoItemResponse,
 )
 from backend.services.sse_service import sse_manager
 
@@ -254,6 +255,41 @@ async def get_review_task_results(
     )
     findings = result.scalars().all()
     return findings
+
+
+@router.get("/tasks/{task_id}/todos", response_model=list[TodoItemResponse])
+async def get_review_task_todos(
+    project_id: str,
+    task_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> list[TodoItem]:
+    """Get all todo items (sub-agents) for a review task.
+
+    TodoItems are created during review execution with session_id = task_id.
+    This endpoint allows fetching sub-agent information for completed tasks
+    when SSE events are no longer available (e.g., after Redis stream TTL expires).
+    """
+    await verify_project_ownership(project_id, current_user.id, db)
+
+    result = await db.execute(
+        select(ReviewTask)
+        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Review task not found",
+        )
+
+    result = await db.execute(
+        select(TodoItem)
+        .where(TodoItem.session_id == task_id)
+        .order_by(TodoItem.created_at.asc())
+    )
+    todos = result.scalars().all()
+    return todos
 
 
 @router.get("/tasks/{task_id}/stream")
