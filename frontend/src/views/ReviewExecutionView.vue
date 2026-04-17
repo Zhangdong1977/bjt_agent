@@ -51,6 +51,10 @@ interface TodoItemState {
 const todos = ref<Map<string, TodoItemState>>(new Map())
 const todoList = computed(() => Array.from(todos.value.values()))
 
+// maxStepsMap and taskStartTime for execution stats
+const maxStepsMap = ref<Record<string, number>>({})
+const taskStartTime = ref<number>(0)
+
 // 统计数据
 const totalSteps = computed(() => steps.value.length)
 const completedCount = computed(() =>
@@ -101,6 +105,14 @@ async function handleSSEEvent(event: any) {
     case 'sub_agent_sub_agent_started':
       // 子代理开始
       updateTodoStatus(event.todo_id, 'running')
+      // 收集 max_steps
+      if (event.max_steps !== undefined) {
+        maxStepsMap.value[event.todo_id] = event.max_steps
+      }
+      // 记录任务开始时间
+      if (!taskStartTime.value) {
+        taskStartTime.value = Date.now()
+      }
       break
 
     case 'sub_agent_progress':
@@ -313,6 +325,40 @@ function updateTodoProgress(todoId: string, _progress: number, currentCheck: str
   }
 }
 
+// Load historical todos from API for completed tasks
+async function loadHistoricalTodos(projectId: string, taskId: string) {
+  try {
+    const historicalTodos = await reviewApi.getTodosByTask(projectId, taskId)
+    console.log('[ReviewExecutionView] Loaded historical todos:', historicalTodos.length)
+
+    // Clear existing todos and populate from API response
+    todos.value.clear()
+
+    for (const item of historicalTodos) {
+      const checkItems: CheckItemState[] = (item.check_items || []).map((ci: any, idx: number) => ({
+        id: `${item.id}-${idx}`,
+        title: ci.title || `检查项 ${idx + 1}`,
+        status: item.status === 'completed' ? 'completed' : item.status === 'running' ? 'running' : item.status === 'failed' ? 'failed' : 'pending'
+      }))
+
+      const todoItem: TodoItemState = {
+        id: item.id,
+        rule_doc_name: item.rule_doc_name || '',
+        check_items: checkItems,
+        status: item.status as TodoItemState['status'],
+        result: item.result || undefined,
+        error_message: item.error_message || undefined
+      }
+
+      todos.value.set(item.id, todoItem)
+    }
+
+    console.log('[ReviewExecutionView] Populated todos from API, count:', todos.value.size)
+  } catch (err) {
+    console.error('[ReviewExecutionView] Failed to load historical todos:', err)
+  }
+}
+
 function connect() {
   if (!projectStore.currentTask?.id) {
     console.log('[ReviewExecutionView] No currentTask.id, skipping SSE connection')
@@ -472,6 +518,9 @@ onMounted(async () => {
       } catch (err) {
         console.error('[ReviewExecutionView] Failed to fetch merged results on mount:', err)
       }
+
+      // 加载历史 todo 项（子代理信息）以处理 SSE 事件丢失的情况
+      await loadHistoricalTodos(projectId.value, projectStore.currentTask.id)
     }
   } else {
     console.log('[ReviewExecutionView] No currentTask, SSE will not connect')
@@ -510,6 +559,10 @@ onUnmounted(() => {
           :completed-count="completedCount"
           :findings-count="findingsCount"
           :phase="phase"
+          :sub-agent-steps-map="subAgentSteps"
+          :max-steps-map="maxStepsMap"
+          :task-start-time="taskStartTime"
+          :todos="todoList"
         />
       </div>
     </div>
