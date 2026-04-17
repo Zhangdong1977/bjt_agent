@@ -2,18 +2,70 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 
+interface TimelineStep {
+  step_number: number
+  step_type: string
+  content: string
+  timestamp: Date
+  tool_args?: { tool_calls?: any[] }
+  tool_result?: { tool_results?: any[] }
+}
+
+interface TodoItemState {
+  id: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+}
+
 const props = defineProps<{
   totalSteps: number
   completedCount: number
   findingsCount: number
   phase: 'pending' | 'running' | 'completed' | 'failed'
+  subAgentStepsMap?: Record<string, TimelineStep[]>
+  maxStepsMap?: Record<string, number>
+  taskStartTime?: number
+  todos?: TodoItemState[]
 }>()
 
 const router = useRouter()
 
-const progress = computed(() => {
-  if (props.totalSteps === 0) return 0
-  return Math.round((props.completedCount / props.totalSteps) * 100)
+// 执行容量进度
+const execCapacityProgress = computed(() => {
+  if (!props.maxStepsMap || Object.keys(props.maxStepsMap).length === 0) {
+    return { current: 0, total: 0, percent: 0 }
+  }
+
+  let totalCapacity = 0
+  let usedCapacity = 0
+
+  for (const [todoId, maxSteps] of Object.entries(props.maxStepsMap)) {
+    totalCapacity += maxSteps
+    const steps = props.subAgentStepsMap?.[todoId] || []
+    usedCapacity += Math.min(steps.length, maxSteps)
+  }
+
+  return {
+    current: usedCapacity,
+    total: totalCapacity,
+    percent: totalCapacity > 0 ? Math.round((usedCapacity / totalCapacity) * 100) : 0
+  }
+})
+
+// 完成任务数
+const completedTasksCount = computed(() => {
+  return props.todos?.filter(t => t.status === 'completed').length || 0
+})
+
+// 总任务数
+const totalTasksCount = computed(() => {
+  return props.todos?.length || 0
+})
+
+// 任务执行平均耗时（秒）
+const averageDuration = computed(() => {
+  if (!props.taskStartTime || completedTasksCount.value === 0) return 0
+  const elapsed = Date.now() - props.taskStartTime
+  return Math.round(elapsed / 1000 / completedTasksCount.value)
 })
 
 const statusText = computed(() => {
@@ -47,18 +99,18 @@ function goBack() {
       <div class="section-title">执行进度</div>
       <div class="overall-progress">
         <div class="progress-label">
-          <span>智能体步骤</span>
-          <span class="progress-pct">{{ progress }}%</span>
+          <span>执行容量</span>
+          <span class="progress-pct">{{ execCapacityProgress.percent }}%</span>
         </div>
         <div class="progress-bar-outer">
           <div
             class="progress-bar-inner"
-            :style="{ width: `${progress}%` }"
+            :style="{ width: `${execCapacityProgress.percent}%` }"
             :class="{ 'animate': phase === 'running' }"
           ></div>
         </div>
         <div class="progress-stats">
-          <span>{{ completedCount }} / {{ totalSteps }} 步骤</span>
+          <span>{{ execCapacityProgress.current }} / {{ execCapacityProgress.total }} 步骤</span>
         </div>
       </div>
     </div>
@@ -68,20 +120,20 @@ function goBack() {
       <div class="section-title">执行统计</div>
       <div class="stats-grid">
         <div class="stat-box">
-          <div class="stat-val sv-purple">{{ totalSteps }}</div>
-          <div class="stat-lbl">总步骤数</div>
+          <div class="stat-val sv-purple">{{ totalTasksCount }}</div>
+          <div class="stat-lbl">任务总数</div>
         </div>
         <div class="stat-box">
-          <div class="stat-val sv-blue">{{ completedCount }}</div>
+          <div class="stat-val sv-green">{{ completedTasksCount }}</div>
           <div class="stat-lbl">已完成</div>
         </div>
         <div class="stat-box">
-          <div class="stat-val sv-amber">{{ totalSteps - completedCount }}</div>
+          <div class="stat-val sv-amber">{{ totalTasksCount - completedTasksCount }}</div>
           <div class="stat-lbl">进行中</div>
         </div>
         <div class="stat-box">
-          <div class="stat-val sv-green">{{ findingsCount }}</div>
-          <div class="stat-lbl">发现问题</div>
+          <div class="stat-val sv-blue">{{ averageDuration }}s</div>
+          <div class="stat-lbl">平均耗时</div>
         </div>
       </div>
     </div>
@@ -92,11 +144,11 @@ function goBack() {
       <div class="legend-list">
         <div class="leg">
           <div class="leg-swatch" style="background: var(--purple)"></div>
-          <span>思考过程</span>
+          <span>主代理</span>
         </div>
         <div class="leg">
           <div class="leg-swatch" style="background: var(--blue)"></div>
-          <span>观察</span>
+          <span>思考</span>
         </div>
         <div class="leg">
           <div class="leg-swatch" style="background: var(--amber)"></div>
@@ -104,11 +156,11 @@ function goBack() {
         </div>
         <div class="leg">
           <div class="leg-swatch" style="background: var(--green)"></div>
-          <span>完成</span>
+          <span>观察</span>
         </div>
         <div class="leg">
-          <div class="leg-swatch" style="background: var(--red)"></div>
-          <span>失败</span>
+          <div class="leg-swatch" style="background: var(--green)"></div>
+          <span>工具结果</span>
         </div>
       </div>
     </div>
