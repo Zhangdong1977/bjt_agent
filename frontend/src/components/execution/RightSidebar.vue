@@ -94,12 +94,12 @@ function goBack() {
       </div>
     </div>
 
-    <!-- 执行进度 -->
+    <!-- 智能体健康度 -->
     <div class="sidebar-section">
-      <div class="section-title">执行进度</div>
+      <div class="section-title">智能体健康度</div>
       <div class="overall-progress">
         <div class="progress-label">
-          <span>执行容量</span>
+          <span>脑容量</span>
           <span class="progress-pct">{{ execCapacityProgress.percent }}%</span>
         </div>
         <div class="progress-bar-outer">
@@ -110,7 +110,7 @@ function goBack() {
           ></div>
         </div>
         <div class="progress-stats">
-          <span>{{ execCapacityProgress.current }} / {{ execCapacityProgress.total }} 步骤</span>
+          <span>{{ execCapacityProgress.current }} / {{ execCapacityProgress.total }} </span>
         </div>
       </div>
     </div>
