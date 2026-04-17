@@ -60,6 +60,7 @@ class SubAgentExecutor:
             self._send_event("sub_agent_started", {
                 "todo_id": self.todo_item.id,
                 "rule_doc_name": self.todo_item.rule_doc_name,
+                "max_steps": max_steps,
             })
 
             # 创建 agent
