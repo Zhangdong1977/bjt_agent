@@ -37,17 +37,6 @@ function initTheme() {
 function applyTheme(t: Theme) {
   document.body.classList.remove('theme-dark', 'theme-light')
   document.body.classList.add(`theme-${t}`)
-
-  // 动态加载主题 CSS
-  const existingLink = document.getElementById('theme-css')
-  if (existingLink) {
-    existingLink.remove()
-  }
-  const link = document.createElement('link')
-  link.id = 'theme-css'
-  link.rel = 'stylesheet'
-  link.href = `/src/assets/themes/${t}.css`
-  document.head.appendChild(link)
 }
 
 // 切换主题

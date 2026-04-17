@@ -31,6 +31,7 @@ const antdTheme = computed(() => ({
 
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&family=Poppins:wght@500;600;700&display=swap');
+@import '@/assets/themes/themes.css';
 @import '@/assets/themes/common.css';
 
 * {

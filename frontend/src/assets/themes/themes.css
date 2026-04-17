@@ -1,0 +1,126 @@
+/* 深色主题变量 */
+:root,
+body.theme-dark {
+  /* 背景色系 */
+  --bg: #0a0a0a;
+  --bg1: #111111;
+  --bg2: #181818;
+  --bg3: #1e1e1e;
+  --bg4: #242424;
+
+  /* 边框线系 */
+  --line: #2a2a2a;
+  --line2: #333333;
+  --dim: #444444;
+
+  /* 文字色系 */
+  --muted: #666666;
+  --sub: #888888;
+  --text: #cccccc;
+  --bright: #eeeeee;
+  --white: #f5f5f5;
+
+  /* 状态色系 */
+  --green: #3dd68c;
+  --green-dim: #1a4d35;
+  --green-bg: #0d2318;
+
+  --amber: #f0a429;
+  --amber-dim: #4d3510;
+  --amber-bg: #1e1500;
+
+  --blue: #4da6ff;
+  --blue-dim: #1a3a5c;
+  --blue-bg: #0a1e30;
+
+  --purple: #a78bfa;
+  --purple-dim: #3b2f6b;
+  --purple-bg: #1a1030;
+
+  --red: #f87171;
+  --red-dim: #4d1f1f;
+  --red-bg: #200d0d;
+
+  --teal: #2dd4bf;
+  --teal-dim: #1a4040;
+  --teal-bg: #0a2020;
+
+  /* 基础变量 */
+  --mono: 'JetBrains Mono', 'Geist Mono', 'Fira Code', monospace;
+  --r: 6px;
+  --r2: 10px;
+}
+
+/* 深色主题文字颜色 */
+body.theme-dark {
+  color: var(--text);
+}
+
+body.theme-dark h1,
+body.theme-dark h2,
+body.theme-dark h3 {
+  color: var(--bright);
+}
+
+/* 浅色主题变量 */
+body.theme-light {
+  /* 背景色系 */
+  --bg: #f5f5f5;
+  --bg1: #ffffff;
+  --bg2: #fafafa;
+  --bg3: #f0f0f0;
+  --bg4: #e8e8e8;
+
+  /* 边框线系 */
+  --line: #e0e0e0;
+  --line2: #d0d0d0;
+  --dim: #b0b0b0;
+
+  /* 文字色系 */
+  --muted: #888888;
+  --sub: #666666;
+  --text: #333333;
+  --bright: #111111;
+  --white: #ffffff;
+
+  /* 状态色系 */
+  --green: #52c41a;
+  --green-dim: #d9f7be;
+  --green-bg: #f6ffed;
+
+  --amber: #faad14;
+  --amber-dim: #ffe58f;
+  --amber-bg: #fffbe6;
+
+  --blue: #1890ff;
+  --blue-dim: #91d5ff;
+  --blue-bg: #e6f7ff;
+
+  --purple: #722ed1;
+  --purple-dim: #d3adf7;
+  --purple-bg: #f9f0ff;
+
+  --red: #ff4d4f;
+  --red-dim: #ffccc7;
+  --red-bg: #fff1f0;
+
+  --teal: #13c2c2;
+  --teal-dim: #87e8de;
+  --teal-bg: #e6fffb;
+
+  /* 基础变量 */
+  --mono: 'JetBrains Mono', 'Geist Mono', 'Fira Code', monospace;
+  --r: 6px;
+  --r2: 10px;
+}
+
+/* 浅色主题文字颜色 */
+body.theme-light {
+  color: var(--text);
+}
+
+body.theme-light h1,
+body.theme-light h2,
+body.theme-light h3 {
+  color: var(--bright);
+}
