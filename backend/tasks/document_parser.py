@@ -499,6 +499,8 @@ async def _parse_docx(file_path: Path) -> dict:
                     )
                     logger.info(f"Replaced placeholder with file path {img_file.name}")
                     placeholder_idx += 1
+                else:
+                    logger.warning(f"No image file available for placeholder at index {placeholder_idx}")
 
     logger.info(f"Extracted {len(images)} images from DOCX")
 
