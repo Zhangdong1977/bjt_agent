@@ -51,6 +51,10 @@ interface TodoItemState {
 const todos = ref<Map<string, TodoItemState>>(new Map())
 const todoList = computed(() => Array.from(todos.value.values()))
 
+// 追踪待处理的 tool_calls 和 tool_results，用于组合细粒度事件
+// Map<todo_id, Map<step_number, { tool_calls: any[], tool_results: any[] }>>
+const pendingToolCallsMap = ref<Map<string, Map<number, { tool_calls: any[], tool_results: any[] }>>>(new Map())
+
 // maxStepsMap and taskStartTime for execution stats
 const maxStepsMap = ref<Record<string, number>>({})
 const taskStartTime = ref<number>(0)
@@ -224,6 +228,126 @@ async function handleSSEEvent(event: any) {
       }
       break
 
+    // 处理 Mini-Agent 细粒度事件 (sub_agent_* 前缀)
+    case 'sub_agent_step_start':
+      // 子代理 step 开始 - 初始化 pending tool_calls
+      if (event.todo_id && event.step !== undefined) {
+        const todoId = event.todo_id
+        const stepNum = event.step
+        if (!pendingToolCallsMap.value.has(todoId)) {
+          pendingToolCallsMap.value.set(todoId, new Map())
+        }
+        const todoPending = pendingToolCallsMap.value.get(todoId)!
+        todoPending.set(stepNum, { tool_calls: [], tool_results: [] })
+        console.log('[ReviewExecutionView] sub_agent_step_start for', todoId, 'step', stepNum)
+      }
+      break
+
+    case 'sub_agent_llm_output':
+      // 子代理 LLM 输出 - 包含 content 和 tool_calls
+      if (event.todo_id && event.step !== undefined) {
+        const todoId = event.todo_id
+        const stepNum = event.step
+        const content = event.content || ''
+        const toolCalls = event.tool_calls || []
+
+        // 存储 tool_calls 到 pending map
+        if (pendingToolCallsMap.value.has(todoId)) {
+          const todoPending = pendingToolCallsMap.value.get(todoId)!
+          if (todoPending.has(stepNum)) {
+            todoPending.get(stepNum)!.tool_calls = toolCalls
+          }
+        }
+
+        // 添加或更新 step
+        const existingSteps = subAgentSteps.value.get(todoId) || []
+        const existingIndex = existingSteps.findIndex(
+          s => s.step_number === stepNum && s.step_type !== 'tool_result'
+        )
+
+        if (existingIndex >= 0) {
+          existingSteps[existingIndex] = {
+            ...existingSteps[existingIndex],
+            content: existingSteps[existingIndex].content + content,
+            timestamp: new Date(),
+            tool_calls: toolCalls,
+          }
+        } else {
+          existingSteps.push({
+            step_number: stepNum,
+            step_type: 'observation',
+            content: content,
+            timestamp: new Date(),
+            tool_calls: toolCalls,
+            tool_results: [],
+          })
+        }
+
+        subAgentSteps.value.set(todoId, [...existingSteps])
+        console.log('[ReviewExecutionView] sub_agent_llm_output for', todoId, 'step', stepNum, 'tool_calls:', toolCalls.length)
+      }
+      break
+
+    case 'sub_agent_tool_call_start':
+      // 子代理工具调用开始
+      if (event.todo_id && event.step !== undefined) {
+        const todoId = event.todo_id
+        const stepNum = event.step
+        console.log('[ReviewExecutionView] sub_agent_tool_call_start for', todoId, 'step', stepNum, 'tool:', event.tool)
+      }
+      break
+
+    case 'sub_agent_tool_call_end':
+      // 子代理工具调用结束 - 添加 tool_result
+      if (event.todo_id && event.step !== undefined) {
+        const todoId = event.todo_id
+        const stepNum = event.step
+        const tool = event.tool
+        const success = event.success
+        const result = event.result
+        const error = event.error
+
+        // 添加 tool_result 到 step
+        const existingSteps = subAgentSteps.value.get(todoId) || []
+        const existingIndex = existingSteps.findIndex(s => s.step_number === stepNum)
+
+        if (existingIndex >= 0) {
+          const step = existingSteps[existingIndex]
+          const toolResults = [...(step.tool_results || [])]
+          toolResults.push({
+            name: tool,
+            result: {
+              status: success ? 'success' : 'error',
+              content: result || null,
+              error: error || null,
+              count: null,
+            }
+          })
+          existingSteps[existingIndex] = {
+            ...step,
+            tool_results: toolResults,
+            timestamp: new Date(),
+          }
+          subAgentSteps.value.set(todoId, [...existingSteps])
+        }
+        console.log('[ReviewExecutionView] sub_agent_tool_call_end for', todoId, 'step', stepNum, 'tool:', tool, 'success:', success)
+      }
+      break
+
+    case 'sub_agent_step_complete':
+      // 子代理 step 完成 - 清理 pending data
+      if (event.todo_id && event.step !== undefined) {
+        const todoId = event.todo_id
+        const stepNum = event.step
+        // 清理 pending data
+        if (pendingToolCallsMap.value.has(todoId)) {
+          const todoPending = pendingToolCallsMap.value.get(todoId)!
+          todoPending.delete(stepNum)
+        }
+        console.log('[ReviewExecutionView] sub_agent_step_complete for', todoId, 'step', stepNum)
+      }
+      break
+
     case 'complete':
       // 审查完成事件
       phase.value = 'completed'
@@ -279,20 +403,15 @@ async function handleSSEEvent(event: any) {
 
 // Helper methods for todo management
 function addTodoItem(event: any) {
-  const checkItemsCount = event.check_items_count || 0
-  const checkItems: CheckItemState[] = []
-  for (let i = 0; i < checkItemsCount; i++) {
-    checkItems.push({
-      id: `${event.todo_id}-${i}`,
-      title: `检查项 ${i + 1}`,
-      status: 'pending'
-    })
-  }
-
+  // Create a single default check item for rule-based review
   const todoItem: TodoItemState = {
     id: event.todo_id || '',
     rule_doc_name: event.rule_doc_name || '',
-    check_items: checkItems,
+    check_items: [{
+      id: `${event.todo_id}-default`,
+      title: '规则审查',
+      status: 'pending'
+    }],
     status: 'pending'
   }
   todos.value.set(todoItem.id, todoItem)
@@ -427,16 +546,16 @@ const subAgentStepsMap = computed(() => {
       content: s.content,
       timestamp: s.timestamp,
       tool_args: s.tool_calls ? { tool_calls: s.tool_calls } : undefined,
-      // 转换 tool_results 格式：从 SSE 扁平结构 {id, name, status, content, error}
-      // 转换为组件期望的嵌套结构 {name, result: {status, content, error, count}}
+      // 转换 tool_results 格式：后端已发送嵌套结构 {name, result: {status, content, error}}
+      // 只需要取出来放到 tool_results 数组中
       tool_result: s.tool_results ? {
         tool_results: s.tool_results.map((r: any) => ({
           name: r.name,
           result: {
-            status: r.status,
-            content: r.content,
-            error: r.error,
-            count: r.count,
+            status: r.result?.status,
+            content: r.result?.content,
+            error: r.result?.error,
+            count: r.result?.count,
           }
         }))
       } : undefined,

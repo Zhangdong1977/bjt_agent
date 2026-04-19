@@ -18,7 +18,7 @@ class TodoItem(Base):
     session_id: Mapped[str] = mapped_column(String(36), index=True)
     rule_doc_path: Mapped[str] = mapped_column(String(500))
     rule_doc_name: Mapped[str] = mapped_column(String(255))
-    check_items: Mapped[Optional[list]] = mapped_column(JSON, default=None)  # 检查项列表
+    check_items: Mapped[Optional[list]] = mapped_column(JSON, default=None, nullable=True)  # 检查项列表
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)  # pending/running/completed/failed
     result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

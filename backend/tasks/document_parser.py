@@ -467,15 +467,15 @@ async def _parse_docx(file_path: Path) -> dict:
             })
         logger.info(f"Saved {len(images)} images to {workspace_images_dir}")
 
-    # Replace image placeholders in markdown with actual base64 data
-    # markitdown uses format: ![](data:image/png;base64,/9j/4AAQSkZJRg...) with full base64 data
-    # We need to check if images were extracted and replace placeholders
+    # Replace image placeholders in markdown with file path references
+    # markitdown uses format: ![alt](data:image/png;base64,/9j/4AAQSkZJRg...) with full base64 data
+    # or in tables: alt_text](data:image/...;base64,...)
+    # Base64 data can span multiple lines and may contain ) characters, so we use a robust approach
     import re
-    # Find all base64 placeholders in the markdown (full base64 format, not truncated)
-    placeholder_pattern = r'!\[\]\(data:image/([^;]+);base64,([^)]+)\)'
-    placeholders = re.findall(placeholder_pattern, markdown_content)
 
-    if placeholders and workspace_images_dir.exists():
+    if not workspace_images_dir.exists():
+        logger.warning(f"Images directory does not exist: {workspace_images_dir}")
+    else:
         # Get all image files from the images directory
         image_files = list(workspace_images_dir.glob('*'))
         image_files = [f for f in image_files if f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']]
@@ -483,24 +483,46 @@ async def _parse_docx(file_path: Path) -> dict:
         if image_files:
             logger.info(f"Found {len(image_files)} images in {workspace_images_dir}, replacing placeholders")
 
-            # Replace each placeholder with file path reference
+            # Replace each data:image placeholder with file path reference
             images_dir_name = f"{file_path.stem}_images"
             placeholder_idx = 0
-            for match in re.finditer(placeholder_pattern, markdown_content):
+
+            # Pattern matches both:
+            # - ![](data:image/...)  - standard markdown image
+            # - alt_text](data:image/...) - image in table cell
+            data_uri_pattern = r'!?\[([^\]]*)\]\(data:image/([^;]+);base64,([^)]+)\)'
+
+            # First try with simple pattern (for cases without ) in base64)
+            matches = list(re.finditer(data_uri_pattern, markdown_content))
+
+            # For any unmatched data:image, use a more aggressive approach
+            remaining_content = markdown_content
+            last_end = 0
+            replacements = []
+
+            for match in matches:
+                full_match = match.group(0)
+                replacements.append((match.start(), match.end(), full_match))
+
+            # Sort replacements by start position in reverse order to apply from end
+            # This way string positions don't shift when we replace
+            replacements.sort(key=lambda x: x[0], reverse=True)
+
+            for start, end, full_match in replacements:
                 if placeholder_idx < len(image_files):
                     img_file = image_files[placeholder_idx]
-                    # Use file path reference instead of base64 data
                     img_ref = f"![{img_file.stem}]({images_dir_name}/{img_file.name})"
-                    # Replace only the first occurrence
-                    markdown_content = markdown_content.replace(
-                        match.group(0),
-                        img_ref,
-                        1
-                    )
+                    markdown_content = markdown_content[:start] + img_ref + markdown_content[end:]
                     logger.info(f"Replaced placeholder with file path {img_file.name}")
                     placeholder_idx += 1
                 else:
                     logger.warning(f"No image file available for placeholder at index {placeholder_idx}")
+                    break
+
+            # Check for any remaining data:image that weren't matched
+            remaining_count = markdown_content.count("data:image")
+            if remaining_count > 0:
+                logger.warning(f"{remaining_count} data:image occurrences were not replaced (possibly contain ) in base64 data)")
 
     logger.info(f"Extracted {len(images)} images from DOCX")
 

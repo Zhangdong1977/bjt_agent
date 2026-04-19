@@ -97,16 +97,22 @@ class MarkitdownConverter:
     def _extract_images(self, result) -> list[ImageInfo]:
         """Extract images from markitdown result.
 
+        Since markitdown's DocumentConverterResult doesn't have a separate images attribute,
+        images are embedded as base64 data URIs in the markdown text. This method extracts
+        them from the text content.
+
         Args:
             result: MarkItDown result object
 
         Returns:
             List of ImageInfo objects
         """
+        import base64
+        import re
+
         images = []
 
-        # markitdown stores images in result.images attribute
-        # Each image has: path, name, data (bytes)
+        # First check if result has images attribute (some markitdown versions)
         if hasattr(result, 'images') and result.images:
             for img in result.images:
                 if hasattr(img, 'data') and hasattr(img, 'name'):
@@ -119,6 +125,32 @@ class MarkitdownConverter:
                         filename=img.get('name', 'image'),
                         data=img.get('data', b'')
                     ))
+            return images
+
+        # Fallback: extract images from markdown text content
+        markdown_text = result.text_content or ""
+
+        # Pattern matches: data:image/[type];base64,[base64_data]
+        pattern = r'data:image/([^;]+);base64,([A-Za-z0-9+/=\s]+)'
+
+        for match in re.finditer(pattern, markdown_text):
+            mime_type = match.group(1)  # e.g., "jpeg", "png"
+            base64_data = match.group(2).replace('\n', '').replace('\r', '').strip()
+
+            try:
+                image_data = base64.b64decode(base64_data)
+                # Generate unique filename
+                idx = len(images) + 1
+                ext = mime_type.split('+')[0]  # Handle "jpeg+xml" etc
+                filename = f"image_{idx}.{ext}"
+
+                images.append(ImageInfo(
+                    filename=filename,
+                    data=image_data
+                ))
+            except Exception as e:
+                logger.warning(f"Failed to decode base64 image: {e}")
+                continue
 
         return images
 

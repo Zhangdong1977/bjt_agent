@@ -1,9 +1,39 @@
 """SubAgentExecutor - 子代理执行器 - 管理单个子代理的生命周期."""
 
 import asyncio
+import logging
+from pathlib import Path
 from typing import Optional, Callable
 from backend.models.todo_item import TodoItem
 from backend.agent.bid_review_agent import BidReviewAgent
+
+
+def setup_sub_agent_logger(todo_id: str, log_dir: Path) -> logging.Logger:
+    """为子代理设置专用 logger，输出到文件.
+
+    Args:
+        todo_id: TodoItem ID (UUID)
+        log_dir: 日志目录路径
+
+    Returns:
+        配置好的 logger 实例
+    """
+    logger = logging.getLogger(f"sub_agent.{todo_id}")
+    logger.setLevel(logging.DEBUG)
+    logger.handlers.clear()  # 避免重复 handler
+
+    # 文件 handler
+    fh = logging.FileHandler(log_dir / f"sub_agent_{todo_id}.log")
+    fh.setLevel(logging.DEBUG)
+
+    # 格式
+    formatter = logging.Formatter(
+        '[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+    return logger
 
 
 class SubAgentExecutor:
@@ -32,18 +62,21 @@ class SubAgentExecutor:
             except Exception:
                 pass  # Don't let callback errors crash the executor
 
-    async def create_agent(self, max_steps: int = 100) -> BidReviewAgent:
+    async def create_agent(self, max_steps: int = 100, logger=None) -> BidReviewAgent:
         """创建子代理实例.
 
         Args:
             max_steps: Maximum number of agent steps to run.
+            logger: Optional logger for file output.
         """
         agent = BidReviewAgent(
             project_id=self.todo_item.project_id,
             tender_doc_path=self.tender_doc_path,
             bid_doc_path=self.bid_doc_path,
             user_id=self.user_id,
+            rule_doc_path=self.todo_item.rule_doc_path,
             event_callback=self.event_callback,
+            logger=logger,
             max_steps=max_steps,
         )
         await agent.initialize()
@@ -53,7 +86,14 @@ class SubAgentExecutor:
     async def execute(self, max_steps: int = 100) -> dict:
         """执行子代理检查任务."""
         import logging
-        logger = logging.getLogger(__name__)
+        from backend.config import get_settings
+        settings = get_settings()
+
+        # 设置日志目录和 logger
+        log_dir = settings.workspace_path / str(self.user_id) / str(self.todo_item.project_id) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        logger = setup_sub_agent_logger(self.todo_item.id, log_dir)
+        logger.info(f"[SubAgentExecutor] Starting execution for todo_id={self.todo_item.id}, rule_doc={self.todo_item.rule_doc_path}")
 
         try:
             # 发送开始事件
@@ -63,22 +103,12 @@ class SubAgentExecutor:
                 "max_steps": max_steps,
             })
 
-            # 创建 agent
-            agent = await self.create_agent(max_steps=max_steps)
-
-            # 构建任务描述
-            check_items_text = self._build_check_items_text()
-            task = f"""请根据以下规则检查投标文件：
-
-规则文档：{self.todo_item.rule_doc_name}
-检查项列表：
-{check_items_text}
-
-请按顺序执行每个检查项，输出结构化的检查结果。
-最终输出必须包含一个JSON数组，每项代表一个审查发现。"""
+            # 创建 agent (rule_doc_path 从 todo_item 获取，logger 传递用于文件输出)
+            agent = await self.create_agent(max_steps=max_steps, logger=logger)
 
             # 执行检查 (task message is added inside run_review())
             findings = await agent.run_review()
+            logger.info(f"[SubAgentExecutor.execute] Findings: {findings}")
 
             return {
                 "success": True,
@@ -97,25 +127,6 @@ class SubAgentExecutor:
             if self._agent:
                 await self._agent.close()
 
-    def _build_check_items_text(self) -> str:
-        """构建检查项文本."""
-        lines = []
-        for i, item in enumerate(self.todo_item.check_items, 1):
-            name = item.get("check_item_name", "未命名检查项")
-            rule_desc = item.get("check_item_rule_desc", "")
-            positive = item.get("positive_example", "")
-            negative = item.get("negative_example", "")
-
-            lines.append(f"### 检查项{i}: {name}")
-            if rule_desc:
-                lines.append(f"检查规则:\n{rule_desc}")
-            if positive:
-                lines.append(f"正例:\n{positive}")
-            if negative:
-                lines.append(f"反例:\n{negative}")
-            lines.append("")  # 空行分隔
-        return "\n".join(lines)
-
     async def close(self):
         """关闭子代理."""
         if self._agent:
@@ -124,7 +135,10 @@ class SubAgentExecutor:
 
 
 def detect_anomaly(result: dict, todo_item: TodoItem) -> bool:
-    """检测结果是否异常."""
+    """检测结果是否异常.
+
+    改进：不依赖 check_items 数量，仅检测基本异常。
+    """
     if not result:
         return True
 
@@ -133,11 +147,6 @@ def detect_anomaly(result: dict, todo_item: TodoItem) -> bool:
 
     findings = result.get("findings", [])
     if not findings:
-        return True
-
-    # 检查是否为全合规但检查项数量不对
-    all_compliant = all(f.get("is_compliant", False) for f in findings)
-    if all_compliant and todo_item.check_items and len(findings) < len(todo_item.check_items):
         return True
 
     return False

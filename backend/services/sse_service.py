@@ -105,7 +105,19 @@ class SSEConnectionManager:
                 event_count += 1
                 # data is a dict like {'data': '<json_string>'}, extract the JSON string
                 json_data = data.get('data', '') if isinstance(data, dict) else str(data)
-                logger.info(f"[SSE.connect] Yielding event {event_count}: msg_id={msg_id}, data_preview={str(json_data)[:80]}")
+                logger.info(f"[SSE.connect] Yielding event {event_count}: msg_id={msg_id}, data_type={type(json_data)}, data_preview={str(json_data)[:200]}")
+                # Debug: parse and check tool_results
+                if isinstance(json_data, str) and 'tool_results' in json_data:
+                    import json as json_lib
+                    try:
+                        parsed = json_lib.loads(json_data)
+                        if 'tool_results' in parsed:
+                            tr = parsed['tool_results']
+                            logger.info(f"[SSE.connect] tool_results type={type(tr)}, len={len(tr) if isinstance(tr, list) else 'N/A'}, first_item={str(tr[0])[:200] if isinstance(tr, list) and tr else 'empty'}")
+                    except Exception as e:
+                        logger.error(f"[SSE.connect] JSON parse error: {e}")
+                elif json_data == '':
+                    logger.warning(f"[SSE.connect] json_data is EMPTY! data dict: {data}")
                 yield f"id: {msg_id}\ndata: {json_data}\n\n"
         except asyncio.CancelledError:
             logger.info(f"[SSE.connect] SSE connection cancelled for {stream_key}")

@@ -66,6 +66,7 @@ function formatToolArg(key: string, value: any): string {
 }
 
 function formatToolResult(result: any): string {
+  console.log('[AgentTimelineItem] formatToolResult called, result:', JSON.stringify(result))
   if (result === undefined || result === null) {
     return ''
   }
@@ -112,7 +113,7 @@ function formatToolResult(result: any): string {
             </span>
           </div>
           <div v-if="toolResults?.[idx]" class="tool-call-result">
-            <span class="result-text">{{ formatToolResult(toolResults[idx].result) }}</span>
+            <span class="result-text">{{ console.log('[AgentTimelineItem] rendering toolResult', idx, JSON.stringify(toolResults[idx])), '' }}{{ formatToolResult(toolResults[idx].result) }}</span>
           </div>
         </div>
       </div>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 
 interface CheckItem {
   name: string
@@ -19,22 +19,14 @@ const props = defineProps<{
   status: 'done' | 'running' | 'wait'
   findings: Finding[]
   runningLog?: string
+  currentStep?: number
+  maxSteps?: number
 }>()
 
 const isOpen = ref(false)
 
 function toggle() {
   isOpen.value = !isOpen.value
-}
-
-function getItemClass(status: string) {
-  const map: Record<string, string> = {
-    done: 'dp-done',
-    run: 'dp-run',
-    wait: 'dp-wait',
-    fail: 'dp-fail'
-  }
-  return map[status] || 'dp-wait'
 }
 
 function getFindingClass(type: string) {
@@ -45,6 +37,16 @@ function getFindingClass(type: string) {
   }
   return map[type] || 'ft-info'
 }
+
+// Progress calculation based on agent steps
+const progress = computed(() => {
+  if (props.maxSteps && props.maxSteps > 0 && props.currentStep) {
+    return Math.round((props.currentStep / props.maxSteps) * 100)
+  }
+  if (props.status === 'done') return 100
+  if (props.status === 'running') return 50
+  return 0
+})
 </script>
 
 <template>
@@ -53,11 +55,11 @@ function getFindingClass(type: string) {
       <div class="ac-avt">{{ agentId }}</div>
       <div class="ac-info">
         <div class="ac-title">{{ title }}</div>
-        <div class="ac-sub">{{ ruleFile }}</div>
+        <div class="ac-sub">规则审查</div>
       </div>
       <div class="ac-right">
         <div class="pbar-outer">
-          <div class="pbar-inner" :style="{ width: status === 'done' ? '100%' : status === 'running' ? '50%' : '0%' }"></div>
+          <div class="pbar-inner" :style="{ width: progress + '%' }"></div>
         </div>
         <span :class="['chip', status === 'done' ? 'chip-done' : status === 'running' ? 'chip-run' : 'chip-wait']">
           {{ status === 'done' ? '完成' : status === 'running' ? '执行中' : '等待' }}
@@ -67,14 +69,19 @@ function getFindingClass(type: string) {
     </div>
     <div class="agent-card-body">
       <div class="dep-section">
-        <div class="dep-sec-label">检查项执行链</div>
+        <div class="dep-sec-label">规则执行状态</div>
         <div class="dep-chain">
-          <div v-for="(item, idx) in checkItems" :key="idx" class="dep-node">
-            <span :class="['dep-pill', getItemClass(item.status)]">
-              <span class="dp-dot"></span>
-              {{ item.name }}
-            </span>
-            <span v-if="idx < checkItems.length - 1" class="dep-arr">→</span>
+          <div v-if="status === 'running'" class="run-log">
+            <span class="log-cursor"></span>
+            正在执行规则审查...
+          </div>
+          <div v-else-if="status === 'done'" class="dep-pill dp-done">
+            <span class="dp-dot"></span>
+            规则审查完成
+          </div>
+          <div v-else class="dep-pill dp-wait">
+            <span class="dp-dot"></span>
+            等待执行
           </div>
         </div>
       </div>

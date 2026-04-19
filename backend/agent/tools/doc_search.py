@@ -5,7 +5,8 @@ from html import unescape
 from pathlib import Path
 from typing import Optional
 
-from mini_agent.tools.base import Tool as BaseTool, ToolResult
+from backend.agent.tools.base import ToolResult
+from mini_agent.tools.base import Tool as BaseTool
 
 # Default chunk size for large documents
 DEFAULT_CHUNK_SIZE = 8000  # characters

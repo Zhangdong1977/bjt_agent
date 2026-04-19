@@ -5,7 +5,7 @@ import asyncio
 import logging
 from typing import Optional, Callable
 
-from .tools.rule_parser import RuleParserTool, RuleLibraryScannerTool
+from .tools.rule_parser import RuleLibraryScannerTool
 from .sub_agent_executor import SubAgentExecutor, detect_anomaly
 from backend.services.todo_service import TodoService
 from backend.services.task_merge_service import TaskMergeService
@@ -37,7 +37,6 @@ class MasterAgent:
         self.max_retries = max_retries
 
         self.scanner = RuleLibraryScannerTool()
-        self.parser = RuleParserTool()
         self._todo_items = []
         self._session_id: Optional[str] = None
 
@@ -46,18 +45,17 @@ class MasterAgent:
         if self.event_callback:
             try:
                 self.event_callback(event_type, data)
-            except Exception:
-                pass  # Don't let callback errors crash the agent
+            except Exception as e:
+                logger.warning(f"[MasterAgent._send_event] Event callback failed: event_type={event_type}, error={e}")
 
     async def run(self, todo_service, session_id: str, session_factory=None) -> dict:
         """
         执行主代理工作流程.
 
         1. 扫描规则库
-        2. 解析每个规则文档
-        3. 创建待办任务
-        4. 并行执行子代理
-        5. 汇总结果
+        2. 创建待办任务（直接传递 rule_doc_path）
+        3. 并行执行子代理
+        4. 汇总结果
 
         Args:
             todo_service: TodoService instance for sequential Phase 2 operations
@@ -80,34 +78,26 @@ class MasterAgent:
             "rule_docs": [d["name"] for d in rule_docs],
         })
 
-        # Phase 2: 解析每个规则文档，创建待办
-        all_check_items = []
+        # Phase 2: 创建待办（不再解析规则文档）
         for doc in rule_docs:
-            parse_result = await self.parser.execute(doc["path"])
-            if parse_result.success:
-                data = json.loads(parse_result.content)
-                check_items = data["check_items"]
-                all_check_items.extend(check_items)
+            # 创建 todo item，直接传递 rule_doc_path
+            todo = await todo_service.create_todo(
+                project_id=self.project_id,
+                session_id=session_id,
+                rule_doc_path=doc["path"],
+                rule_doc_name=doc["name"],
+                check_items=None,  # 不再解析 check_items
+            )
+            self._todo_items.append(todo)
 
-                # 创建 todo item
-                todo = await todo_service.create_todo(
-                    project_id=self.project_id,
-                    session_id=session_id,
-                    rule_doc_path=doc["path"],
-                    rule_doc_name=doc["name"],
-                    check_items=check_items,
-                )
-                self._todo_items.append(todo)
-
-                self._send_event("todo_created", {
-                    "todo_id": todo.id,
-                    "rule_doc_name": doc["name"],
-                    "check_items_count": len(check_items),
-                })
+            self._send_event("todo_created", {
+                "todo_id": todo.id,
+                "rule_doc_name": doc["name"],
+                "rule_doc_path": doc["path"],
+            })
 
         self._send_event("todo_list_completed", {
             "total_todos": len(self._todo_items),
-            "total_check_items": len(all_check_items),
         })
 
         # Phase 3: 并行执行子代理
@@ -236,7 +226,12 @@ class MasterAgent:
         """创建子代理的 event callback 包装."""
         def callback(event_type: str, data: dict):
             data["todo_id"] = todo_id
-            self._send_event(f"sub_agent_{event_type}", data)
+            # Avoid double prefix: BidReviewAgent already emits events with sub_agent_ prefix
+            # e.g., sub_agent_step, sub_agent_completed, completed
+            if event_type.startswith("sub_agent_"):
+                self._send_event(event_type, data)
+            else:
+                self._send_event(f"sub_agent_{event_type}", data)
         return callback
 
     async def _merge_results(self, todo_service) -> dict:
@@ -276,6 +271,7 @@ class MasterAgent:
                     tender_doc_path="",
                     bid_doc_path="",
                     user_id=self.user_id,
+                    rule_doc_path="",
                     event_callback=None,
                     max_steps=1,
                 )

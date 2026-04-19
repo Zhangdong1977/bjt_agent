@@ -148,7 +148,7 @@ export interface SSEEvent {
   type: 'status' | 'progress' | 'step' | 'complete' | 'error' | 'merging' | 'merged'
   | 'master_started' | 'master_scan_completed'
   | 'todo_created' | 'todo_list_completed'
-  | 'sub_agent_started' | 'sub_agent_progress' | 'sub_agent_completed' | 'sub_agent_failed'
+  | 'sub_agent_started' | 'sub_agent_progress' | 'sub_agent_step' | 'sub_agent_completed' | 'sub_agent_failed'
   | 'merging_started' | 'merging_completed'
   task_id: string
   status?: string

@@ -82,7 +82,7 @@ class TodoService:
         session_id: str,
         rule_doc_path: str,
         rule_doc_name: str,
-        check_items: list,
+        check_items: Optional[list] = None,
     ) -> TodoItem:
         """Create a todo item."""
         todo = TodoItem(

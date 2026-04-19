@@ -8,6 +8,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
+from datetime import datetime
 from typing import Any, Optional
 
 # Ensure Mini-Agent path is in sys.path before importing mini_agent modules
@@ -18,6 +19,7 @@ from mini_agent.agent import Agent as BaseAgent
 from mini_agent.llm import LLMClient
 from mini_agent.schema import LLMProvider, Message
 from mini_agent.tools.mcp_loader import load_mcp_tools_async, cleanup_mcp_connections
+from mini_agent.tools.file_tools import WriteTool, ReadTool
 
 from backend.config import get_settings
 from backend.agent.tools.doc_search import DocSearchTool
@@ -38,7 +40,9 @@ class BidReviewAgent(BaseAgent):
         tender_doc_path: str,
         bid_doc_path: str,
         user_id: str,
+        rule_doc_path: str,
         event_callback=None,
+        logger=None,
         max_steps: int = 100,
     ):
         """Initialize the bid review agent (synchronous part).
@@ -48,20 +52,26 @@ class BidReviewAgent(BaseAgent):
             tender_doc_path: Path to the parsed tender document
             bid_doc_path: Path to the parsed bid document
             user_id: The user ID for workspace organization
+            rule_doc_path: Path to the rule document for this review
             event_callback: Optional callback for SSE event publishing
+            logger: Optional logger for file output. If None, uses module logger.
             max_steps: Maximum number of agent steps
         """
         self.project_id = project_id
         self.tender_doc_path = tender_doc_path
         self.bid_doc_path = bid_doc_path
         self.user_id = user_id
+        self.rule_doc_path = rule_doc_path
         self.event_callback = event_callback
+        self._logger = logger
         self._findings: list[dict] = []
         # Store tool results for persistence via _record_agent_step
         # Use list to preserve order and allow multiple calls to same tool
         self._tool_results: list[dict] = []
         # Track the starting index for each step's tool results
         self._tool_results_step_start: int = 0
+        # Track accumulated step data for consolidated sub_agent_step events
+        self._step_data: dict[int, dict] = {}
 
         # Initialize LLM client (MiniMax uses OpenAI protocol)
         llm_client = LLMClient(
@@ -72,25 +82,28 @@ class BidReviewAgent(BaseAgent):
         )
         self.llm_client = llm_client  # Store for _call_llm_with_retry
 
+        # Set up workspace
+        workspace_dir = settings.workspace_path / str(user_id) / str(project_id)
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+
         # Initialize tools
         tools = [
             DocSearchTool(tender_doc_path=tender_doc_path, bid_doc_path=bid_doc_path),
             RAGSearchTool(user_id=user_id),
             ComparatorTool(),
             MergeDeciderTool(),
+            WriteTool(workspace_dir=str(workspace_dir)),
+            ReadTool(workspace_dir=str(workspace_dir)),
         ]
 
-        # Set up workspace
-        workspace_dir = settings.workspace_path / str(user_id) / str(project_id)
-        workspace_dir.mkdir(parents=True, exist_ok=True)
-
-        # Initialize base agent
+        # Initialize base agent with event_callback
         super().__init__(
             llm_client=llm_client,
             system_prompt=SYSTEM_PROMPT,
             tools=tools,
             workspace_dir=str(workspace_dir),
             max_steps=max_steps,
+            event_callback=event_callback,
         )
 
     async def initialize(self):
@@ -104,13 +117,13 @@ class BidReviewAgent(BaseAgent):
                     self.tools[tool.name] = tool
             except Exception as e:
                 import logging
-                logger = logging.getLogger(__name__)
+                logger = self._logger or logging.getLogger(__name__)
                 logger.warning(f"Failed to load MCP tools: {e}")
 
     def _send_event(self, event_type: str, data: dict) -> None:
         """Send an event via callback if available."""
         import logging
-        logger = logging.getLogger(__name__)
+        logger = self._logger or logging.getLogger(__name__)
         logger.info(f"[BidReviewAgent._send_event] type={event_type}, data_keys={list(data.keys())}, callback_exists={self.event_callback is not None}")
         if self.event_callback:
             try:
@@ -119,164 +132,237 @@ class BidReviewAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[BidReviewAgent._send_event] Failed to send event: {e}")
 
+    def _emit_event(self, event_type: str, data: dict) -> None:
+        """Override _emit_event to consolidate granular events into sub_agent_step.
+
+        The base Mini-Agent emits: step_start, llm_output, tool_call_start,
+        tool_call_end, step_complete. The frontend expects consolidated
+        sub_agent_step events with step_number, step_type, content, tool_calls,
+        and tool_results.
+
+        This override intercepts the granular events, accumulates them per step,
+        and emits a consolidated sub_agent_step event when step_complete is received.
+        """
+        import logging
+        logger = self._logger or logging.getLogger(__name__)
+
+        if event_type == "step_start":
+            # Initialize step data accumulation
+            step = data.get("step", 0)
+            self._step_data[step] = {
+                "step_number": step,
+                "step_type": "unknown",
+                "content": "",
+                "tool_calls": [],
+                "tool_results": [],
+                "timestamp": datetime.now(),
+            }
+            logger.info(f"[BidReviewAgent._emit_event] step_start for step {step}")
+
+        elif event_type == "llm_output":
+            # Accumulate LLM output as content/thinking
+            step = data.get("step", 0)
+            if step in self._step_data:
+                content = data.get("content", "") or ""
+                thinking = data.get("thinking") or ""
+                # Determine step_type based on content presence
+                if content and data.get("tool_calls"):
+                    step_type = "observation"
+                elif content:
+                    step_type = "thought"
+                elif data.get("tool_calls"):
+                    step_type = "tool_call"
+                else:
+                    step_type = "unknown"
+                self._step_data[step].update({
+                    "step_type": step_type,
+                    "content": content,
+                    "thinking": thinking,
+                    "tool_calls": data.get("tool_calls", []),
+                })
+                logger.info(f"[BidReviewAgent._emit_event] llm_output for step {step}, tool_calls_count={len(data.get('tool_calls', []))}")
+
+        elif event_type == "tool_call_start":
+            # Tool call started - tool_calls already accumulated from llm_output
+            step = data.get("step", 0)
+            if step in self._step_data:
+                logger.info(f"[BidReviewAgent._emit_event] tool_call_start for step {step}, tool={data.get('tool')}")
+
+        elif event_type == "tool_call_end":
+            # Accumulate tool result
+            step = data.get("step", 0)
+            if step in self._step_data:
+                tool_result = {
+                    "id": data.get("tool_call_id", ""),
+                    "name": data.get("tool", ""),
+                    "status": "success" if data.get("success") else "error",
+                    "content": data.get("result") if data.get("success") else None,
+                    "error": data.get("error") if not data.get("success") else None,
+                }
+                self._step_data[step]["tool_results"].append(tool_result)
+                result_preview = str(data.get("result"))[:200] if data.get("result") else "None"
+                logger.info(f"[BidReviewAgent._emit_event] tool_call_end for step {step}, tool={data.get('tool')}, success={data.get('success')}, result={result_preview}")
+
+        elif event_type == "step_complete":
+            # Emit consolidated sub_agent_step event
+            step = data.get("step", 0)
+            if step in self._step_data:
+                step_info = self._step_data[step]
+                # Convert tool_results to frontend format
+                frontend_tool_results = []
+                for tr in step_info["tool_results"]:
+                    frontend_tool_results.append({
+                        "name": tr["name"],
+                        "result": {
+                            "status": tr["status"],
+                            "content": tr["content"],
+                            "error": tr.get("error"),
+                        }
+                    })
+
+                consolidated_event = {
+                    "step_number": step_info["step_number"],
+                    "step_type": step_info["step_type"],
+                    "content": step_info["content"],
+                    "timestamp": step_info["timestamp"].isoformat(),
+                    "tool_calls": step_info["tool_calls"],
+                    "tool_results": frontend_tool_results,
+                }
+                # Debug: log what we're actually sending
+                for i, tr in enumerate(frontend_tool_results):
+                    logger.info(f"[BidReviewAgent._emit_event] step_complete step={step}, tool_result[{i}]: name={tr['name']}, result_keys={list(tr['result'].keys())}, content_len={len(str(tr['result'].get('content', '')))}")
+
+                # Send consolidated event via callback
+                if self.event_callback:
+                    try:
+                        self.event_callback("sub_agent_step", consolidated_event)
+                        logger.info(f"[BidReviewAgent._emit_event] Emitted sub_agent_step for step {step}")
+                    except Exception as e:
+                        logger.error(f"[BidReviewAgent._emit_event] Failed to emit sub_agent_step: {e}")
+
+                # Clean up
+                del self._step_data[step]
+            logger.info(f"[BidReviewAgent._emit_event] step_complete for step {step}")
+
+        elif event_type == "completed":
+            # Agent completed - forward to callback
+            if self.event_callback:
+                try:
+                    self.event_callback("completed", data)
+                    logger.info(f"[BidReviewAgent._emit_event] Forwarded completed event")
+                except Exception as e:
+                    logger.error(f"[BidReviewAgent._emit_event] Failed to emit completed: {e}")
+
+    def _load_rule_doc(self) -> str:
+        """Read the rule document full text for building system prompt.
+
+        Returns:
+            The full text content of the rule document.
+        Raises:
+            FileNotFoundError: If rule doc path does not exist.
+        """
+        from pathlib import Path
+        path = Path(self.rule_doc_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Rule doc not found: {self.rule_doc_path}")
+        return path.read_text(encoding="utf-8")
+
+    def _build_system_prompt(self, rule_doc_content: str) -> str:
+        """Build system prompt containing rule document content.
+
+        Args:
+            rule_doc_content: Full text content of the rule document.
+
+        Returns:
+            System prompt string with rule content embedded.
+        """
+        from backend.agent.prompt import SYSTEM_PROMPT_WITH_RULE
+        return SYSTEM_PROMPT_WITH_RULE.format(rule_doc_content=rule_doc_content)
+
     async def run_review(self) -> list[dict]:
-        """Run the bid review process.
+        """Run the bid review process using rule file.
+
+        This method:
+        1. Loads the rule document
+        2. Builds system prompt with rule content
+        3. Calls base class run() (reuses Mini-Agent loop with event_callback)
+        4. Post-processes to extract findings from md output file
 
         Returns:
             List of findings with requirement, bid content, compliance status, etc.
         """
         import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"[BidReviewAgent.run_review] Starting, tender={self.tender_doc_path}, bid={self.bid_doc_path}")
-
-        # Build the review task description with clear expectations
-        task = f"""请审查投标文件相对于招标文件的不符合项。
-
-招标书路径: {self.tender_doc_path}
-投标书路径: {self.bid_doc_path}
-
-请严格按照系统提示中的工作流程执行：
-1. 读取并提取招标书中的所有要求
-2. 查询企业知识库获取相关政策
-3. 读取投标书内容
-4. 对每个招标要求与投标内容进行比对
-5. 识别不符合项并输出结构化的JSON格式结果
-
-重要：最终输出必须包含一个JSON数组，每项代表一个审查发现。"""
-
-        self.add_user_message(task)
-
-        # Run the agent loop manually
-        tool_list = list(self.tools.values())
-        logger.info(f"[BidReviewAgent.run_review] tools count: {len(tool_list)}, messages: {len(self.messages)}")
-
-        # Use a dedicated step counter instead of len(messages)-1 to ensure
-        # step numbers are sequential starting from 1
-        step_counter = 1
+        import time
+        logger = self._logger or logging.getLogger(__name__)
+        logger.info(f"[BidReviewAgent.run_review] Starting, tender={self.tender_doc_path}, bid={self.bid_doc_path}, rule_doc={self.rule_doc_path}")
 
         try:
-            while len(self.messages) - 1 < self.max_steps:  # -1 for system message
-                # Check for cancellation
-                if self.cancel_event and self.cancel_event.is_set():
-                    break
+            # 1. Read rule file
+            rule_doc_content = self._load_rule_doc()
+            logger.info(f"[BidReviewAgent.run_review] Rule doc loaded, size={len(rule_doc_content)} chars")
 
-                # Summarize if needed
-                await self._summarize_messages()
+            # 2. Build system prompt
+            system_prompt = self._build_system_prompt(rule_doc_content)
+            self.system_prompt = system_prompt
+            # Update system message in messages list
+            self.messages[0] = Message(role="system", content=system_prompt)
+            logger.info(f"[BidReviewAgent.run_review] System prompt built, size={len(system_prompt)} chars")
 
-                logger.info(f"[BidReviewAgent.run_review] Calling LLM.generate() at step {step_counter}")
-                # Get LLM response (max_tokens=8192 ensures full JSON output without truncation)
-                response = await self.llm.generate(messages=self.messages, tools=tool_list, max_tokens=8192)
-                logger.info(f"[BidReviewAgent.run_review] LLM response received, content length: {len(response.content) if response.content else 0}, tool_calls: {len(response.tool_calls) if response.tool_calls else 0}")
+            # Log full system prompt
+            logger.info(f"[BidReviewAgent.run_review] === SYSTEM PROMPT START ===")
+            logger.info(f"\n{system_prompt}")
+            logger.info(f"[BidReviewAgent.run_review] === SYSTEM PROMPT END ===")
 
-                # Add assistant message
-                assistant_msg = Message(
-                    role="assistant",
-                    content=response.content,
-                    thinking=response.thinking,
-                    tool_calls=response.tool_calls,
-                )
-                self.messages.append(assistant_msg)
+            # 3. Build task prompt with output md path
+            output_md_path = str(self.workspace_dir / f"review_{int(time.time())}.md")
+            task = f"""请执行投标文件审查任务：
+- 招标书路径: {self.tender_doc_path}
+- 投标书路径: {self.bid_doc_path}
+- 审查结果输出文件: {output_md_path}
 
-                # Check if task is complete
-                if not response.tool_calls:
-                    # Send final response event without tool calls
-                    raw_content = response.content
-                    if raw_content is None:
-                        content_preview = ""
-                    elif isinstance(raw_content, str):
-                        content_preview = raw_content[:200]
-                    else:
-                        content_preview = str(raw_content)[:200]
-                    self._send_event("step", {
-                        "step_number": step_counter,
-                        "step_type": "thought",
-                        "tool_name": None,
-                        "content": content_preview,
-                        "tool_calls": [],
-                        "tool_results": [],
-                    })
-                    break
+请按照系统提示词中的规则执行审查，并将结果直接写入到上述 md 文件中。
+重要：必须使用 WriteTool 将审查结果写入文件。"""
+            self.add_user_message(task)
+            logger.info(f"[BidReviewAgent.run_review] Task prompt added, output_md_path={output_md_path}")
 
-                # Execute tools and collect results
-                for tool_call in response.tool_calls:
-                    function_name = tool_call.function.name
+            # Log full task prompt
+            logger.info(f"[BidReviewAgent.run_review] === TASK PROMPT START ===")
+            logger.info(f"\n{task}")
+            logger.info(f"[BidReviewAgent.run_review] === TASK PROMPT END ===")
 
-                    # Validate arguments before executing
-                    if tool_call.function.arguments is None:
-                        tool_call.function.arguments = {}
+            # 4. Call base class run() - reuses Mini-Agent loop with event_callback
+            await self.run()
+            logger.info(f"[BidReviewAgent.run_review] Agent.run() completed")
 
-                    # Execute tool first
-                    if function_name in self.tools:
-                        result = await self.tools[function_name].execute(**tool_call.function.arguments)
+            # Log full message history
+            logger.info(f"[BidReviewAgent.run_review] === FULL MESSAGE HISTORY START ===")
+            for i, msg in enumerate(self.messages):
+                msg_header = f"[Message {i}] role={msg.role}"
+                if msg.thinking:
+                    msg_header += f", thinking_length={len(msg.thinking)}"
+                if msg.tool_calls:
+                    msg_header += f", tool_calls={[tc.function.name for tc in msg.tool_calls]}"
+                if msg.tool_call_id:
+                    msg_header += f", tool_call_id={msg.tool_call_id}"
+                logger.info(f"[BidReviewAgent.run_review] {msg_header}")
+                if msg.content:
+                    # Truncate very long content for logging
+                    content_preview = msg.content[:5000] + "..." if len(msg.content) > 5000 else msg.content
+                    logger.info(f"[BidReviewAgent.run_review] [Message {i}] content:\n{content_preview}")
+                if msg.thinking:
+                    thinking_preview = msg.thinking[:2000] + "..." if len(msg.thinking) > 2000 else msg.thinking
+                    logger.info(f"[BidReviewAgent.run_review] [Message {i}] thinking:\n{thinking_preview}")
+            logger.info(f"[BidReviewAgent.run_review] === FULL MESSAGE HISTORY END ===")
 
-                        # Store tool result for persistence (append to list, don't overwrite)
-                        self._tool_results.append({
-                            "id": tool_call.id,
-                            "name": function_name,
-                            "status": "success" if result.success else "error",
-                            "content": result.content if result.success and result.content else None,
-                            "error": result.error if not result.success else None,
-                            "count": getattr(result, 'count', None),
-                        })
+            # 5. Post-process: extract findings from md file
+            findings = await self._post_process(output_md_path)
+            logger.info(f"[BidReviewAgent.run_review] Post-processing completed, found {len(findings)} findings")
 
-                        # Add tool message
-                        tool_msg_content = result.content if result.success else f"Error: {result.error}"
-                        if tool_msg_content is None:
-                            tool_msg_content = ""
-                        tool_msg = Message(
-                            role="tool",
-                            content=tool_msg_content,
-                            tool_call_id=tool_call.id,
-                            name=function_name,
-                        )
-                        self.messages.append(tool_msg)
-                    else:
-                        # Add error tool message for unknown tool
-                        tool_msg = Message(
-                            role="tool",
-                            content=f"Error: Unknown tool {function_name}",
-                            tool_call_id=tool_call.id,
-                            name=function_name,
-                        )
-                        self.messages.append(tool_msg)
-
-                # Send single step event with content + tool_calls + tool_results
-                raw_content = response.content
-                if raw_content is None:
-                    content_preview = ""
-                elif isinstance(raw_content, str):
-                    content_preview = raw_content[:200]
-                else:
-                    content_preview = str(raw_content)[:200]
-                step_type = "observation" if response.tool_calls else "thought"
-                # Only send tool_results that belong to this step (from _tool_results_step_start onwards)
-                step_tool_results = self._tool_results[self._tool_results_step_start:] if self._tool_results else []
-                self._send_event("step", {
-                    "step_number": step_counter,
-                    "step_type": step_type,
-                    "tool_name": None,
-                    "content": content_preview,
-                    "tool_calls": [
-                        {"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments}
-                        for tc in response.tool_calls
-                    ] if response.tool_calls else [],
-                    "tool_results": step_tool_results,
-                })
-                # Update tracker for next step
-                self._tool_results_step_start = len(self._tool_results)
-                step_counter += 1
+            return findings
 
         except Exception as e:
-            logger.exception(f"[BidReviewAgent.run_review] Exception in run_review loop: {e}")
+            logger.exception(f"[BidReviewAgent.run_review] Exception: {e}")
             return []
-
-        # Extract findings
-        findings = self._extract_findings_from_messages()
-        if not findings:
-            findings = self._parse_findings_from_text(self.messages[-1].content if self.messages else "")
-
-        logger.info(f"[BidReviewAgent.run_review] Completed with {len(findings)} findings")
-        return findings
 
     def _extract_findings_from_messages(self) -> list[dict]:
         """Extract structured findings from agent message history.
@@ -619,7 +705,7 @@ class BidReviewAgent(BaseAgent):
         text_lower = text.lower()
 
         # Critical indicators
-        critical_keywords = ['严重', '关键', '致命', '重大', 'critical', 'fatal', 'major']
+        critical_keywords = ['严重', '关键', '致命', '重大', 'critical', 'fatal']
         if any(kw in text_lower for kw in critical_keywords):
             return "critical"
 
@@ -679,7 +765,7 @@ class BidReviewAgent(BaseAgent):
             Exception: If all retries fail
         """
         import logging
-        logger = logging.getLogger(__name__)
+        logger = self._logger or logging.getLogger(__name__)
         last_exception = None
 
         for attempt in range(1, max_retries + 1):
@@ -697,3 +783,198 @@ class BidReviewAgent(BaseAgent):
         # All retries failed
         logger.error(f"[BidReviewAgent] All {max_retries} LLM attempts failed")
         raise last_exception
+
+    async def _post_process(self, md_path: str) -> list[dict]:
+        """Post-process md file to extract structured findings.
+
+        Args:
+            md_path: Path to the markdown output file.
+
+        Returns:
+            List of structured findings.
+        """
+        import logging
+        from pathlib import Path
+        logger = self._logger or logging.getLogger(__name__)
+
+        # Try to read the md file
+        md_file = Path(md_path)
+        if not md_file.exists():
+            logger.warning(f"[BidReviewAgent._post_process] MD file not found: {md_path}")
+            return []
+
+        md_content = md_file.read_text(encoding="utf-8")
+        logger.info(f"[BidReviewAgent._post_process] MD file read, size={len(md_content)} chars")
+
+        # Try rule-based parsing first
+        findings = self._parse_md_findings(md_content)
+        if findings:
+            logger.info(f"[BidReviewAgent._post_process] Rule-based parsing succeeded, found {len(findings)} findings")
+            return findings
+
+        # Fallback to LLM extraction
+        logger.info(f"[BidReviewAgent._post_process] Rule-based parsing failed, falling back to LLM extraction")
+        findings = await self._llm_extract_findings(md_content)
+        logger.info(f"[BidReviewAgent._post_process] LLM extraction completed, found {len(findings)} findings")
+        return findings
+
+    def _parse_md_findings(self, md_content: str) -> Optional[list[dict]]:
+        """Parse findings from md content using rule-based approach.
+
+        Args:
+            md_content: Markdown content string.
+
+        Returns:
+            List of findings if parsing succeeds, None otherwise.
+        """
+        import logging
+        logger = self._logger or logging.getLogger(__name__)
+
+        findings = []
+        requirement_counter = 1
+
+        # Pattern to match finding sections
+        # Looking for "## 检查项{N}: {name}" headers
+        import re
+        section_pattern = r'##\s*检查项\d+:\s*(.+?)(?=\n##|\Z)'
+        sections = re.split(r'(?=##\s*检查项)', md_content)
+
+        for section in sections:
+            if not section.strip():
+                continue
+
+            # Extract section name
+            header_match = re.match(r'##\s*检查项\d+:\s*(.+)', section)
+            if not header_match:
+                continue
+            check_item_name = header_match.group(1).strip()
+
+            # Extract fields from section
+            rule_desc = self._extract_field(section, '规则项')
+            tender_req = self._extract_field(section, '招标书要求')
+            bid_content = self._extract_field(section, '应标书内容')
+            explanation = self._extract_field(section, '不符合项说明')
+            severity = self._extract_severity_from_section(section)
+
+            if tender_req:
+                finding = {
+                    "requirement_key": f"req_{requirement_counter:03d}",
+                    "requirement_content": tender_req,
+                    "bid_content": bid_content,
+                    "is_compliant": severity is None,  # If no severity, it's compliant
+                    "severity": severity,
+                    "location_page": None,
+                    "location_line": None,
+                    "suggestion": None,
+                    "explanation": explanation or "",
+                }
+                findings.append(finding)
+                requirement_counter += 1
+
+        if not findings:
+            return None
+
+        return findings
+
+    def _extract_field(self, section: str, field_name: str) -> Optional[str]:
+        """Extract a field value from a section.
+
+        Args:
+            section: Section content.
+            field_name: Field name to extract.
+
+        Returns:
+            Field value or None if not found.
+        """
+        import re
+        pattern = rf'###\s*{re.escape(field_name)}\s*\n(.+?)(?=\n###|\Z)'
+        match = re.search(pattern, section, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _extract_severity_from_section(self, section: str) -> Optional[str]:
+        """Extract severity from section.
+
+        Args:
+            section: Section content.
+
+        Returns:
+            Severity string or None if not found/compliant.
+        """
+        import re
+        pattern = r'###\s*严重程度\s*\n(.+?)(?=\n###|\Z)'
+        match = re.search(pattern, section, re.DOTALL)
+        if match:
+            severity_text = match.group(1).strip().lower()
+            if 'critical' in severity_text:
+                return 'critical'
+            elif 'major' in severity_text:
+                return 'major'
+            elif 'minor' in severity_text:
+                return 'minor'
+        return None
+
+    async def _llm_extract_findings(self, md_content: str) -> list[dict]:
+        """Extract findings using LLM.
+
+        Args:
+            md_content: Markdown content string.
+
+        Returns:
+            List of structured findings.
+        """
+        import logging
+        logger = self._logger or logging.getLogger(__name__)
+
+        extract_prompt = f"""你是一个结构化数据提取专家。请从以下投标文件审查结果的 Markdown 文档中提取所有不符合项，输出为 JSON 数组。
+
+## 输出格式
+[
+  {{
+    "requirement_key": "检查项编号",
+    "requirement_content": "招标书要求",
+    "bid_content": "应标书内容",
+    "is_compliant": false,
+    "severity": "critical/major/minor",
+    "explanation": "不符合项说明"
+  }},
+  ...
+]
+
+## Markdown 内容
+{md_content}
+
+## 要求
+1. 只提取不符合项（is_compliant=false 的项）
+2. severity 必须是 "critical"、"major" 或 "minor" 之一
+3. 如果所有检查都符合要求，返回空数组 []
+4. 输出必须是有效的 JSON 数组"""
+
+        try:
+            response = await self.llm_client.generate(
+                messages=[
+                    Message(role="system", content="你是一个结构化数据提取专家。"),
+                    Message(role="user", content=extract_prompt),
+                ],
+                tools=[],
+            )
+
+            if not response.content:
+                return []
+
+            # Try to parse JSON from response
+            parsed = self._try_parse_json(response.content)
+            if parsed and isinstance(parsed, list):
+                findings = []
+                for i, item in enumerate(parsed):
+                    if isinstance(item, dict):
+                        normalized = self._normalize_finding(item, i + 1)
+                        if normalized:
+                            findings.append(normalized)
+                return findings
+
+        except Exception as e:
+            logger.exception(f"[BidReviewAgent._llm_extract_findings] LLM extraction failed: {e}")
+
+        return []

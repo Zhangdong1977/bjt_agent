@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 
 from mini_agent.llm import LLMClient
 from mini_agent.schema import LLMProvider, Message
-from mini_agent.tools.base import Tool as BaseTool, ToolResult
+from backend.agent.tools.base import ToolResult
+from mini_agent.tools.base import Tool as BaseTool
 
 from backend.config import get_settings
 

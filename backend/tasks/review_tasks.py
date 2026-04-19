@@ -71,6 +71,7 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
     XADD + Lua script ensures atomic stream operations.
     """
     import traceback
+    logger.info(f"[_publish_event] ENTRY: task_id={task_id}, event_type={event_type}")
     try:
         import redis
         from backend.config import get_settings
@@ -78,6 +79,10 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
         settings = get_settings()
         stream_key = f"sse:stream:{task_id}"
         event = json.dumps({"type": event_type, "task_id": task_id, **data})
+        # Debug: log tool_results if present
+        if event_type == "sub_agent_step" and "tool_results" in data:
+            tr_preview = str(data.get("tool_results"))[:500]
+            logger.info(f"[_publish_event] tool_results preview: {tr_preview}")
         logger.info(f"[_publish_event] Publishing to stream: {stream_key}, event_type={event_type}, data_keys={list(data.keys())}")
 
         r = redis.from_url(settings.redis_url)
@@ -246,6 +251,7 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
                     tender_doc_path="",
                     bid_doc_path="",
                     user_id="system",
+                    rule_doc_path="",
                     event_callback=None,
                     max_steps=1,
                 )

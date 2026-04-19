@@ -112,10 +112,12 @@ class TestParseDocx:
 
         markdown_output = result["text"]
 
-        # First placeholder should be replaced
+        # Replacements happen from end to start, so the last placeholder is replaced first
+        # First placeholder (PLACEHOLDER1 at text position 0) remains because placeholder_idx=1 has no image
+        # Second placeholder (PLACEHOLDER2) is replaced with image1.png
         assert "test_unmatched_images/image1.png" in markdown_output
-        # Second placeholder should still contain base64 (not replaced) and warning should be logged
-        assert "PLACEHOLDER2" in markdown_output
+        # First placeholder should still contain base64 (not replaced) because we ran out of images
+        assert "PLACEHOLDER1" in markdown_output
         # Verify warning was logged
         assert any("No image file available for placeholder at index 1" in record.message for record in caplog.records)
 
