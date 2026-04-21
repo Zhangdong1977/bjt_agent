@@ -5,8 +5,6 @@
             "type": "stdio",
             "command": "uvx",
             "args": [
-                "--from",
-                "git+https://github.com/MiniMax-AI/MiniMax-Coding-Plan-MCP",
                 "minimax-coding-plan-mcp"
             ],
             "env": {

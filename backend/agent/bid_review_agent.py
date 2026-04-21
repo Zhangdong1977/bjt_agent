@@ -108,17 +108,123 @@ class BidReviewAgent(BaseAgent):
 
     async def initialize(self):
         """Async initialization - load MCP tools (call after construction)."""
-        # Load MCP tools (MiniMax-Coding-Plan-MCP)
-        mcp_config_path = Path(__file__).parent.parent / "mcp.json"
-        if mcp_config_path.exists():
+        import logging
+        import sys as _sys
+        import os as _os
+        import subprocess as _subprocess
+        logger = self._logger or logging.getLogger(__name__)
+
+        # Ensure MINIMAX_API_KEY and MINIMAX_API_HOST are set in os.environ
+        # before loading MCP tools. This is required because:
+        # 1. Celery workers don't inherit .env file automatically
+        # 2. mcp_loader's env expansion uses os.environ.get() which returns None
+        # 3. The subprocess would get literal "${MINIMAX_API_KEY}" instead of actual key
+        if not _os.environ.get("MINIMAX_API_KEY") and settings.minimax_api_key:
+            _os.environ["MINIMAX_API_KEY"] = settings.minimax_api_key
+            logger.info("[BidReviewAgent.initialize] Set MINIMAX_API_KEY from settings")
+        if not _os.environ.get("MINIMAX_API_HOST") and settings.minimax_api_host:
+            _os.environ["MINIMAX_API_HOST"] = settings.minimax_api_host
+            logger.info("[BidReviewAgent.initialize] Set MINIMAX_API_HOST from settings")
+
+        # Fix for Celery's LoggingProxy which breaks asyncio subprocess creation.
+        # Celery replaces sys.stderr with a LoggingProxy that has no fileno().
+        # The mcp library's stdio_client calls anyio.open_process with stderr=errlog,
+        # which eventually calls subprocess.Popen. In Popen._get_handles(),
+        # stderr.fileno() is called TWICE:
+        #   1. First call: to get the fd number and check if it's a tty (via isatty())
+        #   2. Second call: to actually dup2 the fd
+        # The problem: LoggingProxy.fileno() raises AttributeError.
+        # Our previous StderrWrapper approach failed because each fileno() call
+        # opened a NEW /dev/null fd, causing the fd to change between the two calls,
+        # making os.fstat() fail and Popen falling back to the original stderr.
+        # Solution: keep a SINGLE /dev/null fd open for the entire _connect_stdio call,
+        # and pass it to the subprocess via monkeypatching StdioServerParameters.
+
+        # Check if we have LoggingProxy
+        _orig_stderr = _sys.stderr
+        _needs_fix = False
+        try:
+            _sys.stderr.fileno()
+        except AttributeError:
+            _needs_fix = True
+
+        _devnull_fd = None
+        _old_stderr = None
+
+        if _needs_fix:
+            # Open /dev/null ONCE and keep it open for the duration
+            _devnull_fd = _os.open(_os.devnull, _os.O_WRONLY)
+
+            class _StderrWrapper:
+                """Wrapper that returns a FIXED /dev/null fd for every fileno() call."""
+                def __init__(self, orig, fd):
+                    self._orig = orig
+                    self._fd = fd
+                def write(self, s):
+                    return self._orig.write(s)
+                def flush(self):
+                    return self._orig.flush()
+                def fileno(self):
+                    return self._fd  # Same fd every time!
+                def isatty(self):
+                    return False
+
+            _old_stderr = _StderrWrapper(_orig_stderr, _devnull_fd)
+            _sys.stderr = _old_stderr
+            logger.info(f"[BidReviewAgent.initialize] Wrapped LoggingProxy.stderr with fixed fd={_devnull_fd}")
+
+            # The problem: stdio_client's default errlog=sys.stderr was captured at
+            # IMPORT TIME (when the module was first loaded, stderr was LoggingProxy).
+            # So even though we replaced sys.stderr, stdio_client still uses the
+            # old LoggingProxy via its default argument.
+            # Fix: patch _create_platform_compatible_process to use DEVNULL for stderr.
+            # This is the function that actually passes stderr to subprocess.Popen.
             try:
+                import anyio
+                _original_open_process = anyio.open_process
+                async def _patched_open_process(*args, **kwargs):
+                    kwargs['stderr'] = _subprocess.DEVNULL
+                    return await _original_open_process(*args, **kwargs)
+                anyio.open_process = _patched_open_process
+                logger.info("[BidReviewAgent.initialize] Patched anyio.open_process to use stderr=DEVNULL")
+            except Exception as e:
+                logger.warning(f"[BidReviewAgent.initialize] Could not patch anyio.open_process: {e}")
+
+        try:
+            # Load MCP tools (MiniMax-Coding-Plan-MCP)
+            mcp_config_path = Path(__file__).parent.parent / "mcp.json"
+            if mcp_config_path.exists():
+                from mini_agent.tools.mcp_loader import set_mcp_timeout_config
+                set_mcp_timeout_config(connect_timeout=60.0, execute_timeout=120.0)
+
                 mcp_tools = await load_mcp_tools_async(str(mcp_config_path))
+                loaded_tool_names = []
                 for tool in mcp_tools:
                     self.tools[tool.name] = tool
-            except Exception as e:
-                import logging
-                logger = self._logger or logging.getLogger(__name__)
-                logger.warning(f"Failed to load MCP tools: {e}")
+                    loaded_tool_names.append(tool.name)
+
+                logger.info(f"[BidReviewAgent.initialize] Successfully loaded {len(mcp_tools)} MCP tools: {loaded_tool_names}")
+
+                if "understand_image" in loaded_tool_names:
+                    logger.info("[BidReviewAgent.initialize] Image understanding tool (understand_image) is available")
+                if "web_search" in loaded_tool_names:
+                    logger.info("[BidReviewAgent.initialize] Web search tool (web_search) is available")
+            else:
+                logger.warning(f"[BidReviewAgent.initialize] MCP config not found at {mcp_config_path}")
+
+        except Exception as e:
+            logger.warning(f"[BidReviewAgent.initialize] Failed to load MCP tools: {e}")
+        finally:
+            if _needs_fix:
+                _sys.stderr = _orig_stderr
+                if _devnull_fd is not None:
+                    _os.close(_devnull_fd)
+                try:
+                    anyio.open_process = _original_open_process
+                    logger.info("[BidReviewAgent.initialize] Restored anyio.open_process")
+                except Exception:
+                    pass
+                logger.info("[BidReviewAgent.initialize] Restored original LoggingProxy.stderr")
 
     def _send_event(self, event_type: str, data: dict) -> None:
         """Send an event via callback if available."""
@@ -277,7 +383,12 @@ class BidReviewAgent(BaseAgent):
             System prompt string with rule content embedded.
         """
         from backend.agent.prompt import SYSTEM_PROMPT_WITH_RULE
-        return SYSTEM_PROMPT_WITH_RULE.format(rule_doc_content=rule_doc_content)
+        # document_directory is the parent directory of the bid document (where images would be)
+        document_directory = str(Path(self.bid_doc_path).parent)
+        return SYSTEM_PROMPT_WITH_RULE.format(
+            rule_doc_content=rule_doc_content,
+            document_directory=document_directory,
+        )
 
     async def run_review(self) -> list[dict]:
         """Run the bid review process using rule file.

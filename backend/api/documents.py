@@ -173,8 +173,22 @@ async def get_document_content(
     if file_ext in [".docx", ".doc"]:
         # Return Markdown content if available, otherwise fallback to HTML
         content_format = "markdown"
+        workspace_dir = settings.workspace_path
+        workspace_rel_path = ""
         if document.parsed_markdown_path and Path(document.parsed_markdown_path).exists():
             content = Path(document.parsed_markdown_path).read_text(encoding="utf-8")
+            # Fix relative image paths in markdown to use /files/ URLs
+            if document.parsed_images_dir and Path(document.parsed_images_dir).exists():
+                workspace_rel_path = Path(document.parsed_images_dir).relative_to(workspace_dir).parent
+                import re
+                def fix_markdown_img_src(match):
+                    alt_text = match.group(1)
+                    src = match.group(2)
+                    if src.startswith(('http://', 'https://', '/')):
+                        return match.group(0)
+                    new_src = f"/files/{workspace_rel_path}/{src}"
+                    return f"![{alt_text}]({new_src})"
+                content = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', fix_markdown_img_src, content)
         elif document.parsed_html_path and Path(document.parsed_html_path).exists():
             # Fallback to HTML if markdown is not available
             content_format = "html"

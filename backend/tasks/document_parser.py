@@ -477,8 +477,12 @@ async def _parse_docx(file_path: Path) -> dict:
         logger.warning(f"Images directory does not exist: {workspace_images_dir}")
     else:
         # Get all image files from the images directory
+        # Include standard formats plus EMF/WMF formats (LibreOffice conversion artifacts)
         image_files = list(workspace_images_dir.glob('*'))
-        image_files = [f for f in image_files if f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']]
+        image_files = [f for f in image_files if f.suffix.lower() in [
+            '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp',
+            '.emf', '.wmf', '.x-emf', '.x-wmf'  # LibreOffice conversion formats
+        ]]
 
         if image_files:
             logger.info(f"Found {len(image_files)} images in {workspace_images_dir}, replacing placeholders")
@@ -490,7 +494,9 @@ async def _parse_docx(file_path: Path) -> dict:
             # Pattern matches both:
             # - ![](data:image/...)  - standard markdown image
             # - alt_text](data:image/...) - image in table cell
-            data_uri_pattern = r'!?\[([^\]]*)\]\(data:image/([^;]+);base64,([^)]+)\)'
+            # Use [\s\S]*? to match any character including newlines (non-greedy)
+            # to handle cases where base64 data spans multiple lines or contains )
+            data_uri_pattern = r'!?\[([^\]]*)\]\(data:image/([^;]+);base64,([\s\S]*?)\)'
 
             # First try with simple pattern (for cases without ) in base64)
             matches = list(re.finditer(data_uri_pattern, markdown_content))
