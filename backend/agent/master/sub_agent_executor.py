@@ -45,22 +45,62 @@ class SubAgentExecutor:
         tender_doc_path: str,
         bid_doc_path: str,
         user_id: str,
+        session_factory,
         event_callback: Optional[Callable] = None,
     ):
         self.todo_item = todo_item
         self.tender_doc_path = tender_doc_path
         self.bid_doc_path = bid_doc_path
         self.user_id = user_id
+        self.session_factory = session_factory
         self.event_callback = event_callback
         self._agent: Optional[BidReviewAgent] = None
 
     def _send_event(self, event_type: str, data: dict):
-        """发送 SSE 事件."""
+        """发送 SSE 事件，并写入数据库."""
+        logger = logging.getLogger(__name__)
+        # 如果是 sub_agent_step 事件，同步写入 AgentStep 表
+        if event_type == "sub_agent_step":
+            self._record_agent_step(data)
+
         if self.event_callback:
             try:
                 self.event_callback(event_type, data)
-            except Exception:
-                pass  # Don't let callback errors crash the executor
+            except Exception as e:
+                logger.warning(f"[_send_event] Event callback failed: event_type={event_type}, error={e}")
+
+    def _record_agent_step(self, data: dict) -> None:
+        """同步写入 AgentStep 到数据库."""
+        import concurrent.futures
+        import logging
+        from backend.models.agent_step import AgentStep
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(asyncio.run, self._record_agent_step_async(data))
+                future.result()
+            logger.info(f"[_record_agent_step] Successfully recorded step {data.get('step_number')} for todo {self.todo_item.id}")
+        except Exception as e:
+            logger.error(f"[_record_agent_step] Failed to record step: {e}")
+
+    async def _record_agent_step_async(self, data: dict) -> None:
+        """异步写入 AgentStep 到数据库。"""
+        from backend.models.agent_step import AgentStep
+
+        async with self.session_factory() as db:
+            step = AgentStep(
+                todo_id=self.todo_item.id,
+                step_number=data.get("step_number", 0),
+                step_type=data.get("step_type", "unknown"),
+                content=data.get("content", "") or "",
+                tool_name=None,  # sub_agent_step 不使用此字段
+                tool_args={"tool_calls": data.get("tool_calls", [])} if data.get("tool_calls") else None,
+                tool_result={"tool_results": data.get("tool_results", [])} if data.get("tool_results") else None,
+            )
+            db.add(step)
+            await db.commit()
 
     async def create_agent(self, max_steps: int = 100, logger=None) -> BidReviewAgent:
         """创建子代理实例.

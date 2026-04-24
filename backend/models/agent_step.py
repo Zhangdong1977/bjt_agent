@@ -24,7 +24,8 @@ class AgentStep(Base):
 
     __tablename__ = "agent_steps"
 
-    task_id: Mapped[str] = mapped_column(String(36), ForeignKey("review_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    task_id: Mapped[str] = mapped_column(String(36), ForeignKey("review_tasks.id", ondelete="CASCADE"), nullable=True, index=True)
+    todo_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("todo_items.id", ondelete="CASCADE"), nullable=True, index=True)
     step_number: Mapped[int] = mapped_column(Integer, nullable=False)
     step_type: Mapped[str] = mapped_column(String(50), nullable=False)  # thought, tool_call, tool_result, final
     content: Mapped[str] = mapped_column(nullable=False)

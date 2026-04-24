@@ -155,6 +155,7 @@ class MasterAgent:
                     tender_doc_path=self.tender_doc_path,
                     bid_doc_path=self.bid_doc_path,
                     user_id=self.user_id,
+                    session_factory=session_factory,
                     event_callback=self._create_sub_agent_callback(todo.id),
                 )
                 logger.info(f"[_run_single_sub_agent] Calling executor.execute() for todo {todo.id}")
