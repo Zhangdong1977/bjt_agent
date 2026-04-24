@@ -98,8 +98,8 @@ class MasterAgent:
             "total_todos": len(self._todo_items),
         })
 
-        # Phase 3: 并行执行子代理
-        await self._run_sub_agents_parallel(todo_service)
+        # Phase 3: 串行执行子代理
+        await self._run_sub_agents(todo_service)
 
         # Phase 4: 汇总结果
         self._send_event("merging_started", {"message": "开始合并结果"})
@@ -113,22 +113,16 @@ class MasterAgent:
             "merged_result": merged_result,
         }
 
-    async def _run_sub_agents_parallel(self, todo_service) -> None:
-        """并行执行所有子代理."""
-        logger.info(f"[_run_sub_agents_parallel] Starting with {len(self._todo_items)} todos, session_factory={'available' if self._session_factory else 'None'}")
-        semaphore = asyncio.Semaphore(self.max_parallel)
-
-        async def run_with_semaphore(todo):
-            async with semaphore:
-                return await self._run_single_sub_agent(todo, todo_service, self._session_factory)
-
-        tasks = [run_with_semaphore(todo) for todo in self._todo_items]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        # Log any exceptions captured by return_exceptions=True
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.error(f"[_run_sub_agents_parallel] Task {i} raised exception: {result}")
-        logger.info(f"[_run_sub_agents_parallel] All tasks completed")
+    async def _run_sub_agents(self, todo_service) -> None:
+        """串行执行所有子代理."""
+        logger.info(f"[_run_sub_agents] Starting sequential execution with {len(self._todo_items)} todos")
+        for i, todo in enumerate(self._todo_items):
+            try:
+                result = await self._run_single_sub_agent(todo, todo_service, self._session_factory)
+                logger.info(f"[_run_sub_agents] Task {i+1}/{len(self._todo_items)} completed, success={result.get('success')}")
+            except Exception as e:
+                logger.error(f"[_run_sub_agents] Task {i+1} raised exception: {e}")
+        logger.info(f"[_run_sub_agents] All tasks completed")
 
     async def _run_single_sub_agent(self, todo, todo_service, session_factory=None) -> dict:
         """执行单个子代理.
