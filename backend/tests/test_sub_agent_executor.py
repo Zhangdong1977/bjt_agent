@@ -19,17 +19,13 @@ def test_detect_anomaly_failed_result():
     assert detect_anomaly(result, None) is True
 
 
-def test_detect_anomaly_all_compliant_but_missing():
-    """Test anomaly detection when all findings are compliant but some are missing."""
-    todo = type("TodoItem", (), {"check_items": [{"id": 1}, {"id": 2}, {"id": 3}]})()
+def test_detect_anomaly_empty_findings():
+    """Test anomaly detection when findings list is empty."""
     result = {
         "success": True,
-        "findings": [
-            {"is_compliant": True, "requirement_key": "1"},
-            {"is_compliant": True, "requirement_key": "2"},
-        ],
+        "findings": [],
     }
-    assert detect_anomaly(result, todo) is True
+    assert detect_anomaly(result, None) is True
 
 
 def test_detect_anomaly_all_compliant_complete():
@@ -83,6 +79,7 @@ class TestSubAgentExecutor:
             tender_doc_path="/path/to/tender.md",
             bid_doc_path="/path/to/bid.md",
             user_id="user_789",
+            session_factory=None,
             event_callback=MagicMock(),
         )
 
