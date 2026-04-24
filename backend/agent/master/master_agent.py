@@ -24,7 +24,6 @@ class MasterAgent:
         bid_doc_path: str,
         user_id: str,
         event_callback: Optional[Callable] = None,
-        max_parallel: int = 5,
         max_retries: int = 3,
     ):
         self.project_id = project_id
@@ -33,7 +32,6 @@ class MasterAgent:
         self.bid_doc_path = bid_doc_path
         self.user_id = user_id
         self.event_callback = event_callback
-        self.max_parallel = max_parallel
         self.max_retries = max_retries
 
         self.scanner = RuleLibraryScannerTool()
