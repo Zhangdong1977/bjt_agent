@@ -65,6 +65,7 @@ class TestSubAgentExecutor:
         todo.id = "todo_123"
         todo.project_id = "project_456"
         todo.rule_doc_name = "test_rules.md"
+        todo.rule_doc_path = "/path/to/rules.md"
         todo.check_items = [
             {"title": "Check 1", "description": "First check", "rule_content": "Rule 1 content"},
             {"title": "Check 2", "description": "Second check", "rule_content": "Rule 2 content"},
@@ -99,25 +100,6 @@ class TestSubAgentExecutor:
         # Should not raise
         executor._send_event("test_event", {"key": "value"})
 
-    def test_build_check_items_text(self, executor):
-        """Test _build_check_items_text returns correct format."""
-        text = executor._build_check_items_text()
-
-        assert "1. Check 1" in text
-        assert "描述: First check" in text
-        assert "Rule 1 content" in text
-        assert "2. Check 2" in text
-
-    def test_build_check_items_text_truncates_long_rule(self, executor):
-        """Test _build_check_items_text truncates long rule content."""
-        executor.todo_item.check_items = [
-            {"title": "Long Rule Check", "description": "", "rule_content": "x" * 300}
-        ]
-
-        text = executor._build_check_items_text()
-
-        assert "..." in text
-        assert len(text) < 500
 
     @pytest.mark.asyncio
     async def test_create_agent(self, executor):
@@ -134,7 +116,9 @@ class TestSubAgentExecutor:
                 tender_doc_path="/path/to/tender.md",
                 bid_doc_path="/path/to/bid.md",
                 user_id="user_789",
+                rule_doc_path="/path/to/rules.md",
                 event_callback=executor.event_callback,
+                logger=None,
                 max_steps=75,
             )
             mock_agent.initialize.assert_called_once()
