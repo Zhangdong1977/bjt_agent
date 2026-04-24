@@ -142,10 +142,28 @@ class DocSearchTool(BaseTool):
 
         return "\n".join(summary_parts)
 
+    def _extract_image_refs(self, content: str) -> list[dict]:
+        """Extract all markdown image references from content.
+
+        Returns list of {alt_text, path, full_match, line_number}.
+        """
+        image_refs = []
+        lines = content.split("\n")
+        for i, line in enumerate(lines):
+            matches = re.finditer(r'!\[([^\]]*)\]\(([^)]+)\)', line)
+            for match in matches:
+                image_refs.append({
+                    "alt_text": match.group(1),
+                    "path": match.group(2),
+                    "full_match": match.group(0),
+                    "line_number": i + 1,  # 1-indexed
+                })
+        return image_refs
+
     def _search_by_keyword(self, lines: list[str], query: str, max_results: int = MAX_LINES_PER_QUERY) -> list[dict]:
         """Search document lines by keyword and return matches with context.
 
-        Returns list of {line_number, line_content, context}.
+        Returns list of {line_number, line_content, context, image_refs}.
         """
         results = []
         query_lower = query.lower()
@@ -157,11 +175,22 @@ class DocSearchTool(BaseTool):
                 context_before = smart_truncate(strip_html_tags(lines[max(0, i - 1)].strip()), 150) if i > 0 else ""
                 context_after = smart_truncate(strip_html_tags(lines[min(len(lines) - 1, i + 1)].strip()), 150) if i < len(lines) - 1 else ""
 
+                # Extract image references from this line
+                image_refs = []
+                img_matches = re.finditer(r'!\[([^\]]*)\]\(([^)]+)\)', line)
+                for img_match in img_matches:
+                    image_refs.append({
+                        "alt_text": img_match.group(1),
+                        "path": img_match.group(2),
+                        "full_match": img_match.group(0),
+                    })
+
                 results.append({
                     "line_number": i + 1,  # 1-indexed
                     "line_content": smart_truncate(strip_html_tags(line.strip()), 400),
                     "context_before": context_before,
                     "context_after": context_after,
+                    "image_refs": image_refs,
                 })
 
                 if len(results) >= max_results:
@@ -211,7 +240,7 @@ class DocSearchTool(BaseTool):
     @property
     def description(self) -> str:
         return """Search and read tender/bid document content. Input should be a JSON object with:
-- 'doc_type': 'tender' or 'bid' (required)
+- '文档类型': 'tender' or 'bid' (required)
 - 'query': Optional keyword to filter content (returns matching lines with context)
 - 'chunk': Optional chunk number for large documents (0-indexed)
 - 'full_content': Set to true to return entire document content
@@ -223,7 +252,7 @@ Returns matching lines with line numbers and surrounding context."""
         return {
             "type": "object",
             "properties": {
-                "doc_type": {
+                "文档类型": {
                     "type": "string",
                     "enum": ["tender", "bid"],
                     "description": "Type of document to search",
@@ -243,20 +272,24 @@ Returns matching lines with line numbers and surrounding context."""
                     "default": False,
                 },
             },
-            "required": ["doc_type"],
+            "required": ["文档类型"],
         }
 
     async def execute(
         self,
-        doc_type: str,
+        文档类型: str = None,
         query: str = None,
         chunk: int = 0,
         full_content: bool = False,
+        # Accept both Chinese and English parameter names for compatibility
+        doc_type: str = None,
+        **kwargs,
     ) -> ToolResult:
         """Execute the document search.
 
         Args:
-            doc_type: 'tender' or 'bid'
+            文档类型: 'tender' or 'bid' (Chinese parameter name from LLM)
+            doc_type: 'tender' or 'bid' (English parameter name, fallback)
             query: Optional query string to filter lines
             chunk: Chunk number for pagination of large documents
             full_content: If True, return full document (may be truncated)
@@ -264,8 +297,13 @@ Returns matching lines with line numbers and surrounding context."""
         Returns:
             ToolResult with the document content and metadata
         """
+        # Resolve doc_type from either Chinese or English parameter name
+        resolved_doc_type = 文档类型 or doc_type
+        if not resolved_doc_type:
+            return ToolResult(success=False, content="", error="Missing required parameter: 文档类型 or doc_type")
+
         try:
-            doc_path = Path(self.tender_doc_path if doc_type == "tender" else self.bid_doc_path)
+            doc_path = Path(self.tender_doc_path if resolved_doc_type == "tender" else self.bid_doc_path)
             _, lines = self._load_document(doc_path)
 
             # If full content requested, return friendly summary
@@ -304,6 +342,7 @@ Returns matching lines with line numbers and surrounding context."""
 
                 # If query also provided, include keyword match summary
                 query_match_info = ""
+                keyword_matches = []
                 if query:
                     keyword_matches = self._search_by_keyword(lines, query)
                     if keyword_matches:
@@ -316,6 +355,12 @@ Returns matching lines with line numbers and surrounding context."""
                     # Append query info to content
                     friendly_content += query_match_info
 
+                # Extract all image references from the full document
+                all_image_refs = self._extract_image_refs(full_text)
+                has_images = len(all_image_refs) > 0
+                if has_images:
+                    friendly_content += f"\n\n📷 文档包含 **{len(all_image_refs)}** 张图片"
+
                 return ToolResult(
                     success=True,
                     content=friendly_content,
@@ -325,7 +370,9 @@ Returns matching lines with line numbers and surrounding context."""
                         "total_chunks": total_chunks,
                         "current_chunk_lines": current_chunk_lines,
                         "full_content": full_text,
-                        "query_matches": len(keyword_matches) if query else 0,
+                        "query_matches": len(keyword_matches),
+                        "has_images": has_images,
+                        "image_refs": all_image_refs,
                     },
                 )
 
@@ -372,6 +419,8 @@ Returns matching lines with line numbers and surrounding context."""
                 display_matches = matches[:10]
                 formatted = [f"🔍 在{doc_label}书中找到 **{len(matches)}** 处提到\"{query}\"：\n"]
                 citations = []
+                has_images = False
+                all_image_refs = []
                 for i, m in enumerate(display_matches, 1):
                     # Format citation with line number and quoted content
                     formatted.append(f"{i}. {m['line_content']}")
@@ -379,6 +428,16 @@ Returns matching lines with line numbers and surrounding context."""
                         formatted.append(f"   ↳ 上文: {m['context_before']}")
                     if m.get('context_after'):
                         formatted.append(f"   ↳ 下文: {m['context_after']}")
+                    # Check for image references in this match
+                    img_refs = m.get('image_refs', [])
+                    if img_refs:
+                        has_images = True
+                        for img in img_refs:
+                            img["line_number"] = m['line_number']
+                            all_image_refs.append(img)
+                        formatted.append(f"   📷 图片: {img_refs[0]['path']}")
+                        if len(img_refs) > 1:
+                            formatted.append(f"   (还有 {len(img_refs) - 1} 张图片)")
                     # Build structured citation for data
                     citations.append({
                         "index": i,
@@ -386,6 +445,7 @@ Returns matching lines with line numbers and surrounding context."""
                         "quote": m['line_content'],
                         "context_before": m.get('context_before', ''),
                         "context_after": m.get('context_after', ''),
+                        "image_refs": img_refs,
                     })
 
                 if len(matches) > 10:
@@ -399,6 +459,8 @@ Returns matching lines with line numbers and surrounding context."""
                         "matches": len(matches),
                         "results": matches,
                         "citations": citations,
+                        "has_images": has_images,
+                        "image_refs": all_image_refs,
                     },
                 )
 
