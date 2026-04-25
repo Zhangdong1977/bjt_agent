@@ -119,6 +119,8 @@ class SubAgentExecutor:
             logger=logger,
             max_steps=max_steps,
         )
+        # Set task_id for heartbeat tracking
+        agent._task_id = self.todo_item.id
         await agent.initialize()
         self._agent = agent
         return agent

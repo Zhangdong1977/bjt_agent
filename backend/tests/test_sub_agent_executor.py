@@ -124,6 +124,20 @@ class TestSubAgentExecutor:
             mock_agent.initialize.assert_called_once()
             assert executor._agent == mock_agent
             assert agent == mock_agent
+            assert agent._task_id == "todo_123"
+
+    @pytest.mark.asyncio
+    async def test_create_agent_sets_task_id(self, executor):
+        """Test create_agent sets _task_id on the agent from todo_item.id."""
+        with patch("backend.agent.master.sub_agent_executor.BidReviewAgent") as MockAgent:
+            mock_agent = AsyncMock()
+            mock_agent.initialize = AsyncMock()
+            MockAgent.return_value = mock_agent
+
+            agent = await executor.create_agent()
+
+            assert mock_agent._task_id == "todo_123"
+            mock_agent.initialize.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_create_agent_default_max_steps(self, executor):

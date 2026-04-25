@@ -26,7 +26,7 @@ from backend.agent.tools.doc_search import DocSearchTool
 from backend.agent.tools.rag_search import RAGSearchTool
 from backend.agent.tools.comparator import ComparatorTool
 from backend.agent.tools import MergeDeciderTool
-from backend.agent.prompt import SYSTEM_PROMPT
+from backend.agent.prompt import SYSTEM_PROMPT_WITH_RULE
 
 settings = get_settings()
 
@@ -44,6 +44,8 @@ class BidReviewAgent(BaseAgent):
         event_callback=None,
         logger=None,
         max_steps: int = 100,
+        cancel_event: Optional[asyncio.Event] = None,
+        heartbeat_timeout: int = 20,
     ):
         """Initialize the bid review agent (synchronous part).
 
@@ -56,6 +58,8 @@ class BidReviewAgent(BaseAgent):
             event_callback: Optional callback for SSE event publishing
             logger: Optional logger for file output. If None, uses module logger.
             max_steps: Maximum number of agent steps
+            cancel_event: Optional asyncio.Event to signal cancellation
+            heartbeat_timeout: Heartbeat timeout in seconds (default 20)
         """
         self.project_id = project_id
         self.tender_doc_path = tender_doc_path
@@ -64,6 +68,9 @@ class BidReviewAgent(BaseAgent):
         self.rule_doc_path = rule_doc_path
         self.event_callback = event_callback
         self._logger = logger
+        self.cancel_event = cancel_event
+        self.heartbeat_timeout = heartbeat_timeout
+        self._task_id: Optional[str] = None
         self._findings: list[dict] = []
         # Store tool results for persistence via _record_agent_step
         # Use list to preserve order and allow multiple calls to same tool
@@ -99,7 +106,7 @@ class BidReviewAgent(BaseAgent):
         # Initialize base agent with event_callback
         super().__init__(
             llm_client=llm_client,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=SYSTEM_PROMPT_WITH_RULE,
             tools=tools,
             workspace_dir=str(workspace_dir),
             max_steps=max_steps,
@@ -237,6 +244,66 @@ class BidReviewAgent(BaseAgent):
                 logger.info(f"[BidReviewAgent._send_event] Successfully sent event type={event_type}")
             except Exception as e:
                 logger.error(f"[BidReviewAgent._send_event] Failed to send event: {e}")
+
+    def _check_heartbeat(self) -> bool:
+        """Check if heartbeat has exceeded timeout.
+
+        Returns:
+            True if heartbeat is OK (within timeout or no task context),
+            False if exceeded timeout.
+        """
+        import logging
+        logger = self._logger or logging.getLogger(__name__)
+
+        # No task context means we're in standalone mode without heartbeat tracking
+        if not hasattr(self, '_task_id') or not self._task_id:
+            return True
+
+        from sqlalchemy import select
+        from backend.models import ReviewTask
+        from backend.models.base import async_session_factory
+
+        try:
+            async def _check():
+                async with async_session_factory() as db:
+                    result = await db.execute(
+                        select(ReviewTask).where(ReviewTask.id == self._task_id)
+                    )
+                    task = result.scalar_one_or_none()
+                    if not task or not task.last_heartbeat:
+                        return True  # No heartbeat yet, assume OK
+
+                    elapsed = (datetime.utcnow() - task.last_heartbeat).total_seconds()
+                    if elapsed > self.heartbeat_timeout:
+                        logger.warning(
+                            f"[BidReviewAgent] Heartbeat timeout: {elapsed:.1f}s > {self.heartbeat_timeout}s"
+                        )
+                        return False
+                    return True
+
+            import asyncio
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(_check())
+        except Exception as e:
+            logger = self._logger or logging.getLogger(__name__)
+            logger.warning(f"[BidReviewAgent] Heartbeat check failed: {e}")
+            return True  # Fail open
+
+    async def _heartbeat_monitor_loop(self) -> None:
+        """Background loop that monitors heartbeat and sets cancel_event on timeout."""
+        import logging
+        logger = self._logger or logging.getLogger(__name__)
+
+        while not self.cancel_event.is_set():
+            await asyncio.sleep(5)  # Check every 5 seconds
+
+            if self.cancel_event.is_set():
+                break
+
+            if not self._check_heartbeat():
+                logger.warning("[BidReviewAgent] Setting cancel_event due to heartbeat timeout")
+                self.cancel_event.set()
+                break
 
     def _emit_event(self, event_type: str, data: dict) -> None:
         """Override _emit_event to consolidate granular events into sub_agent_step.
@@ -383,11 +450,12 @@ class BidReviewAgent(BaseAgent):
             System prompt string with rule content embedded.
         """
         from backend.agent.prompt import SYSTEM_PROMPT_WITH_RULE
-        # document_directory is the parent directory of the bid document (where images would be)
-        document_directory = str(Path(self.bid_doc_path).parent)
+        tender_doc_directory = str(Path(self.tender_doc_path).parent)
+        bid_doc_directory = str(Path(self.bid_doc_path).parent)
         return SYSTEM_PROMPT_WITH_RULE.format(
             rule_doc_content=rule_doc_content,
-            document_directory=document_directory,
+            tender_doc_directory=tender_doc_directory,
+            bid_doc_directory=bid_doc_directory,
         )
 
     async def run_review(self) -> list[dict]:
@@ -441,9 +509,25 @@ class BidReviewAgent(BaseAgent):
             logger.info(f"\n{task}")
             logger.info(f"[BidReviewAgent.run_review] === TASK PROMPT END ===")
 
-            # 4. Call base class run() - reuses Mini-Agent loop with event_callback
-            await self.run()
-            logger.info(f"[BidReviewAgent.run_review] Agent.run() completed")
+            # Create cancel event if not provided
+            if self.cancel_event is None:
+                self.cancel_event = asyncio.Event()
+
+            # Start heartbeat monitor as background task
+            heartbeat_monitor = asyncio.create_task(
+                self._heartbeat_monitor_loop()
+            )
+
+            try:
+                # 4. Call base class run() - reuses Mini-Agent loop with event_callback
+                await self.run(cancel_event=self.cancel_event)
+                logger.info(f"[BidReviewAgent.run_review] Agent.run() completed")
+            finally:
+                heartbeat_monitor.cancel()
+                try:
+                    await heartbeat_monitor
+                except asyncio.CancelledError:
+                    pass
 
             # Log full message history
             logger.info(f"[BidReviewAgent.run_review] === FULL MESSAGE HISTORY START ===")
