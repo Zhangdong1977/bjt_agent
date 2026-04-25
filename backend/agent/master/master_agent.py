@@ -157,6 +157,7 @@ class MasterAgent:
                     user_id=self.user_id,
                     session_factory=session_factory,
                     event_callback=self._create_sub_agent_callback(todo.id),
+                    session_id=self._session_id,
                 )
                 logger.info(f"[_run_single_sub_agent] Calling executor.execute() for todo {todo.id}")
                 result = await executor.execute()
