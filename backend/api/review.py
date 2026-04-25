@@ -188,6 +188,12 @@ async def cancel_review_task(
             detail="Task cannot be cancelled",
         )
 
+    # Revoke Celery task if running
+    if task.celery_task_id:
+        from backend.celery_app import celery_app
+
+        celery_app.control.revoke(task.celery_task_id, terminate=True)
+
     task.status = "cancelled"
     await db.flush()
     await db.refresh(task)
