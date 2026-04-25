@@ -68,7 +68,6 @@ class BidReviewAgent(BaseAgent):
         self.rule_doc_path = rule_doc_path
         self.event_callback = event_callback
         self._logger = logger
-        self.cancel_event = cancel_event
         self.heartbeat_timeout = heartbeat_timeout
         self._task_id: Optional[str] = None
         self._findings: list[dict] = []
@@ -112,6 +111,9 @@ class BidReviewAgent(BaseAgent):
             max_steps=max_steps,
             event_callback=event_callback,
         )
+
+        # Set cancel_event AFTER super().__init__() to avoid being overwritten
+        self.cancel_event = cancel_event
 
     async def initialize(self):
         """Async initialization - load MCP tools (call after construction)."""
