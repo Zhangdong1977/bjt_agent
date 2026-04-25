@@ -194,6 +194,41 @@ async def cancel_review_task(
     return task
 
 
+@router.post("/tasks/{task_id}/heartbeat", status_code=status.HTTP_200_OK)
+async def heartbeat_review_task(
+    project_id: str,
+    task_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> dict:
+    """Update the last_heartbeat timestamp for a running review task.
+
+    This endpoint should be called by the frontend every 10 seconds while
+    the user is viewing the task progress page. If no heartbeat is received
+    for 20+ seconds, the task will be automatically cancelled.
+    """
+    await verify_project_ownership(project_id, current_user.id, db)
+
+    result = await db.execute(
+        select(ReviewTask)
+        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Review task not found",
+        )
+
+    if task.status != "running":
+        # Still return 200 for non-running tasks to avoid frontend errors
+        return {"status": task.status, "message": "Task not running"}
+
+    task.last_heartbeat = datetime.utcnow()
+    await db.flush()
+    return {"status": "ok", "last_heartbeat": task.last_heartbeat}
+
+
 @router.get("/tasks/{task_id}/steps", response_model=list[AgentStepResponse])
 async def get_review_task_steps(
     project_id: str,

@@ -308,6 +308,9 @@ export const reviewApi = {
     return response.data
   },
 
+  heartbeat: (projectId: string, taskId: string) =>
+    apiClient.post(`/projects/${projectId}/review/tasks/${taskId}/heartbeat`),
+
   async getSteps(projectId: string, taskId: string): Promise<AgentStep[]> {
     const response = await apiClient.get(`/projects/${projectId}/review/tasks/${taskId}/steps`)
     return response.data
