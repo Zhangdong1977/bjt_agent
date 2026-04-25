@@ -35,6 +35,10 @@ export const useProjectStore = defineStore('project', () => {
   // Upload progress state
   const uploadProgress = ref<Record<string, UploadProgress>>({})
 
+  // Heartbeat state
+  let heartbeatTimer: number | null = null
+  const HEARTBEAT_INTERVAL = 10000 // 10 seconds
+
   // Document parse SSE connections
   const docParseSSEConnections = ref<Record<string, EventSource>>({})
 
@@ -258,6 +262,10 @@ export const useProjectStore = defineStore('project', () => {
 
     sseEventSource.value.onopen = () => {
       console.log('[connectSSE] SSE connection opened successfully for taskId:', taskId)
+      // Start heartbeat when SSE connects
+      if (currentProject.value && taskId) {
+        startHeartbeat(currentProject.value.id, taskId)
+      }
     }
 
     sseEventSource.value.onmessage = (event) => {
@@ -371,6 +379,7 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   function disconnectSSE() {
+    stopHeartbeat()
     if (sseEventSource.value) {
       sseEventSource.value.close()
       sseEventSource.value = null
@@ -491,6 +500,30 @@ export const useProjectStore = defineStore('project', () => {
     agentSteps.value = groupedSteps.filter(s => !(s.step_type === 'tool_result' && (s as any)._merged))
   }
 
+  function startHeartbeat(projectId: string, taskId: string) {
+    stopHeartbeat()
+    if (!projectId || !taskId) return
+
+    heartbeatTimer = window.setInterval(async () => {
+      try {
+        await reviewApi.heartbeat(projectId, taskId)
+      } catch (err) {
+        console.warn('[startHeartbeat] Heartbeat failed:', err)
+        // Don't stop - the task might still be running and we want to keep trying
+      }
+    }, HEARTBEAT_INTERVAL)
+
+    // Also send immediately
+    reviewApi.heartbeat(projectId, taskId).catch(console.warn)
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer !== null) {
+      clearInterval(heartbeatTimer)
+      heartbeatTimer = null
+    }
+  }
+
   return {
     projects,
     currentProject,
@@ -523,6 +556,8 @@ export const useProjectStore = defineStore('project', () => {
     fetchReviewTasks,
     selectReviewTask,
     loadHistoricalSteps,
+    startHeartbeat,
+    stopHeartbeat,
     $reset
   }
 })
