@@ -245,8 +245,8 @@ class BidReviewAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[BidReviewAgent._send_event] Failed to send event: {e}")
 
-    def _check_heartbeat(self) -> bool:
-        """Check if heartbeat has exceeded timeout.
+    async def _check_heartbeat_async(self) -> bool:
+        """Check if heartbeat has exceeded timeout (async version).
 
         Returns:
             True if heartbeat is OK (within timeout or no task context),
@@ -264,28 +264,22 @@ class BidReviewAgent(BaseAgent):
         from backend.models.base import async_session_factory
 
         try:
-            async def _check():
-                async with async_session_factory() as db:
-                    result = await db.execute(
-                        select(ReviewTask).where(ReviewTask.id == self._task_id)
+            async with async_session_factory() as db:
+                result = await db.execute(
+                    select(ReviewTask).where(ReviewTask.id == self._task_id)
+                )
+                task = result.scalar_one_or_none()
+                if not task or not task.last_heartbeat:
+                    return True  # No heartbeat yet, assume OK
+
+                elapsed = (datetime.utcnow() - task.last_heartbeat).total_seconds()
+                if elapsed > self.heartbeat_timeout:
+                    logger.warning(
+                        f"[BidReviewAgent] Heartbeat timeout: {elapsed:.1f}s > {self.heartbeat_timeout}s"
                     )
-                    task = result.scalar_one_or_none()
-                    if not task or not task.last_heartbeat:
-                        return True  # No heartbeat yet, assume OK
-
-                    elapsed = (datetime.utcnow() - task.last_heartbeat).total_seconds()
-                    if elapsed > self.heartbeat_timeout:
-                        logger.warning(
-                            f"[BidReviewAgent] Heartbeat timeout: {elapsed:.1f}s > {self.heartbeat_timeout}s"
-                        )
-                        return False
-                    return True
-
-            import asyncio
-            loop = asyncio.get_event_loop()
-            return loop.run_until_complete(_check())
+                    return False
+                return True
         except Exception as e:
-            logger = self._logger or logging.getLogger(__name__)
             logger.warning(f"[BidReviewAgent] Heartbeat check failed: {e}")
             return True  # Fail open
 
@@ -300,7 +294,7 @@ class BidReviewAgent(BaseAgent):
             if self.cancel_event.is_set():
                 break
 
-            if not self._check_heartbeat():
+            if not await self._check_heartbeat_async():
                 logger.warning("[BidReviewAgent] Setting cancel_event due to heartbeat timeout")
                 self.cancel_event.set()
                 break

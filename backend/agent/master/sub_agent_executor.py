@@ -48,6 +48,7 @@ class SubAgentExecutor:
         session_factory,
         event_callback: Optional[Callable] = None,
         session_id: Optional[str] = None,
+        cancel_event: Optional[asyncio.Event] = None,
     ):
         self.todo_item = todo_item
         self.tender_doc_path = tender_doc_path
@@ -56,6 +57,7 @@ class SubAgentExecutor:
         self.session_factory = session_factory
         self.event_callback = event_callback
         self.session_id = session_id
+        self.cancel_event = cancel_event
         self._agent: Optional[BidReviewAgent] = None
 
     def _send_event(self, event_type: str, data: dict):
@@ -120,6 +122,7 @@ class SubAgentExecutor:
             event_callback=self.event_callback,
             logger=logger,
             max_steps=max_steps,
+            cancel_event=self.cancel_event,
         )
         # Set task_id for heartbeat tracking (ReviewTask.id, not TodoItem.id)
         agent._task_id = self.session_id
