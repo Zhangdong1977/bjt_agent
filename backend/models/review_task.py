@@ -25,7 +25,7 @@ class ReviewTask(Base):
     started_at: Mapped[datetime | None] = mapped_column(nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
     error_message: Mapped[str | None] = mapped_column(nullable=True)
-    last_heartbeat: Mapped[datetime | None] = mapped_column(nullable=True)  # NEW: track frontend heartbeat
+    last_heartbeat: Mapped[datetime | None] = mapped_column(nullable=True, index=True)  # Track frontend heartbeat - if no heartbeat for 20+ seconds, agent will cancel
 
     # Relationships
     project: Mapped["Project"] = relationship("Project", back_populates="review_tasks")
