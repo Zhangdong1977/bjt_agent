@@ -87,6 +87,8 @@ async function handleSSEEvent(event: any) {
       break
 
     case 'master_started':
+      // 已完成的任务跳过重置，防止历史时间线数据被 SSE 缓存事件清空
+      if (phase.value === 'completed') break
       // 主代理开始解析，重置 steps 和 subAgentSteps
       steps.value = []
       subAgentSteps.value = new Map()
@@ -595,6 +597,8 @@ onMounted(async () => {
       } else if (task.status === 'failed') {
         phase.value = 'failed'
         errorMessage.value = task.error_message || '审查失败'
+      } else if (task.status === 'running') {
+        phase.value = 'running'
       }
     }
   } else {
@@ -612,6 +616,8 @@ onMounted(async () => {
       } else if (latestTask.status === 'failed') {
         phase.value = 'failed'
         errorMessage.value = projectStore.currentTask?.error_message || '审查失败'
+      } else if (latestTask.status === 'running') {
+        phase.value = 'running'
       }
     }
   }
@@ -640,6 +646,24 @@ onMounted(async () => {
 
       // 加载历史 todo 项（子代理信息）以处理 SSE 事件丢失的情况
       await loadHistoricalTodos(projectId.value, projectStore.currentTask.id)
+
+      // 加载历史 master agent 步骤（时间线数据）
+      try {
+        const historicalSteps = await reviewApi.getSteps(projectId.value, projectStore.currentTask.id)
+        if (historicalSteps.length > 0) {
+          steps.value = historicalSteps.map(s => ({
+            step_number: s.step_number,
+            step_type: s.step_type,
+            content: s.content || '',
+            timestamp: new Date(),
+            tool_calls: (s.tool_args as any)?.tool_calls || [],
+            tool_results: (s.tool_result as any)?.tool_results || [],
+          }))
+          console.log('[ReviewExecutionView] Loaded historical steps:', steps.value.length)
+        }
+      } catch (err) {
+        console.error('[ReviewExecutionView] Failed to load historical steps:', err)
+      }
     }
   } else {
     console.log('[ReviewExecutionView] No currentTask, SSE will not connect')

@@ -182,38 +182,22 @@ def run_review(self, task_id: str) -> dict:
                 # Create cancel_event for heartbeat cancellation mechanism
                 cancel_event = asyncio.Event()
 
-                # Run the agent review (pass session_factory for parallel sub-agent session isolation)
-                findings = await _run_agent_review(task_id, tender_doc, bid_doc, session_factory, cancel_event)
-
-                # Store only non-compliant findings (ReviewResult is for non-compliance)
-                non_compliant_findings = [f for f in findings if not f.get("is_compliant", False)]
-                logger.info(f"[_run] project_id={task.project_id}, task_id={task_id}, total_findings={len(findings)}, non_compliant={len(non_compliant_findings)}")
-                for finding_data in non_compliant_findings:
-                    finding = ReviewResult(
-                        task_id=task_id,
-                        **finding_data,
-                    )
-                    db.add(finding)
-
-                task.status = "completed"
-                task.completed_at = datetime.utcnow()
-                await db.flush()
-                await db.commit()
-
-                # Trigger merge task after successful completion
-                from backend.tasks.review_tasks import merge_review_results
-                merge_review_results.delay(project_id=task.project_id, latest_task_id=task_id)
+                # Run the agent review — handles saving, status update, and merge trigger internally
+                findings_count = await _run_agent_review(
+                    task_id, tender_doc, bid_doc, session_factory, cancel_event,
+                    db=db, review_task=task,
+                )
 
                 # Send completion event
                 _publish_event(task_id, "complete", {
                     "status": "completed",
-                    "findings_count": len(non_compliant_findings),
+                    "findings_count": findings_count,
                 })
 
                 return {
                     "status": "success",
                     "task_id": task_id,
-                    "findings_count": len(non_compliant_findings),
+                    "findings_count": findings_count,
                 }
 
             except Exception as e:
@@ -377,24 +361,30 @@ async def _run_agent_review(
     bid_doc,
     session_factory,
     cancel_event: asyncio.Event,
-) -> list[dict]:
-    """Run the agent review process and return findings.
+    db,  # Main DB session for saving ReviewResult records
+    review_task,  # ReviewTask instance for status updates
+) -> int:
+    """Run the agent review process and return non-compliant findings count.
 
     Uses MasterAgent with SubAgentExecutor for multi-agent review.
+    Saves findings incrementally after each sub-agent, then replaces with merged
+    results after TaskMergeService completes.
 
     Args:
         task_id: Review task ID
         tender_doc: Tender document model
         bid_doc: Bid document model
         session_factory: Async session factory for database operations.
-                       Phase 2 uses a single session, Phase 3 creates fresh sessions per parallel task.
+        cancel_event: asyncio.Event for cancellation.
+        db: Main async database session for persisting ReviewResult records.
+        review_task: ReviewTask instance for status updates.
     """
     from backend.agent.master import MasterAgent
     from backend.services.todo_service import TodoService
 
-    # Create a session for Phase 2 sequential operations (todo creation)
-    db = session_factory()
-    todo_service = TodoService(db)
+    # Create a separate session for todo operations
+    todo_db = session_factory()
+    todo_service = TodoService(todo_db)
     tender_path = tender_doc.parsed_markdown_path or tender_doc.parsed_html_path or ""
     bid_path = bid_doc.parsed_markdown_path or bid_doc.parsed_html_path or ""
 
@@ -416,6 +406,24 @@ async def _run_agent_review(
     if hasattr(tender_doc.project, 'user_id'):
         user_id = str(tender_doc.project.user_id)
 
+    # Callback for incremental saving after each sub-agent completes
+    async def on_sub_agent_completed(findings: list[dict]):
+        non_compliant = [f for f in findings if not f.get("is_compliant", False)]
+        if not non_compliant:
+            return
+        try:
+            for finding_data in non_compliant:
+                finding = ReviewResult(
+                    task_id=task_id,
+                    **finding_data,
+                )
+                db.add(finding)
+            await db.commit()
+            logger.info(f"Incremental save: {len(non_compliant)} findings for task {task_id}")
+        except Exception as e:
+            logger.error(f"Incremental save failed: {e}")
+            await db.rollback()
+
     master = MasterAgent(
         project_id=str(tender_doc.project_id),
         rule_library_path=rule_library_path,
@@ -424,22 +432,53 @@ async def _run_agent_review(
         user_id=user_id,
         event_callback=event_cb,
         cancel_event=cancel_event,
+        on_sub_agent_result=on_sub_agent_completed,
     )
 
     try:
-        # Pass session_factory so parallel sub-agents can create their own sessions
+        # Pass session_factory so sub-agents can create their own sessions
         result = await master.run(todo_service, session_id=task_id, session_factory=session_factory)
 
         if result.get("success"):
-            return result.get("merged_result", {}).get("findings", [])
+            findings = result.get("merged_result", {}).get("findings", [])
+            non_compliant_findings = [f for f in findings if not f.get("is_compliant", False)]
+            logger.info(f"[_run_agent_review] project_id={review_task.project_id}, task_id={task_id}, total_findings={len(findings)}, non_compliant={len(non_compliant_findings)}")
+
+            # Remove sub-agent incremental saves, replace with merged findings
+            from sqlalchemy import delete
+            await db.execute(
+                delete(ReviewResult).where(ReviewResult.task_id == task_id)
+            )
+
+            for finding_data in non_compliant_findings:
+                finding = ReviewResult(
+                    task_id=task_id,
+                    **finding_data,
+                )
+                db.add(finding)
+
+            # Update task status
+            review_task.status = "completed"
+            review_task.completed_at = datetime.utcnow()
+            await db.commit()
+
+            # Trigger merge task after successful completion
+            from backend.tasks.review_tasks import merge_review_results
+            merge_review_results.delay(project_id=review_task.project_id, latest_task_id=task_id)
+
+            logger.info(f"[_run_agent_review] Completed: saved {len(non_compliant_findings)} merged findings")
+
+            return len(non_compliant_findings)
+
         else:
             error_msg = result.get("error", "Unknown error")
             event_cb("error", {"message": f"MasterAgent error: {error_msg}"})
-            return _create_error_finding(error_msg)
+            raise Exception(error_msg)
 
     except Exception as e:
         logger.exception(f"MasterAgent execution failed for task {task_id}: {e}")
         event_cb("error", {"message": f"Agent error: {str(e)}"})
-        return _create_error_finding(str(e))
+        raise  # Re-raise so run_review._run() handles status update
+
     finally:
-        await db.close()
+        await todo_db.close()

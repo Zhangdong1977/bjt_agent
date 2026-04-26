@@ -26,6 +26,7 @@ class MasterAgent:
         event_callback: Optional[Callable] = None,
         max_retries: int = 3,
         cancel_event: Optional[asyncio.Event] = None,
+        on_sub_agent_result: Optional[Callable] = None,
     ):
         self.project_id = project_id
         self.rule_library_path = rule_library_path
@@ -35,6 +36,7 @@ class MasterAgent:
         self.event_callback = event_callback
         self.max_retries = max_retries
         self.cancel_event = cancel_event
+        self.on_sub_agent_result = on_sub_agent_result
 
         self.scanner = RuleLibraryScannerTool()
         self._todo_items = []
@@ -203,6 +205,13 @@ class MasterAgent:
                     "findings_count": len(findings),
                     "findings": findings,
                 })
+
+                # Incremental save callback for ReviewResult persistence
+                if self.on_sub_agent_result and findings:
+                    try:
+                        await self.on_sub_agent_result(findings)
+                    except Exception as e:
+                        logger.warning(f"[_run_single_sub_agent] on_sub_agent_result callback failed: {e}")
 
                 return result
 

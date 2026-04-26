@@ -39,6 +39,9 @@ const toolNameMap: Record<string, string> = {
   get_skill: '获取技能',
   record_note: '记录笔记',
   recall_notes: '回忆笔记',
+  // MCP 工具
+  understand_image: '理解图片',
+  web_search: '网络搜索',
 }
 
 function formatTime(date: Date): string {

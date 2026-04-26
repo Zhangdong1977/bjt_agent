@@ -94,10 +94,6 @@ def _clean_sd_abs_pos_elements(html_content: str) -> str:
     return str(soup)
 
 
-
-
-
-
 def _fix_html_image_paths(html_content: str, images_dir_name: str) -> str:
     """Fix image paths in HTML to point to the correct images directory.
 
