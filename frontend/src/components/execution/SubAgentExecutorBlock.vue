@@ -67,7 +67,7 @@ const agentsWithSteps = computed(() => {
           <path d="M5.5 3.5v2.5l1.5 1" stroke="var(--blue)" stroke-width="1.1" stroke-linecap="round"/>
         </svg>
       </div>
-      <span class="executor-title">SubAgentExecutor</span>
+      <span class="executor-title">执行详情</span>
       <span class="executor-count">{{ agentsWithSteps.length }} 个子代理</span>
     </div>
     <div class="executor-body">

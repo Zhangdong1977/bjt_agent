@@ -213,7 +213,7 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' {
     <template v-if="!isBidReviewAgentMode && (phase === 'running' || phase === 'completed')">
       <!-- MasterAgent 时间线 -->
       <div class="phase-block">
-        <div class="phase-label">MasterAgent · 规则解析</div>
+        <div class="phase-label">主代理</div>
         <div class="master-timeline">
           <AgentTimelineItem
             v-for="step in observations"
