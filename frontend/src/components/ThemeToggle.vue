@@ -37,7 +37,7 @@ const label = computed(() => theme.value === 'dark' ? '切换亮色模式' : '�
 
 .theme-toggle:hover {
   background: var(--bg3);
-  border-color: var(--purple);
+  border-color: var(--blue);
   transform: scale(1.05);
 }
 

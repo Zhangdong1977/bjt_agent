@@ -106,7 +106,7 @@ const progress = computed(() => {
   overflow: hidden;
   margin-bottom: 8px;
 }
-.agent-card.ac-running { border-color: var(--purple-dim); }
+.agent-card.ac-running { border-color: var(--blue-dim); }
 .agent-card.ac-done { border-color: var(--green-dim); }
 
 .agent-card-head {
@@ -119,7 +119,7 @@ const progress = computed(() => {
   cursor: pointer;
   user-select: none;
 }
-.agent-card.ac-running .agent-card-head { background: var(--purple-bg); }
+.agent-card.ac-running .agent-card-head { background: var(--blue-bg); }
 .agent-card.ac-done .agent-card-head { background: var(--green-bg); }
 
 .ac-avt {
@@ -130,7 +130,7 @@ const progress = computed(() => {
   flex-shrink: 0;
 }
 .ac-done .ac-avt { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-dim); }
-.ac-running .ac-avt { background: var(--purple-bg); color: var(--purple); border: 1px solid var(--purple-dim); }
+.ac-running .ac-avt { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-dim); }
 .ac-wait .ac-avt { background: var(--bg3); color: var(--muted); border: 1px solid var(--line2); }
 
 .ac-info { flex: 1; min-width: 0; }
@@ -146,7 +146,7 @@ const progress = computed(() => {
 }
 .pbar-inner { height: 100%; border-radius: 2px; transition: width 0.5s ease; }
 .ac-done .pbar-inner { background: var(--green); }
-.ac-running .pbar-inner { background: var(--purple); }
+.ac-running .pbar-inner { background: var(--blue); }
 .ac-wait .pbar-inner { background: var(--dim); }
 
 .chevron { font-size: 10px; color: var(--dim); transition: transform 0.2s; }
@@ -188,13 +188,13 @@ const progress = computed(() => {
   white-space: nowrap;
 }
 .dp-done { background: var(--green-bg); border-color: var(--green-dim); color: var(--green); }
-.dp-run { background: var(--purple-bg); border-color: var(--purple-dim); color: var(--purple); }
+.dp-run { background: var(--blue-bg); border-color: var(--blue-dim); color: var(--blue); }
 .dp-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }
 .dp-fail { background: var(--red-bg); border-color: var(--red-dim); color: var(--red); }
 
 .dp-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .dp-done .dp-dot { background: var(--green); }
-.dp-run .dp-dot { background: var(--purple); animation: blink 1s infinite; }
+.dp-run .dp-dot { background: var(--blue); animation: blink 1s infinite; }
 .dp-wait .dp-dot { background: var(--muted); }
 .dp-fail .dp-dot { background: var(--red); }
 
@@ -235,7 +235,7 @@ const progress = computed(() => {
 }
 .log-cursor {
   width: 6px; height: 12px;
-  background: var(--purple);
+  background: var(--blue);
   display: inline-block;
   border-radius: 1px;
   animation: blink 0.9s step-end infinite;
@@ -251,6 +251,6 @@ const progress = computed(() => {
   border: 1px solid;
 }
 .chip-done { background: var(--green-bg); border-color: var(--green-dim); color: var(--green); }
-.chip-run { background: var(--purple-bg); border-color: var(--purple-dim); color: var(--purple); }
+.chip-run { background: var(--blue-bg); border-color: var(--blue-dim); color: var(--blue); }
 .chip-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }
 </style>

@@ -29,6 +29,16 @@ const toolNameMap: Record<string, string> = {
   rag_search: '搜索知识库',
   comparator: '内容比对',
   compare_bid: '标书比对',
+  // Mini-Agent 内置工具
+  read_file: '读取文件',
+  write_file: '写入文件',
+  edit_file: '编辑文件',
+  bash: '终端命令',
+  bash_output: '命令输出',
+  bash_kill: '终止命令',
+  get_skill: '获取技能',
+  record_note: '记录笔记',
+  recall_notes: '回忆笔记',
 }
 
 function formatTime(date: Date): string {
@@ -42,7 +52,7 @@ function formatTime(date: Date): string {
 
 function getStepColor(stepType: string): string {
   const colorMap: Record<string, string> = {
-    master: 'var(--purple)',
+    master: 'var(--blue)',
     tool_call: 'var(--amber)',
     observation: 'var(--green)',
     thought: 'var(--blue)',
@@ -155,7 +165,7 @@ function formatToolResult(result: any): string {
   border-left: 3px solid;
 }
 
-.card-master { background: var(--purple-bg); border-color: var(--purple); }
+.card-master { background: var(--blue-bg); border-color: var(--blue); }
 .card-observation { background: var(--green-bg); border-color: var(--green); }
 .card-tool_call { background: var(--amber-bg); border-color: var(--amber); }
 .card-thought { background: var(--blue-bg); border-color: var(--blue); }
@@ -228,7 +238,7 @@ function formatToolResult(result: any): string {
 .tool-name {
   font-size: 11px;
   font-weight: 600;
-  color: var(--purple);
+  color: var(--blue);
 }
 
 .tool-call-args {

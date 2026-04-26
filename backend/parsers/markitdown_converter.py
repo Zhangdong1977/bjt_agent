@@ -1,7 +1,7 @@
 """Markitdown converter module for DOCX/DOC to Markdown conversion."""
 
 import logging
-import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -43,11 +43,12 @@ class MarkitdownConverter:
         """
         self.timeout = timeout
 
-    def convert(self, file_path: Path) -> ConversionResult:
+    def convert(self, file_path: Path, progress_callback=None) -> ConversionResult:
         """Convert a DOCX/DOC file to Markdown format.
 
         Args:
             file_path: Path to the input DOCX/DOC file
+            progress_callback: Optional callback for progress updates (processed, total)
 
         Returns:
             ConversionResult with markdown_content, images, and page_count
@@ -67,25 +68,39 @@ class MarkitdownConverter:
         logger.info(f"Markitdown conversion: {file_path} ({file_size / (1024 * 1024):.2f}MB)")
 
         try:
-            # Add markitdown to path
-            import sys
+            # Add markitdown and mammoth paths to sys.path
             markitdown_path = Path(__file__).parent.parent.parent / "third_party" / "markitdown" / "packages" / "markitdown" / "src"
-            if str(markitdown_path) not in sys.path:
-                sys.path.insert(0, str(markitdown_path))
+            mammoth_path = Path(__file__).parent.parent.parent / "third_party" / "mammoth"
 
+            for p in [str(markitdown_path), str(mammoth_path)]:
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+
+            # Import markitdown components
             from markitdown import MarkItDown
 
-            markitdown = MarkItDown()
-            # keep_data_uris=True preserves full base64 image data instead of truncating to "base64..."
-            result = markitdown.convert(str(file_path.resolve()), keep_data_uris=True)
+            # Create converter and convert
+            converter = MarkItDown()
 
-            # Extract images from result
+            # Prepare kwargs: keep_data_uris=True preserves full base64 image data
+            # (without it, _CustomMarkdownify truncates to "data:image/png;base64,...")
+            kwargs = {"keep_data_uris": True}
+            if progress_callback:
+                kwargs["progress_callback"] = progress_callback
+
+            # Convert using markitdown (which uses mammoth internally)
+            result = converter.convert(
+                source=file_path,
+                **kwargs
+            )
+
+            # Extract images from the markdown content (base64 data URIs)
             images = self._extract_images(result)
 
-            logger.info(f"Markitdown conversion successful: {len(result.text_content)} characters, {len(images)} images")
+            logger.info(f"Markitdown conversion successful: {len(result.markdown)} chars, {len(images)} images")
 
             return ConversionResult(
-                markdown_content=result.text_content or "",
+                markdown_content=result.markdown or "",
                 images=images,
                 page_count=None
             )
@@ -102,7 +117,7 @@ class MarkitdownConverter:
         them from the text content.
 
         Args:
-            result: MarkItDown result object
+            result: MarkItDown DocumentConverterResult object
 
         Returns:
             List of ImageInfo objects
@@ -128,13 +143,16 @@ class MarkitdownConverter:
             return images
 
         # Fallback: extract images from markdown text content
-        markdown_text = result.text_content or ""
+        # The markdown contains data URIs like:
+        #   ![alt](data:image/png;base64,iVBORw0KGgo...)
+        markdown_text = result.markdown or ""
 
         # Pattern matches: data:image/[type];base64,[base64_data]
+        # Uses [\s\S] to match across line boundaries since base64 can span multiple lines
         pattern = r'data:image/([^;]+);base64,([A-Za-z0-9+/=\s]+)'
 
         for match in re.finditer(pattern, markdown_text):
-            mime_type = match.group(1)  # e.g., "jpeg", "png"
+            mime_type = match.group(1)  # e.g., "png", "jpeg"
             base64_data = match.group(2).replace('\n', '').replace('\r', '').strip()
 
             try:

@@ -217,13 +217,13 @@ function goToTaskExecution() {
               <input
                 v-else
                 type="file"
-                accept=".pdf,.docx,.doc"
+                accept=".docx"
                 :id="'tender-upload'"
                 class="file-input"
                 @change="handleUpload($event, 'tender')"
               />
               <label v-if="!projectStore.uploadProgress['tender']" for="tender-upload" class="upload-label">
-                点击上传 PDF 或 Word 文件
+                点击上传 Word 文件 (.docx)
               </label>
             </div>
           </div>
@@ -281,13 +281,13 @@ function goToTaskExecution() {
               <input
                 v-else
                 type="file"
-                accept=".pdf,.docx,.doc"
+                accept=".docx"
                 :id="'bid-upload'"
                 class="file-input"
                 @change="handleUpload($event, 'bid')"
               />
               <label v-if="!projectStore.uploadProgress['bid']" for="bid-upload" class="upload-label">
-                点击上传 PDF 或 Word 文件
+                点击上传 Word 文件 (.docx)
               </label>
             </div>
           </div>
@@ -375,7 +375,7 @@ function goToTaskExecution() {
   color: var(--text);
   margin-bottom: 1.5rem;
   padding-bottom: 0.5rem;
-  border-bottom: 2px solid var(--purple);
+  border-bottom: 2px solid var(--blue);
 }
 
 .documents-grid {
@@ -467,9 +467,9 @@ function goToTaskExecution() {
 .upload-label {
   display: block;
   padding: 2rem;
-  border: 2px dashed var(--purple);
+  border: 2px dashed var(--blue);
   border-radius: var(--r2);
-  color: var(--purple);
+  color: var(--blue);
   cursor: pointer;
   transition: background-color 0.2s ease;
 }
@@ -525,7 +525,7 @@ function goToTaskExecution() {
 }
 
 .view-btn {
-  background: var(--purple);
+  background: var(--blue);
   color: var(--white);
 }
 
@@ -749,7 +749,7 @@ function goToTaskExecution() {
 
 .start-review-btn {
   padding: 0.6rem 1.5rem;
-  background: var(--purple);
+  background: var(--blue);
   color: var(--white);
   border: none;
   border-radius: var(--r);
@@ -796,7 +796,7 @@ function goToTaskExecution() {
 
 .view-task-btn {
   padding: 0.5rem 1rem;
-  background: var(--purple);
+  background: var(--blue);
   color: var(--white);
   border: none;
   border-radius: var(--r);

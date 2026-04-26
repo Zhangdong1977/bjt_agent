@@ -4,3 +4,6 @@
 [submodule "third_party/markitdown"]
 	path = third_party/markitdown
 	url = https://github.com/microsoft/markitdown.git
+[submodule "third_party/mammoth"]
+	path = third_party/mammoth
+	url = https://github.com/Zhangdong1977/python-mammoth.git

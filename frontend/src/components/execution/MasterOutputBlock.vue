@@ -61,10 +61,10 @@ function formatArgs(args: Record<string, any>): string {
 <template>
   <div class="output-block">
     <div class="output-header">
-      <div class="output-header-icon" style="background:var(--purple-bg);border:1px solid var(--purple-dim)">
+      <div class="output-header-icon" style="background:var(--blue-bg);border:1px solid var(--blue-dim)">
         <svg viewBox="0 0 11 11" fill="none">
-          <circle cx="5.5" cy="5.5" r="4" stroke="var(--purple)" stroke-width="1.2"/>
-          <path d="M5.5 3.5v2.5l1.5 1" stroke="var(--purple)" stroke-width="1.1" stroke-linecap="round"/>
+          <circle cx="5.5" cy="5.5" r="4" stroke="var(--blue)" stroke-width="1.2"/>
+          <path d="M5.5 3.5v2.5l1.5 1" stroke="var(--blue)" stroke-width="1.1" stroke-linecap="round"/>
         </svg>
       </div>
       <span class="output-header-title">主代理 — 规则解析</span>
@@ -130,7 +130,7 @@ function formatArgs(args: Record<string, any>): string {
   border-radius: 3px;
   border: 1px solid;
 }
-.chip-master { background: var(--purple-bg); border-color: var(--purple-dim); color: var(--purple); }
+.chip-master { background: var(--blue-bg); border-color: var(--blue-dim); color: var(--blue); }
 
 .ts { font-size: 11px; color: var(--dim); font-style: italic; }
 

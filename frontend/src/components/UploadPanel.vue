@@ -143,15 +143,15 @@ async function handleUpload(event: Event) {
 .upload-label {
   display: block;
   padding: 2rem;
-  border: 2px dashed var(--purple);
+  border: 2px dashed var(--blue);
   border-radius: var(--r2);
-  color: var(--purple);
+  color: var(--blue);
   cursor: pointer;
   transition: background-color 0.2s ease;
 }
 
 .upload-label:hover {
-  background: var(--purple-bg);
+  background: var(--blue-bg);
 }
 
 .status {
@@ -199,7 +199,7 @@ async function handleUpload(event: Event) {
 }
 
 .view-btn {
-  background: var(--purple);
+  background: var(--blue);
   color: var(--white);
   transition: filter 0.2s ease;
 }

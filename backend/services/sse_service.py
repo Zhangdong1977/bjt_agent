@@ -9,6 +9,7 @@ import redis
 
 from backend.config import get_settings
 
+# Configure module logger
 logger = logging.getLogger(__name__)
 
 
@@ -44,7 +45,8 @@ class SSEConnectionManager:
             """Blocking listener that runs in a separate thread using sync redis."""
             r = None
             try:
-                r = redis.from_url(settings.redis_url, decode_responses=True)
+                # Add socket_timeout to prevent blocking on Redis I/O
+                r = redis.from_url(settings.redis_url, decode_responses=True, socket_timeout=5.0, socket_connect_timeout=5.0)
                 logger.info(f"[SSE.redis_listener] Subscribed to stream: {stream_key}")
 
                 # Start reading from last_event_id if provided, otherwise from beginning

@@ -81,7 +81,7 @@ function getAgentTagClass(status: string) {
   font-size: 9px;
 }
 .todo-item.td-done .todo-check { border-color: var(--green-dim); background: var(--green-bg); color: var(--green); }
-.todo-item.td-run .todo-check { border-color: var(--purple-dim); background: var(--purple-bg); color: var(--purple); }
+.todo-item.td-run .todo-check { border-color: var(--blue-dim); background: var(--blue-bg); color: var(--blue); }
 .todo-item.td-wait .todo-check { border-color: var(--line2); background: var(--bg2); color: transparent; }
 
 .todo-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -101,14 +101,14 @@ function getAgentTagClass(status: string) {
   letter-spacing: 0.03em;
 }
 .tag-done { background: var(--green-bg); border: 1px solid var(--green-dim); color: var(--green); }
-.tag-run { background: var(--purple-bg); border: 1px solid var(--purple-dim); color: var(--purple); }
+.tag-run { background: var(--blue-bg); border: 1px solid var(--blue-dim); color: var(--blue); }
 .tag-wait { background: var(--bg3); border: 1px solid var(--line2); color: var(--muted); }
 
 .todo-spin {
   width: 10px; height: 10px;
   border-radius: 50%;
-  border: 1.5px solid var(--purple-dim);
-  border-top-color: var(--purple);
+  border: 1.5px solid var(--blue-dim);
+  border-top-color: var(--blue);
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -121,6 +121,6 @@ function getAgentTagClass(status: string) {
   border: 1px solid;
 }
 .chip-done { background: var(--green-bg); border-color: var(--green-dim); color: var(--green); }
-.chip-run { background: var(--purple-bg); border-color: var(--purple-dim); color: var(--purple); }
+.chip-run { background: var(--blue-bg); border-color: var(--blue-dim); color: var(--blue); }
 .chip-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }
 </style>

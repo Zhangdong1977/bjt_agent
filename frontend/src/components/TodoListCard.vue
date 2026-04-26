@@ -80,7 +80,7 @@ const checkItemsCount = computed(() => props.todo.check_items?.length || 0)
 }
 .todo-item:hover { background: var(--bg3); }
 .td-done .todo-check { border-color: var(--green-dim); background: var(--green-bg); color: var(--green); }
-.td-run .todo-check { border-color: var(--purple-dim); background: var(--purple-bg); color: var(--purple); }
+.td-run .todo-check { border-color: var(--blue-dim); background: var(--blue-bg); color: var(--blue); }
 .td-fail .todo-check { border-color: var(--red-dim); background: var(--red-bg); color: var(--red); }
 .td-wait .todo-check { border-color: var(--line2); background: var(--bg2); color: transparent; }
 
@@ -96,8 +96,8 @@ const checkItemsCount = computed(() => props.todo.check_items?.length || 0)
 .todo-spin {
   width: 10px; height: 10px;
   border-radius: 50%;
-  border: 1.5px solid var(--purple-dim);
-  border-top-color: var(--purple);
+  border: 1.5px solid var(--blue-dim);
+  border-top-color: var(--blue);
   animation: spin 0.8s linear infinite;
 }
 
@@ -111,13 +111,13 @@ const checkItemsCount = computed(() => props.todo.check_items?.length || 0)
 .todo-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .agent-tag { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 3px; }
 .tag-done { background: var(--green-bg); border: 1px solid var(--green-dim); color: var(--green); }
-.tag-run { background: var(--purple-bg); border: 1px solid var(--purple-dim); color: var(--purple); }
+.tag-run { background: var(--blue-bg); border: 1px solid var(--blue-dim); color: var(--blue); }
 .tag-wait { background: var(--bg3); border: 1px solid var(--line2); color: var(--muted); }
 .tag-fail { background: var(--red-bg); border: 1px solid var(--red-dim); color: var(--red); }
 
 .chip { font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 3px; border: 1px solid; }
 .chip-done { background: var(--green-bg); border-color: var(--green-dim); color: var(--green); }
-.chip-run { background: var(--purple-bg); border-color: var(--purple-dim); color: var(--purple); }
+.chip-run { background: var(--blue-bg); border-color: var(--blue-dim); color: var(--blue); }
 .chip-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }
 .chip-fail { background: var(--red-bg); border-color: var(--red-dim); color: var(--red); }
 

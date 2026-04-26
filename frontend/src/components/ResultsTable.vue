@@ -114,7 +114,7 @@ tr.non-compliant:hover {
 }
 
 .suggestion-cell {
-  color: var(--purple);
+  color: var(--blue);
   font-style: italic;
 }
 </style>

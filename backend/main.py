@@ -1,6 +1,8 @@
 """FastAPI application entry point."""
 
 import asyncio
+import logging
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -17,6 +19,16 @@ from backend.api.events import router as events_router
 from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+
+# Configure logging to output to stdout (captured by uvicorn)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stdout,
+)
+# Set specific loggers to DEBUG level for SSE service
+logging.getLogger("backend.services.sse_service").setLevel(logging.DEBUG)
+logging.getLogger("backend.api.events").setLevel(logging.DEBUG)
 
 settings = get_settings()
 

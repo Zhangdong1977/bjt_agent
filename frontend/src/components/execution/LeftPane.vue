@@ -374,7 +374,7 @@ function formatTime(date: Date): string {
 
 .master-timeline {
   padding-left: 8px;
-  border-left: 2px solid var(--purple-dim);
+  border-left: 2px solid var(--blue-dim);
 }
 
 .merge-block {
@@ -403,9 +403,9 @@ function formatTime(date: Date): string {
 }
 
 .chip-run {
-  background: var(--purple-bg);
-  border-color: var(--purple-dim);
-  color: var(--purple);
+  background: var(--blue-bg);
+  border-color: var(--blue-dim);
+  color: var(--blue);
 }
 
 .merge-icon.spin {

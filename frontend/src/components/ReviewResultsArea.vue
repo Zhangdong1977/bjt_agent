@@ -163,7 +163,7 @@ function getSeverityClass(severity: string) {
 }
 
 .suggestion {
-  color: var(--purple);
+  color: var(--blue);
 }
 
 .no-results {

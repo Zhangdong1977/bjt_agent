@@ -96,7 +96,7 @@ function goToTimeline() {
 
 .timeline-btn {
   padding: 0.5rem 1rem;
-  background: var(--purple);
+  background: var(--blue);
   color: var(--white);
   border: none;
   border-radius: var(--r);
@@ -123,7 +123,7 @@ function goToTimeline() {
   color: var(--text);
   margin-bottom: 1rem;
   padding-bottom: 0.5rem;
-  border-bottom: 2px solid var(--purple);
+  border-bottom: 2px solid var(--blue);
 }
 
 .no-results {

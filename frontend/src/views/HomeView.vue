@@ -145,7 +145,7 @@ function logout() {
 }
 
 .header h1 {
-  color: var(--purple);
+  color: var(--blue);
   font-size: 1.5rem;
   font-weight: 600;
 }
@@ -189,7 +189,7 @@ function logout() {
 
 .primary-btn {
   padding: 0.75rem 1.5rem;
-  background: var(--purple);
+  background: var(--blue);
   color: var(--white);
   border: none;
   border-radius: var(--r);
@@ -231,7 +231,7 @@ function logout() {
 }
 
 .project-card:hover {
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--purple) 15%, transparent);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--blue) 15%, transparent);
   transform: translateY(-2px);
 }
 
@@ -318,8 +318,8 @@ function logout() {
 .form-group input:focus,
 .form-group textarea:focus {
   outline: none;
-  border-color: var(--purple);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--purple) 15%, transparent);
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 15%, transparent);
 }
 
 .modal-actions {
@@ -343,7 +343,7 @@ function logout() {
 }
 
 .modal-actions .primary-btn {
-  background: var(--purple);
+  background: var(--blue);
   color: var(--white);
 }
 

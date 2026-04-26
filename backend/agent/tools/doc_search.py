@@ -1,4 +1,4 @@
-"""Document search tool for querying tender and bid documents."""
+"""文档搜索工具，用于查询招标书和应标书内容。"""
 
 import re
 from html import unescape
@@ -8,11 +8,11 @@ from typing import Optional
 from backend.agent.tools.base import ToolResult
 from mini_agent.tools.base import Tool as BaseTool
 
-# Default chunk size for large documents
-DEFAULT_CHUNK_SIZE = 8000  # characters
+# 大文档分块大小
+DEFAULT_CHUNK_SIZE = 8000  # 字符数
 MAX_LINES_PER_QUERY = 100
 
-# Constants for _extract_summary
+# _extract_summary 函数的常量
 _MIN_LINE_LENGTH = 5
 _MAX_LINE_TRUNCATE = 150
 _MAX_LINES_PER_CATEGORY = 3
@@ -51,7 +51,7 @@ def smart_truncate(text: str, max_length: int = 400) -> str:
     return truncated + '...'
 
 
-# Precompiled category patterns for performance
+# 预编译的分类模式，用于性能优化
 _CATEGORY_PATTERNS = {
     "技术": (re.compile(r"技术|Python|Vue|FastAPI|开发", re.IGNORECASE), "🛠️"),
     "工期": (re.compile(r"工期|时间|交付|完成", re.IGNORECASE), "⏱️"),
@@ -61,34 +61,34 @@ _CATEGORY_PATTERNS = {
 
 
 class DocSearchTool(BaseTool):
-    """Tool for searching and reading tender/bid document content."""
+    """用于搜索和读取招标书/应标书内容的工具。"""
 
     def __init__(self, tender_doc_path: str, bid_doc_path: str, chunk_size: int = DEFAULT_CHUNK_SIZE):
-        """Initialize the document search tool.
+        """初始化文档搜索工具。
 
         Args:
-            tender_doc_path: Path to the parsed tender HTML file
-            bid_doc_path: Path to the parsed bid HTML file
-            chunk_size: Maximum characters per chunk for large documents
+            tender_doc_path: 已解析的招标书HTML文件路径
+            bid_doc_path: 已解析的应标书HTML文件路径
+            chunk_size: 大文档每块的最大字符数
         """
         self.tender_doc_path = tender_doc_path
         self.bid_doc_path = bid_doc_path
         self.chunk_size = chunk_size
-        # Cache for loaded documents to avoid repeated disk reads
+        # 文档缓存，避免重复磁盘读取
         self._cache: dict[str, tuple[str, list[str]]] = {}
         super().__init__()
 
     def _load_document(self, doc_path: Path) -> tuple[str, list[str]]:
-        """Load document and return (full_content, lines_list).
+        """加载文档并返回 (完整内容, 行列表)。
 
-        Uses caching to avoid repeated disk reads.
+        使用缓存避免重复磁盘读取。
         """
         cache_key = str(doc_path)
         if cache_key in self._cache:
             return self._cache[cache_key]
 
         if not doc_path.exists():
-            raise FileNotFoundError(f"Document not found: {doc_path}")
+            raise FileNotFoundError(f"文档未找到: {doc_path}")
 
         content = doc_path.read_text(encoding="utf-8")
         lines = content.split("\n")
@@ -96,24 +96,24 @@ class DocSearchTool(BaseTool):
         return content, lines
 
     def _find_line_around(self, lines: list[str], keyword: str, target_line: int = None) -> tuple[int, str]:
-        """Find line number and content around the keyword match.
+        """查找关键词匹配的行号和内容。
 
-        Returns (line_number, line_content).
+        Returns (行号, 行内容)。
         """
         for i, line in enumerate(lines):
             if keyword.lower() in line.lower():
-                return i + 1, line  # 1-indexed
+                return i + 1, line  # 从1开始编号
         return -1, ""
 
     def _extract_summary(self, content: str) -> str:
-        """Extract a structured summary from document content.
+        """从文档内容中提取结构化摘要。
 
-        Returns a human-friendly summary with categorized sections.
+        返回带分类区块的人类可读摘要。
         """
         lines = content.split('\n')
         summary_parts = []
 
-        # Find matching lines for each category using precompiled patterns
+        # 使用预编译模式查找每个分类的匹配行
         categorized_lines = {cat: [] for cat in _CATEGORY_PATTERNS}
 
         for line in lines:
@@ -125,7 +125,7 @@ class DocSearchTool(BaseTool):
                     categorized_lines[cat_name].append(line_stripped[:_MAX_LINE_TRUNCATE])
                     break
 
-        # Build summary
+        # 构建摘要
         for cat_name, (pattern, icon) in _CATEGORY_PATTERNS.items():
             lines_for_cat = categorized_lines[cat_name][:(_MAX_LINES_PER_CATEGORY)]
             if lines_for_cat:
@@ -134,7 +134,7 @@ class DocSearchTool(BaseTool):
                     summary_parts.append(f"• {l}")
 
         if not summary_parts:
-            # Fallback: first few non-empty lines
+            # 备用方案：取前几行非空行
             summary_parts.append("\n📝 文档内容")
             for line in lines[:(_FALLBACK_LINE_COUNT)]:
                 if line.strip():
@@ -143,9 +143,9 @@ class DocSearchTool(BaseTool):
         return "\n".join(summary_parts)
 
     def _extract_image_refs(self, content: str) -> list[dict]:
-        """Extract all markdown image references from content.
+        """从内容中提取所有markdown图片引用。
 
-        Returns list of {alt_text, path, full_match, line_number}.
+        返回列表: {alt_text, path, full_match, line_number}。
         """
         image_refs = []
         lines = content.split("\n")
@@ -156,26 +156,26 @@ class DocSearchTool(BaseTool):
                     "alt_text": match.group(1),
                     "path": match.group(2),
                     "full_match": match.group(0),
-                    "line_number": i + 1,  # 1-indexed
+                    "line_number": i + 1,  # 从1开始编号
                 })
         return image_refs
 
     def _search_by_keyword(self, lines: list[str], query: str, max_results: int = MAX_LINES_PER_QUERY) -> list[dict]:
-        """Search document lines by keyword and return matches with context.
+        """按关键词搜索文档行并返回带上下文的匹配结果。
 
-        Returns list of {line_number, line_content, context, image_refs}.
+        返回列表: {line_number, line_content, context, image_refs}。
         """
         results = []
         query_lower = query.lower()
 
         for i, line in enumerate(lines):
             if query_lower in line.lower():
-                # Get some context (previous and next lines if available)
-                # Strip HTML first, then truncate to avoid cutting mid-tag
+                # 获取上下文（前后各一行）
+                # 先去除HTML，再截断，避免在标签中间截断
                 context_before = smart_truncate(strip_html_tags(lines[max(0, i - 1)].strip()), 150) if i > 0 else ""
                 context_after = smart_truncate(strip_html_tags(lines[min(len(lines) - 1, i + 1)].strip()), 150) if i < len(lines) - 1 else ""
 
-                # Extract image references from this line
+                # 从当前行提取图片引用
                 image_refs = []
                 img_matches = re.finditer(r'!\[([^\]]*)\]\(([^)]+)\)', line)
                 for img_match in img_matches:
@@ -186,7 +186,7 @@ class DocSearchTool(BaseTool):
                     })
 
                 results.append({
-                    "line_number": i + 1,  # 1-indexed
+                    "line_number": i + 1,  # 从1开始编号
                     "line_content": smart_truncate(strip_html_tags(line.strip()), 400),
                     "context_before": context_before,
                     "context_after": context_after,
@@ -199,35 +199,35 @@ class DocSearchTool(BaseTool):
         return results
 
     def _chunk_content(self, content: str, chunk_num: int = 0) -> str:
-        """Split large content into chunks and return specific chunk.
+        """将大内容分块并返回指定块。
 
-        Returns the full content if it's smaller than chunk_size.
-        Returns empty string if chunk_num is out of range.
+        如果内容小于chunk_size，返回完整内容。
+        如果chunk_num超出范围，返回空字符串。
         """
         if len(content) <= self.chunk_size:
             return content
 
-        # Split content into chunks at paragraph/sentence boundaries
+        # 在段落或句子边界处分块
         chunks = []
         start = 0
         while start < len(content):
             end = start + self.chunk_size
             if end < len(content):
-                # Try to break at a paragraph or sentence boundary
+                # 尝试在段落或句子边界处断开
                 break_points = [
                     content.rfind("\n\n", start, end),
                     content.rfind("\n", start, end),
                     content.rfind(". ", start, end),
                 ]
                 for bp in break_points:
-                    if bp > start and bp >= end - 200:  # At least 200 chars into chunk
+                    if bp > start and bp >= end - 200:  # 至少进入块200个字符
                         end = bp + 1
                         break
             chunk = content[start:end]
             chunks.append(chunk)
             start = end
 
-        # Return the requested chunk or empty if out of range
+        # 返回请求的块，超出范围则返回空
         if chunk_num < 0 or chunk_num >= len(chunks):
             return ""
 
@@ -239,13 +239,13 @@ class DocSearchTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return """Search and read tender/bid document content. Input should be a JSON object with:
-- '文档类型': 'tender' or 'bid' (required)
-- 'query': Optional keyword to filter content (returns matching lines with context)
-- 'chunk': Optional chunk number for large documents (0-indexed)
-- 'full_content': Set to true to return entire document content
+        return """搜索和读取招标书/应标书内容。输入应为JSON对象，包含：
+- '文档类型': 'tender' 或 'bid' (必填)
+- 'query': 可选关键词，用于过滤内容（返回匹配行及上下文）
+- 'chunk': 大文档的分块编号（0开始，用于分页）
+- 'full_content': 设为true返回完整文档内容（可能被截断）
 
-Returns matching lines with line numbers and surrounding context."""
+返回匹配行及行号和周围上下文。"""
 
     @property
     def parameters(self) -> dict:
@@ -255,20 +255,20 @@ Returns matching lines with line numbers and surrounding context."""
                 "文档类型": {
                     "type": "string",
                     "enum": ["tender", "bid"],
-                    "description": "Type of document to search",
+                    "description": "要搜索的文档类型",
                 },
                 "query": {
                     "type": "string",
-                    "description": "Optional query string to filter content (keyword search)",
+                    "description": "用于过滤内容的可选查询字符串（关键词搜索）",
                 },
                 "chunk": {
                     "type": "integer",
-                    "description": "Chunk number for large documents (0-indexed, for pagination)",
+                    "description": "大文档的分块编号（0开始，用于分页）",
                     "default": 0,
                 },
                 "full_content": {
                     "type": "boolean",
-                    "description": "If true, return full document content (may be truncated)",
+                    "description": "如果为true，返回完整文档内容（可能被截断）",
                     "default": False,
                 },
             },
@@ -281,32 +281,32 @@ Returns matching lines with line numbers and surrounding context."""
         query: str = None,
         chunk: int = 0,
         full_content: bool = False,
-        # Accept both Chinese and English parameter names for compatibility
+        # 兼容中英文参数名
         doc_type: str = None,
         **kwargs,
     ) -> ToolResult:
-        """Execute the document search.
+        """执行文档搜索。
 
         Args:
-            文档类型: 'tender' or 'bid' (Chinese parameter name from LLM)
-            doc_type: 'tender' or 'bid' (English parameter name, fallback)
-            query: Optional query string to filter lines
-            chunk: Chunk number for pagination of large documents
-            full_content: If True, return full document (may be truncated)
+            文档类型: 'tender' 或 'bid' (来自LLM的中文参数名)
+            doc_type: 'tender' 或 'bid' (英文参数名，备用)
+            query: 可选的查询字符串，用于过滤行
+            chunk: 大文档分页的分块编号
+            full_content: 如果为True，返回完整文档（可能被截断）
 
         Returns:
-            ToolResult with the document content and metadata
+            包含文档内容和元数据的ToolResult
         """
-        # Resolve doc_type from either Chinese or English parameter name
+        # 从中文或英文参数名解析doc_type
         resolved_doc_type = 文档类型 or doc_type
         if not resolved_doc_type:
-            return ToolResult(success=False, content="", error="Missing required parameter: 文档类型 or doc_type")
+            return ToolResult(success=False, content="", error="缺少必需参数: 文档类型 或 doc_type")
 
         try:
             doc_path = Path(self.tender_doc_path if resolved_doc_type == "tender" else self.bid_doc_path)
             _, lines = self._load_document(doc_path)
 
-            # If full content requested, return friendly summary
+            # 如果请求完整内容，返回友好摘要
             if full_content:
                 full_text = "\n".join(lines)
                 total_lines = len(lines)
@@ -315,20 +315,20 @@ Returns matching lines with line numbers and surrounding context."""
                 if len(full_text) > self.chunk_size * 3:
                     full_text = self._chunk_content(full_text, chunk)
                     if chunk > 0:
-                        full_text = f"[... Chunk {chunk} ...]\n{full_text}"
+                        full_text = f"[... 第 {chunk} 块 ...]\n{full_text}"
                         current_chunk_lines = len(full_text.split('\n'))
                     else:
                         current_chunk_lines = len(full_text.split('\n'))
                 else:
                     current_chunk_lines = total_lines
 
-                # Generate friendly summary
+                # 生成友好摘要
                 summary = self._extract_summary(full_text)
                 doc_label = "招标" if doc_type == "tender" else "投标"
 
-                # Pagination note for chunked content
+                # 分页提示
                 if chunk > 0:
-                    pagination_note = f"\n📄 当前第 {chunk + 1} 页，共 {total_chunks} 页"
+                    pagination_note = f"\n📄 当前第 {chunk + 1} 块，共 {total_chunks} 块"
                 else:
                     pagination_note = ""
 
@@ -340,22 +340,22 @@ Returns matching lines with line numbers and surrounding context."""
 
 [完整文档已加载]"""
 
-                # If query also provided, include keyword match summary
+                # 如果也提供了query，包含关键词匹配摘要
                 query_match_info = ""
                 keyword_matches = []
                 if query:
                     keyword_matches = self._search_by_keyword(lines, query)
                     if keyword_matches:
                         query_match_info = f"\n\n📌 关键词\"{query}\"匹配情况：找到 **{len(keyword_matches)}** 处"
-                        # Show first 3 matches as examples
+                        # 显示前3个匹配作为示例
                         for i, m in enumerate(keyword_matches[:3], 1):
                             query_match_info += f"\n   {i}. {m['line_content'][:80]}..."
                     else:
                         query_match_info = f"\n\n📌 关键词\"{query}\"未在正文匹配（可能在分类标题中）"
-                    # Append query info to content
+                    # 将query信息追加到内容
                     friendly_content += query_match_info
 
-                # Extract all image references from the full document
+                # 从完整文档提取所有图片引用
                 all_image_refs = self._extract_image_refs(full_text)
                 has_images = len(all_image_refs) > 0
                 if has_images:
@@ -376,20 +376,20 @@ Returns matching lines with line numbers and surrounding context."""
                     },
                 )
 
-            # If query provided, search by keyword
+            # 如果提供了query，按关键词搜索
             if query:
                 matches = self._search_by_keyword(lines, query)
 
                 if not matches:
                     doc_label = "招标" if doc_type == "tender" else "投标"
-                    # Check if query might be in a category header
+                    # 检查query是否可能在分类标题中
                     query_lower = query.lower()
                     header_matches = []
                     category_indicators = ["技术", "工期", "预算", "资质", "要求", "规格", "标准", "条件"]
                     for i, line in enumerate(lines):
                         line_stripped = strip_html_tags(line.strip()).lower()
                         if query_lower in line_stripped:
-                            # Check if this looks like a header (contains category indicators)
+                            # 检查这是否像标题（包含分类标识符）
                             if any(cat in line_stripped for cat in category_indicators):
                                 header_matches.append(strip_html_tags(line.strip())[:100])
                             if len(header_matches) >= 3:
@@ -414,7 +414,7 @@ Returns matching lines with line numbers and surrounding context."""
                             data={"query": query, "matches": 0, "search_mode": "keyword"},
                         )
 
-                # Format results with context and citations
+                # 格式化结果，包含上下文和引用
                 doc_label = "招标" if doc_type == "tender" else "投标"
                 display_matches = matches[:10]
                 formatted = [f"🔍 在{doc_label}书中找到 **{len(matches)}** 处提到\"{query}\"：\n"]
@@ -422,13 +422,13 @@ Returns matching lines with line numbers and surrounding context."""
                 has_images = False
                 all_image_refs = []
                 for i, m in enumerate(display_matches, 1):
-                    # Format citation with line number and quoted content
+                    # 格式化引用，包含行号和引用内容
                     formatted.append(f"{i}. {m['line_content']}")
                     if m.get('context_before'):
                         formatted.append(f"   ↳ 上文: {m['context_before']}")
                     if m.get('context_after'):
                         formatted.append(f"   ↳ 下文: {m['context_after']}")
-                    # Check for image references in this match
+                    # 检查此匹配中的图片引用
                     img_refs = m.get('image_refs', [])
                     if img_refs:
                         has_images = True
@@ -438,7 +438,7 @@ Returns matching lines with line numbers and surrounding context."""
                         formatted.append(f"   📷 图片: {img_refs[0]['path']}")
                         if len(img_refs) > 1:
                             formatted.append(f"   (还有 {len(img_refs) - 1} 张图片)")
-                    # Build structured citation for data
+                    # 构建结构化引用数据
                     citations.append({
                         "index": i,
                         "line_number": m['line_number'],
@@ -464,7 +464,7 @@ Returns matching lines with line numbers and surrounding context."""
                     },
                 )
 
-            # No query, return document info
+            # 无query时，返回文档信息
             doc_label = "招标" if doc_type == "tender" else "投标"
             return ToolResult(
                 success=True,
@@ -480,11 +480,11 @@ Returns matching lines with line numbers and surrounding context."""
             return ToolResult(
                 success=False,
                 content="",
-                error=f"Document not found: {e}",
+                error=f"文档未找到: {e}",
             )
         except Exception as e:
             return ToolResult(success=False, content="", error=str(e))
 
     def clear_cache(self) -> None:
-        """Clear the document cache."""
+        """清除文档缓存。"""
         self._cache.clear()

@@ -179,8 +179,11 @@ def run_review(self, task_id: str) -> dict:
                 # Send progress event
                 _publish_event(task_id, "progress", {"message": "Starting document analysis..."})
 
+                # Create cancel_event for heartbeat cancellation mechanism
+                cancel_event = asyncio.Event()
+
                 # Run the agent review (pass session_factory for parallel sub-agent session isolation)
-                findings = await _run_agent_review(task_id, tender_doc, bid_doc, session_factory)
+                findings = await _run_agent_review(task_id, tender_doc, bid_doc, session_factory, cancel_event)
 
                 # Store only non-compliant findings (ReviewResult is for non-compliance)
                 non_compliant_findings = [f for f in findings if not f.get("is_compliant", False)]
@@ -373,6 +376,7 @@ async def _run_agent_review(
     tender_doc,
     bid_doc,
     session_factory,
+    cancel_event: asyncio.Event,
 ) -> list[dict]:
     """Run the agent review process and return findings.
 
@@ -419,6 +423,7 @@ async def _run_agent_review(
         bid_doc_path=bid_path,
         user_id=user_id,
         event_callback=event_cb,
+        cancel_event=cancel_event,
     )
 
     try:

@@ -181,18 +181,42 @@ stop_service() {
 
     # Kill by celery pattern (精确匹配，只杀Q队列worker)
     if [ -n "$celery_pattern" ]; then
-        # 使用精确模式: 匹配 "-A celery_app worker ... -Q <queuename>"
+        # 使用精确模式: 匹配 "-A celery_app worker ... -Q <queuename>" 或 "--hostname=<name>"
         local queue_name=""
+        local hostname_pattern=""
         case "$celery_pattern" in
-            "celery.*review") queue_name="review" ;;
-            "celery.*parser") queue_name="parser" ;;
+            "celery.*review")
+                queue_name="review"
+                hostname_pattern="celery_review"
+                ;;
+            "celery.*parser")
+                queue_name="parser"
+                hostname_pattern="celery_parser"
+                ;;
         esac
         if [ -n "$queue_name" ]; then
             # 只杀监听特定队列的celery worker进程
+            # 同时匹配 -Q <queue> 和 --hostname=<hostname> 两种方式
             local celery_pids=$(pgrep -af "celery.*-A.*celery_app.*-Q ${queue_name}" 2>/dev/null)
             if [ -n "$celery_pids" ]; then
                 for p in $celery_pids; do
                     log "Killing celery ${queue_name} worker (PID: $p)..."
+                    kill -9 "$p" 2>/dev/null || true
+                done
+            fi
+            # 也杀掉通过 --hostname 启动的进程
+            local hostname_pids=$(pgrep -af "celery.*-A.*celery_app.*--hostname=${hostname_pattern}" 2>/dev/null)
+            if [ -n "$hostname_pids" ]; then
+                for p in $hostname_pids; do
+                    log "Killing celery ${hostname_pattern} worker (PID: $p)..."
+                    kill -9 "$p" 2>/dev/null || true
+                done
+            fi
+            # 也杀掉通过 backend.celery_app 启动的旧格式进程
+            local backend_pids=$(pgrep -af "celery.*-A backend.celery_app.*--hostname=${hostname_pattern}" 2>/dev/null)
+            if [ -n "$backend_pids" ]; then
+                for p in $backend_pids; do
+                    log "Killing legacy celery ${hostname_pattern} worker (PID: $p)..."
                     kill -9 "$p" 2>/dev/null || true
                 done
             fi

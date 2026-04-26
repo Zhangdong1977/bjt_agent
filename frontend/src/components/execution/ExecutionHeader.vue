@@ -110,9 +110,9 @@ function goBack() {
 }
 
 .status-running {
-  background: var(--purple-bg);
-  border: 1px solid var(--purple-dim);
-  color: var(--purple);
+  background: var(--blue-bg);
+  border: 1px solid var(--blue-dim);
+  color: var(--blue);
 }
 
 .status-completed {
@@ -137,7 +137,7 @@ function goBack() {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--purple);
+  background: var(--blue);
   animation: blink 1.4s ease-in-out infinite;
 }
 

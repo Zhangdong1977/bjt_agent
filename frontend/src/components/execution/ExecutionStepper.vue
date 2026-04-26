@@ -96,9 +96,9 @@ function getStepClass(stepKey: string, currentPhase: string) {
 }
 
 .s-active .step-n {
-  background: var(--purple-bg);
-  border-color: var(--purple-dim);
-  color: var(--purple);
+  background: var(--blue-bg);
+  border-color: var(--blue-dim);
+  color: var(--blue);
   animation: pulse 1.4s ease-in-out infinite;
 }
 
@@ -124,7 +124,7 @@ function getStepClass(stepKey: string, currentPhase: string) {
 }
 
 .s-active .step-label {
-  color: var(--purple);
+  color: var(--blue);
 }
 
 .s-wait .step-label {

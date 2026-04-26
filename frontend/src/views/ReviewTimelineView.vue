@@ -111,7 +111,7 @@ function goBack() {
   color: var(--text);
   margin-bottom: 1.5rem;
   padding-bottom: 0.5rem;
-  border-bottom: 2px solid var(--purple);
+  border-bottom: 2px solid var(--blue);
 }
 
 .task-info {

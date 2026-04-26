@@ -1,5 +1,6 @@
 """MasterAgent - 主代理 - 解析规则库，生成待办列表，并行启动子代理，汇总结果."""
 
+import asyncio
 import json
 import logging
 from typing import Optional, Callable
@@ -24,6 +25,7 @@ class MasterAgent:
         user_id: str,
         event_callback: Optional[Callable] = None,
         max_retries: int = 3,
+        cancel_event: Optional[asyncio.Event] = None,
     ):
         self.project_id = project_id
         self.rule_library_path = rule_library_path
@@ -32,6 +34,7 @@ class MasterAgent:
         self.user_id = user_id
         self.event_callback = event_callback
         self.max_retries = max_retries
+        self.cancel_event = cancel_event
 
         self.scanner = RuleLibraryScannerTool()
         self._todo_items = []
@@ -45,7 +48,7 @@ class MasterAgent:
             except Exception as e:
                 logger.warning(f"[MasterAgent._send_event] Event callback failed: event_type={event_type}, error={e}")
 
-    async def run(self, todo_service, session_id: str, session_factory=None) -> dict:
+    async def run(self, todo_service, session_id: str, session_factory=None, cancel_event: Optional[asyncio.Event] = None) -> dict:
         """
         执行主代理工作流程.
 
@@ -59,7 +62,12 @@ class MasterAgent:
             session_id: Review session ID
             session_factory: Optional async session factory for parallel sub-agent tasks.
                           If provided, each parallel task will create its own session.
+            cancel_event: Optional asyncio.Event to signal cancellation from heartbeat timeout.
         """
+        # Use instance cancel_event if not provided
+        if cancel_event is None:
+            cancel_event = self.cancel_event
+
         self._session_id = session_id
         self._session_factory = session_factory  # Store for parallel tasks
         self._send_event("master_started", {"message": "开始解析规则库"})
@@ -98,7 +106,7 @@ class MasterAgent:
         })
 
         # Phase 3: 串行执行子代理
-        await self._run_sub_agents(todo_service)
+        await self._run_sub_agents(todo_service, cancel_event)
 
         # Phase 4: 汇总结果
         self._send_event("merging_started", {"message": "开始合并结果"})
@@ -112,18 +120,18 @@ class MasterAgent:
             "merged_result": merged_result,
         }
 
-    async def _run_sub_agents(self, todo_service) -> None:
+    async def _run_sub_agents(self, todo_service, cancel_event: Optional[asyncio.Event] = None) -> None:
         """串行执行所有子代理."""
         logger.info(f"[_run_sub_agents] Starting sequential execution with {len(self._todo_items)} todos")
         for i, todo in enumerate(self._todo_items):
             try:
-                result = await self._run_single_sub_agent(todo, todo_service, self._session_factory)
+                result = await self._run_single_sub_agent(todo, todo_service, self._session_factory, cancel_event)
                 logger.info(f"[_run_sub_agents] Task {i+1}/{len(self._todo_items)} completed, success={result.get('success')}")
             except Exception as e:
                 logger.error(f"[_run_sub_agents] Task {i+1} raised exception: {e}")
         logger.info(f"[_run_sub_agents] All tasks completed")
 
-    async def _run_single_sub_agent(self, todo, todo_service, session_factory=None) -> dict:
+    async def _run_single_sub_agent(self, todo, todo_service, session_factory=None, cancel_event: Optional[asyncio.Event] = None) -> dict:
         """执行单个子代理.
 
         Args:
@@ -131,6 +139,7 @@ class MasterAgent:
             todo_service: TodoService for sequential operations (phase 2 todo creation)
             session_factory: Optional session factory. If provided, each retry creates
                           a fresh TodoService with its own database session.
+            cancel_event: Optional asyncio.Event to signal cancellation.
         """
         logger.info(f"[_run_single_sub_agent] Starting for todo_id={todo.id}, rule_doc_name={todo.rule_doc_name}")
         retry_count = 0
@@ -158,6 +167,7 @@ class MasterAgent:
                     session_factory=session_factory,
                     event_callback=self._create_sub_agent_callback(todo.id),
                     session_id=self._session_id,
+                    cancel_event=cancel_event,
                 )
                 logger.info(f"[_run_single_sub_agent] Calling executor.execute() for todo {todo.id}")
                 result = await executor.execute()

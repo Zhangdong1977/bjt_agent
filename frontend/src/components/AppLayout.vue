@@ -52,7 +52,7 @@ function logout() {
 }
 
 .header-left .logo {
-  color: var(--purple);
+  color: var(--blue);
   font-size: 1.25rem;
   font-weight: 600;
   margin: 0;

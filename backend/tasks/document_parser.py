@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import redis
 from pathlib import Path
 
 from typing import Literal
@@ -14,24 +15,41 @@ from backend.models import Document
 logger = logging.getLogger(__name__)
 
 
-Stage = Literal["extracting_text", "processing_images", "saving"]
+# Redis connection pool for _publish_parse_progress - avoids creating new connections each call
+# which was causing thread exhaustion and timeouts under heavy load
+_redis_connection_pool = None
 
-def _publish_parse_progress(document_id: str, stage: Stage, processed: int, total: int, eta_seconds: int) -> None:
+def _get_redis_pool():
+    """Get or create the shared Redis connection pool."""
+    global _redis_connection_pool
+    if _redis_connection_pool is None:
+        from backend.config import get_settings
+        settings = get_settings()
+        # Use a pool with limited connections to prevent resource exhaustion
+        _redis_connection_pool = redis.ConnectionPool.from_url(
+            settings.redis_url,
+            max_connections=10,
+            socket_timeout=5.0,
+            socket_connect_timeout=5.0,
+            socket_keepalive=True,
+        )
+    return _redis_connection_pool
+
+def _publish_parse_progress(document_id: str, stage: str, processed: int, total: int, eta_seconds: int) -> None:
     """Publish a parse progress event to Redis Stream.
 
     Args:
         document_id: The document UUID
-        stage: One of "converting", "extracting", "saving"
-        processed: Number of images processed so far
-        total: Total number of images to process
+        stage: Stage name (e.g., "extracting_text", "saving")
+        processed: Number of elements processed so far
+        total: Total number of elements to process
         eta_seconds: Estimated seconds remaining
     """
     import redis
-    from backend.config import get_settings
 
     try:
-        settings = get_settings()
-        r = redis.from_url(settings.redis_url)
+        pool = _get_redis_pool()
+        r = redis.Redis(connection_pool=pool)
         stream_key = f"sse:stream:doc_parse:{document_id}"
         event = {
             "type": "parse_progress",
@@ -40,9 +58,12 @@ def _publish_parse_progress(document_id: str, stage: Stage, processed: int, tota
             "total": total,
             "eta_seconds": eta_seconds,
         }
+        pct = int(processed * 100 / total) if total > 0 else 0
+        # logger.info(f"[PROGRESS] Publishing to {stream_key}: stage={stage}, processed={processed}, total={total}, pct={pct}%")
         r.xadd(stream_key, {"data": json.dumps(event)})
+        # logger.info(f"[PROGRESS] Successfully published progress event for document {document_id}")
     except Exception as e:
-        logger.warning(f"Failed to publish parse progress for {document_id}: {e}")
+        logger.warning(f"[PROGRESS] Failed to publish parse progress for {document_id}: {e}")
 
 
 def _clean_sd_abs_pos_elements(html_content: str) -> str:
@@ -176,122 +197,78 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
     _publish_parse_progress(document_id, "saving", 1, 3, 0)
 
     parsed_dir = file_path.parent
-    suffix = file_path.suffix.lower()
 
-    # For DOCX/DOC: save as Markdown
-    if suffix in [".docx", ".doc"]:
-        md_path = parsed_dir / f"{file_path.stem}_parsed.md"
-        images_dir = parsed_dir / f"{file_path.stem}_images"
+    # Save as Markdown (DOCX only)
+    md_path = parsed_dir / f"{file_path.stem}_parsed.md"
+    images_dir = parsed_dir / f"{file_path.stem}_images"
 
-        md_content = parsed_data["text"]
+    md_content = parsed_data["text"]
 
-        # Save Markdown content
-        md_path.write_text(md_content, encoding="utf-8")
+    # Save Markdown content
+    md_path.write_text(md_content, encoding="utf-8")
 
-        # Handle images - copy from markitdown result
-        if parsed_data["images"]:
-            images_dir.mkdir(exist_ok=True)
-            for img_info in parsed_data["images"]:
-                img_path = images_dir / img_info["filename"]
-                if not img_path.exists():
-                    img_path.write_bytes(img_info["data"])
-            document.parsed_images_dir = str(images_dir)
-
-        document.parsed_markdown_path = str(md_path)
-        document.word_count = len(md_content.split())
-        document.status = "parsed"
-
-        # Publish saving progress: complete
-        _publish_parse_progress(document_id, "saving", 3, 3, 0)
-
-        return {
-            "status": "success",
-            "document_id": document.id,
-            "parsed_markdown_path": str(md_path),
-            "page_count": None,
-            "word_count": document.word_count,
-        }
-
-    # For PDF: keep existing HTML logic
-    elif suffix == ".pdf":
-        html_path = parsed_dir / f"{file_path.stem}_parsed.html"
-        images_dir = parsed_dir / f"{file_path.stem}_images"
-
-        html_content = parsed_data["text"]
-
-        # Fix image paths in HTML to point to the images directory
-        images_dir_name = f"{file_path.stem}_images"
-        has_images = parsed_data["images"] or images_dir.exists()
-        if has_images:
-            html_content = _fix_html_image_paths(html_content, images_dir_name)
-            html_content = _insert_missing_img_tags(html_content, images_dir)
-
-        # Save images
-        if parsed_data["images"]:
-            images_dir.mkdir(exist_ok=True)
-            for img_info in parsed_data["images"]:
-                img_path = images_dir / img_info["filename"]
+    # Handle images - copy from markitdown result
+    if parsed_data["images"]:
+        images_dir.mkdir(exist_ok=True)
+        for img_info in parsed_data["images"]:
+            img_path = images_dir / img_info["filename"]
+            if not img_path.exists():
                 img_path.write_bytes(img_info["data"])
-            document.parsed_images_dir = str(images_dir)
+        document.parsed_images_dir = str(images_dir)
 
-        # Write HTML and update document
-        html_path.write_text(html_content, encoding="utf-8")
-        document.parsed_html_path = str(html_path)
-        document.page_count = parsed_data.get("page_count")
-        document.word_count = len(html_content.split())
-        document.status = "parsed"
+    document.parsed_markdown_path = str(md_path)
+    document.word_count = len(md_content.split())
+    document.status = "parsed"
 
-        # Publish saving progress: complete
-        _publish_parse_progress(document_id, "saving", 3, 3, 0)
+    # Publish saving progress: complete
+    _publish_parse_progress(document_id, "saving", 3, 3, 0)
 
-        return {
-            "status": "success",
-            "document_id": document.id,
-            "parsed_html_path": str(html_path),
-            "page_count": document.page_count,
-            "word_count": document.word_count,
-        }
+    return {
+        "status": "success",
+        "document_id": document.id,
+        "parsed_markdown_path": str(md_path),
+        "page_count": None,
+        "word_count": document.word_count,
+    }
 
 
 async def _parse_document_internal(document: Document, file_path: Path, settings) -> dict:
-    """Internal document parsing logic."""
+    """Internal document parsing logic for DOCX files."""
     import time as time_module
 
     suffix = file_path.suffix.lower()
     start_time = time_module.time()
-    total_steps = 3
 
-    # Publish initial progress: 0/3, starting text extraction
-    _publish_parse_progress(document.id, "extracting_text", 0, total_steps, 0)
+    logger.info(f"[PARSE] Starting DOCX parsing: document_id={document.id}, file_path={file_path}")
 
-    if suffix == ".pdf":
-        parsed_data = await _parse_pdf(file_path)
-        # Mark text extraction complete, start processing images
-        elapsed = time_module.time() - start_time
-        eta = int(elapsed * 2)  # Rough estimate: 2x elapsed for remaining steps
-        _publish_parse_progress(document.id, "processing_images", 1, total_steps, eta)
-        # Mark image processing complete
-        elapsed = time_module.time() - start_time
-        eta = int(elapsed * 1)  # One more step remaining
-        _publish_parse_progress(document.id, "processing_images", 2, total_steps, eta)
-    elif suffix in [".docx", ".doc"]:
-        parsed_data = await _parse_docx(file_path)
-        # Mark text extraction complete, start processing images
-        elapsed = time_module.time() - start_time
-        eta = int(elapsed * 2)
-        _publish_parse_progress(document.id, "processing_images", 1, total_steps, eta)
-        # Mark image processing complete
-        elapsed = time_module.time() - start_time
-        eta = int(elapsed * 1)
-        _publish_parse_progress(document.id, "processing_images", 2, total_steps, eta)
-    else:
-        document.status = "failed"
-        document.parse_error = f"Unsupported file type: {suffix}"
-        return {"status": "error", "message": f"Unsupported file type: {suffix}"}
+    # Progress tracking for DOCX parsing via mammoth
+    # mammoth's _visit_all is called recursively for nested elements (runs, table cells, etc.),
+    # but the progress callback now only fires from the top-level document.children iteration.
+    # processed is the count of top-level elements visited so far (at 10-element intervals).
+    last_published_time = 0
+    MIN_PUBLISH_INTERVAL = 0.5  # seconds between publishes
+
+    def docx_progress_callback(processed: int, total: int):
+        nonlocal last_published_time
+        logger.info(f"[PARSE] DOCX progress callback: processed={processed}, total={total}")
+
+        if total <= 0:
+            return
+
+        current_time = time_module.time()
+        # Always publish final progress (processed >= total) to prevent frontend stalling
+        # Time-based throttling: skip non-final events within 0.5s window
+        if processed < total and current_time - last_published_time < MIN_PUBLISH_INTERVAL:
+            return
+
+        last_published_time = current_time
+        _publish_parse_progress(document.id, "extracting_text", processed, total, 0)
+
+    parsed_data = await _parse_docx(file_path, progress_callback=docx_progress_callback, document_id=document.id)
+    logger.info(f"[PARSE] DOCX parsing completed, markdown length: {len(parsed_data.get('text', ''))}")
 
     # Mark saving complete (final step)
-    elapsed = time_module.time() - start_time
-    _publish_parse_progress(document.id, "saving", 3, total_steps, 0)
+    _publish_parse_progress(document.id, "saving", 3, 3, 0)
 
     return await _save_parsed_content(file_path, parsed_data, document, settings, document.id)
 
@@ -431,11 +408,12 @@ async def _parse_pdf(file_path: Path) -> dict:
     }
 
 
-async def _parse_docx(file_path: Path) -> dict:
+async def _parse_docx(file_path: Path, progress_callback=None, document_id: str = "") -> dict:
     """Parse DOCX file using markitdown.
 
     Args:
         file_path: Path to the DOCX file
+        progress_callback: Optional callback for progress updates (processed, total)
 
     Returns:
         Dict with text (Markdown), images, and page_count (None)
@@ -446,7 +424,7 @@ async def _parse_docx(file_path: Path) -> dict:
     logger.info(f"Markitdown parsing: {file_path} ({file_size / (1024*1024):.2f}MB)")
 
     converter = MarkitdownConverter()
-    result = converter.convert(file_path)
+    result = converter.convert(file_path, progress_callback=progress_callback)
 
     markdown_content = result.markdown_content
     logger.info(f"Markitdown conversion successful: {len(markdown_content)} characters")
@@ -485,7 +463,8 @@ async def _parse_docx(file_path: Path) -> dict:
         ]]
 
         if image_files:
-            logger.info(f"Found {len(image_files)} images in {workspace_images_dir}, replacing placeholders")
+            total_images = len(image_files)
+            logger.info(f"Found {total_images} images in {workspace_images_dir}, replacing placeholders")
 
             # Replace each data:image placeholder with file path reference
             images_dir_name = f"{file_path.stem}_images"
@@ -521,6 +500,12 @@ async def _parse_docx(file_path: Path) -> dict:
                     markdown_content = markdown_content[:start] + img_ref + markdown_content[end:]
                     logger.info(f"Replaced placeholder with file path {img_file.name}")
                     placeholder_idx += 1
+                    # Report progress for every processed image
+                    eta = max(1, int((total_images - placeholder_idx) * 0.4))
+                    _publish_parse_progress(
+                        document_id, "processing_images",
+                        placeholder_idx, total_images, eta,
+                    )
                 else:
                     logger.warning(f"No image file available for placeholder at index {placeholder_idx}")
                     break

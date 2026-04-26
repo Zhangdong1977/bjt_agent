@@ -70,21 +70,21 @@ async function handleLogin() {
   justify-content: center;
   align-items: center;
   min-height: 100vh;
-  background: linear-gradient(135deg, var(--purple) 0%, var(--purple-dim) 100%);
+  background: var(--bg);
 }
 
 .auth-card {
   background: var(--bg1);
   padding: 2rem;
   border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(167, 139, 250, 0.2);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
   width: 100%;
   max-width: 400px;
 }
 
 h1 {
   text-align: center;
-  color: var(--purple);
+  color: var(--blue);
   margin-bottom: 0.5rem;
   font-size: 1.5rem;
 }
@@ -118,14 +118,14 @@ input {
 
 input:focus {
   outline: none;
-  border-color: var(--purple);
-  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.15);
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 
 button {
   width: 100%;
   padding: 0.75rem;
-  background: var(--purple);
+  background: var(--blue);
   color: var(--white);
   border: none;
   border-radius: 6px;
@@ -142,7 +142,7 @@ button:disabled {
 }
 
 button:hover:not(:disabled) {
-  background: var(--purple-dim);
+  background: var(--blue-dim);
 }
 
 button:active:not(:disabled) {
@@ -162,7 +162,7 @@ button:active:not(:disabled) {
 }
 
 .switch-auth a {
-  color: var(--purple);
+  color: var(--blue);
   text-decoration: none;
   font-weight: 500;
 }

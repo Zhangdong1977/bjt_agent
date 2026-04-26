@@ -207,7 +207,7 @@ function getStatusClass(status: string) {
 
 .primary-btn {
   padding: 0.75rem 1.5rem;
-  background: var(--purple);
+  background: var(--blue);
   color: var(--white);
   border: none;
   border-radius: 6px;
@@ -217,7 +217,7 @@ function getStatusClass(status: string) {
 }
 
 .primary-btn:hover {
-  background: var(--purple-dim);
+  background: var(--blue-dim);
 }
 
 .primary-btn:active {

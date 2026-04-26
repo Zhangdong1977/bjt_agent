@@ -22,9 +22,13 @@ async def stream_document_parse_events(document_id: str):
 
     async def event_generator():
         stream_key = f"doc_parse:{document_id}"
+        event_count = 0
         try:
             async for raw_event in sse_manager.connect(stream_key):
+                event_count += 1
+                logger.info(f"[events] Yielding event {event_count} for {document_id}: {raw_event[:100]}...")
                 yield raw_event
+            logger.info(f"[events] SSE stream ended for {document_id}, total events: {event_count}")
         except Exception as e:
             logger.error(f"[events] SSE stream error for {document_id}: {e}")
 

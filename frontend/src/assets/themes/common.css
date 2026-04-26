@@ -37,7 +37,7 @@
 }
 
 .btn-primary {
-  background: var(--purple);
+  background: var(--blue);
   color: var(--white);
 }
 
@@ -102,10 +102,10 @@
 .section-title {
   font-size: 1.1rem;
   font-weight: 600;
-  color: var(--purple);
+  color: var(--blue);
   margin-bottom: 1rem;
   padding-bottom: 0.5rem;
-  border-bottom: 2px solid var(--purple);
+  border-bottom: 2px solid var(--blue);
 }
 
 /* 响应式网格 */

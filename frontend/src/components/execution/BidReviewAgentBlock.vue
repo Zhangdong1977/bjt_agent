@@ -104,7 +104,7 @@ function getStatusText(status: string) {
   margin-bottom: 8px;
 }
 
-.bra-running { border-color: var(--purple-dim); }
+.bra-running { border-color: var(--blue-dim); }
 .bra-done { border-color: var(--green-dim); }
 
 .block-header {
@@ -117,7 +117,7 @@ function getStatusText(status: string) {
   user-select: none;
 }
 
-.bra-running .block-header { background: var(--purple-bg); }
+.bra-running .block-header { background: var(--blue-bg); }
 .bra-done .block-header { background: var(--green-bg); }
 
 .bra-avatar {
@@ -133,7 +133,7 @@ function getStatusText(status: string) {
 }
 
 .bra-done .bra-avatar { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-dim); }
-.bra-running .bra-avatar { background: var(--purple-bg); color: var(--purple); border: 1px solid var(--purple-dim); }
+.bra-running .bra-avatar { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-dim); }
 .bra-wait .bra-avatar { background: var(--bg3); color: var(--muted); border: 1px solid var(--line2); }
 
 .bra-info { flex: 1; min-width: 0; }
@@ -157,7 +157,7 @@ function getStatusText(status: string) {
 }
 
 .bra-done .pbar-inner { background: var(--green); }
-.bra-running .pbar-inner { background: var(--purple); }
+.bra-running .pbar-inner { background: var(--blue); }
 .bra-wait .pbar-inner { background: var(--dim); }
 
 .chevron {
@@ -189,6 +189,6 @@ function getStatusText(status: string) {
 }
 
 .chip-done { background: var(--green-bg); border-color: var(--green-dim); color: var(--green); }
-.chip-run { background: var(--purple-bg); border-color: var(--purple-dim); color: var(--purple); }
+.chip-run { background: var(--blue-bg); border-color: var(--blue-dim); color: var(--blue); }
 .chip-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }
 </style>

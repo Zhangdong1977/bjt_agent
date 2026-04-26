@@ -81,7 +81,7 @@ const steps = [
   border: 1px solid;
 }
 .chip-done { background: var(--green-bg); border-color: var(--green-dim); color: var(--green); }
-.chip-run { background: var(--purple-bg); border-color: var(--purple-dim); color: var(--purple); }
+.chip-run { background: var(--blue-bg); border-color: var(--blue-dim); color: var(--blue); }
 .chip-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }
 
 .merge-steps {
@@ -106,7 +106,7 @@ const steps = [
   background: var(--line2);
 }
 .m-dot.md-done { background: var(--green); }
-.m-dot.md-run { background: var(--purple); animation: blink 1s infinite; }
+.m-dot.md-run { background: var(--blue); animation: blink 1s infinite; }
 @keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: 0 } }
 
 .merge-step-arr { color: var(--dim); font-size: 11px; }

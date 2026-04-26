@@ -143,7 +143,7 @@ function goBack() {
       <div class="section-title">图例</div>
       <div class="legend-list">
         <div class="leg">
-          <div class="leg-swatch" style="background: var(--purple)"></div>
+          <div class="leg-swatch" style="background: var(--blue)"></div>
           <span>主代理</span>
         </div>
         <div class="leg">
@@ -224,7 +224,7 @@ function goBack() {
 }
 
 .status-pending .status-dot { background: var(--muted); }
-.status-running .status-dot { background: var(--purple); animation: pulse 1.4s ease-in-out infinite; }
+.status-running .status-dot { background: var(--blue); animation: pulse 1.4s ease-in-out infinite; }
 .status-completed .status-dot { background: var(--green); }
 .status-failed .status-dot { background: var(--red); }
 
@@ -235,7 +235,7 @@ function goBack() {
 }
 
 .status-pending .status-text { color: var(--muted); }
-.status-running .status-text { color: var(--purple); }
+.status-running .status-text { color: var(--blue); }
 .status-completed .status-text { color: var(--green); }
 .status-failed .status-text { color: var(--red); }
 
@@ -261,7 +261,7 @@ function goBack() {
 }
 
 .progress-pct {
-  color: var(--purple);
+  color: var(--blue);
   font-weight: 600;
 }
 
@@ -275,7 +275,7 @@ function goBack() {
 .progress-bar-inner {
   height: 100%;
   border-radius: 3px;
-  background: var(--purple);
+  background: var(--blue);
   transition: width 0.3s ease;
 }
 
@@ -317,7 +317,7 @@ function goBack() {
   letter-spacing: -0.02em;
 }
 
-.sv-purple { color: var(--purple); }
+.sv-purple { color: var(--blue); }
 .sv-green { color: var(--green); }
 .sv-amber { color: var(--amber); }
 .sv-red { color: var(--red); }

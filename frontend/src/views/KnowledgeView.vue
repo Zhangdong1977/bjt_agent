@@ -231,7 +231,7 @@ function getScoreColor(score: number): string {
                 @click="openDocFromSearch(result.docId)"
               >
                 <div class="result-header">
-                  <file-text-outlined :style="{ color: 'var(--purple)' }" />
+                  <file-text-outlined :style="{ color: 'var(--blue)' }" />
                   <span class="result-source">{{ result.source }}</span>
                   <a-tag :color="getScoreColor(result.score)">{{ result.score.toFixed(2) }}</a-tag>
                 </div>
@@ -286,7 +286,7 @@ function getScoreColor(score: number): string {
               </template>
               <a-list-item-meta>
                 <template #avatar>
-                  <file-text-outlined style="font-size: 24px; color: var(--purple)" />
+                  <file-text-outlined style="font-size: 24px; color: var(--blue)" />
                 </template>
                 <template #title>{{ item.filename }}</template>
                 <template #description>
@@ -393,11 +393,11 @@ function getScoreColor(score: number): string {
 .search-box :deep(.ant-input:focus),
 .search-box :deep(.ant-input-affix-wrapper:focus),
 .search-box :deep(.ant-input-affix-wrapper-focused) {
-  border-color: var(--purple);
+  border-color: var(--blue);
 }
 
 .search-box :deep(.ant-btn-primary) {
-  background: var(--purple);
+  background: var(--blue);
 }
 
 .search-results {

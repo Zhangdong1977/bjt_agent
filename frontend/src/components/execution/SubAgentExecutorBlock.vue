@@ -63,8 +63,8 @@ const agentsWithSteps = computed(() => {
     <div class="executor-header">
       <div class="executor-icon">
         <svg viewBox="0 0 11 11" fill="none">
-          <circle cx="5.5" cy="5.5" r="4" stroke="var(--purple)" stroke-width="1.2"/>
-          <path d="M5.5 3.5v2.5l1.5 1" stroke="var(--purple)" stroke-width="1.1" stroke-linecap="round"/>
+          <circle cx="5.5" cy="5.5" r="4" stroke="var(--blue)" stroke-width="1.2"/>
+          <path d="M5.5 3.5v2.5l1.5 1" stroke="var(--blue)" stroke-width="1.1" stroke-linecap="round"/>
         </svg>
       </div>
       <span class="executor-title">SubAgentExecutor</span>
@@ -96,8 +96,8 @@ const agentsWithSteps = computed(() => {
   align-items: center;
   gap: 10px;
   padding: 8px 14px;
-  background: var(--purple-bg);
-  border: 1px solid var(--purple-dim);
+  background: var(--blue-bg);
+  border: 1px solid var(--blue-dim);
   border-radius: var(--r2);
   margin-bottom: 8px;
 }
@@ -113,18 +113,18 @@ const agentsWithSteps = computed(() => {
 .executor-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--purple);
+  color: var(--blue);
 }
 
 .executor-count {
   margin-left: auto;
   font-size: 11px;
-  color: var(--purple);
+  color: var(--blue);
   opacity: 0.7;
 }
 
 .executor-body {
   padding-left: 16px;
-  border-left: 2px solid var(--purple-dim);
+  border-left: 2px solid var(--blue-dim);
 }
 </style>

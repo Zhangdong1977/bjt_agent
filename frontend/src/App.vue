@@ -17,7 +17,7 @@ const isDark = computed(() => appTheme.value === 'dark')
 
 const antdTheme = computed(() => ({
   token: {
-    colorPrimary: '#a78bfa',
+    colorPrimary: '#3b82f6',
   },
   algorithm: isDark.value ? theme.darkAlgorithm : theme.defaultAlgorithm,
 }))

@@ -89,6 +89,16 @@ const toolNameMap: Record<string, string> = {
   search_tender_doc: '搜索文档',
   rag_search: '搜索知识库',
   comparator: '内容比对',
+  // Mini-Agent 内置工具
+  read_file: '读取文件',
+  write_file: '写入文件',
+  edit_file: '编辑文件',
+  bash: '终端命令',
+  bash_output: '命令输出',
+  bash_kill: '终止命令',
+  get_skill: '获取技能',
+  record_note: '记录笔记',
+  recall_notes: '回忆笔记',
 }
 
 onMounted(() => {
@@ -589,7 +599,7 @@ onUnmounted(() => {
 }
 
 .historical-badge {
-  background: var(--purple);
+  background: var(--blue);
   color: var(--white);
   padding: 0.2rem 0.5rem;
   border-radius: 4px;
@@ -640,8 +650,8 @@ onUnmounted(() => {
 
 /* 渐变背景卡片 */
 .card-tool_call {
-  background: var(--purple-bg);
-  border-left: 4px solid var(--purple);
+  background: var(--blue-bg);
+  border-left: 4px solid var(--blue);
 }
 
 .card-observation {
@@ -794,8 +804,8 @@ onUnmounted(() => {
 }
 
 .phase-agents {
-  background: var(--purple-bg);
-  border-left: 4px solid var(--purple);
+  background: var(--blue-bg);
+  border-left: 4px solid var(--blue);
 }
 
 .phase-header {
