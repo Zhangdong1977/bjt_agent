@@ -171,9 +171,10 @@ function mapCheckItemStatus(status: string): 'done' | 'run' | 'wait' | 'fail' {
   return 'wait'
 }
 
-function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' {
+function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail' {
   if (status === 'completed') return 'done'
   if (status === 'running') return 'running'
+  if (status === 'failed') return 'fail'
   return 'wait'
 }
 

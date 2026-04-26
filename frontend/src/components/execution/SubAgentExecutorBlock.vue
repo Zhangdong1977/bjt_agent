@@ -35,7 +35,7 @@ interface SubAgentData {
   agentId: string
   title: string
   ruleFile: string
-  status: 'done' | 'running' | 'wait'
+  status: 'done' | 'running' | 'wait' | 'fail'
   checkItems?: CheckItem[]
   steps: TimelineStep[]
   findings: Finding[]

@@ -147,6 +147,9 @@ class MasterAgent:
         retry_count = 0
 
         while retry_count <= self.max_retries:
+            # Create a fresh cancel_event for each attempt to prevent cascade cancellation
+            attempt_cancel_event = asyncio.Event()
+
             # Create a fresh TodoService for each retry iteration if factory is available
             task_todo_service = todo_service
             session_to_close = None
@@ -169,7 +172,7 @@ class MasterAgent:
                     session_factory=session_factory,
                     event_callback=self._create_sub_agent_callback(todo.id),
                     session_id=self._session_id,
-                    cancel_event=cancel_event,
+                    cancel_event=attempt_cancel_event,
                 )
                 logger.info(f"[_run_single_sub_agent] Calling executor.execute() for todo {todo.id}")
                 result = await executor.execute()
@@ -182,6 +185,10 @@ class MasterAgent:
                     if retry_count < self.max_retries:
                         retry_count += 1
                         await task_todo_service.reset_todo_for_retry(todo.id, retry_count)
+                        # Exponential backoff: 2s, 4s, 8s, ...
+                        backoff = 2 ** retry_count
+                        logger.info(f"[_run_single_sub_agent] Backing off {backoff}s before retry {retry_count} for todo {todo.id}")
+                        await asyncio.sleep(backoff)
                         continue
                     else:
                         await task_todo_service.update_todo_status(
@@ -220,6 +227,10 @@ class MasterAgent:
                 if retry_count < self.max_retries:
                     retry_count += 1
                     await task_todo_service.reset_todo_for_retry(todo.id, retry_count)
+                    # Exponential backoff: 2s, 4s, 8s, ...
+                    backoff = 2 ** retry_count
+                    logger.info(f"[_run_single_sub_agent] Backing off {backoff}s before retry {retry_count} for todo {todo.id}")
+                    await asyncio.sleep(backoff)
                 else:
                     await task_todo_service.update_todo_status(
                         todo.id, "failed", error_message=str(e)

@@ -508,6 +508,9 @@ class BidReviewAgent(BaseAgent):
             # Create cancel event if not provided
             if self.cancel_event is None:
                 self.cancel_event = asyncio.Event()
+            elif self.cancel_event.is_set():
+                logger.warning("[BidReviewAgent.run_review] cancel_event was already set at start (from previous agent), clearing it")
+                self.cancel_event.clear()
 
             # Start heartbeat monitor as background task
             heartbeat_monitor = asyncio.create_task(
@@ -516,8 +519,23 @@ class BidReviewAgent(BaseAgent):
 
             try:
                 # 4. Call base class run() - reuses Mini-Agent loop with event_callback
-                await self.run(cancel_event=self.cancel_event)
-                logger.info(f"[BidReviewAgent.run_review] Agent.run() completed")
+                run_result = await self.run(cancel_event=self.cancel_event)
+                logger.info(f"[BidReviewAgent.run_review] Agent.run() completed, result_preview={str(run_result)[:200] if run_result else 'None'}")
+
+                # Check run result for error/cancellation/max-steps conditions
+                is_normal = True
+                if run_result is None:
+                    logger.error("[BidReviewAgent.run_review] Agent.run() returned None")
+                    is_normal = False
+                elif run_result.startswith("LLM call failed"):
+                    logger.error(f"[BidReviewAgent.run_review] {run_result}")
+                    is_normal = False
+                elif run_result == "Task cancelled by user.":
+                    logger.warning("[BidReviewAgent.run_review] Agent execution was cancelled by user")
+                    is_normal = False
+                elif run_result.startswith("Task couldn't be completed"):
+                    logger.warning(f"[BidReviewAgent.run_review] {run_result} — will try to extract partial results")
+                    # For max-steps, proceed to post_process (partial MD may exist)
             finally:
                 heartbeat_monitor.cancel()
                 try:
@@ -537,7 +555,6 @@ class BidReviewAgent(BaseAgent):
                     msg_header += f", tool_call_id={msg.tool_call_id}"
                 logger.info(f"[BidReviewAgent.run_review] {msg_header}")
                 if msg.content:
-                    # Truncate very long content for logging
                     content_preview = msg.content[:5000] + "..." if len(msg.content) > 5000 else msg.content
                     logger.info(f"[BidReviewAgent.run_review] [Message {i}] content:\n{content_preview}")
                 if msg.thinking:
@@ -546,8 +563,32 @@ class BidReviewAgent(BaseAgent):
             logger.info(f"[BidReviewAgent.run_review] === FULL MESSAGE HISTORY END ===")
 
             # 5. Post-process: extract findings from md file
+            # Log whether WriteTool was ever called (diagnostic)
+            write_tool_called = any(
+                tc.function.name == "WriteTool"
+                for msg in self.messages
+                if msg.role == "assistant" and msg.tool_calls
+                for tc in msg.tool_calls
+            )
+            if not write_tool_called:
+                logger.error("[BidReviewAgent.run_review] CRITICAL: WriteTool was NEVER called during the entire execution")
+
+            # Skip post_process for non-recoverable failures (LLM error, cancellation)
+            if not is_normal:
+                logger.warning("[BidReviewAgent.run_review] Agent did not complete normally, skipping _post_process, trying fallback extraction")
+                findings = self._extract_findings_from_messages()
+                logger.info(f"[BidReviewAgent.run_review] Fallback extraction returned {len(findings)} findings")
+                return findings
+
+            # Normal or max-steps: try post_process first
             findings = await self._post_process(output_md_path)
             logger.info(f"[BidReviewAgent.run_review] Post-processing completed, found {len(findings)} findings")
+
+            # Fallback: if post_process returned empty, try extracting from message history
+            if not findings:
+                logger.warning("[BidReviewAgent.run_review] _post_process returned empty, trying _extract_findings_from_messages")
+                findings = self._extract_findings_from_messages()
+                logger.info(f"[BidReviewAgent.run_review] Fallback extraction returned {len(findings)} findings")
 
             return findings
 

@@ -36,7 +36,7 @@ interface Props {
   agentId: string
   title: string
   ruleFile: string
-  status: 'done' | 'running' | 'wait'
+  status: 'done' | 'running' | 'wait' | 'fail'
   checkItems?: CheckItem[]
   steps: TimelineStep[]
   findings: Finding[]
@@ -53,6 +53,7 @@ function toggle() {
 function getStatusText(status: string) {
   if (status === 'done') return '完成'
   if (status === 'running') return '执行中'
+  if (status === 'fail') return '失败'
   return '等待'
 }
 </script>
@@ -69,7 +70,7 @@ function getStatusText(status: string) {
         <div class="pbar-outer">
           <div class="pbar-inner" :style="{ width: status === 'done' ? '100%' : status === 'running' ? '50%' : '0%' }"></div>
         </div>
-        <span :class="['chip', status === 'done' ? 'chip-done' : status === 'running' ? 'chip-run' : 'chip-wait']">
+        <span :class="['chip', status === 'done' ? 'chip-done' : status === 'running' ? 'chip-run' : status === 'fail' ? 'chip-fail' : 'chip-wait']">
           {{ getStatusText(status) }}
         </span>
         <span class="chevron" :class="{ open: isOpen }">›</span>
@@ -106,6 +107,7 @@ function getStatusText(status: string) {
 
 .bra-running { border-color: var(--blue-dim); }
 .bra-done { border-color: var(--green-dim); }
+.bra-fail { border-color: var(--red-dim); }
 
 .block-header {
   display: flex;
@@ -119,6 +121,7 @@ function getStatusText(status: string) {
 
 .bra-running .block-header { background: var(--blue-bg); }
 .bra-done .block-header { background: var(--green-bg); }
+.bra-fail .block-header { background: var(--red-bg); }
 
 .bra-avatar {
   width: 26px;
@@ -135,6 +138,7 @@ function getStatusText(status: string) {
 .bra-done .bra-avatar { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-dim); }
 .bra-running .bra-avatar { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-dim); }
 .bra-wait .bra-avatar { background: var(--bg3); color: var(--muted); border: 1px solid var(--line2); }
+.bra-fail .bra-avatar { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-dim); }
 
 .bra-info { flex: 1; min-width: 0; }
 .bra-title { font-size: 12px; font-weight: 500; color: var(--bright); }
@@ -159,6 +163,7 @@ function getStatusText(status: string) {
 .bra-done .pbar-inner { background: var(--green); }
 .bra-running .pbar-inner { background: var(--blue); }
 .bra-wait .pbar-inner { background: var(--dim); }
+.bra-fail .pbar-inner { background: var(--red); }
 
 .chevron {
   font-size: 10px;
@@ -191,4 +196,5 @@ function getStatusText(status: string) {
 .chip-done { background: var(--green-bg); border-color: var(--green-dim); color: var(--green); }
 .chip-run { background: var(--blue-bg); border-color: var(--blue-dim); color: var(--blue); }
 .chip-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }
+.chip-fail { background: var(--red-bg); border-color: var(--red-dim); color: var(--red); }
 </style>

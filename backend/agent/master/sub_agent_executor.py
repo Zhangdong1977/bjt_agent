@@ -165,6 +165,16 @@ class SubAgentExecutor:
 
         except Exception as e:
             logger.exception(f"[SubAgentExecutor.execute] Exception: {e}")
+            # Diagnostic: log last few assistant messages for troubleshooting
+            if self._agent and hasattr(self._agent, 'messages'):
+                try:
+                    last_msgs = self._agent.messages[-5:] if len(self._agent.messages) > 5 else self._agent.messages
+                    for msg in last_msgs:
+                        if msg.role == "assistant":
+                            tc_names = [tc.function.name for tc in (msg.tool_calls or [])]
+                            logger.warning(f"[SubAgentExecutor.execute] Last assistant msg: content_len={len(msg.content or '')}, tool_calls={tc_names}")
+                except Exception as log_e:
+                    logger.warning(f"[SubAgentExecutor.execute] Could not log agent diagnostics: {log_e}")
             return {
                 "success": False,
                 "error": str(e),
