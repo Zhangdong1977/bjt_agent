@@ -20,7 +20,7 @@ interface Props {
   duration?: number
 }
 
-const props = defineProps<Props>()
+defineProps<Props>()
 
 // 工具名称映射
 const toolNameMap: Record<string, string> = {

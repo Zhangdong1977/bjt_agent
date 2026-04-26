@@ -164,12 +164,6 @@ const bidReviewAgentData = computed(() => {
   return []
 })
 
-function mapStatus(status: string): 'done' | 'running' | 'wait' {
-  if (status === 'completed') return 'done'
-  if (status === 'running') return 'running'
-  return 'wait'
-}
-
 function mapCheckItemStatus(status: string): 'done' | 'run' | 'wait' | 'fail' {
   if (status === 'completed') return 'done'
   if (status === 'running') return 'run'
@@ -183,14 +177,6 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' {
   return 'wait'
 }
 
-function formatTime(date: Date): string {
-  return new Date(date).toLocaleTimeString('zh-CN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  })
-}
 </script>
 
 <template>

@@ -53,10 +53,6 @@ function renderMarkdown(content: string): string {
   })
 }
 
-function goBack() {
-  router.push({ name: 'home' })
-}
-
 async function handleUpload(event: Event, docType: 'tender' | 'bid') {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]

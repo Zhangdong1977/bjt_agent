@@ -263,9 +263,6 @@ async def _parse_document_internal(document: Document, file_path: Path, settings
     parsed_data = await _parse_docx(file_path, progress_callback=docx_progress_callback, document_id=document.id)
     logger.info(f"[PARSE] DOCX parsing completed, markdown length: {len(parsed_data.get('text', ''))}")
 
-    # Mark saving complete (final step)
-    _publish_parse_progress(document.id, "saving", 3, 3, 0)
-
     return await _save_parsed_content(file_path, parsed_data, document, settings, document.id)
 
 
@@ -319,6 +316,8 @@ def parse_document(self, document_id: str) -> dict:
             try:
                 result = await _parse_document_internal(document, file_path, settings)
                 await db.commit()
+                # Publish completion event after successful save and commit
+                _publish_parse_progress(document.id, "completed", 1, 1, 0)
                 return result
             except Exception as e:
                 document.status = "failed"

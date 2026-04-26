@@ -128,6 +128,8 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   let documentPollIntervals: Record<string, number> = {};
+  const documentPollRetries: Record<string, number> = {};
+  const MAX_POLL_RETRIES = 5;
 
   async function pollDocumentStatus(documentId: string) {
     if (!currentProject.value) return;
@@ -147,6 +149,9 @@ export const useProjectStore = defineStore("project", () => {
           };
         }
 
+        // Reset retry count on successful request
+        delete documentPollRetries[documentId];
+
         // Stop polling if status is final
         if (updatedDoc.status === "parsed" || updatedDoc.status === "failed") {
           clearDocumentPoll(documentId);
@@ -155,10 +160,15 @@ export const useProjectStore = defineStore("project", () => {
         }
       } catch (err) {
         console.error("Failed to poll document status:", err);
-        // Stop polling on error
-        if (documentPollIntervals[documentId]) {
-          clearInterval(documentPollIntervals[documentId]);
-          delete documentPollIntervals[documentId];
+        // Retry on error instead of stopping immediately
+        const retries = (documentPollRetries[documentId] || 0) + 1;
+        documentPollRetries[documentId] = retries;
+        if (retries >= MAX_POLL_RETRIES) {
+          console.error(
+            `[pollDocumentStatus] Max retries (${MAX_POLL_RETRIES}) reached for document ${documentId}, stopping polling.`,
+          );
+          clearDocumentPoll(documentId);
+          delete documentPollRetries[documentId];
         }
       }
     };
@@ -241,6 +251,24 @@ export const useProjectStore = defineStore("project", () => {
       eta_seconds: number;
     },
   ) {
+    // Handle completion event — update document status and clean up resources
+    if (data.stage === "completed") {
+      console.log(
+        "[updateDocumentParseProgress] Parse completed for documentId:",
+        documentId,
+      );
+      const index = documents.value.findIndex((d) => d.id === documentId);
+      if (index !== -1) {
+        documents.value[index].status = "parsed";
+      }
+      // Clean up tracking state
+      delete lastProcessedCount.value[documentId];
+      delete lastStage.value[documentId];
+      clearDocumentPoll(documentId);
+      disconnectDocParseSSE(documentId);
+      return;
+    }
+
     // Reset monotonic counter on stage transition (e.g. "extracting_text" -> "processing_images")
     if (
       lastStage.value[documentId] &&
@@ -546,6 +574,7 @@ export const useProjectStore = defineStore("project", () => {
       clearInterval(documentPollIntervals[documentId]);
       delete documentPollIntervals[documentId];
     }
+    delete documentPollRetries[documentId];
   }
 
   async function fetchReviewTasks() {
