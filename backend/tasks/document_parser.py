@@ -15,6 +15,17 @@ from backend.models import Document
 logger = logging.getLogger(__name__)
 
 
+def _natural_sort_key(text: str) -> list:
+    """Sort key for natural string ordering with embedded numbers.
+
+    Example: 'image_10' should sort after 'image_2' not before 'image_1'.
+    Returns a list of (is_digit, value) tuples for proper numeric sorting.
+    """
+    import re
+    parts = re.split(r'(\d+)', text)
+    return [(int(p) if p.isdigit() else p.lower(), i) for i, p in enumerate(parts)]
+
+
 # Redis connection pool for _publish_parse_progress - avoids creating new connections each call
 # which was causing thread exhaustion and timeouts under heavy load
 _redis_connection_pool = None
@@ -456,6 +467,9 @@ async def _parse_docx(file_path: Path, progress_callback=None, document_id: str 
             '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp',
             '.emf', '.wmf', '.x-emf', '.x-wmf'  # LibreOffice conversion formats
         ]]
+        # Sort by numeric suffix (image_1, image_2, ..., image_10, ...)
+        # to match the order markitdown assigns (extracted in document order)
+        image_files.sort(key=lambda f: _natural_sort_key(f.stem))
 
         if image_files:
             total_images = len(image_files)
@@ -490,7 +504,10 @@ async def _parse_docx(file_path: Path, progress_callback=None, document_id: str 
 
             for start, end, full_match in replacements:
                 if placeholder_idx < len(image_files):
-                    img_file = image_files[placeholder_idx]
+                    # Process replacements from end to start (to avoid position shifting),
+                    # so access image_files in reverse too — the last data URI should
+                    # get the last image file, not the first.
+                    img_file = image_files[-(placeholder_idx + 1)]
                     img_ref = f"![{img_file.stem}]({images_dir_name}/{img_file.name})"
                     markdown_content = markdown_content[:start] + img_ref + markdown_content[end:]
                     logger.info(f"Replaced placeholder with file path {img_file.name}")
