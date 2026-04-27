@@ -45,7 +45,7 @@ class BidReviewAgent(BaseAgent):
         logger=None,
         max_steps: int = 100,
         cancel_event: Optional[asyncio.Event] = None,
-        heartbeat_timeout: int = 20,
+        heartbeat_timeout: int = 60,
     ):
         """Initialize the bid review agent (synchronous part).
 
@@ -59,7 +59,7 @@ class BidReviewAgent(BaseAgent):
             logger: Optional logger for file output. If None, uses module logger.
             max_steps: Maximum number of agent steps
             cancel_event: Optional asyncio.Event to signal cancellation
-            heartbeat_timeout: Heartbeat timeout in seconds (default 20)
+            heartbeat_timeout: Heartbeat timeout in seconds (default 60)
         """
         self.project_id = project_id
         self.tender_doc_path = tender_doc_path
