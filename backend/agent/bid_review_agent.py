@@ -115,6 +115,12 @@ class BidReviewAgent(BaseAgent):
         # Set cancel_event AFTER super().__init__() to avoid being overwritten
         self.cancel_event = cancel_event
 
+        # LLM interaction logging
+        self._interactions_log: list[dict] = []
+        self._llm_call_count: int = 0
+        self._original_llm_generate = None
+        self._wrap_llm_generate()
+
     async def initialize(self):
         """Async initialization - load MCP tools (call after construction)."""
         import logging
@@ -234,6 +240,236 @@ class BidReviewAgent(BaseAgent):
                 except Exception:
                     pass
                 logger.info("[BidReviewAgent.initialize] Restored original LoggingProxy.stderr")
+
+    def _wrap_llm_generate(self) -> None:
+        """Wrap llm_client.generate to log request/response details."""
+        import functools
+        import logging
+        import time
+
+        logger = self._logger or logging.getLogger(__name__)
+        original_generate = self.llm_client.generate
+        self._original_llm_generate = original_generate
+        agent_ref = self
+
+        @functools.wraps(original_generate)
+        async def wrapped_generate(*args, **kwargs):
+            agent_ref._llm_call_count += 1
+            call_index = agent_ref._llm_call_count
+            call_start = time.perf_counter()
+            call_timestamp = datetime.now().isoformat()
+
+            messages = kwargs.get("messages") or (args[0] if args else [])
+            tools = kwargs.get("tools") or []
+
+            # Log request
+            agent_ref._log_llm_request(call_index, messages, tools)
+
+            try:
+                response = await original_generate(*args, **kwargs)
+            except Exception as e:
+                latency_ms = int((time.perf_counter() - call_start) * 1000)
+                logger.error(
+                    f"[LLM Interaction #{call_index}] FAILED after {latency_ms}ms: {e}"
+                )
+                agent_ref._interactions_log.append({
+                    "call_index": call_index,
+                    "timestamp": call_timestamp,
+                    "latency_ms": latency_ms,
+                    "status": "error",
+                    "error": str(e),
+                    "request": agent_ref._build_request_summary(messages, tools),
+                })
+                raise
+
+            latency_ms = int((time.perf_counter() - call_start) * 1000)
+
+            # Log response
+            agent_ref._log_llm_response(call_index, response, latency_ms)
+
+            # Determine step number from message count (approximation)
+            step_number = call_index
+
+            agent_ref._interactions_log.append({
+                "call_index": call_index,
+                "step_number": step_number,
+                "timestamp": call_timestamp,
+                "latency_ms": latency_ms,
+                "status": "success",
+                "request": agent_ref._build_request_summary(messages, tools),
+                "response": agent_ref._build_response_detail(response),
+            })
+
+            return response
+
+        self.llm_client.generate = wrapped_generate
+
+    def _build_request_summary(self, messages: list, tools: list) -> dict:
+        """Build a summary dict of the LLM request."""
+        messages_summary = []
+        for msg in messages:
+            msg_info = {"role": msg.role}
+            content = msg.content
+            if isinstance(content, str):
+                msg_info["content_length"] = len(content)
+            elif isinstance(content, list):
+                msg_info["content_length"] = sum(
+                    len(str(b)) for b in content if isinstance(b, dict)
+                )
+            if hasattr(msg, "thinking") and msg.thinking:
+                msg_info["thinking_length"] = len(msg.thinking)
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                msg_info["tool_calls"] = [
+                    tc.function.name for tc in msg.tool_calls
+                ]
+            if hasattr(msg, "tool_call_id") and msg.tool_call_id:
+                msg_info["tool_call_id"] = msg.tool_call_id
+            messages_summary.append(msg_info)
+
+        return {
+            "message_count": len(messages),
+            "messages_summary": messages_summary,
+            "tool_names": [t.name for t in tools] if tools else [],
+        }
+
+    def _build_response_detail(self, response) -> dict:
+        """Build a detail dict of the LLM response."""
+        result = {
+            "content": response.content or "",
+            "finish_reason": response.finish_reason,
+        }
+        if response.thinking:
+            result["thinking"] = response.thinking
+        if response.tool_calls:
+            result["tool_calls"] = [
+                {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                }
+                for tc in response.tool_calls
+            ]
+        if response.usage:
+            result["usage"] = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+        return result
+
+    def _log_llm_request(self, call_index: int, messages: list, tools: list) -> None:
+        """Log LLM request details."""
+        import logging
+        logger = self._logger or logging.getLogger(__name__)
+
+        msg_count = len(messages)
+        tool_names = [t.name for t in tools] if tools else []
+        roles = [m.role for m in messages]
+
+        logger.info(
+            f"[LLM Interaction #{call_index}] >>> REQUEST: "
+            f"messages={msg_count}, roles={roles}, tools={tool_names}"
+        )
+        for i, msg in enumerate(messages):
+            content_len = len(msg.content) if isinstance(msg.content, str) else "?"
+            tc_names = [tc.function.name for tc in msg.tool_calls] if msg.tool_calls else []
+            logger.debug(
+                f"[LLM Interaction #{call_index}] msg[{i}]: "
+                f"role={msg.role}, content_len={content_len}"
+                + (f", tool_calls={tc_names}" if tc_names else "")
+                + (f", tool_call_id={msg.tool_call_id}" if msg.tool_call_id else "")
+            )
+
+    def _log_llm_response(self, call_index: int, response, latency_ms: int) -> None:
+        """Log LLM response details."""
+        import logging
+        logger = self._logger or logging.getLogger(__name__)
+
+        content_len = len(response.content) if response.content else 0
+        thinking_len = len(response.thinking) if response.thinking else 0
+        tc_names = [tc.function.name for tc in response.tool_calls] if response.tool_calls else []
+        usage_info = ""
+        if response.usage:
+            usage_info = (
+                f", tokens={response.usage.total_tokens}"
+                f" (prompt={response.usage.prompt_tokens}"
+                f", completion={response.usage.completion_tokens})"
+            )
+
+        logger.info(
+            f"[LLM Interaction #{call_index}] <<< RESPONSE: "
+            f"latency={latency_ms}ms, content_len={content_len}"
+            f", thinking_len={thinking_len}"
+            f", tool_calls={tc_names}"
+            f", finish_reason={response.finish_reason}"
+            f"{usage_info}"
+        )
+
+        # Log content preview
+        if response.content:
+            preview = response.content[:2000]
+            logger.debug(
+                f"[LLM Interaction #{call_index}] content:\n{preview}"
+                + ("..." if len(response.content) > 2000 else "")
+            )
+
+        # Log thinking preview
+        if response.thinking:
+            preview = response.thinking[:2000]
+            logger.debug(
+                f"[LLM Interaction #{call_index}] thinking:\n{preview}"
+                + ("..." if len(response.thinking) > 2000 else "")
+            )
+
+        # Log tool call arguments
+        if response.tool_calls:
+            for tc in response.tool_calls:
+                logger.debug(
+                    f"[LLM Interaction #{call_index}] tool_call: "
+                    f"name={tc.function.name}, args={json.dumps(tc.function.arguments, ensure_ascii=False, default=str)}"
+                )
+
+    def _write_interaction_log(self) -> None:
+        """Write accumulated LLM interaction log to a JSON file.
+
+        Writes to {workspace}/{user_id}/{project_id}/logs/interaction_{timestamp}.jsonl
+        """
+        import logging
+        logger = self._logger or logging.getLogger(__name__)
+
+        if not self._interactions_log:
+            logger.info("[BidReviewAgent._write_interaction_log] No interactions to log")
+            return
+
+        try:
+            log_dir = settings.workspace_path / str(self.user_id) / str(self.project_id) / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_path = log_dir / f"interaction_{timestamp}.jsonl"
+
+            with open(log_path, "w", encoding="utf-8") as f:
+                # Write header metadata
+                header = {
+                    "type": "session_meta",
+                    "project_id": self.project_id,
+                    "user_id": self.user_id,
+                    "tender_doc": self.tender_doc_path,
+                    "bid_doc": self.bid_doc_path,
+                    "rule_doc": self.rule_doc_path,
+                    "total_llm_calls": len(self._interactions_log),
+                    "written_at": datetime.now().isoformat(),
+                }
+                f.write(json.dumps(header, ensure_ascii=False) + "\n")
+
+                for interaction in self._interactions_log:
+                    f.write(json.dumps(interaction, ensure_ascii=False, default=str) + "\n")
+
+            logger.info(
+                f"[BidReviewAgent._write_interaction_log] "
+                f"Wrote {len(self._interactions_log)} interactions to {log_path}"
+            )
+        except Exception as e:
+            logger.error(f"[BidReviewAgent._write_interaction_log] Failed: {e}")
 
     def _send_event(self, event_type: str, data: dict) -> None:
         """Send an event via callback if available."""
@@ -436,6 +672,45 @@ class BidReviewAgent(BaseAgent):
             raise FileNotFoundError(f"Rule doc not found: {self.rule_doc_path}")
         return path.read_text(encoding="utf-8")
 
+    def _parse_check_items(self, rule_doc_content: str) -> list[dict]:
+        """Parse check items from rule document to extract names and suggested keywords.
+
+        Args:
+            rule_doc_content: Full text content of the rule document.
+
+        Returns:
+            List of dicts with keys: index, name, suggested_keywords
+        """
+        items = []
+        # Accept variable hash counts (##, ####, #####) for compatibility with different rule file formats
+        sections = re.split(r'(?=##+\s*检查项\d+)', rule_doc_content)
+
+        for section in sections:
+            if not section.strip():
+                continue
+
+            index_match = re.match(r'##+\s*检查项(\d+)', section)
+            if not index_match:
+                continue
+            index = int(index_match.group(1))
+
+            name_match = re.search(r'##+\s*检查项名称\s*\n\s*(.+)', section)
+            name = name_match.group(1).strip() if name_match else f"检查项{index}"
+
+            # Derive suggested search keywords from the name
+            suggested_keywords = [name.replace("检查", "")]
+            for kw in re.findall(r'[一-鿿]{2,}', name):
+                if kw not in suggested_keywords:
+                    suggested_keywords.append(kw)
+
+            items.append({
+                "index": index,
+                "name": name,
+                "suggested_keywords": suggested_keywords[:3],
+            })
+
+        return items
+
     def _build_system_prompt(self, rule_doc_content: str) -> str:
         """Build system prompt containing rule document content.
 
@@ -445,7 +720,6 @@ class BidReviewAgent(BaseAgent):
         Returns:
             System prompt string with rule content embedded.
         """
-        from backend.agent.prompt import SYSTEM_PROMPT_WITH_RULE
         tender_doc_directory = str(Path(self.tender_doc_path).parent)
         bid_doc_directory = str(Path(self.bid_doc_path).parent)
         return SYSTEM_PROMPT_WITH_RULE.format(
@@ -490,13 +764,43 @@ class BidReviewAgent(BaseAgent):
 
             # 3. Build task prompt with output md path
             output_md_path = str(self.workspace_dir / f"review_{int(time.time())}.md")
-            task = f"""请执行投标文件审查任务：
+
+            # Parse check items for explicit enumeration in task prompt
+            check_items = self._parse_check_items(rule_doc_content)
+            check_list_lines = []
+            for item in check_items:
+                keywords_hint = "、".join(item["suggested_keywords"][:2])
+                check_list_lines.append(
+                    f"  {item['index']}. {item['name']} — 搜索关键词: {keywords_hint}"
+                )
+            check_list_str = "\n".join(check_list_lines)
+            total_items = len(check_items) if check_items else "所有"
+
+            task = f"""请执行投标文件审查任务。
+
+文档信息：
 - 招标书路径: {self.tender_doc_path}
 - 投标书路径: {self.bid_doc_path}
 - 审查结果输出文件: {output_md_path}
 
-请按照系统提示词中的规则执行审查，并将结果直接写入到上述 md 文件中。
-重要：必须使用 WriteTool 将审查结果写入文件。"""
+共有 {total_items} 个检查项：
+{check_list_str}
+
+执行要求：
+对上述每一个检查项，你必须：
+1. 调用 search_tender_doc(文档类型="tender", query="关键词") 查找招标书中的要求
+2. 调用 search_tender_doc(文档类型="bid", query="关键词") 查找投标书中所有对应位置
+3. 如需精确判断，调用 compare_bid(requirement=..., bid_content=...) 进行深入比对
+4. 如搜索结果含 image_refs，调用 understand_image 分析图片
+5. 记录结果后，继续下一个检查项
+
+所有 {total_items} 个检查项完成后，调用 write_file 将完整结果写入 {output_md_path}。
+
+⚠️ 重要约束：
+- 禁止使用 read_file 读取招标书或投标书（必须使用 search_tender_doc）
+- 禁止在一次工具调用中尝试完成多个检查项
+- 必须逐项检查，每个检查项至少调用 search_tender_doc 两次
+- 必须使用 write_file 写入最终结果"""
             self.add_user_message(task)
             logger.info(f"[BidReviewAgent.run_review] Task prompt added, output_md_path={output_md_path}")
 
@@ -535,13 +839,15 @@ class BidReviewAgent(BaseAgent):
                     is_normal = False
                 elif run_result.startswith("Task couldn't be completed"):
                     logger.warning(f"[BidReviewAgent.run_review] {run_result} — will try to extract partial results")
-                    # For max-steps, proceed to post_process (partial MD may exist)
             finally:
                 heartbeat_monitor.cancel()
                 try:
                     await heartbeat_monitor
                 except asyncio.CancelledError:
                     pass
+
+                # Write interaction log even if heartbeat monitor was cancelled
+                self._write_interaction_log()
 
             # Log full message history
             logger.info(f"[BidReviewAgent.run_review] === FULL MESSAGE HISTORY START ===")
@@ -565,7 +871,7 @@ class BidReviewAgent(BaseAgent):
             # 5. Post-process: extract findings from md file
             # Log whether WriteTool was ever called (diagnostic)
             write_tool_called = any(
-                tc.function.name == "WriteTool"
+                tc.function.name == "write_file"
                 for msg in self.messages
                 if msg.role == "assistant" and msg.tool_calls
                 for tc in msg.tool_calls
@@ -594,6 +900,7 @@ class BidReviewAgent(BaseAgent):
 
         except Exception as e:
             logger.exception(f"[BidReviewAgent.run_review] Exception: {e}")
+            self._write_interaction_log()
             return []
 
     def _extract_findings_from_messages(self) -> list[dict]:

@@ -8,6 +8,7 @@ import {
   CloseCircleOutlined,
 } from '@ant-design/icons-vue'
 import { Tag } from 'ant-design-vue'
+import { formatToolCallDescription, getToolDisplayName } from '@/utils/toolDisplay'
 import TodoListCard from './TodoListCard.vue'
 import SubAgentCard from './SubAgentCard.vue'
 
@@ -83,23 +84,6 @@ const agentIndexMap = computed(() => {
   return map
 })
 let eventSource: EventSource | null = null
-
-// 工具名称映射
-const toolNameMap: Record<string, string> = {
-  search_tender_doc: '搜索文档',
-  rag_search: '搜索知识库',
-  comparator: '内容比对',
-  // Mini-Agent 内置工具
-  read_file: '读取文件',
-  write_file: '写入文件',
-  edit_file: '编辑文件',
-  bash: '终端命令',
-  bash_output: '命令输出',
-  bash_kill: '终止命令',
-  get_skill: '获取技能',
-  record_note: '记录笔记',
-  recall_notes: '回忆笔记',
-}
 
 onMounted(() => {
   // Always set initial steps if available, regardless of historicalMode
@@ -368,43 +352,7 @@ function getStepLabel(stepType: string): string {
 
 function getFriendlyToolName(toolName?: string): string {
   if (!toolName) return '未知工具'
-  return toolNameMap[toolName] || toolName
-}
-
-// 人类友好的工具参数标签映射
-const argLabelMap: Record<string, string> = {
-  doc_type: '文档类型',
-  query: '查询',
-  requirement: '需求',
-  bid_content: '投标内容',
-  severity: '严重程度',
-  full_content: '完整内容',
-  chunk: '分块',
-  limit: '数量限制',
-}
-
-// 文档类型值映射
-const docTypeMap: Record<string, string> = {
-  tender: '招标书',
-  bid: '投标书',
-}
-
-function formatToolArg(key: string, value: any): string {
-  // 映射标签
-  const label = argLabelMap[key] || key
-  // 映射值
-  let displayValue = value
-  if (key === 'doc_type' && docTypeMap[value]) {
-    displayValue = docTypeMap[value]
-  } else if (typeof value === 'boolean') {
-    displayValue = value ? '是' : '否'
-  } else if (typeof value === 'object') {
-    displayValue = JSON.stringify(value).slice(0, 50)
-    if (JSON.stringify(value).length > 50) displayValue += '...'
-  } else if (typeof value === 'string' && value.length > 100) {
-    displayValue = value.slice(0, 100) + '...'
-  }
-  return `${label}: ${displayValue}`
+  return getToolDisplayName(toolName)
 }
 
 function formatToolResult(toolResult: ToolResult): string {
@@ -506,8 +454,8 @@ onUnmounted(() => {
                   <Tag color="purple" size="small">🔧 {{ getFriendlyToolName(toolCall.name) }}</Tag>
                 </div>
                 <div class="tool-call-args">
-                  <span v-for="(value, key) in toolCall.arguments" :key="key" class="param-tag">
-                    {{ formatToolArg(key, value) }}
+                  <span class="param-tag">
+                    {{ formatToolCallDescription(toolCall.name, toolCall.arguments) }}
                   </span>
                 </div>
                 <!-- 配对的工具返回结果 -->

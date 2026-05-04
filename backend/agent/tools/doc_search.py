@@ -239,13 +239,17 @@ class DocSearchTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return """搜索和读取招标书/应标书内容。输入应为JSON对象，包含：
-- '文档类型': 'tender' 或 'bid' (必填)
-- 'query': 可选关键词，用于过滤内容（返回匹配行及上下文）
-- 'chunk': 大文档的分块编号（0开始，用于分页）
-- 'full_content': 设为true返回完整文档内容（可能被截断）
+        return """【招标/投标文档专用搜索工具】查询招标书(tender)或投标书(bid)中的内容。
 
-返回匹配行及行号和周围上下文。"""
+这是查询招标书和投标书的唯一正确工具。禁止使用 read_file 读取招标书或投标书。
+
+参数说明（JSON对象）：
+- "文档类型": "tender"（查招标书）或 "bid"（查投标书），必填
+- "query": 搜索关键词，必填。返回所有包含该关键词的行及上下文
+- "chunk": 分页编号（从0开始），大文档分页时使用
+- "full_content": 设为true返回完整文档（仅在无query时使用）
+
+返回：匹配行的行号、内容和上下文。"""
 
     @property
     def parameters(self) -> dict:
@@ -324,7 +328,7 @@ class DocSearchTool(BaseTool):
 
                 # 生成友好摘要
                 summary = self._extract_summary(full_text)
-                doc_label = "招标" if doc_type == "tender" else "投标"
+                doc_label = "招标" if resolved_doc_type == "tender" else "投标"
 
                 # 分页提示
                 if chunk > 0:
@@ -381,7 +385,7 @@ class DocSearchTool(BaseTool):
                 matches = self._search_by_keyword(lines, query)
 
                 if not matches:
-                    doc_label = "招标" if doc_type == "tender" else "投标"
+                    doc_label = "招标" if resolved_doc_type == "tender" else "投标"
                     # 检查query是否可能在分类标题中
                     query_lower = query.lower()
                     header_matches = []
@@ -415,7 +419,7 @@ class DocSearchTool(BaseTool):
                         )
 
                 # 格式化结果，包含上下文和引用
-                doc_label = "招标" if doc_type == "tender" else "投标"
+                doc_label = "招标" if resolved_doc_type == "tender" else "投标"
                 display_matches = matches[:10]
                 formatted = [f"🔍 在{doc_label}书中找到 **{len(matches)}** 处提到\"{query}\"：\n"]
                 citations = []

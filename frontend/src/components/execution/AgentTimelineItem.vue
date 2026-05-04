@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { formatToolCallDescription, getToolDisplayName } from '@/utils/toolDisplay'
+
 interface ToolCall {
   name: string
   arguments: Record<string, any>
@@ -22,28 +24,6 @@ interface Props {
 
 defineProps<Props>()
 
-// 工具名称映射
-const toolNameMap: Record<string, string> = {
-  search_tender_doc: '搜索文档',
-  search_doc: '搜索文档',
-  rag_search: '搜索知识库',
-  comparator: '内容比对',
-  compare_bid: '标书比对',
-  // Mini-Agent 内置工具
-  read_file: '读取文件',
-  write_file: '写入文件',
-  edit_file: '编辑文件',
-  bash: '终端命令',
-  bash_output: '命令输出',
-  bash_kill: '终止命令',
-  get_skill: '获取技能',
-  record_note: '记录笔记',
-  recall_notes: '回忆笔记',
-  // MCP 工具
-  understand_image: '理解图片',
-  web_search: '网络搜索',
-}
-
 function formatTime(date: Date): string {
   return date.toLocaleTimeString('zh-CN', {
     hour: '2-digit',
@@ -66,16 +46,6 @@ function getStepColor(stepType: string): string {
 
 function getCardClass(stepType: string): string {
   return `card-${stepType}`
-}
-
-function formatToolArg(key: string, value: any): string {
-  if (key === 'doc_type') {
-    return value === 'tender' ? '文档类型: 招标书' : '文档类型: 投标书'
-  }
-  if (typeof value === 'string' && value.length > 100) {
-    return `${key}: ${value.slice(0, 100)}...`
-  }
-  return `${key}: ${value}`
 }
 
 function formatToolResult(result: any): string {
@@ -118,15 +88,15 @@ function formatToolResult(result: any): string {
       <div v-if="toolCalls?.length" class="tool-calls-section">
         <div v-for="(tc, idx) in toolCalls" :key="idx" class="tool-call-item">
           <div class="tool-call-header">
-            <span class="tool-name">{{ toolNameMap[tc.name] || tc.name }}</span>
+            <span class="tool-name">{{ getToolDisplayName(tc.name) }}</span>
           </div>
           <div class="tool-call-args">
-            <span v-for="(value, key) in tc.arguments" :key="key" class="param-tag">
-              {{ formatToolArg(key, value) }}
+            <span class="param-tag">
+              {{ formatToolCallDescription(tc.name, tc.arguments) }}
             </span>
           </div>
           <div v-if="toolResults?.[idx]" class="tool-call-result">
-            <span class="result-text">{{ console.log('[AgentTimelineItem] rendering toolResult', idx, JSON.stringify(toolResults[idx])), '' }}{{ formatToolResult(toolResults[idx].result) }}</span>
+            <span class="result-text">{{ formatToolResult(toolResults[idx].result) }}</span>
           </div>
         </div>
       </div>

@@ -83,13 +83,17 @@ class ComparatorTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return """将应标书内容与招标要求进行比对。
-输入应为JSON对象，包含：
-- 'requirement': 招标要求文本
-- 'bid_content': 要比对的应标书内容（可包含行号，如"Line 5: content"）
-- 'severity': 不满足时的默认严重程度（'critical'、'major'、'minor'），默认为'major'
+        return """【合规比对工具】将一条招标要求与投标书内容进行精确合规对比。
 
-返回结构化的比对结果，包含合规状态、严重程度、说明和位置信息。"""
+在 search_tender_doc 查到招标书要求和投标书内容后，使用此工具进行合规判断。
+每次只对比一条检查项。
+
+输入JSON对象：
+- "requirement": 招标书中的要求文本
+- "bid_content": 投标书中对应的内容（可包含行号如"Line 5: content"）
+- "severity": 不满足时的默认严重程度，"critical"/"major"/"minor"，默认"major"
+
+返回：合规状态、严重程度、原因说明和位置信息。"""
 
     @property
     def parameters(self) -> dict:
