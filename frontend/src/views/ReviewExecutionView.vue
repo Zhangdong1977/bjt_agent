@@ -29,6 +29,7 @@ const subAgentSteps = ref<Map<string, any[]>>(new Map())
 const errorMessage = ref<string | null>(null)
 const findingsCount = ref<number>(0)
 const mergedStats = ref<{ total: number; critical: number; major: number; minor: number; compliant: number } | null>(null)
+const mergedFindings = ref<any[] | null>(null)
 
 // Todo items state (mirrors ReviewTimeline.vue)
 interface CheckItemState {
@@ -390,6 +391,7 @@ async function handleSSEEvent(event: any) {
               minor: response.summary.minor || 0,
               compliant: response.summary.compliant || 0
             }
+            mergedFindings.value = response.findings || null
           }
         } catch (err) {
           console.error('[ReviewExecutionView] Failed to fetch merged results:', err)
@@ -639,6 +641,7 @@ onMounted(async () => {
             compliant: response.summary.compliant || 0
           }
           findingsCount.value = response.summary.non_compliant || 0
+          mergedFindings.value = response.findings || null
         }
       } catch (err) {
         console.error('[ReviewExecutionView] Failed to fetch merged results on mount:', err)
@@ -695,6 +698,7 @@ onUnmounted(() => {
           :merged-stats="mergedStats"
           :is-merging="isMerging"
           :merge-progress="mergeProgress"
+          :merged-findings="mergedFindings"
         />
 
         <RightSidebar

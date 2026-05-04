@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import AgentTimelineItem from './AgentTimelineItem.vue'
 import BidReviewAgentBlock from './BidReviewAgentBlock.vue'
 import SubAgentExecutorBlock from './SubAgentExecutorBlock.vue'
+import FindingsTable from './FindingsTable.vue'
 
 interface ToolCall {
   name: string
@@ -60,6 +61,7 @@ interface Props {
   mergedStats?: MergedStats | null
   isMerging?: boolean
   mergeProgress?: string
+  mergedFindings?: any[] | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -301,6 +303,8 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail'
             </div>
           </div>
         </div>
+        <!-- 审查结果明细表格 -->
+        <FindingsTable v-if="mergedFindings?.length" :findings="mergedFindings" />
       </div>
     </div>
 
