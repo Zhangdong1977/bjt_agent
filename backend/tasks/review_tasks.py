@@ -12,6 +12,25 @@ from backend.models import ReviewTask, ReviewResult, AgentStep
 
 logger = logging.getLogger(__name__)
 
+# Module-level Redis connection pool for _publish_event
+_review_redis_pool = None
+
+
+def _get_review_redis():
+    """Get Redis client from shared connection pool."""
+    global _review_redis_pool
+    import redis as redis_lib
+    if _review_redis_pool is None:
+        _settings = get_settings()
+        _review_redis_pool = redis_lib.ConnectionPool.from_url(
+            _settings.redis_url,
+            max_connections=5,
+            socket_timeout=5.0,
+            socket_connect_timeout=5.0,
+            socket_keepalive=True,
+        )
+    return redis_lib.Redis(connection_pool=_review_redis_pool)
+
 
 def run_async(coro):
     """Helper to run async function in sync context.
@@ -28,6 +47,10 @@ def create_session_factory():
 
     This must be called within an asyncio event loop to ensure the session
     factory is properly bound to that loop.
+
+    Returns:
+        Tuple of (session_factory, engine). Caller MUST call await engine.dispose()
+        when done to prevent connection leaks.
     """
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
     from backend.config import get_settings
@@ -37,16 +60,17 @@ def create_session_factory():
         settings.database_url,
         echo=settings.debug,
         pool_pre_ping=True,
-        pool_size=10,
-        max_overflow=20,
+        pool_size=5,
+        max_overflow=10,
     )
-    return async_sessionmaker(
+    session_factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
         expire_on_commit=False,
         autocommit=False,
         autoflush=False,
     )
+    return session_factory, engine
 
 
 # Error message constants
@@ -85,7 +109,7 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
             logger.info(f"[_publish_event] tool_results preview: {tr_preview}")
         logger.info(f"[_publish_event] Publishing to stream: {stream_key}, event_type={event_type}, data_keys={list(data.keys())}")
 
-        r = redis.from_url(settings.redis_url)
+        r = _get_review_redis()
         try:
             # Use Lua script for atomic XADD with TTL
             # This ensures events are added atomically and expire after 1 hour
@@ -99,8 +123,9 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
             """
             msg_id = r.eval(lua_script, 1, stream_key, event, 3600)  # 1 hour TTL
             logger.info(f"[_publish_event] SUCCESS: stream={stream_key}, msg_id={msg_id}, event_type={event_type}")
-        finally:
-            r.close()
+        except Exception as redis_err:
+            logger.error(f"[_publish_event] Redis error: {redis_err}")
+            raise
     except Exception as e:
         logger.error(f"[_publish_event] FAILED to publish event: {e}, stream={stream_key}, event_type={event_type}, traceback={traceback.format_exc()}")
 
@@ -116,100 +141,133 @@ def run_review(self, task_id: str) -> dict:
     4. Stores findings in the database
     5. Publishes SSE events via Redis
     """
+    from celery.exceptions import SoftTimeLimitExceeded
+
     async def _run():
         # Create session factory within the event loop to avoid 'different loop' error
-        session_factory = create_session_factory()
-        async with session_factory() as db:
-            from sqlalchemy import select
+        session_factory, engine = create_session_factory()
+        try:
+            async with session_factory() as db:
+                from sqlalchemy import select
 
-            # Get the review task
-            result = await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
-            task = result.scalar_one_or_none()
+                # Get the review task
+                result = await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
+                task = result.scalar_one_or_none()
 
-            if not task:
-                return {"status": "error", "message": ERROR_TASK_NOT_FOUND}
+                if not task:
+                    return {"status": "error", "message": ERROR_TASK_NOT_FOUND}
 
+                try:
+                    task.status = "running"
+                    task.started_at = datetime.utcnow()
+                    await db.flush()
+                    await db.commit()  # Commit immediately so API can see status change
+
+                    # Send SSE event (Redis Streams handles reliability - no sleep needed)
+                    _publish_event(task_id, "status", {"status": "running"})
+
+                    # Get project and documents
+                    from backend.models import Project, Document
+                    result = await db.execute(select(Project).where(Project.id == task.project_id))
+                    project = result.scalar_one_or_none()
+
+                    if not project:
+                        task.status = "failed"
+                        task.error_message = ERROR_PROJECT_NOT_FOUND
+                        await db.flush()
+                        await db.commit()
+                        _publish_event(task_id, "error", {"message": ERROR_PROJECT_NOT_FOUND})
+                        return {"status": "error", "message": ERROR_PROJECT_NOT_FOUND}
+
+                    # Get tender and bid documents
+                    result = await db.execute(
+                        select(Document).where(Document.project_id == task.project_id)
+                    )
+                    documents = result.scalars().all()
+
+                    tender_doc = next((d for d in documents if d.doc_type == "tender"), None)
+                    bid_doc = next((d for d in documents if d.doc_type == "bid"), None)
+
+                    if not tender_doc:
+                        task.status = "failed"
+                        task.error_message = ERROR_TENDER_NOT_FOUND
+                        await db.flush()
+                        await db.commit()
+                        _publish_event(task_id, "error", {"message": ERROR_TENDER_NOT_FOUND})
+                        return {"status": "error", "message": ERROR_TENDER_NOT_FOUND}
+
+                    if not bid_doc:
+                        task.status = "failed"
+                        task.error_message = ERROR_BID_NOT_FOUND
+                        await db.flush()
+                        await db.commit()
+                        _publish_event(task_id, "error", {"message": ERROR_BID_NOT_FOUND})
+                        return {"status": "error", "message": ERROR_BID_NOT_FOUND}
+
+                    # Send progress event
+                    _publish_event(task_id, "progress", {"message": "Starting document analysis..."})
+
+                    # Create cancel_event for heartbeat cancellation mechanism
+                    cancel_event = asyncio.Event()
+
+                    # Run the agent review — handles saving, status update, and merge trigger internally
+                    findings_count = await _run_agent_review(
+                        task_id, tender_doc, bid_doc, session_factory, cancel_event,
+                        db=db, review_task=task,
+                    )
+
+                    # Send completion event
+                    _publish_event(task_id, "complete", {
+                        "status": "completed",
+                        "findings_count": findings_count,
+                    })
+
+                    return {
+                        "status": "success",
+                        "task_id": task_id,
+                        "findings_count": findings_count,
+                    }
+
+                except Exception as e:
+                    task.status = "failed"
+                    task.error_message = str(e)
+                    task.completed_at = datetime.utcnow()
+                    await db.flush()
+                    await db.commit()
+                    _publish_event(task_id, "error", {"message": str(e)})
+                    return {"status": "error", "message": str(e)}
+        finally:
+            await engine.dispose()
+
+    try:
+        return run_async(_run())
+    except SoftTimeLimitExceeded:
+        logger.error(f"[run_review] SoftTimeLimitExceeded for task {task_id}")
+        _publish_event(task_id, "error", {"message": "Task exceeded time limit (25 minutes)"})
+        _mark_task_failed_after_timeout(task_id, "Task exceeded time limit (25 minutes)")
+        return {"status": "error", "message": "Task exceeded time limit"}
+
+
+def _mark_task_failed_after_timeout(task_id: str, error_msg: str) -> None:
+    """Best-effort: mark a timed-out task as failed in the database."""
+    try:
+        async def _do():
+            session_factory, engine = create_session_factory()
             try:
-                task.status = "running"
-                task.started_at = datetime.utcnow()
-                await db.flush()
-                await db.commit()  # Commit immediately so API can see status change
-
-                # Send SSE event (Redis Streams handles reliability - no sleep needed)
-                _publish_event(task_id, "status", {"status": "running"})
-
-                # Get project and documents
-                from backend.models import Project, Document
-                result = await db.execute(select(Project).where(Project.id == task.project_id))
-                project = result.scalar_one_or_none()
-
-                if not project:
-                    task.status = "failed"
-                    task.error_message = ERROR_PROJECT_NOT_FOUND
-                    await db.flush()
-                    await db.commit()
-                    _publish_event(task_id, "error", {"message": ERROR_PROJECT_NOT_FOUND})
-                    return {"status": "error", "message": ERROR_PROJECT_NOT_FOUND}
-
-                # Get tender and bid documents
-                result = await db.execute(
-                    select(Document).where(Document.project_id == task.project_id)
-                )
-                documents = result.scalars().all()
-
-                tender_doc = next((d for d in documents if d.doc_type == "tender"), None)
-                bid_doc = next((d for d in documents if d.doc_type == "bid"), None)
-
-                if not tender_doc:
-                    task.status = "failed"
-                    task.error_message = ERROR_TENDER_NOT_FOUND
-                    await db.flush()
-                    await db.commit()
-                    _publish_event(task_id, "error", {"message": ERROR_TENDER_NOT_FOUND})
-                    return {"status": "error", "message": ERROR_TENDER_NOT_FOUND}
-
-                if not bid_doc:
-                    task.status = "failed"
-                    task.error_message = ERROR_BID_NOT_FOUND
-                    await db.flush()
-                    await db.commit()
-                    _publish_event(task_id, "error", {"message": ERROR_BID_NOT_FOUND})
-                    return {"status": "error", "message": ERROR_BID_NOT_FOUND}
-
-                # Send progress event
-                _publish_event(task_id, "progress", {"message": "Starting document analysis..."})
-
-                # Create cancel_event for heartbeat cancellation mechanism
-                cancel_event = asyncio.Event()
-
-                # Run the agent review — handles saving, status update, and merge trigger internally
-                findings_count = await _run_agent_review(
-                    task_id, tender_doc, bid_doc, session_factory, cancel_event,
-                    db=db, review_task=task,
-                )
-
-                # Send completion event
-                _publish_event(task_id, "complete", {
-                    "status": "completed",
-                    "findings_count": findings_count,
-                })
-
-                return {
-                    "status": "success",
-                    "task_id": task_id,
-                    "findings_count": findings_count,
-                }
-
-            except Exception as e:
-                task.status = "failed"
-                task.error_message = str(e)
-                task.completed_at = datetime.utcnow()
-                await db.flush()
-                await db.commit()
-                _publish_event(task_id, "error", {"message": str(e)})
-                return {"status": "error", "message": str(e)}
-
-    return run_async(_run())
+                async with session_factory() as db:
+                    from sqlalchemy import select
+                    result = await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
+                    task = result.scalar_one_or_none()
+                    if task and task.status == "running":
+                        task.status = "failed"
+                        task.error_message = error_msg
+                        task.completed_at = datetime.utcnow()
+                        await db.commit()
+            finally:
+                await engine.dispose()
+        asyncio.run(_do())
+    except Exception as e:
+        logger.error(f"[run_review] Failed to mark task {task_id} as failed: {e}")
 
 
 @celery_app.task(bind=True, name="backend.tasks.review_tasks.merge_review_results")
@@ -222,44 +280,53 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
     3. Stores merged results in project_review_results table
     4. Publishes SSE events for frontend progress
     """
+    from celery.exceptions import SoftTimeLimitExceeded
+
     def event_cb(event_type: str, data: dict):
         _publish_event(latest_task_id, event_type, data)
 
     async def _run_merge():
-        session_factory = create_session_factory()
-        async with session_factory() as db:
-            from backend.services.merge_service import MergeService
-            from backend.agent.bid_review_agent import BidReviewAgent
-            agent = None
-            try:
-                # Create agent for merge decisions (paths don't matter since we only use MergeDeciderTool)
-                agent = BidReviewAgent(
-                    project_id=project_id,
-                    tender_doc_path="",
-                    bid_doc_path="",
-                    user_id="system",
-                    rule_doc_path="",
-                    event_callback=None,
-                    max_steps=1,
-                )
-                await agent.initialize()
+        session_factory, engine = create_session_factory()
+        try:
+            async with session_factory() as db:
+                from backend.services.merge_service import MergeService
+                from backend.agent.bid_review_agent import BidReviewAgent
+                agent = None
+                try:
+                    agent = BidReviewAgent(
+                        project_id=project_id,
+                        tender_doc_path="",
+                        bid_doc_path="",
+                        user_id="system",
+                        rule_doc_path="",
+                        event_callback=None,
+                        max_steps=1,
+                    )
+                    await agent.initialize()
 
-                merge_service = MergeService(db, agent)
-                merged_count, total_count = await merge_service.merge_project_results(
-                    project_id=project_id,
-                    latest_task_id=latest_task_id,
-                    event_callback=event_cb,
-                )
-                return {"status": "success", "merged_count": merged_count, "total_count": total_count}
-            except Exception as e:
-                logger.error(f"Merge failed: {e}")
-                event_cb("error", {"message": str(e)})
-                return {"status": "error", "message": str(e)}
-            finally:
-                if agent is not None:
-                    await agent.close()
+                    merge_service = MergeService(db, agent)
+                    merged_count, total_count = await merge_service.merge_project_results(
+                        project_id=project_id,
+                        latest_task_id=latest_task_id,
+                        event_callback=event_cb,
+                    )
+                    return {"status": "success", "merged_count": merged_count, "total_count": total_count}
+                except Exception as e:
+                    logger.error(f"Merge failed: {e}")
+                    event_cb("error", {"message": str(e)})
+                    return {"status": "error", "message": str(e)}
+                finally:
+                    if agent is not None:
+                        await agent.close()
+        finally:
+            await engine.dispose()
 
-    return run_async(_run_merge())
+    try:
+        return run_async(_run_merge())
+    except SoftTimeLimitExceeded:
+        logger.error(f"[merge_review_results] SoftTimeLimitExceeded for project {project_id}")
+        _publish_event(latest_task_id, "error", {"message": "Merge task exceeded time limit"})
+        return {"status": "error", "message": "Merge task exceeded time limit"}
 
 
 def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: list | None = None) -> int:

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,8 +36,38 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown events."""
+    logger = logging.getLogger(__name__)
     # Startup
     await init_db()
+
+    # Clean up stale tasks from previous runs (tasks stuck in pending/running
+    # for over 45 minutes are assumed dead from crashed workers)
+    try:
+        from sqlalchemy import select, and_
+        from backend.models import async_session_factory, ReviewTask
+
+        stale_threshold = datetime.utcnow() - timedelta(minutes=45)
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(ReviewTask).where(
+                    and_(
+                        ReviewTask.status.in_(["pending", "running"]),
+                        ReviewTask.started_at < stale_threshold,
+                    )
+                )
+            )
+            stale = result.scalars().all()
+            for t in stale:
+                logger.warning(f"[startup] Failing stale task {t.id}, started_at={t.started_at}")
+                t.status = "failed"
+                t.error_message = "Stale task cleaned up on startup"
+                t.completed_at = datetime.utcnow()
+            await db.commit()
+            if stale:
+                logger.warning(f"[startup] Cleaned up {len(stale)} stale tasks")
+    except Exception as e:
+        logger.warning(f"[startup] Stale task cleanup failed: {e}")
+
     yield
     # Shutdown
     await close_db()

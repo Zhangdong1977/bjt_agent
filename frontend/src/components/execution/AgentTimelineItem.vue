@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { formatToolCallDescription, getToolDisplayName } from '@/utils/toolDisplay'
+import { renderMarkdown } from '@/utils/markdown'
 
 interface ToolCall {
   name: string
@@ -48,27 +49,22 @@ function getCardClass(stepType: string): string {
   return `card-${stepType}`
 }
 
-function formatToolResult(result: any): string {
-  console.log('[AgentTimelineItem] formatToolResult called, result:', JSON.stringify(result))
-  if (result === undefined || result === null) {
-    return ''
-  }
-  // 处理 compare_bid 的结构化结果
+function getToolResultText(result: any): string {
+  if (result === undefined || result === null) return ''
   if (result.is_compliant !== undefined) {
     const emoji = result.is_compliant ? '✅' : '❌'
     const severity = result.severity || ''
     const explanation = result.explanation || ''
-    const text = `${emoji} ${severity ? `(${severity}) ` : ''}${explanation}`
-    return text.slice(0, 200) + (text.length > 200 ? '...' : '')
+    return `${emoji} ${severity ? `(${severity}) ` : ''}${explanation}`
   }
   if (result?.status === 'success' && result?.content) {
-    return result.content.slice(0, 200) + (result.content.length > 200 ? '...' : '')
+    return result.content
   }
   if (result?.status === 'error') {
     return `失败: ${result.error || 'unknown'}`
   }
   const str = JSON.stringify(result)
-  return str ? str.slice(0, 100) : String(result)
+  return str || String(result)
 }
 </script>
 
@@ -83,7 +79,7 @@ function formatToolResult(result: any): string {
         <span v-if="duration !== undefined" class="duration">{{ duration }}ms</span>
         <span class="timestamp">{{ formatTime(timestamp) }}</span>
       </div>
-      <p v-if="content" class="step-text">{{ content }}</p>
+      <div v-if="content" class="step-text markdown-content" v-html="renderMarkdown(content)"></div>
       <!-- 工具调用详情 -->
       <div v-if="toolCalls?.length" class="tool-calls-section">
         <div v-for="(tc, idx) in toolCalls" :key="idx" class="tool-call-item">
@@ -95,9 +91,7 @@ function formatToolResult(result: any): string {
               {{ formatToolCallDescription(tc.name, tc.arguments) }}
             </span>
           </div>
-          <div v-if="toolResults?.[idx]" class="tool-call-result">
-            <span class="result-text">{{ formatToolResult(toolResults[idx].result) }}</span>
-          </div>
+          <div v-if="toolResults?.[idx]" class="tool-call-result markdown-content" v-html="renderMarkdown(getToolResultText(toolResults[idx].result))"></div>
         </div>
       </div>
     </div>
@@ -189,6 +183,80 @@ function formatToolResult(result: any): string {
   margin: 0;
 }
 
+.markdown-content :deep(h1),
+.markdown-content :deep(h2),
+.markdown-content :deep(h3) {
+  margin-top: 0.8em;
+  margin-bottom: 0.4em;
+  font-weight: 600;
+}
+
+.markdown-content :deep(h1) { font-size: 1.4em; }
+.markdown-content :deep(h2) { font-size: 1.2em; }
+.markdown-content :deep(h3) { font-size: 1.1em; }
+
+.markdown-content :deep(p) {
+  margin-bottom: 0.5em;
+}
+
+.markdown-content :deep(ul),
+.markdown-content :deep(ol) {
+  margin-bottom: 0.5em;
+  padding-left: 1.5em;
+}
+
+.markdown-content :deep(li) {
+  margin-bottom: 0.3em;
+}
+
+.markdown-content :deep(code) {
+  background-color: var(--bg2);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.markdown-content :deep(pre) {
+  background-color: var(--bg2);
+  padding: 0.8em;
+  border-radius: var(--r);
+  overflow-x: auto;
+  margin-bottom: 0.5em;
+}
+
+.markdown-content :deep(pre code) {
+  background: none;
+  padding: 0;
+}
+
+.markdown-content :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 0.5em;
+}
+
+.markdown-content :deep(th),
+.markdown-content :deep(td) {
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+}
+
+.markdown-content :deep(th) {
+  background-color: var(--bg2);
+  font-weight: 600;
+}
+
+.markdown-content :deep(strong) {
+  font-weight: 600;
+}
+
+.markdown-content :deep(blockquote) {
+  border-left: 3px solid var(--blue);
+  padding-left: 0.8em;
+  margin: 0.5em 0;
+  color: var(--muted);
+}
+
 .tool-calls-section {
   margin-top: 10px;
   padding: 8px;
@@ -230,6 +298,6 @@ function formatToolResult(result: any): string {
   padding-top: 6px;
   border-top: 1px dashed var(--line);
   font-size: 11px;
-  color: var(--green);
+  color: var(--text);
 }
 </style>

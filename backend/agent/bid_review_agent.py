@@ -85,6 +85,7 @@ class BidReviewAgent(BaseAgent):
             provider=LLMProvider.OPENAI,  # MiniMax uses OpenAI-compatible API
             api_base=settings.mini_agent_api_base,
             model=settings.mini_agent_model,
+            timeout=120.0,  # 2min per API call to prevent indefinite hangs
         )
         self.llm_client = llm_client  # Store for _call_llm_with_retry
 
@@ -266,7 +267,23 @@ class BidReviewAgent(BaseAgent):
             agent_ref._log_llm_request(call_index, messages, tools)
 
             try:
-                response = await original_generate(*args, **kwargs)
+                async with asyncio.timeout(180.0):
+                    response = await original_generate(*args, **kwargs)
+            except TimeoutError:
+                latency_ms = int((time.perf_counter() - call_start) * 1000)
+                logger.error(
+                    f"[LLM Interaction #{call_index}] TIMEOUT after {latency_ms}ms "
+                    f"(asyncio.timeout exceeded 180s)"
+                )
+                agent_ref._interactions_log.append({
+                    "call_index": call_index,
+                    "timestamp": call_timestamp,
+                    "latency_ms": latency_ms,
+                    "status": "timeout",
+                    "error": "asyncio.timeout exceeded 180s",
+                    "request": agent_ref._build_request_summary(messages, tools),
+                })
+                raise
             except Exception as e:
                 latency_ms = int((time.perf_counter() - call_start) * 1000)
                 logger.error(
@@ -283,6 +300,12 @@ class BidReviewAgent(BaseAgent):
                 raise
 
             latency_ms = int((time.perf_counter() - call_start) * 1000)
+
+            # Check cancel_event after LLM call completes (heartbeat may have
+            # timed out while we were waiting for the LLM response)
+            if agent_ref.cancel_event and agent_ref.cancel_event.is_set():
+                logger.warning(f"[LLM Interaction #{call_index}] Cancel event detected after LLM response")
+                raise asyncio.CancelledError("Task cancelled by heartbeat timeout")
 
             # Log response
             agent_ref._log_llm_response(call_index, response, latency_ms)

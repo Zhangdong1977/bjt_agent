@@ -8,6 +8,7 @@ import {
   CloseCircleOutlined,
 } from '@ant-design/icons-vue'
 import { Tag } from 'ant-design-vue'
+import { renderMarkdown } from '@/utils/markdown'
 import { formatToolCallDescription, getToolDisplayName } from '@/utils/toolDisplay'
 import TodoListCard from './TodoListCard.vue'
 import SubAgentCard from './SubAgentCard.vue'
@@ -441,7 +442,7 @@ onUnmounted(() => {
             </div>
 
             <!-- 步骤内容 -->
-            <p v-if="step.content" class="step-text">{{ step.content }}</p>
+            <div v-if="step.content" class="step-text markdown-content" v-html="renderMarkdown(step.content)"></div>
 
             <!-- 内嵌的工具调用列表 -->
             <div v-if="step.tool_args?.tool_calls?.length" class="tool-calls-section">
@@ -778,5 +779,87 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* Markdown rendering */
+.step-text {
+  font-size: 0.85rem;
+  color: var(--text);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.markdown-content :deep(h1),
+.markdown-content :deep(h2),
+.markdown-content :deep(h3) {
+  margin-top: 0.8em;
+  margin-bottom: 0.4em;
+  font-weight: 600;
+}
+
+.markdown-content :deep(h1) { font-size: 1.4em; }
+.markdown-content :deep(h2) { font-size: 1.2em; }
+.markdown-content :deep(h3) { font-size: 1.1em; }
+
+.markdown-content :deep(p) {
+  margin-bottom: 0.5em;
+}
+
+.markdown-content :deep(ul),
+.markdown-content :deep(ol) {
+  margin-bottom: 0.5em;
+  padding-left: 1.5em;
+}
+
+.markdown-content :deep(li) {
+  margin-bottom: 0.3em;
+}
+
+.markdown-content :deep(code) {
+  background-color: var(--bg2);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.markdown-content :deep(pre) {
+  background-color: var(--bg2);
+  padding: 0.8em;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin-bottom: 0.5em;
+}
+
+.markdown-content :deep(pre code) {
+  background: none;
+  padding: 0;
+}
+
+.markdown-content :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 0.5em;
+}
+
+.markdown-content :deep(th),
+.markdown-content :deep(td) {
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+}
+
+.markdown-content :deep(th) {
+  background-color: var(--bg2);
+  font-weight: 600;
+}
+
+.markdown-content :deep(strong) {
+  font-weight: 600;
+}
+
+.markdown-content :deep(blockquote) {
+  border-left: 3px solid var(--blue);
+  padding-left: 0.8em;
+  margin: 0.5em 0;
+  color: var(--muted);
 }
 </style>

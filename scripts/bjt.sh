@@ -92,7 +92,7 @@ is_running() {
 start_celery_review() {
     log "Starting Celery Worker (review queue)..."
     cd "$BACKEND_DIR"
-    celery -A celery_app worker --loglevel=info --concurrency=2 -Q review > "$SCRIPT_DIR/logs/celery_review.log" 2>&1 &
+    celery -A celery_app worker --loglevel=info --concurrency=2 -Q review --max-tasks-per-child=10 > "$SCRIPT_DIR/logs/celery_review.log" 2>&1 &
     save_pid "celery_review" "$!"
     log "Celery Review started (PID: $(get_pid celery_review))"
 }

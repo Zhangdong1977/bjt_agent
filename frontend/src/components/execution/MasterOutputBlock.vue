@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { watch } from 'vue'
+import { renderMarkdown } from '@/utils/markdown'
 
 const MAX_CONTENT_LENGTH = 100
 const MAX_ARGS_DISPLAY_LENGTH = 50
@@ -76,7 +77,7 @@ function formatArgs(args: Record<string, any>): string {
     <div class="output-body">
       <div v-for="step in steps" :key="step.step_number" class="output-line">
         <span class="prompt">›</span>
-        <span class="cmd">{{ step.content }}</span>
+        <span class="cmd markdown-content" v-html="renderMarkdown(step.content)"></span>
       </div>
       <div v-if="steps.length > 0 && steps[0].tool_calls?.length" class="tool-call">
         <span class="tool-call-fn">{{ steps[0].tool_calls[0].name }}</span>
@@ -162,4 +163,10 @@ function formatArgs(args: Record<string, any>): string {
 .tool-call-arg { color: var(--muted); }
 .tool-call-arrow { color: var(--dim); }
 .tool-call-result { color: var(--green); }
+
+.markdown-content :deep(strong) { font-weight: 600; }
+.markdown-content :deep(code) { background: var(--bg2); padding: 0.1em 0.3em; border-radius: 3px; font-size: 0.9em; }
+.markdown-content :deep(p) { margin: 0; }
+.markdown-content :deep(ul), .markdown-content :deep(ol) { padding-left: 1.5em; margin: 0; }
+.markdown-content :deep(li) { margin-bottom: 0.2em; }
 </style>
