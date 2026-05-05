@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { renderMarkdown } from '@/utils/markdown'
 
 interface Finding {
   id: string
@@ -17,18 +17,6 @@ interface Finding {
 defineProps<{
   findings: Finding[]
 }>()
-
-const expandedRows = ref<Set<string>>(new Set())
-
-function toggleRow(id: string) {
-  const next = new Set(expandedRows.value)
-  if (next.has(id)) {
-    next.delete(id)
-  } else {
-    next.add(id)
-  }
-  expandedRows.value = next
-}
 
 function getSeverityLabel(severity: string): string {
   const map: Record<string, string> = {
@@ -56,12 +44,11 @@ function getSeverityLabel(severity: string): string {
         <tbody>
           <template v-for="(finding, idx) in findings" :key="finding.id">
             <tr
-              :class="['finding-row', { 'non-compliant': !finding.is_compliant, expandable: !finding.is_compliant }]"
-              @click="!finding.is_compliant && toggleRow(finding.id)"
+              :class="['finding-row', { 'non-compliant': !finding.is_compliant }]"
             >
               <td class="col-idx">{{ idx + 1 }}</td>
               <td class="col-key">
-                <div class="req-content">{{ finding.requirement_content }}</div>
+                <div class="req-content" v-html="renderMarkdown(finding.requirement_content)"></div>
               </td>
               <td class="col-status">
                 <span :class="['status-badge', finding.is_compliant ? 'pass' : 'fail']">
@@ -75,20 +62,20 @@ function getSeverityLabel(severity: string): string {
                 <span v-else class="severity-dash">-</span>
               </td>
             </tr>
-            <tr v-if="!finding.is_compliant && expandedRows.has(finding.id)" class="detail-row">
+            <tr v-if="!finding.is_compliant" class="detail-row">
               <td colspan="4">
                 <div class="detail-content">
                   <div v-if="finding.bid_content" class="detail-field">
                     <span class="detail-label">应标内容:</span>
-                    <span>{{ finding.bid_content }}</span>
+                    <span v-html="renderMarkdown(finding.bid_content)"></span>
                   </div>
                   <div v-if="finding.explanation" class="detail-field">
                     <span class="detail-label">说明:</span>
-                    <span>{{ finding.explanation }}</span>
+                    <span v-html="renderMarkdown(finding.explanation)"></span>
                   </div>
                   <div v-if="finding.suggestion" class="detail-field">
                     <span class="detail-label">建议:</span>
-                    <span>{{ finding.suggestion }}</span>
+                    <span v-html="renderMarkdown(finding.suggestion)"></span>
                   </div>
                   <div v-if="finding.location_page" class="detail-field">
                     <span class="detail-label">位置:</span>
@@ -120,8 +107,6 @@ function getSeverityLabel(severity: string): string {
 }
 
 .findings-table-scroll {
-  max-height: 400px;
-  overflow-y: auto;
 }
 
 .findings-table {
@@ -157,10 +142,6 @@ function getSeverityLabel(severity: string): string {
 .findings-table tbody tr.finding-row.non-compliant:hover {
   background: var(--red-bg);
   filter: brightness(0.97);
-}
-
-.findings-table tbody tr.finding-row.expandable {
-  cursor: pointer;
 }
 
 .col-idx {

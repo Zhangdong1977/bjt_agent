@@ -142,6 +142,20 @@ async function handleSSEEvent(event: any) {
 
     case 'merging_completed':
       phase.value = 'completed'
+      // 从事件数据中提取合并结果（避免等待项目级合并 Celery 任务）
+      if (event.result) {
+        const r = event.result
+        mergedStats.value = {
+          total: r.total_findings || 0,
+          critical: r.critical_count || 0,
+          major: r.major_count || 0,
+          minor: r.minor_count || 0,
+          compliant: r.passed_count || 0
+        }
+        if (r.findings?.length) {
+          mergedFindings.value = r.findings
+        }
+      }
       break
 
     case 'progress':
