@@ -3,7 +3,7 @@
 	url = https://github.com/Zhangdong1977/Mini-Agent.git
 [submodule "third_party/markitdown"]
 	path = third_party/markitdown
-	url = https://github.com/microsoft/markitdown.git
+	url = https://github.com/Zhangdong1977/markitdown.git
 [submodule "third_party/mammoth"]
 	path = third_party/mammoth
 	url = https://github.com/Zhangdong1977/python-mammoth.git
