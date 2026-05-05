@@ -200,34 +200,23 @@ def _insert_missing_img_tags(html_content: str, images_dir: Path) -> str:
 
 async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Document, settings, document_id: str) -> dict:
     """Save parsed content to disk and update document record."""
-    # Publish saving progress: start
     _publish_parse_progress(document_id, "saving", 1, 3, 0)
 
     parsed_dir = file_path.parent
-
-    # Save as Markdown (DOCX only)
     md_path = parsed_dir / f"{file_path.stem}_parsed.md"
     images_dir = parsed_dir / f"{file_path.stem}_images"
 
     md_content = parsed_data["text"]
-
-    # Save Markdown content
     md_path.write_text(md_content, encoding="utf-8")
 
-    # Handle images - copy from markitdown result
+    # Images are already on disk (written by DirectFileImageHandler during parsing)
     if parsed_data["images"]:
-        images_dir.mkdir(exist_ok=True)
-        for img_info in parsed_data["images"]:
-            img_path = images_dir / img_info["filename"]
-            if not img_path.exists():
-                img_path.write_bytes(img_info["data"])
         document.parsed_images_dir = str(images_dir)
 
     document.parsed_markdown_path = str(md_path)
     document.word_count = len(md_content.split())
     document.status = "parsed"
 
-    # Publish saving progress: complete
     _publish_parse_progress(document_id, "saving", 3, 3, 0)
 
     return {
@@ -417,9 +406,13 @@ async def _parse_pdf(file_path: Path) -> dict:
 async def _parse_docx(file_path: Path, progress_callback=None, document_id: str = "") -> dict:
     """Parse DOCX file using markitdown.
 
+    Images are written directly to disk by DirectFileImageHandler during conversion,
+    so the returned markdown already contains file-path references instead of base64 data URIs.
+
     Args:
         file_path: Path to the DOCX file
         progress_callback: Optional callback for progress updates (processed, total)
+        document_id: Document UUID for progress reporting
 
     Returns:
         Dict with text (Markdown), images, and page_count (None)
@@ -429,108 +422,15 @@ async def _parse_docx(file_path: Path, progress_callback=None, document_id: str 
     file_size = file_path.stat().st_size
     logger.info(f"Markitdown parsing: {file_path} ({file_size / (1024*1024):.2f}MB)")
 
+    images_dir = file_path.parent / f"{file_path.stem}_images"
+
     converter = MarkitdownConverter()
-    result = converter.convert(file_path, progress_callback=progress_callback)
+    result = converter.convert(file_path, progress_callback=progress_callback, images_dir=images_dir)
 
-    markdown_content = result.markdown_content
-    logger.info(f"Markitdown conversion successful: {len(markdown_content)} characters")
-
-    # Determine the target images directory in workspace
-    workspace_images_dir = file_path.parent / f"{file_path.stem}_images"
-
-    # Save images to workspace and build image mapping
-    images = []
-    if result.images:
-        workspace_images_dir.mkdir(parents=True, exist_ok=True)
-        for img_info in result.images:
-            img_path = workspace_images_dir / img_info.filename
-            img_path.write_bytes(img_info.data)
-            images.append({
-                "filename": img_info.filename,
-                "data": img_info.data,
-            })
-        logger.info(f"Saved {len(images)} images to {workspace_images_dir}")
-
-    # Replace image placeholders in markdown with file path references
-    # markitdown uses format: ![alt](data:image/png;base64,/9j/4AAQSkZJRg...) with full base64 data
-    # or in tables: alt_text](data:image/...;base64,...)
-    # Base64 data can span multiple lines and may contain ) characters, so we use a robust approach
-    import re
-
-    if not workspace_images_dir.exists():
-        logger.warning(f"Images directory does not exist: {workspace_images_dir}")
-    else:
-        # Get all image files from the images directory
-        # Include standard formats plus EMF/WMF formats (LibreOffice conversion artifacts)
-        image_files = list(workspace_images_dir.glob('*'))
-        image_files = [f for f in image_files if f.suffix.lower() in [
-            '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp',
-            '.emf', '.wmf', '.x-emf', '.x-wmf'  # LibreOffice conversion formats
-        ]]
-        # Sort by numeric suffix (image_1, image_2, ..., image_10, ...)
-        # to match the order markitdown assigns (extracted in document order)
-        image_files.sort(key=lambda f: _natural_sort_key(f.stem))
-
-        if image_files:
-            total_images = len(image_files)
-            logger.info(f"Found {total_images} images in {workspace_images_dir}, replacing placeholders")
-
-            # Replace each data:image placeholder with file path reference
-            images_dir_name = f"{file_path.stem}_images"
-            placeholder_idx = 0
-
-            # Pattern matches both:
-            # - ![](data:image/...)  - standard markdown image
-            # - alt_text](data:image/...) - image in table cell
-            # Use [\s\S]*? to match any character including newlines (non-greedy)
-            # to handle cases where base64 data spans multiple lines or contains )
-            data_uri_pattern = r'!?\[([^\]]*)\]\(data:image/([^;]+);base64,([\s\S]*?)\)'
-
-            # First try with simple pattern (for cases without ) in base64)
-            matches = list(re.finditer(data_uri_pattern, markdown_content))
-
-            # For any unmatched data:image, use a more aggressive approach
-            remaining_content = markdown_content
-            last_end = 0
-            replacements = []
-
-            for match in matches:
-                full_match = match.group(0)
-                replacements.append((match.start(), match.end(), full_match))
-
-            # Sort replacements by start position in reverse order to apply from end
-            # This way string positions don't shift when we replace
-            replacements.sort(key=lambda x: x[0], reverse=True)
-
-            for start, end, full_match in replacements:
-                if placeholder_idx < len(image_files):
-                    # Process replacements from end to start (to avoid position shifting),
-                    # so access image_files in reverse too — the last data URI should
-                    # get the last image file, not the first.
-                    img_file = image_files[-(placeholder_idx + 1)]
-                    img_ref = f"![{img_file.stem}]({images_dir_name}/{img_file.name})"
-                    markdown_content = markdown_content[:start] + img_ref + markdown_content[end:]
-                    logger.info(f"Replaced placeholder with file path {img_file.name}")
-                    placeholder_idx += 1
-                    # Report progress for every processed image
-                    eta = max(1, int((total_images - placeholder_idx) * 0.4))
-                    _publish_parse_progress(
-                        document_id, "processing_images",
-                        placeholder_idx, total_images, eta,
-                    )
-                else:
-                    logger.warning(f"No image file available for placeholder at index {placeholder_idx}")
-                    break
-
-            # Check for any remaining data:image that weren't matched
-            remaining_count = markdown_content.count("data:image")
-            if remaining_count > 0:
-                logger.warning(f"{remaining_count} data:image occurrences were not replaced (possibly contain ) in base64 data)")
-
-    logger.info(f"Extracted {len(images)} images from DOCX")
+    logger.info(f"Markitdown conversion successful: {len(result.markdown_content)} characters, {len(result.images)} images")
 
     return {
-        "text": markdown_content,  # Markdown content
-        "images": images,
+        "text": result.markdown_content,
+        "images": [{"filename": img.filename, "data": img.data} for img in result.images],
         "page_count": None,
     }

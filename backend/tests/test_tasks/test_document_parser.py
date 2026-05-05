@@ -5,24 +5,21 @@ import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from backend.parsers.markitdown_converter import ImageInfo
+
 
 class TestParseDocx:
-    """Test cases for _parse_docx function."""
 
     def test_parse_docx_function_exists(self):
-        """Test that _parse_docx function exists and is callable."""
         from backend.tasks.document_parser import _parse_docx
         assert callable(_parse_docx)
 
     def test_parse_docx_returns_dict_with_text_and_images(self, tmp_path):
-        """Test that _parse_docx returns dict with expected keys."""
         from backend.tasks.document_parser import _parse_docx
 
-        # Create a minimal DOCX file (PK header)
         docx_path = tmp_path / "test.docx"
-        docx_path.write_bytes(b"PK\x03\x04")  # Minimal DOCX-like bytes
+        docx_path.write_bytes(b"PK\x03\x04")
 
-        # Mock MarkitdownConverter to avoid actual conversion
         mock_result = MagicMock()
         mock_result.markdown_content = "Test content"
         mock_result.images = []
@@ -40,27 +37,43 @@ class TestParseDocx:
         assert "page_count" in result
         assert result["page_count"] is None
 
-    def test_parse_docx_replaces_placeholders_with_file_references(self, tmp_path):
-        """Test that image placeholders are replaced with file path references."""
+    def test_parse_docx_passes_images_dir_to_converter(self, tmp_path):
+        """Verify _parse_docx passes the correct images_dir to converter."""
         from backend.tasks.document_parser import _parse_docx
 
-        # Create a minimal DOCX file
+        docx_path = tmp_path / "my_doc.docx"
+        docx_path.write_bytes(b"PK\x03\x04")
+
+        mock_result = MagicMock()
+        mock_result.markdown_content = "Content"
+        mock_result.images = []
+
+        with patch('backend.parsers.markitdown_converter.MarkitdownConverter') as mock_converter_class:
+            mock_converter = MagicMock()
+            mock_converter.convert.return_value = mock_result
+            mock_converter_class.return_value = mock_converter
+
+            asyncio.get_event_loop().run_until_complete(_parse_docx(docx_path))
+
+        # Verify converter was called with correct images_dir
+        mock_converter.convert.assert_called_once()
+        call_kwargs = mock_converter.convert.call_args
+        assert call_kwargs.kwargs.get("images_dir") == tmp_path / "my_doc_images"
+
+    def test_parse_docx_markdown_already_has_file_paths(self, tmp_path):
+        """With DirectFileImageHandler, markdown contains file paths, not base64."""
+        from backend.tasks.document_parser import _parse_docx
+
         docx_path = tmp_path / "test_image.docx"
         docx_path.write_bytes(b"PK\x03\x04")
 
-        # Create images directory with a real image file
-        images_dir = tmp_path / "test_image_images"
-        images_dir.mkdir()
-        test_img = images_dir / "image1.png"
-        test_img.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00")
-
-        # Mock ConversionResult with base64 placeholder
+        # Simulate what DirectFileImageHandler produces: file-path references, no base64
         mock_result = MagicMock()
         mock_result.markdown_content = (
-            "Document with image ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==) end"
+            "Document with image ![image_1](test_image_images/image_1.png) end"
         )
         mock_result.images = [
-            MagicMock(filename="image1.png", data=test_img.read_bytes())
+            ImageInfo(filename="image_1.png", data=b"\x89PNG\r\n\x1a\n")
         ]
 
         with patch('backend.parsers.markitdown_converter.MarkitdownConverter') as mock_converter_class:
@@ -72,61 +85,16 @@ class TestParseDocx:
 
         markdown_output = result["text"]
 
-        # Verify placeholder was replaced with file path
-        assert "test_image_images/image1.png" in markdown_output
-        # Verify base64 data is NOT in output
-        assert "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==" not in markdown_output
-
-    def test_parse_docx_logs_warning_for_unmatched_placeholder(self, tmp_path, caplog):
-        """Test that a warning is logged when there are more placeholders than image files."""
-        import logging
-        from backend.tasks.document_parser import _parse_docx
-
-        # Create a minimal DOCX file
-        docx_path = tmp_path / "test_unmatched.docx"
-        docx_path.write_bytes(b"PK\x03\x04")
-
-        # Create images directory with only ONE image
-        images_dir = tmp_path / "test_unmatched_images"
-        images_dir.mkdir()
-        test_img = images_dir / "image1.png"
-        test_img.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00")
-
-        # Mock ConversionResult with TWO base64 placeholders but only ONE image
-        mock_result = MagicMock()
-        mock_result.markdown_content = (
-            "Doc with image1 ![](data:image/png;base64,PLACEHOLDER1) "
-            "and image2 ![](data:image/png;base64,PLACEHOLDER2) end"
-        )
-        mock_result.images = [
-            MagicMock(filename="image1.png", data=test_img.read_bytes())
-        ]
-
-        with patch('backend.parsers.markitdown_converter.MarkitdownConverter') as mock_converter_class:
-            mock_converter = MagicMock()
-            mock_converter.convert.return_value = mock_result
-            mock_converter_class.return_value = mock_converter
-
-            with caplog.at_level(logging.WARNING):
-                result = asyncio.get_event_loop().run_until_complete(_parse_docx(docx_path))
-
-        markdown_output = result["text"]
-
-        # Replacements happen from end to start, so the last placeholder is replaced first
-        # First placeholder (PLACEHOLDER1 at text position 0) remains because placeholder_idx=1 has no image
-        # Second placeholder (PLACEHOLDER2) is replaced with image1.png
-        assert "test_unmatched_images/image1.png" in markdown_output
-        # First placeholder should still contain base64 (not replaced) because we ran out of images
-        assert "PLACEHOLDER1" in markdown_output
-        # Verify warning was logged
-        assert any("No image file available for placeholder at index 1" in record.message for record in caplog.records)
+        # Markdown should have file path references
+        assert "test_image_images/image_1.png" in markdown_output
+        # No base64 data URIs should be present
+        assert "data:image" not in markdown_output
+        assert "base64" not in markdown_output
 
 
 class TestParseDocxEdgeCases:
-    """Edge case tests for _parse_docx function."""
 
     def test_parse_docx_with_no_images(self, tmp_path):
-        """Test _parse_docx when document has no images."""
         from backend.tasks.document_parser import _parse_docx
 
         docx_path = tmp_path / "text_only.docx"
@@ -146,29 +114,34 @@ class TestParseDocxEdgeCases:
         assert result["text"] == "Plain text document without images"
         assert result["images"] == []
 
-    def test_parse_docx_creates_images_directory(self, tmp_path):
-        """Test that _parse_docx creates images directory when images exist."""
+    def test_parse_docx_with_many_images(self, tmp_path):
+        """Verify handling of documents with multiple images."""
         from backend.tasks.document_parser import _parse_docx
 
-        docx_path = tmp_path / "with_images.docx"
+        docx_path = tmp_path / "multi_image.docx"
         docx_path.write_bytes(b"PK\x03\x04")
 
-        images_dir = tmp_path / "with_images_images"
+        images = [
+            ImageInfo(filename=f"image_{i}.png", data=f"img{i}".encode())
+            for i in range(1, 6)
+        ]
+        markdown_parts = [
+            f"![image_{i}](multi_image_images/image_{i}.png)"
+            for i in range(1, 6)
+        ]
 
         mock_result = MagicMock()
-        mock_result.markdown_content = "Document"
-        mock_result.images = []
+        mock_result.markdown_content = "Between " + " and ".join(markdown_parts) + " end"
+        mock_result.images = images
 
         with patch('backend.parsers.markitdown_converter.MarkitdownConverter') as mock_converter_class:
             mock_converter = MagicMock()
             mock_converter.convert.return_value = mock_result
             mock_converter_class.return_value = mock_converter
 
-            # Run parsing - images_dir should not exist yet
-            assert not images_dir.exists()
-
             result = asyncio.get_event_loop().run_until_complete(_parse_docx(docx_path))
 
-            # After parsing, images dir should be created if there are images
-            # (empty images list means dir won't be created, but function should still work)
-            assert result is not None
+        assert len(result["images"]) == 5
+        for i in range(1, 6):
+            assert f"image_{i}.png" in result["text"]
+        assert "data:image" not in result["text"]

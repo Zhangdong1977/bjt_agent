@@ -29,34 +29,48 @@ class ConversionResult:
     page_count: Optional[int] = None
 
 
+class DirectFileImageHandler:
+    """Writes DOCX images directly to disk, bypassing base64 encoding.
+
+    Instead of letting mammoth base64-encode images into data URIs, this handler
+    reads image bytes from the DOCX and writes them directly to the target directory,
+    returning lightweight file-path references for the HTML/Markdown output.
+    """
+
+    def __init__(self, images_dir: Path, images_dir_name: str):
+        self._images_dir = images_dir
+        self._images_dir_name = images_dir_name
+        self._counter = 0
+        self.images: list[ImageInfo] = []
+
+    def __call__(self, image):
+        self._counter += 1
+        ext = image.content_type.partition("/")[2] if image.content_type else "png"
+        filename = f"image_{self._counter}.{ext}"
+
+        self._images_dir.mkdir(parents=True, exist_ok=True)
+        with image.open() as image_bytes:
+            data = image_bytes.read()
+
+        dest = self._images_dir / filename
+        dest.write_bytes(data)
+
+        self.images.append(ImageInfo(filename=filename, data=data))
+        return {"src": f"{self._images_dir_name}/{filename}"}
+
+
 class MarkitdownConverter:
     """Markitdown converter for DOCX/DOC files to Markdown format.
 
     Uses the markitdown library to extract text and images from documents.
+    Images are written directly to disk via a custom mammoth image handler,
+    avoiding the base64 round-trip overhead.
     """
 
     def __init__(self, timeout: int = 300):
-        """Initialize the converter.
-
-        Args:
-            timeout: Maximum time in seconds for conversion (default: 5 minutes)
-        """
         self.timeout = timeout
 
-    def convert(self, file_path: Path, progress_callback=None) -> ConversionResult:
-        """Convert a DOCX/DOC file to Markdown format.
-
-        Args:
-            file_path: Path to the input DOCX/DOC file
-            progress_callback: Optional callback for progress updates (processed, total)
-
-        Returns:
-            ConversionResult with markdown_content, images, and page_count
-
-        Raises:
-            MarkitdownConversionError: If conversion fails
-            FileNotFoundError: If input file doesn't exist
-        """
+    def convert(self, file_path: Path, progress_callback=None, images_dir: Path = None) -> ConversionResult:
         if not file_path.exists():
             raise FileNotFoundError(f"Input file not found: {file_path}")
 
@@ -67,8 +81,11 @@ class MarkitdownConverter:
         file_size = file_path.stat().st_size
         logger.info(f"Markitdown conversion: {file_path} ({file_size / (1024 * 1024):.2f}MB)")
 
+        if images_dir is None:
+            images_dir = file_path.parent / f"{file_path.stem}_images"
+        images_dir_name = images_dir.name
+
         try:
-            # Add markitdown and mammoth paths to sys.path
             markitdown_path = Path(__file__).parent.parent.parent / "third_party" / "markitdown" / "packages" / "markitdown" / "src"
             mammoth_path = Path(__file__).parent.parent.parent / "third_party" / "mammoth"
 
@@ -76,32 +93,23 @@ class MarkitdownConverter:
                 if p not in sys.path:
                     sys.path.insert(0, p)
 
-            # Import markitdown components
+            import mammoth
             from markitdown import MarkItDown
 
-            # Create converter and convert
-            converter = MarkItDown()
+            handler = DirectFileImageHandler(images_dir, images_dir_name)
 
-            # Prepare kwargs: keep_data_uris=True preserves full base64 image data
-            # (without it, _CustomMarkdownify truncates to "data:image/png;base64,...")
-            kwargs = {"keep_data_uris": True}
+            converter = MarkItDown()
+            kwargs = {"convert_image": mammoth.images.img_element(handler)}
             if progress_callback:
                 kwargs["progress_callback"] = progress_callback
 
-            # Convert using markitdown (which uses mammoth internally)
-            result = converter.convert(
-                source=file_path,
-                **kwargs
-            )
+            result = converter.convert(source=file_path, **kwargs)
 
-            # Extract images from the markdown content (base64 data URIs)
-            images = self._extract_images(result)
-
-            logger.info(f"Markitdown conversion successful: {len(result.markdown)} chars, {len(images)} images")
+            logger.info(f"Markitdown conversion successful: {len(result.markdown)} chars, {len(handler.images)} images")
 
             return ConversionResult(
                 markdown_content=result.markdown or "",
-                images=images,
+                images=handler.images,
                 page_count=None
             )
 
@@ -109,84 +117,7 @@ class MarkitdownConverter:
             logger.error(f"Markitdown conversion failed: {e}")
             raise MarkitdownConversionError(f"Markitdown conversion failed: {e}")
 
-    def _extract_images(self, result) -> list[ImageInfo]:
-        """Extract images from markitdown result.
 
-        Since markitdown's DocumentConverterResult doesn't have a separate images attribute,
-        images are embedded as base64 data URIs in the markdown text. This method extracts
-        them from the text content.
-
-        Args:
-            result: MarkItDown DocumentConverterResult object
-
-        Returns:
-            List of ImageInfo objects
-        """
-        import base64
-        import re
-
-        images = []
-
-        # First check if result has images attribute (some markitdown versions)
-        if hasattr(result, 'images') and result.images:
-            for img in result.images:
-                if hasattr(img, 'data') and hasattr(img, 'name'):
-                    images.append(ImageInfo(
-                        filename=img.name,
-                        data=img.data
-                    ))
-                elif isinstance(img, dict):
-                    images.append(ImageInfo(
-                        filename=img.get('name', 'image'),
-                        data=img.get('data', b'')
-                    ))
-            return images
-
-        # Fallback: extract images from markdown text content
-        # The markdown contains data URIs like:
-        #   ![alt](data:image/png;base64,iVBORw0KGgo...)
-        markdown_text = result.markdown or ""
-
-        # Pattern matches: data:image/[type];base64,[base64_data]
-        # Uses [\s\S] to match across line boundaries since base64 can span multiple lines
-        pattern = r'data:image/([^;]+);base64,([A-Za-z0-9+/=\s]+)'
-
-        for match in re.finditer(pattern, markdown_text):
-            mime_type = match.group(1)  # e.g., "png", "jpeg"
-            base64_data = match.group(2).replace('\n', '').replace('\r', '').strip()
-
-            try:
-                image_data = base64.b64decode(base64_data)
-                # Generate unique filename
-                idx = len(images) + 1
-                ext = mime_type.split('+')[0]  # Handle "jpeg+xml" etc
-                filename = f"image_{idx}.{ext}"
-
-                images.append(ImageInfo(
-                    filename=filename,
-                    data=image_data
-                ))
-            except Exception as e:
-                logger.warning(f"Failed to decode base64 image: {e}")
-                continue
-
-        return images
-
-
-# Module-level convenience function
 def convert_to_markdown(file_path: Path) -> ConversionResult:
-    """Convert a DOCX/DOC file to Markdown format.
-
-    Args:
-        file_path: Path to the input DOCX/DOC file
-
-    Returns:
-        ConversionResult with markdown_content, images, and page_count
-
-    Raises:
-        FileNotFoundError: If input file doesn't exist
-        MarkitdownConversionError: If conversion fails
-        ValueError: If file type is not supported
-    """
     converter = MarkitdownConverter()
     return converter.convert(file_path)
