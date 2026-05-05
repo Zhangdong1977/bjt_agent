@@ -127,6 +127,10 @@ class SubAgentExecutor:
         # Set task_id for heartbeat tracking (ReviewTask.id, not TodoItem.id)
         agent._task_id = self.session_id
         await agent.initialize()
+        # Sub-agents must not call cleanup_mcp_connections() on close,
+        # because it's a global function that would kill MCP connections
+        # of other concurrently running sub-agents.
+        agent._owns_mcp_cleanup = False
         self._agent = agent
         return agent
 

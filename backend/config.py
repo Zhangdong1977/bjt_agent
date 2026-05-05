@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60  # Default rate limit per minute
     rate_limit_auth_per_minute: int = 10  # Stricter limit for auth endpoints
 
+    # Sub-Agent Concurrency
+    max_sub_agent_concurrency: int = 2  # Max parallel sub-agents (env: MAX_SUB_AGENT_CONCURRENCY)
+    max_llm_concurrency: int = 0  # Max concurrent LLM API calls, 0 = same as max_sub_agent_concurrency (env: MAX_LLM_CONCURRENCY)
+
     # Celery
     celery_broker_url: str = ""  # Must be set via environment variable
     celery_result_backend: str = ""  # Must be set via environment variable

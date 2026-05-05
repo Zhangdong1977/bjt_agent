@@ -9,6 +9,7 @@ from .tools.rule_parser import RuleLibraryScannerTool
 from .sub_agent_executor import SubAgentExecutor, detect_anomaly
 from backend.services.todo_service import TodoService
 from backend.services.task_merge_service import TaskMergeService
+from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ class MasterAgent:
             "total_todos": len(self._todo_items),
         })
 
-        # Phase 3: 串行执行子代理
+        # Phase 3: 并行执行子代理（受信号量控制）
         await self._run_sub_agents(todo_service, cancel_event)
 
         # Phase 4: 汇总结果
@@ -123,15 +124,34 @@ class MasterAgent:
         }
 
     async def _run_sub_agents(self, todo_service, cancel_event: Optional[asyncio.Event] = None) -> None:
-        """串行执行所有子代理."""
-        logger.info(f"[_run_sub_agents] Starting sequential execution with {len(self._todo_items)} todos")
-        for i, todo in enumerate(self._todo_items):
-            try:
-                result = await self._run_single_sub_agent(todo, todo_service, self._session_factory, cancel_event)
-                logger.info(f"[_run_sub_agents] Task {i+1}/{len(self._todo_items)} completed, success={result.get('success')}")
-            except Exception as e:
-                logger.error(f"[_run_sub_agents] Task {i+1} raised exception: {e}")
-        logger.info(f"[_run_sub_agents] All tasks completed")
+        """并行执行所有子代理（受信号量控制并发数）."""
+        max_concurrency = get_settings().max_sub_agent_concurrency
+        total = len(self._todo_items)
+        logger.info(
+            f"[_run_sub_agents] Starting parallel execution with {total} todos, "
+            f"max_concurrency={max_concurrency}"
+        )
+
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def _run_with_semaphore(todo):
+            async with semaphore:
+                if cancel_event and cancel_event.is_set():
+                    return {"success": False, "error": "Cancelled before start"}
+                try:
+                    return await self._run_single_sub_agent(todo, todo_service, self._session_factory, cancel_event)
+                except asyncio.CancelledError:
+                    return {"success": False, "error": "Task cancelled"}
+
+        tasks = [_run_with_semaphore(todo) for todo in self._todo_items]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, r in enumerate(results):
+            if isinstance(r, BaseException):
+                logger.error(f"[_run_sub_agents] Task {i+1}/{total} raised {type(r).__name__}: {r}")
+            else:
+                logger.info(f"[_run_sub_agents] Task {i+1}/{total} completed, success={r.get('success')}")
+        logger.info(f"[_run_sub_agents] All {total} tasks completed")
 
     async def _run_single_sub_agent(self, todo, todo_service, session_factory=None, cancel_event: Optional[asyncio.Event] = None) -> dict:
         """执行单个子代理.

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 
 interface TimelineStep {
@@ -29,25 +29,39 @@ const props = defineProps<{
 
 const router = useRouter()
 
-// 执行容量进度
+// 执行容量进度：取当前运行中子代理的最大进度
 const execCapacityProgress = computed(() => {
   if (!props.maxStepsMap || Object.keys(props.maxStepsMap).length === 0) {
     return { current: 0, total: 0, percent: 0 }
   }
 
-  let totalCapacity = 0
-  let usedCapacity = 0
+  const runningTodos = props.todos?.filter(t => t.status === 'running') || []
 
-  for (const [todoId, maxSteps] of Object.entries(props.maxStepsMap)) {
-    totalCapacity += maxSteps
-    const steps = props.subAgentStepsMap?.[todoId] || []
-    usedCapacity += Math.min(steps.length, maxSteps)
+  if (runningTodos.length === 0) {
+    return { current: 0, total: 0, percent: 0 }
   }
 
+  let maxCurrent = 0
+  let maxTotal = 0
+
+  for (const todo of runningTodos) {
+    const maxSteps = props.maxStepsMap[todo.id]
+    if (maxSteps === undefined) continue
+    const steps = props.subAgentStepsMap?.[todo.id] || []
+    const current = Math.min(steps.length, maxSteps)
+
+    if (maxTotal === 0 || current / maxSteps > maxCurrent / maxTotal) {
+      maxCurrent = current
+      maxTotal = maxSteps
+    }
+  }
+
+  if (maxTotal === 0) return { current: 0, total: 0, percent: 0 }
+
   return {
-    current: usedCapacity,
-    total: totalCapacity,
-    percent: totalCapacity > 0 ? Math.round((usedCapacity / totalCapacity) * 100) : 0
+    current: maxCurrent,
+    total: maxTotal,
+    percent: Math.round((maxCurrent / maxTotal) * 100)
   }
 })
 
@@ -61,12 +75,68 @@ const totalTasksCount = computed(() => {
   return props.todos?.length || 0
 })
 
-// 任务执行平均耗时（秒）
-const averageDuration = computed(() => {
+// 运行中任务数（不含 pending）
+const runningTasksCount = computed(() => {
+  return props.todos?.filter(t => t.status === 'running').length || 0
+})
+
+// 任务执行平均耗时（秒）— 子代理平均耗时
+const avgAgentDuration = computed(() => {
   if (!props.taskStartTime || completedTasksCount.value === 0) return 0
   const elapsed = Date.now() - props.taskStartTime
   return Math.round(elapsed / 1000 / completedTasksCount.value)
 })
+
+// 总步骤数（所有子代理）
+const totalAllSteps = computed(() => {
+  if (!props.subAgentStepsMap) return 0
+  let total = 0
+  for (const steps of Object.values(props.subAgentStepsMap)) {
+    total += steps.length
+  }
+  return total
+})
+
+// 每步平均耗时（秒）
+const avgStepDuration = computed(() => {
+  if (!props.taskStartTime || totalAllSteps.value === 0) return 0
+  const elapsed = Date.now() - props.taskStartTime
+  return Math.round(elapsed / 1000 / totalAllSteps.value)
+})
+
+// 任务总运行时间（每秒递增）
+const totalRuntime = ref(0)
+let runtimeTimer: ReturnType<typeof setInterval> | null = null
+
+watch(() => props.phase, (newPhase) => {
+  if (newPhase === 'running') {
+    if (runtimeTimer) clearInterval(runtimeTimer)
+    runtimeTimer = setInterval(() => {
+      if (props.taskStartTime) {
+        totalRuntime.value = Math.round((Date.now() - props.taskStartTime) / 1000)
+      }
+    }, 1000)
+  } else {
+    if (runtimeTimer) {
+      clearInterval(runtimeTimer)
+      runtimeTimer = null
+    }
+    if (props.taskStartTime && (newPhase === 'completed' || newPhase === 'failed')) {
+      totalRuntime.value = Math.round((Date.now() - props.taskStartTime) / 1000)
+    }
+  }
+}, { immediate: true })
+
+onUnmounted(() => {
+  if (runtimeTimer) clearInterval(runtimeTimer)
+})
+
+function formatRuntime(seconds: number): string {
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+}
 
 const statusText = computed(() => {
   switch (props.phase) {
@@ -128,39 +198,24 @@ function goBack() {
           <div class="stat-lbl">已完成</div>
         </div>
         <div class="stat-box">
-          <div class="stat-val sv-amber">{{ totalTasksCount - completedTasksCount }}</div>
+          <div class="stat-val sv-amber">{{ runningTasksCount }}</div>
           <div class="stat-lbl">进行中</div>
         </div>
         <div class="stat-box">
-          <div class="stat-val sv-blue">{{ averageDuration }}s</div>
-          <div class="stat-lbl">平均耗时</div>
+          <div class="stat-val sv-cyan">{{ totalAllSteps }}</div>
+          <div class="stat-lbl">总步骤数</div>
         </div>
-      </div>
-    </div>
-
-    <!-- 图例 -->
-    <div class="sidebar-section">
-      <div class="section-title">图例</div>
-      <div class="legend-list">
-        <div class="leg">
-          <div class="leg-swatch" style="background: var(--blue)"></div>
-          <span>主代理</span>
+        <div class="stat-box">
+          <div class="stat-val sv-cyan">{{ avgStepDuration }}s</div>
+          <div class="stat-lbl">每步均耗</div>
         </div>
-        <div class="leg">
-          <div class="leg-swatch" style="background: var(--blue)"></div>
-          <span>思考</span>
+        <div class="stat-box">
+          <div class="stat-val sv-cyan">{{ avgAgentDuration }}s</div>
+          <div class="stat-lbl">代理均耗</div>
         </div>
-        <div class="leg">
-          <div class="leg-swatch" style="background: var(--amber)"></div>
-          <span>工具调用</span>
-        </div>
-        <div class="leg">
-          <div class="leg-swatch" style="background: var(--green)"></div>
-          <span>观察</span>
-        </div>
-        <div class="leg">
-          <div class="leg-swatch" style="background: var(--green)"></div>
-          <span>工具结果</span>
+        <div class="stat-box stat-box-wide">
+          <div class="stat-val sv-blue">{{ formatRuntime(totalRuntime) }}</div>
+          <div class="stat-lbl">运行时间</div>
         </div>
       </div>
     </div>
@@ -299,8 +354,12 @@ function goBack() {
 /* 统计网格 */
 .stats-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 6px;
+}
+
+.stat-box-wide {
+  grid-column: 1 / -1;
 }
 
 .stat-box {
@@ -322,33 +381,12 @@ function goBack() {
 .sv-amber { color: var(--amber); }
 .sv-red { color: var(--red); }
 .sv-blue { color: var(--blue); }
+.sv-cyan { color: #06b6d4; }
 
 .stat-lbl {
   font-size: 10px;
   color: var(--muted);
   margin-top: 4px;
-}
-
-/* 图例 */
-.legend-list {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-.leg {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 11px;
-  color: var(--sub);
-}
-
-.leg-swatch {
-  width: 3px;
-  height: 14px;
-  border-radius: 2px;
-  flex-shrink: 0;
 }
 
 /* 操作按钮 */

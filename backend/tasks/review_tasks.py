@@ -473,23 +473,26 @@ async def _run_agent_review(
     if hasattr(tender_doc.project, 'user_id'):
         user_id = str(tender_doc.project.user_id)
 
-    # Callback for incremental saving after each sub-agent completes
+    # Callback for incremental saving after each sub-agent completes.
+    # Uses an independent session from session_factory to avoid sharing the
+    # main db session across concurrent sub-agent tasks.
     async def on_sub_agent_completed(findings: list[dict]):
         non_compliant = [f for f in findings if not f.get("is_compliant", False)]
         if not non_compliant:
             return
-        try:
-            for finding_data in non_compliant:
-                finding = ReviewResult(
-                    task_id=task_id,
-                    **finding_data,
-                )
-                db.add(finding)
-            await db.commit()
-            logger.info(f"Incremental save: {len(non_compliant)} findings for task {task_id}")
-        except Exception as e:
-            logger.error(f"Incremental save failed: {e}")
-            await db.rollback()
+        async with session_factory() as cb_db:
+            try:
+                for finding_data in non_compliant:
+                    finding = ReviewResult(
+                        task_id=task_id,
+                        **finding_data,
+                    )
+                    cb_db.add(finding)
+                await cb_db.commit()
+                logger.info(f"Incremental save: {len(non_compliant)} findings for task {task_id}")
+            except Exception as e:
+                logger.error(f"Incremental save failed: {e}")
+                await cb_db.rollback()
 
     master = MasterAgent(
         project_id=str(tender_doc.project_id),
@@ -549,3 +552,7 @@ async def _run_agent_review(
 
     finally:
         await todo_db.close()
+        # Final MCP cleanup: sub-agents skip individual cleanup to avoid
+        # killing shared connections, so we clean up once here.
+        from mini_agent.tools.mcp_loader import cleanup_mcp_connections
+        await cleanup_mcp_connections()

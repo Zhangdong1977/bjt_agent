@@ -30,6 +30,30 @@ from backend.agent.prompt import SYSTEM_PROMPT_WITH_RULE
 
 settings = get_settings()
 
+# Module-level LLM concurrency semaphore: shared across all BidReviewAgent instances
+# within the same process (Celery worker). Limits concurrent LLM API calls to
+# avoid overwhelming the MiniMax API rate limit.
+# Uses a separate config (max_llm_concurrency) from sub-agent concurrency.
+# The semaphore is re-created if the event loop changes (e.g., across asyncio.run() calls).
+_llm_semaphore: asyncio.Semaphore | None = None
+_llm_semaphore_loop_id: int | None = None
+
+
+def _get_llm_semaphore() -> asyncio.Semaphore:
+    """Get or create the shared LLM concurrency semaphore.
+
+    Re-creates the semaphore if the event loop has changed (happens when
+    Celery workers call asyncio.run() for each task).
+    """
+    global _llm_semaphore, _llm_semaphore_loop_id
+    current_loop = asyncio.get_running_loop()
+    current_loop_id = id(current_loop)
+    if _llm_semaphore is None or _llm_semaphore_loop_id != current_loop_id:
+        max_conc = settings.max_llm_concurrency or settings.max_sub_agent_concurrency
+        _llm_semaphore = asyncio.Semaphore(max_conc)
+        _llm_semaphore_loop_id = current_loop_id
+    return _llm_semaphore
+
 
 class BidReviewAgent(BaseAgent):
     """Bid review agent that extends Mini-Agent with domain-specific tools."""
@@ -71,6 +95,7 @@ class BidReviewAgent(BaseAgent):
         self.heartbeat_timeout = heartbeat_timeout
         self._task_id: Optional[str] = None
         self._findings: list[dict] = []
+        self._owns_mcp_cleanup: bool = True  # Sub-agents set this to False
         # Store tool results for persistence via _record_agent_step
         # Use list to preserve order and allow multiple calls to same tool
         self._tool_results: list[dict] = []
@@ -267,8 +292,9 @@ class BidReviewAgent(BaseAgent):
             agent_ref._log_llm_request(call_index, messages, tools)
 
             try:
-                async with asyncio.timeout(180.0):
-                    response = await original_generate(*args, **kwargs)
+                async with _get_llm_semaphore():
+                    async with asyncio.timeout(180.0):
+                        response = await original_generate(*args, **kwargs)
             except TimeoutError:
                 latency_ms = int((time.perf_counter() - call_start) * 1000)
                 logger.error(
@@ -823,7 +849,8 @@ class BidReviewAgent(BaseAgent):
 - 禁止使用 read_file 读取招标书或投标书（必须使用 search_tender_doc）
 - 禁止在一次工具调用中尝试完成多个检查项
 - 必须逐项检查，每个检查项至少调用 search_tender_doc 两次
-- 必须使用 write_file 写入最终结果"""
+- 必须使用 write_file 写入最终结果
+- understand_image 的 prompt 中禁止使用"身份证""身份证号码""姓名""护照号码"等敏感词，使用"证件""证件编号""人员名称"等替代"""
             self.add_user_message(task)
             logger.info(f"[BidReviewAgent.run_review] Task prompt added, output_md_path={output_md_path}")
 
@@ -1306,8 +1333,14 @@ class BidReviewAgent(BaseAgent):
         return result.content
 
     async def close(self):
-        """Close MCP connections and cleanup resources."""
-        await cleanup_mcp_connections()
+        """Close MCP connections and cleanup resources.
+
+        Only calls cleanup_mcp_connections() when _owns_mcp_cleanup is True.
+        Sub-agents set this to False to avoid killing shared MCP connections
+        of other concurrently running sub-agents.
+        """
+        if self._owns_mcp_cleanup:
+            await cleanup_mcp_connections()
 
     async def _call_llm_with_retry(
         self,
