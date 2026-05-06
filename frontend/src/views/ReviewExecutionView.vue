@@ -515,18 +515,28 @@ function connect() {
     console.log('[ReviewExecutionView] SSE connection opened')
   }
 
+  // 节流：用 requestAnimationFrame 批量处理 SSE 事件
+  let pendingEvents: any[] = []
+  let rafId: number | null = null
+
   eventSource.onmessage = (e) => {
     try {
-      const data = JSON.parse(e.data)
-      handleSSEEvent(data)
+      pendingEvents.push(JSON.parse(e.data))
+      if (!rafId) {
+        rafId = requestAnimationFrame(() => {
+          pendingEvents.forEach(evt => handleSSEEvent(evt))
+          pendingEvents = []
+          rafId = null
+        })
+      }
     } catch (err) {
       console.error('[ReviewExecutionView] Failed to parse SSE event:', err)
     }
   }
 
-  eventSource.onerror = (err) => {
-    console.error('[ReviewExecutionView] SSE error:', err)
-    // 不要立即断开，尝试重连
+  eventSource.onerror = () => {
+    console.error('[ReviewExecutionView] SSE error, disconnecting')
+    disconnect()
   }
 }
 
@@ -587,10 +597,6 @@ watch(phase, (newPhase) => {
   console.log('[ReviewExecutionView] phase changed to:', newPhase)
 })
 
-// 调试：监控 timelineSteps 变化
-watch(timelineSteps, (newSteps) => {
-  console.log('[ReviewExecutionView] timelineSteps changed, count:', newSteps.length, 'types:', [...new Set(newSteps.map(s => s.step_type))])
-}, { deep: true })
 
 onMounted(async () => {
   console.log('[ReviewExecutionView] onMounted, projectId:', projectId.value)
@@ -638,49 +644,62 @@ onMounted(async () => {
     }
   }
 
-  // 建立 SSE 连接以接收实时更新
-  if (projectStore.currentTask?.id) {
+  // 建立 SSE 连接以接收实时更新（仅运行中任务，已完成任务通过 API 拉取）
+  if (projectStore.currentTask?.id && projectStore.currentTask?.status !== 'completed' && projectStore.currentTask?.status !== 'failed') {
     connect()
+  } else if (projectStore.currentTask?.id && (projectStore.currentTask?.status === 'completed' || projectStore.currentTask?.status === 'failed')) {
+    // 已完成/失败任务：通过 API 拉取结果，不走 SSE 重放
+    try {
+      const response = await reviewApi.getResults(projectId.value)
+      if (response.summary) {
+        mergedStats.value = {
+          total: response.summary.non_compliant || 0,
+          critical: response.summary.critical || 0,
+          major: response.summary.major || 0,
+          minor: response.summary.minor || 0,
+          compliant: response.summary.compliant || 0
+        }
+        findingsCount.value = response.summary.non_compliant || 0
+        mergedFindings.value = response.findings || null
+      }
+    } catch (err) {
+      console.error('[ReviewExecutionView] Failed to fetch merged results on mount:', err)
+    }
 
-    // 如果任务已完成，主动拉取合并结果（处理 SSE 事件丢失的情况）
-    if (projectStore.currentTask.status === 'completed') {
-      try {
-        const response = await reviewApi.getResults(projectId.value)
-        if (response.summary) {
-          mergedStats.value = {
-            total: response.summary.non_compliant || 0,
-            critical: response.summary.critical || 0,
-            major: response.summary.major || 0,
-            minor: response.summary.minor || 0,
-            compliant: response.summary.compliant || 0
+    // 加载历史 todo 项（子代理信息）
+    await loadHistoricalTodos(projectId.value, projectStore.currentTask.id)
+
+    // 加载历史步骤（master + sub-agent 时间线数据）
+    try {
+      const historicalSteps = await reviewApi.getSteps(projectId.value, projectStore.currentTask.id)
+      if (historicalSteps.length > 0) {
+        const mapStep = (s: any) => ({
+          step_number: s.step_number,
+          step_type: s.step_type,
+          content: s.content || '',
+          timestamp: new Date(),
+          tool_calls: (s.tool_args as any)?.tool_calls || [],
+          tool_results: (s.tool_result as any)?.tool_results || [],
+        })
+        // 分离 master 步骤和 sub-agent 步骤
+        const masterSteps: any[] = []
+        const subStepMap = new Map<string, any[]>()
+        for (const s of historicalSteps) {
+          const todoId = (s as any).todo_id
+          if (todoId) {
+            const arr = subStepMap.get(todoId) || []
+            arr.push(mapStep(s))
+            subStepMap.set(todoId, arr)
+          } else {
+            masterSteps.push(mapStep(s))
           }
-          findingsCount.value = response.summary.non_compliant || 0
-          mergedFindings.value = response.findings || null
         }
-      } catch (err) {
-        console.error('[ReviewExecutionView] Failed to fetch merged results on mount:', err)
+        steps.value = masterSteps
+        subAgentSteps.value = subStepMap
+        console.log('[ReviewExecutionView] Loaded historical steps: master=', masterSteps.length, 'sub-agents=', subStepMap.size)
       }
-
-      // 加载历史 todo 项（子代理信息）以处理 SSE 事件丢失的情况
-      await loadHistoricalTodos(projectId.value, projectStore.currentTask.id)
-
-      // 加载历史 master agent 步骤（时间线数据）
-      try {
-        const historicalSteps = await reviewApi.getSteps(projectId.value, projectStore.currentTask.id)
-        if (historicalSteps.length > 0) {
-          steps.value = historicalSteps.map(s => ({
-            step_number: s.step_number,
-            step_type: s.step_type,
-            content: s.content || '',
-            timestamp: new Date(),
-            tool_calls: (s.tool_args as any)?.tool_calls || [],
-            tool_results: (s.tool_result as any)?.tool_results || [],
-          }))
-          console.log('[ReviewExecutionView] Loaded historical steps:', steps.value.length)
-        }
-      } catch (err) {
-        console.error('[ReviewExecutionView] Failed to load historical steps:', err)
-      }
+    } catch (err) {
+      console.error('[ReviewExecutionView] Failed to load historical steps:', err)
     }
   } else {
     console.log('[ReviewExecutionView] No currentTask, SSE will not connect')

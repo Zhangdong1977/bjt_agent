@@ -3,12 +3,16 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import Optional, Callable
+
+from sqlalchemy import update
 
 from .tools.rule_parser import RuleLibraryScannerTool
 from .sub_agent_executor import SubAgentExecutor, detect_anomaly
 from backend.services.todo_service import TodoService
 from backend.services.task_merge_service import TaskMergeService
+from backend.models.review_task import ReviewTask
 from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -209,6 +213,7 @@ class MasterAgent:
                         backoff = 2 ** retry_count
                         logger.info(f"[_run_single_sub_agent] Backing off {backoff}s before retry {retry_count} for todo {todo.id}")
                         await asyncio.sleep(backoff)
+                        await self._refresh_heartbeat(session_factory)
                         continue
                     else:
                         await task_todo_service.update_todo_status(
@@ -251,6 +256,7 @@ class MasterAgent:
                     backoff = 2 ** retry_count
                     logger.info(f"[_run_single_sub_agent] Backing off {backoff}s before retry {retry_count} for todo {todo.id}")
                     await asyncio.sleep(backoff)
+                    await self._refresh_heartbeat(session_factory)
                 else:
                     await task_todo_service.update_todo_status(
                         todo.id, "failed", error_message=str(e)
@@ -276,6 +282,26 @@ class MasterAgent:
             else:
                 self._send_event(f"sub_agent_{event_type}", data)
         return callback
+
+    async def _refresh_heartbeat(self, session_factory) -> None:
+        """Refresh ReviewTask.last_heartbeat to reset the heartbeat timeout window.
+
+        Called before each retry to prevent the new sub-agent from being
+        immediately cancelled by a stale heartbeat timestamp.
+        """
+        if not self._session_id or not session_factory:
+            return
+        try:
+            async with session_factory() as db:
+                await db.execute(
+                    update(ReviewTask)
+                    .where(ReviewTask.id == self._session_id)
+                    .values(last_heartbeat=datetime.utcnow())
+                )
+                await db.commit()
+            logger.info(f"[_refresh_heartbeat] Refreshed heartbeat for session {self._session_id}")
+        except Exception as e:
+            logger.warning(f"[_refresh_heartbeat] Failed to refresh heartbeat: {e}")
 
     async def _merge_results(self, todo_service) -> dict:
         """合并所有子代理结果.

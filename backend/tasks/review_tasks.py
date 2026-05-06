@@ -129,6 +129,67 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
     except Exception as e:
         logger.error(f"[_publish_event] FAILED to publish event: {e}, stream={stream_key}, event_type={event_type}, traceback={traceback.format_exc()}")
 
+    # Persist step events to database for historical timeline display
+    if event_type in ("step", "sub_agent_step") and data.get("step_number") is not None:
+        _persist_step(task_id, event_type, data)
+
+
+def _persist_step(task_id: str, event_type: str, data: dict) -> None:
+    """Persist a step event to agent_steps table for historical timeline."""
+    try:
+        import asyncio as _aio
+
+        async def _save():
+            sf, eng = create_session_factory()
+            try:
+                async with sf() as db:
+                    step_number = data["step_number"]
+                    todo_id = data.get("todo_id")
+
+                    # Check if step already exists (upsert by task_id + step_number + todo_id)
+                    from sqlalchemy import select as _sel
+                    query = _sel(AgentStep).where(
+                        AgentStep.task_id == task_id,
+                        AgentStep.step_number == step_number,
+                    )
+                    if todo_id:
+                        query = query.where(AgentStep.todo_id == todo_id)
+                    else:
+                        query = query.where(AgentStep.todo_id.is_(None))
+
+                    existing = (await db.execute(query)).scalar_one_or_none()
+                    if existing:
+                        # Update existing step (e.g., tool_results arriving after initial step)
+                        if data.get("content") is not None:
+                            existing.content = str(data["content"])[:500]
+                        if data.get("step_type"):
+                            existing.step_type = data["step_type"]
+                        if data.get("tool_calls"):
+                            existing.tool_args = {"tool_calls": data["tool_calls"]}
+                        if data.get("tool_results"):
+                            existing.tool_result = {"tool_results": data["tool_results"]}
+                    else:
+                        step = AgentStep(
+                            task_id=task_id,
+                            todo_id=todo_id,
+                            step_number=step_number,
+                            step_type=data.get("step_type", "thought"),
+                            content=str(data.get("content", ""))[:500],
+                            tool_args={"tool_calls": data["tool_calls"]} if data.get("tool_calls") else None,
+                            tool_result={"tool_results": data["tool_results"]} if data.get("tool_results") else None,
+                        )
+                        db.add(step)
+                    await db.commit()
+            finally:
+                await eng.dispose()
+
+        # Run in a background thread to avoid blocking the Celery event loop
+        import threading
+        t = threading.Thread(target=lambda: _aio.run(_save()), daemon=True)
+        t.start()
+    except Exception as e:
+        logger.warning(f"[_persist_step] Failed to persist step: {e}")
+
 
 @celery_app.task(bind=True, name="backend.tasks.review_tasks.run_review")
 def run_review(self, task_id: str) -> dict:

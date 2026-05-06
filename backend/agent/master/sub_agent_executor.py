@@ -113,6 +113,8 @@ class SubAgentExecutor:
             max_steps: Maximum number of agent steps to run.
             logger: Optional logger for file output.
         """
+        from backend.config import get_settings
+
         agent = BidReviewAgent(
             project_id=self.todo_item.project_id,
             tender_doc_path=self.tender_doc_path,
@@ -123,6 +125,7 @@ class SubAgentExecutor:
             logger=logger,
             max_steps=max_steps,
             cancel_event=self.cancel_event,
+            heartbeat_timeout=get_settings().sub_agent_heartbeat_timeout,
         )
         # Set task_id for heartbeat tracking (ReviewTask.id, not TodoItem.id)
         agent._task_id = self.session_id
@@ -161,10 +164,28 @@ class SubAgentExecutor:
             findings = await agent.run_review()
             logger.info(f"[SubAgentExecutor.execute] Findings: {findings}")
 
+            # Capture diagnostics: verify write_file was both called AND
+            # returned a result (role="tool" with matching tool_call_id)
+            write_file_called = False
+            write_file_call_ids = set()
+            for msg in self._agent.messages:
+                if msg.role == "assistant" and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        if tc.function.name == "write_file" and tc.id:
+                            write_file_call_ids.add(tc.id)
+            if write_file_call_ids:
+                for msg in self._agent.messages:
+                    if msg.role == "tool" and msg.tool_call_id in write_file_call_ids:
+                        write_file_called = True
+                        break
+
             return {
                 "success": True,
                 "findings": findings,
                 "todo_id": self.todo_item.id,
+                "_diagnostics": {
+                    "write_file_called": write_file_called,
+                },
             }
 
         except Exception as e:
@@ -198,7 +219,9 @@ class SubAgentExecutor:
 def detect_anomaly(result: dict, todo_item: TodoItem) -> bool:
     """检测结果是否异常.
 
-    改进：不依赖 check_items 数量，仅检测基本异常。
+    区分两种情况：
+    - 全部合规（write_file 被调用，findings 为空）→ 不视为异常
+    - 执行失败（write_file 未被调用，findings 为空）→ 视为异常
     """
     if not result:
         return True
@@ -208,6 +231,12 @@ def detect_anomaly(result: dict, todo_item: TodoItem) -> bool:
 
     findings = result.get("findings", [])
     if not findings:
+        diagnostics = result.get("_diagnostics", {})
+        # If write_file was called, the agent completed its review and
+        # produced output — empty findings means all items are compliant.
+        if diagnostics.get("write_file_called", False):
+            return False
+        # write_file was never called — the agent failed to complete.
         return True
 
     return False

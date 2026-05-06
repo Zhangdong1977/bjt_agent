@@ -65,6 +65,8 @@ class AgentStepResponse(BaseModel):
     """Schema for agent step response."""
 
     id: str
+    task_id: str
+    todo_id: str | None = None
     step_number: int
     step_type: str
     content: str

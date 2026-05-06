@@ -959,6 +959,16 @@ class BidReviewAgent(BaseAgent):
         Returns:
             List of structured findings if found, empty list otherwise.
         """
+        # Phase 1: Try JSON extraction from message content
+        findings = self._extract_json_findings()
+        if findings:
+            return findings
+
+        # Phase 2: Keyword-based fallback extraction for non-JSON analysis text
+        return self._extract_keyword_findings()
+
+    def _extract_json_findings(self) -> list[dict]:
+        """Extract findings from JSON-formatted content in agent messages."""
         findings = []
         requirement_counter = 1
 
@@ -981,6 +991,90 @@ class BidReviewAgent(BaseAgent):
                         requirement_counter += 1
 
         return findings
+
+    # Keywords indicating non-compliance in Chinese review analysis text
+    _NON_COMPLIANCE_KEYWORDS = [
+        "不通过", "不符合", "不合规", "未提供", "缺失", "缺少",
+        "存在问题", "不满足", "未满足", "没有找到", "未找到",
+        "未包含", "未说明", "未明确", "未体现", "不一致",
+    ]
+
+    def _extract_keyword_findings(self) -> list[dict]:
+        """Fallback: extract findings from natural-language analysis text.
+
+        Scans assistant messages for non-compliance indicators and constructs
+        semi-structured findings from surrounding context.
+        """
+        findings = []
+        requirement_counter = 1
+        seen_contexts: set[str] = set()
+
+        for msg in reversed(self.messages):
+            if msg.role != "assistant" or not msg.content:
+                continue
+
+            content = msg.content
+            # Skip if content looks like JSON (already handled by _extract_json_findings)
+            stripped = content.strip()
+            if stripped.startswith("{") or stripped.startswith("["):
+                continue
+
+            # Search for non-compliance patterns in the text
+            for keyword in self._NON_COMPLIANCE_KEYWORDS:
+                idx = content.find(keyword)
+                if idx < 0:
+                    continue
+
+                # Extract surrounding context (~200 chars around the keyword)
+                start = max(0, idx - 80)
+                end = min(len(content), idx + len(keyword) + 120)
+                context = content[start:end].strip()
+
+                # Deduplicate by context to avoid repeating the same finding
+                if context in seen_contexts:
+                    continue
+                seen_contexts.add(context)
+
+                # Try to identify the requirement being discussed
+                requirement_content = self._extract_requirement_context(
+                    content, idx
+                )
+
+                findings.append({
+                    "requirement_key": f"req_{requirement_counter:03d}",
+                    "requirement_content": requirement_content or context[:200],
+                    "bid_content": None,
+                    "is_compliant": False,
+                    "severity": "major",
+                    "location_page": None,
+                    "location_line": None,
+                    "suggestion": None,
+                    "explanation": context,
+                })
+                requirement_counter += 1
+
+        return findings
+
+    def _extract_requirement_context(self, content: str, keyword_idx: int) -> str:
+        """Extract the requirement description preceding a keyword match."""
+        # Look backwards from the keyword for a numbered item or section indicator
+        prefix = content[:keyword_idx]
+
+        # Try to find patterns like "1.", "2.", "检查项X:", "要求X:"
+        patterns = [
+            r'(?:^|\n)\s*(?:\d+[\.\、\)]|检查项|要求|第\d+条)\s*[^\n]{10,200}',
+        ]
+        for pattern in patterns:
+            matches = re.findall(pattern, prefix)
+            if matches:
+                return matches[-1].strip()
+
+        # Fallback: return the sentence containing or before the keyword
+        sentences = re.split(r'[。；\n]', prefix)
+        if sentences:
+            return sentences[-1].strip()[:300]
+
+        return prefix[-300:] if len(prefix) > 300 else prefix
 
     def _normalize_finding(self, item: dict, counter: int) -> Optional[dict]:
         """Normalize a finding to match ReviewResult model.

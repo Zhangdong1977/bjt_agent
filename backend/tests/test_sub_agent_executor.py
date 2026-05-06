@@ -10,6 +10,7 @@ from backend.agent.master.sub_agent_executor import SubAgentExecutor, detect_ano
 def test_detect_anomaly_empty_result():
     """Test anomaly detection with empty result."""
     assert detect_anomaly({}, None) is True
+    # Empty findings without _diagnostics → anomaly (unknown state, assume failure)
     assert detect_anomaly({"success": True, "findings": []}, None) is True
 
 
@@ -19,13 +20,24 @@ def test_detect_anomaly_failed_result():
     assert detect_anomaly(result, None) is True
 
 
-def test_detect_anomaly_empty_findings():
-    """Test anomaly detection when findings list is empty."""
+def test_detect_anomaly_empty_findings_write_file_not_called():
+    """Empty findings + write_file not called → execution failed → anomaly."""
     result = {
         "success": True,
         "findings": [],
+        "_diagnostics": {"write_file_called": False},
     }
     assert detect_anomaly(result, None) is True
+
+
+def test_detect_anomaly_empty_findings_all_compliant():
+    """Empty findings + write_file called → all compliant → not anomaly."""
+    result = {
+        "success": True,
+        "findings": [],
+        "_diagnostics": {"write_file_called": True},
+    }
+    assert detect_anomaly(result, None) is False
 
 
 def test_detect_anomaly_all_compliant_complete():
@@ -104,6 +116,7 @@ class TestSubAgentExecutor:
     @pytest.mark.asyncio
     async def test_create_agent(self, executor):
         """Test create_agent creates BidReviewAgent with correct params."""
+        executor.session_id = "todo_123"
         with patch("backend.agent.master.sub_agent_executor.BidReviewAgent") as MockAgent:
             mock_agent = AsyncMock()
             mock_agent.initialize = AsyncMock()
@@ -120,6 +133,8 @@ class TestSubAgentExecutor:
                 event_callback=executor.event_callback,
                 logger=None,
                 max_steps=75,
+                cancel_event=None,
+                heartbeat_timeout=60,
             )
             mock_agent.initialize.assert_called_once()
             assert executor._agent == mock_agent
@@ -128,7 +143,8 @@ class TestSubAgentExecutor:
 
     @pytest.mark.asyncio
     async def test_create_agent_sets_task_id(self, executor):
-        """Test create_agent sets _task_id on the agent from todo_item.id."""
+        """Test create_agent sets _task_id on the agent from session_id."""
+        executor.session_id = "session_abc"
         with patch("backend.agent.master.sub_agent_executor.BidReviewAgent") as MockAgent:
             mock_agent = AsyncMock()
             mock_agent.initialize = AsyncMock()
@@ -136,7 +152,7 @@ class TestSubAgentExecutor:
 
             agent = await executor.create_agent()
 
-            assert mock_agent._task_id == "todo_123"
+            assert mock_agent._task_id == "session_abc"
             mock_agent.initialize.assert_called_once()
 
     @pytest.mark.asyncio
@@ -165,13 +181,21 @@ class TestSubAgentExecutor:
             mock_agent.run_review = AsyncMock(return_value=mock_findings)
             mock_agent.close = AsyncMock()
             mock_agent.add_user_message = MagicMock()
-            mock_create.return_value = mock_agent
+            mock_agent.messages = []  # No write_file calls in this test
+
+            async def _create_side_effect(*args, **kwargs):
+                executor._agent = mock_agent
+                return mock_agent
+
+            mock_create.side_effect = _create_side_effect
 
             result = await executor.execute(max_steps=30)
 
             assert result["success"] is True
             assert result["findings"] == mock_findings
             assert result["todo_id"] == "todo_123"
+            assert "_diagnostics" in result
+            assert result["_diagnostics"]["write_file_called"] is False
 
     @pytest.mark.asyncio
     async def test_execute_handles_exception(self, executor):
@@ -180,7 +204,13 @@ class TestSubAgentExecutor:
             mock_agent = AsyncMock()
             mock_agent.run_review = AsyncMock(side_effect=RuntimeError("Test error"))
             mock_agent.close = AsyncMock()
-            mock_create.return_value = mock_agent
+            mock_agent.messages = []
+
+            async def _create_side_effect(*args, **kwargs):
+                executor._agent = mock_agent
+                return mock_agent
+
+            mock_create.side_effect = _create_side_effect
 
             result = await executor.execute()
 
