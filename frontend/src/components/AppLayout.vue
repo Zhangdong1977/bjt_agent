@@ -76,5 +76,6 @@ function logout() {
   padding: 24px;
   background: var(--bg);
   min-height: calc(100vh - 64px);
+  overflow: auto;
 }
 </style>

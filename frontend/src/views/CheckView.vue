@@ -82,9 +82,9 @@ async function createProject() {
       <template #title>使用说明</template>
       <ol class="help-list">
         <li>创建新项目，填写项目名称和描述</li>
-        <li>上传招标书（PDF或Word文档）</li>
-        <li>上传应标书（PDF或Word文档）</li>
-        <li>点击"开始审查"启动AI审查流程</li>
+        <li>上传招标文件（Word文档）</li>
+        <li>上传投标文件（Word文档）</li>
+        <li>点击"立即检查"启动AI审查流程</li>
         <li>查看审查结果，导出报告</li>
       </ol>
     </a-card>

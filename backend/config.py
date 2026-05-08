@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     # Sub-Agent Heartbeat
     sub_agent_heartbeat_timeout: int = 60  # Heartbeat timeout in seconds (env: SUB_AGENT_HEARTBEAT_TIMEOUT)
 
+    # Agent Progress Watchdog
+    agent_progress_timeout: int = 600  # Max seconds without SSE events before task is considered hung (env: AGENT_PROGRESS_TIMEOUT)
+
     # Celery
     celery_broker_url: str = ""  # Must be set via environment variable
     celery_result_backend: str = ""  # Must be set via environment variable

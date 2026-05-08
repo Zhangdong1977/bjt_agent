@@ -40,13 +40,15 @@ interface Props {
   checkItems?: CheckItem[]
   steps: TimelineStep[]
   findings: Finding[]
+  allowExpand?: boolean
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
 
 const isOpen = ref(false)
 
 function toggle() {
+  if (!props.allowExpand && props.allowExpand !== undefined) return
   isOpen.value = !isOpen.value
 }
 

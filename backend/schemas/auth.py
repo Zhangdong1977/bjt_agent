@@ -1,22 +1,14 @@
 """Authentication schemas."""
 
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
-class UserCreate(BaseModel):
-    """Schema for user registration."""
+class LoginRequest(BaseModel):
+    """Schema for login request (JSON body)."""
 
-    username: str = Field(..., min_length=3, max_length=100)
-    email: EmailStr
-    password: str = Field(..., min_length=6)
-
-
-class UserLogin(BaseModel):
-    """Schema for user login."""
-
-    email: EmailStr
-    password: str
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
 
 
 class UserResponse(BaseModel):
@@ -26,6 +18,8 @@ class UserResponse(BaseModel):
     username: str
     email: str
     created_at: datetime
+    interior_user: bool = False
+    concurrency: int = 2
 
     model_config = {"from_attributes": True}
 
@@ -48,3 +42,5 @@ class TokenData(BaseModel):
     """Schema for decoded JWT token data."""
 
     user_id: str | None = None
+    interior_user: bool = False
+    concurrency: int = 2

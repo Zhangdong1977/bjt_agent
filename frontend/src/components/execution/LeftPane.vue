@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useAuthStore } from '@/stores/auth'
 import AgentTimelineItem from './AgentTimelineItem.vue'
 import BidReviewAgentBlock from './BidReviewAgentBlock.vue'
 import SubAgentExecutorBlock from './SubAgentExecutorBlock.vue'
 import FindingsTable from './FindingsTable.vue'
+
+const authStore = useAuthStore()
 
 interface ToolCall {
   name: string
@@ -209,6 +212,7 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail'
         :check-items="agent.checkItems"
         :steps="agent.steps"
         :findings="agent.findings"
+        :allow-expand="authStore.isInteriorUser"
       />
     </div>
 

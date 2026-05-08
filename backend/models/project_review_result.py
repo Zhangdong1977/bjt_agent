@@ -34,6 +34,8 @@ class ProjectReviewResult(Base):
     location_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
     explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rule_doc_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    check_item_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_task_id: Mapped[str] = mapped_column(String(36), ForeignKey("review_tasks.id"), nullable=False)
     merged_from_count: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(nullable=False)

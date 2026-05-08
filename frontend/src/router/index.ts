@@ -1,95 +1,88 @@
-import { createRouter, createWebHistory } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
+import { createRouter, createWebHistory } from "vue-router";
+import { useAuthStore } from "@/stores/auth";
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
-      path: '/login',
-      name: 'login',
-      component: () => import('@/views/LoginView.vue'),
-      meta: { guest: true }
+      path: "/login",
+      name: "login",
+      component: () => import("@/views/LoginView.vue"),
+      meta: { guest: true },
     },
     {
-      path: '/register',
-      name: 'register',
-      component: () => import('@/views/RegisterView.vue'),
-      meta: { guest: true }
+      path: "/",
+      redirect: "/home/check",
     },
     {
-      path: '/',
-      redirect: '/home/check'
-    },
-    {
-      path: '/home',
-      name: 'home',
-      redirect: '/home/check',
-      component: () => import('@/components/AppLayout.vue'),
+      path: "/home",
+      name: "home",
+      redirect: "/home/check",
+      component: () => import("@/components/AppLayout.vue"),
       meta: { requiresAuth: true },
       children: [
         {
-          path: '',
-          name: 'home-index',
-          redirect: '/home/check'
+          path: "",
+          name: "home-index",
+          redirect: "/home/check",
         },
         {
-          path: 'check',
-          name: 'check',
-          component: () => import('@/views/CheckView.vue')
+          path: "check",
+          name: "check",
+          component: () => import("@/views/CheckView.vue"),
         },
         {
-          path: 'history',
-          name: 'history',
-          component: () => import('@/views/HistoryView.vue')
+          path: "history",
+          name: "history",
+          component: () => import("@/views/HistoryView.vue"),
         },
         {
-          path: 'knowledge',
-          name: 'knowledge',
-          component: () => import('@/views/KnowledgeView.vue')
-        }
-      ]
+          path: "knowledge",
+          name: "knowledge",
+          component: () => import("@/views/KnowledgeView.vue"),
+        },
+        {
+          path: "projects/:id",
+          name: "project",
+          component: () => import("@/views/ProjectView.vue"),
+        },
+        {
+          path: "projects/:id/review",
+          name: "review-timeline",
+          component: () => import("@/views/ReviewTimelineView.vue"),
+          meta: { interiorOnly: true },
+        },
+        {
+          path: "projects/:id/review-execution",
+          name: "review-execution",
+          component: () => import("@/views/ReviewExecutionView.vue"),
+        },
+        {
+          path: "projects/:id/results",
+          name: "review-results",
+          component: () => import("@/views/ResultsView.vue"),
+        },
+      ],
     },
-    {
-      path: '/projects/:id',
-      name: 'project',
-      component: () => import('@/views/ProjectView.vue'),
-      meta: { requiresAuth: true }
-    },
-    {
-      path: '/projects/:id/review',
-      name: 'review-timeline',
-      component: () => import('@/views/ReviewTimelineView.vue'),
-      meta: { requiresAuth: true }
-    },
-    {
-      path: '/projects/:id/review-execution',
-      name: 'review-execution',
-      component: () => import('@/views/ReviewExecutionView.vue'),
-      meta: { requiresAuth: true }
-    },
-    {
-      path: '/projects/:id/results',
-      name: 'review-results',
-      component: () => import('@/views/ResultsView.vue'),
-      meta: { requiresAuth: true }
-    }
-  ]
-})
+  ],
+});
 
 router.beforeEach(async (to, _from, next) => {
-  const authStore = useAuthStore()
+  const authStore = useAuthStore();
 
   if (!authStore.initialized) {
-    await authStore.initialize()
+    await authStore.initialize();
   }
 
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
-    next({ name: 'login' })
+    next({ name: "login" });
   } else if (to.meta.guest && authStore.isAuthenticated) {
-    next('/home/check')
+    next("/home/check");
+  } else if (to.meta.interiorOnly && !authStore.isInteriorUser) {
+    next("/home/check");
   } else {
-    next()
+    next();
   }
-})
+});
 
-export default router
+export default router;

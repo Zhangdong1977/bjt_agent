@@ -92,6 +92,15 @@ async def get_current_active_user(
     return current_user
 
 
+def get_token_claims(token: str) -> dict:
+    """Decode JWT and extract interior_user and concurrency claims."""
+    payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+    return {
+        "interior_user": payload.get("interior_user", False),
+        "concurrency": payload.get("concurrency", 2),
+    }
+
+
 # Type aliases for cleaner dependency injection
 CurrentUser = Annotated[User, Depends(get_current_active_user)]
 DBSession = Annotated[AsyncSession, Depends(get_db_session)]

@@ -533,11 +533,11 @@ class BidReviewAgent(BaseAgent):
                 logger.error(f"[BidReviewAgent._send_event] Failed to send event: {e}")
 
     async def _check_heartbeat_async(self) -> bool:
-        """Check if heartbeat has exceeded timeout (async version).
+        """Check if heartbeat has exceeded timeout or cancellation was requested.
 
         Returns:
             True if heartbeat is OK (within timeout or no task context),
-            False if exceeded timeout.
+            False if exceeded timeout or cancellation was requested.
         """
         import logging
         logger = self._logger or logging.getLogger(__name__)
@@ -545,6 +545,12 @@ class BidReviewAgent(BaseAgent):
         # No task context means we're in standalone mode without heartbeat tracking
         if not hasattr(self, '_task_id') or not self._task_id:
             return True
+
+        # Check if cancellation was requested via API
+        from backend.tasks.review_tasks import is_task_cancelled
+        if is_task_cancelled(self._task_id):
+            logger.warning("[BidReviewAgent] Cancellation requested via API")
+            return False
 
         from sqlalchemy import select
         from backend.models import ReviewTask
@@ -582,7 +588,7 @@ class BidReviewAgent(BaseAgent):
                 break
 
             if not await self._check_heartbeat_async():
-                logger.warning("[BidReviewAgent] Setting cancel_event due to heartbeat timeout")
+                logger.warning("[BidReviewAgent] Setting cancel_event due to heartbeat timeout or API cancellation")
                 self.cancel_event.set()
                 break
 
@@ -816,6 +822,8 @@ class BidReviewAgent(BaseAgent):
 
             # Parse check items for explicit enumeration in task prompt
             check_items = self._parse_check_items(rule_doc_content)
+            self._rule_doc_name = Path(self.rule_doc_path).name
+            self._check_item_name = check_items[0]["name"] if check_items else None
             check_list_lines = []
             for item in check_items:
                 keywords_hint = "、".join(item["suggested_keywords"][:2])
@@ -863,8 +871,10 @@ class BidReviewAgent(BaseAgent):
             if self.cancel_event is None:
                 self.cancel_event = asyncio.Event()
             elif self.cancel_event.is_set():
-                logger.warning("[BidReviewAgent.run_review] cancel_event was already set at start (from previous agent), clearing it")
-                self.cancel_event.clear()
+                # Cancel event is shared across sub-agents — if already set,
+                # propagation from another sub-agent is in progress. Keep it
+                # set so this agent also stops immediately.
+                logger.warning("[BidReviewAgent.run_review] cancel_event already set, will stop immediately")
 
             # Start heartbeat monitor as background task
             heartbeat_monitor = asyncio.create_task(
@@ -933,6 +943,7 @@ class BidReviewAgent(BaseAgent):
             if not is_normal:
                 logger.warning("[BidReviewAgent.run_review] Agent did not complete normally, skipping _post_process, trying fallback extraction")
                 findings = self._extract_findings_from_messages()
+                findings = self._enrich_findings(findings)
                 logger.info(f"[BidReviewAgent.run_review] Fallback extraction returned {len(findings)} findings")
                 return findings
 
@@ -946,12 +957,20 @@ class BidReviewAgent(BaseAgent):
                 findings = self._extract_findings_from_messages()
                 logger.info(f"[BidReviewAgent.run_review] Fallback extraction returned {len(findings)} findings")
 
-            return findings
+            return self._enrich_findings(findings)
 
         except Exception as e:
             logger.exception(f"[BidReviewAgent.run_review] Exception: {e}")
             self._write_interaction_log()
             return []
+
+    def _enrich_findings(self, findings: list[dict]) -> list[dict]:
+        for f in findings:
+            if "rule_doc_name" not in f:
+                f["rule_doc_name"] = getattr(self, "_rule_doc_name", None)
+            if "check_item_name" not in f:
+                f["check_item_name"] = getattr(self, "_check_item_name", None)
+        return findings
 
     def _extract_findings_from_messages(self) -> list[dict]:
         """Extract structured findings from agent message history.
@@ -1460,7 +1479,8 @@ class BidReviewAgent(BaseAgent):
         for attempt in range(1, max_retries + 1):
             try:
                 logger.info(f"[BidReviewAgent] LLM attempt {attempt}/{max_retries}")
-                response = await self.llm_client.generate(messages=messages)
+                async with asyncio.timeout(300.0):
+                    response = await self.llm_client.generate(messages=messages)
                 logger.info(f"[BidReviewAgent] LLM attempt {attempt} succeeded")
                 return response
             except Exception as e:

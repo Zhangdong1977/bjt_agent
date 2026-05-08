@@ -7,9 +7,7 @@ import type { DocumentContent } from '@/types'
 import { ElMessage } from 'element-plus'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
-import ExecutionHeader from '@/components/execution/ExecutionHeader.vue'
 
 // Configure DOMPurify to allow base64 images and table tags
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -41,8 +39,6 @@ const docViewerTitle = ref('')
 
 onMounted(async () => {
   await projectStore.selectProject(projectId.value)
-  await projectStore.fetchReviewTasks()
-  await projectStore.fetchReviewResults()
 })
 
 function renderMarkdown(content: string): string {
@@ -59,9 +55,9 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
   if (!file) return
   try {
     await projectStore.uploadDocument(docType, file)
-    ElMessage.success(`${docType === 'tender' ? '招标书' : '应标书'}上传成功`)
+    ElMessage.success(`${docType === 'tender' ? '招标文件' : '投标文件'}上传成功`)
   } catch {
-    ElMessage.error(`${docType === 'tender' ? '招标书' : '应标书'}上传失败`)
+    ElMessage.error(`${docType === 'tender' ? '招标文件' : '投标文件'}上传失败`)
   }
 }
 
@@ -75,7 +71,7 @@ async function handleViewDoc(documentId: string) {
   try {
     docViewerContent.value = await documentsApi.getContent(projectStore.currentProject.id, documentId)
     const doc = projectStore.documents.find(d => d.id === documentId)
-    docViewerTitle.value = doc ? `${doc.doc_type === 'tender' ? '招标书' : '应标书'} - ${doc.original_filename}` : '文档'
+    docViewerTitle.value = doc ? `${doc.doc_type === 'tender' ? '招标文件' : '投标文件'} - ${doc.original_filename}` : '文档'
   } catch (error) {
     console.error('Failed to load document:', error)
     ElMessage.error('加载文档内容失败')
@@ -119,50 +115,19 @@ function getStatusClass(status: string) {
       return 'status-pending'
   }
 }
-
-const selectedTaskId = ref<string>('')
-
-function getStatusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    pending: '待处理',
-    running: '进行中',
-    completed: '已完成',
-    failed: '失败'
-  }
-  return labels[status] || status
-}
-
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return 'N/A'
-  return new Date(dateStr).toLocaleString('zh-CN')
-}
-
-function goToTaskExecution() {
-  if (!selectedTaskId.value) return
-  router.push({
-    name: 'review-execution',
-    params: { id: projectId.value },
-    query: { taskId: selectedTaskId.value }
-  })
-}
 </script>
 
 <template>
   <div class="project-view">
-    <ExecutionHeader
-      :project-name="projectStore.currentProject?.name || '项目'"
-      status="pending"
-    />
-
     <main class="content">
       <!-- Documents Section -->
       <section class="section">
-        <h2>文档</h2>
+        <h2>招标文件、投标文件</h2>
 
         <div class="documents-grid">
           <!-- Tender Document -->
           <div class="document-card">
-            <h3>招标书</h3>
+            <h3>招标文件</h3>
             <div v-if="tenderDoc" class="document-info">
               <div class="doc-header">
                 <div class="doc-icon">📄</div>
@@ -226,7 +191,7 @@ function goToTaskExecution() {
 
           <!-- Bid Document -->
           <div class="document-card">
-            <h3>应标书</h3>
+            <h3>投标文件</h3>
             <div v-if="bidDoc" class="document-info">
               <div class="doc-header">
                 <div class="doc-icon">📄</div>
@@ -290,32 +255,16 @@ function goToTaskExecution() {
         </div>
       </section>
 
-      <!-- Results Section -->
-      <section class="section">
-        <h2>审查结果</h2>
-        <div class="review-actions">
-          <!-- 任务选择器 -->
-          <div v-if="projectStore.reviewTasks.length > 0" class="task-selector">
-            <label>选择审查任务:</label>
-            <select v-model="selectedTaskId" class="task-select">
-              <option v-for="task in projectStore.reviewTasks" :key="task.id" :value="task.id">
-                {{ getStatusLabel(task.status) }} - {{ formatDate(task.created_at) }}
-              </option>
-            </select>
-            <button class="view-task-btn" @click="goToTaskExecution">
-              查看
-            </button>
-          </div>
-          <button
-            class="start-review-btn"
-            :disabled="!tenderDoc || !bidDoc || tenderDoc.status !== 'parsed' || bidDoc.status !== 'parsed'"
-            @click="handleStartReview"
-          >
-            {{ projectStore.reviewLoading ? '启动中...' : '开始审查' }}
-          </button>
-        </div>
-        <ReviewResultsArea :review-results="projectStore.reviewResults" />
-      </section>
+      <!-- Start Review -->
+      <div class="review-action-bar">
+        <button
+          class="start-review-btn"
+          :disabled="!tenderDoc || !bidDoc || tenderDoc.status !== 'parsed' || bidDoc.status !== 'parsed'"
+          @click="handleStartReview"
+        >
+          {{ projectStore.reviewLoading ? '启动中...' : '立即检查' }}
+        </button>
+      </div>
     </main>
 
     <!-- Document Viewer Modal -->
@@ -350,7 +299,6 @@ function goToTaskExecution() {
 
 <style scoped>
 .project-view {
-  min-height: 100vh;
 }
 
 .content {
@@ -739,69 +687,33 @@ function goToTaskExecution() {
   padding: 0;
 }
 
-.review-actions {
-  margin-bottom: 1rem;
+.review-action-bar {
+  display: flex;
+  justify-content: center;
+  margin-top: 1.5rem;
 }
 
 .start-review-btn {
-  padding: 0.6rem 1.5rem;
+  padding: 0.75rem 2.5rem;
   background: var(--blue);
   color: var(--white);
   border: none;
-  border-radius: var(--r);
+  border-radius: var(--r2);
   cursor: pointer;
-  font-size: 0.9rem;
-  font-weight: 500;
-  transition: filter 0.2s;
+  font-size: 1rem;
+  font-weight: 600;
+  transition: filter 0.2s, transform 0.15s;
 }
 
 .start-review-btn:hover:not(:disabled) {
   filter: brightness(1.1);
+  transform: translateY(-1px);
 }
 
 .start-review-btn:disabled {
   background: var(--muted);
   cursor: not-allowed;
-}
-
-.task-selector {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-  padding: 0.75rem;
-  background: var(--bg2);
-  border-radius: var(--r);
-  border: 1px solid var(--line);
-}
-
-.task-selector label {
-  font-weight: 500;
-  color: var(--text);
-  white-space: nowrap;
-}
-
-.task-select {
-  padding: 0.5rem;
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  min-width: 200px;
-  background: var(--bg1);
-  color: var(--text);
-}
-
-.view-task-btn {
-  padding: 0.5rem 1rem;
-  background: var(--blue);
-  color: var(--white);
-  border: none;
-  border-radius: var(--r);
-  cursor: pointer;
-  font-size: 0.85rem;
-}
-
-.view-task-btn:hover {
-  filter: brightness(1.1);
+  opacity: 0.6;
 }
 
 @media (max-width: 767px) {

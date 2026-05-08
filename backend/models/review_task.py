@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, ForeignKey
+from sqlalchemy import Integer, String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -26,6 +26,7 @@ class ReviewTask(Base):
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
     error_message: Mapped[str | None] = mapped_column(nullable=True)
     last_heartbeat: Mapped[datetime | None] = mapped_column(nullable=True, index=True)  # Track frontend heartbeat - if no heartbeat for 20+ seconds, agent will cancel
+    max_concurrency: Mapped[int] = mapped_column(Integer, default=2, server_default="2", nullable=False)
 
     # Relationships
     project: Mapped["Project"] = relationship("Project", back_populates="review_tasks")

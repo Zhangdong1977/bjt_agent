@@ -23,8 +23,7 @@ celery_app.conf.update(
     task_track_started=True,
     worker_prefetch_multiplier=1,
     # Safety nets to prevent worker hangs
-    task_time_limit=1800,            # 30min hard limit (SIGKILL)
-    task_soft_time_limit=1500,       # 25min soft limit (raises SoftTimeLimitExceeded)
+    task_time_limit=7200,            # 2h hard limit — ultimate safety net
     worker_max_tasks_per_child=10,   # Recycle worker process every 10 tasks
     task_routes={
         "backend.tasks.review_tasks.run_review": {"queue": "review"},
@@ -33,8 +32,8 @@ celery_app.conf.update(
     },
     task_annotations={
         "backend.tasks.review_tasks.run_review": {
-            "time_limit": 1800,
-            "soft_time_limit": 1500,
+            "time_limit": 7200,
+            "soft_time_limit": None,
         },
         "backend.tasks.review_tasks.merge_review_results": {
             "time_limit": 600,

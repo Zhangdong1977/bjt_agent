@@ -6,6 +6,7 @@ import AgentTimelineItem from '@/components/execution/AgentTimelineItem.vue'
 const props = defineProps<{
   todo: TodoItem
   agentIndex: number
+  showTimelineButton?: boolean
   steps?: Array<{
     step_number: number
     step_type: string
@@ -140,7 +141,7 @@ function transformStep(step: Step) {
         </span>
       </div>
 
-      <div v-if="todo.status === 'completed'" class="timeline-toggle">
+      <div v-if="todo.status === 'completed' && showTimelineButton" class="timeline-toggle">
         <button class="timeline-btn" @click.stop="toggleTimeline">
           {{ showTimeline ? '收起时间线' : '查看时间线' }}
           <span class="btn-icon">{{ showTimeline ? '↑' : '↓' }}</span>

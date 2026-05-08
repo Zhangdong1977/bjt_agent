@@ -1,5 +1,6 @@
 """Review API routes."""
 
+import json
 import logging
 from datetime import datetime
 from typing import Optional
@@ -8,9 +9,10 @@ logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from backend.api.deps import DBSession, CurrentUser
+from backend.api.deps import DBSession, CurrentUser, get_token_claims, oauth2_scheme
+from backend.config import get_settings
 from backend.models import Project, ReviewTask, ReviewResult, AgentStep, ProjectReviewResult, TodoItem
 from backend.schemas.review import (
     ReviewResponse,
@@ -23,6 +25,7 @@ from backend.schemas.review import (
 from backend.services.sse_service import sse_manager
 
 router = APIRouter(prefix="/projects/{project_id}/review", tags=["Review"])
+settings = get_settings()
 
 
 async def verify_project_ownership(project_id: str, user_id: str, db: DBSession) -> Project:
@@ -60,12 +63,19 @@ async def list_review_tasks(
 
 @router.post("", response_model=ReviewTaskResponse, status_code=status.HTTP_201_CREATED)
 async def start_review(
+    request: Request,
     project_id: str,
     db: DBSession,
     current_user: CurrentUser,
 ) -> ReviewTask:
     """Start a new review task for the project."""
     await verify_project_ownership(project_id, current_user.id, db)
+
+    # Extract concurrency from JWT claims
+    from backend.api.deps import oauth2_scheme, get_token_claims
+    token = await oauth2_scheme(request)
+    claims = get_token_claims(token)
+    concurrency = claims.get("concurrency", settings.max_sub_agent_concurrency)
 
     # Check if there are running tasks and auto-cancel stale tasks
     result = await db.execute(
@@ -86,6 +96,7 @@ async def start_review(
     task = ReviewTask(
         project_id=project_id,
         status="pending",
+        max_concurrency=concurrency,
     )
     db.add(task)
     await db.flush()
@@ -125,13 +136,15 @@ async def get_review_results(
     logger.info(f"[get_review_results] project_id={project_id}, findings_count={len(findings)}")
 
     # Calculate summary
+    category_count_result = await db.execute(
+        select(func.count()).where(TodoItem.project_id == project_id)
+    )
+    category_count = category_count_result.scalar()
+
     summary = {
-        "total_requirements": len(findings),
-        "compliant": sum(1 for f in findings if f.is_compliant),
-        "non_compliant": sum(1 for f in findings if not f.is_compliant),
-        "critical": sum(1 for f in findings if f.severity == "critical" and not f.is_compliant),
-        "major": sum(1 for f in findings if f.severity == "major" and not f.is_compliant),
-        "minor": sum(1 for f in findings if f.severity == "minor" and not f.is_compliant),
+        "category_count": category_count,
+        "check_item_count": len(findings),
+        "risk_item_count": sum(1 for f in findings if not f.is_compliant),
     }
 
     return ReviewResponse(summary=summary, findings=findings)
@@ -197,7 +210,12 @@ async def cancel_review_task(
         except Exception:
             pass  # Task may have already completed or expired
 
+    # Set Redis cancellation flag so the heartbeat monitor can detect it
+    from backend.tasks.review_tasks import set_task_cancelled
+    set_task_cancelled(task_id)
+
     task.status = "cancelled"
+    task.completed_at = datetime.utcnow()
     await db.flush()
     await db.refresh(task)
     return task
@@ -242,10 +260,19 @@ async def heartbeat_review_task(
 async def get_review_task_steps(
     project_id: str,
     task_id: str,
+    request: Request,
     db: DBSession,
     current_user: CurrentUser,
 ) -> list[AgentStep]:
-    """Get all steps for a review task (for timeline display)."""
+    """Get all steps for a review task (for timeline display). Internal users only."""
+    token = await oauth2_scheme(request)
+    claims = get_token_claims(token)
+    if not claims["interior_user"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="外部用户无权查看时间线",
+        )
+
     await verify_project_ownership(project_id, current_user.id, db)
 
     result = await db.execute(
@@ -311,8 +338,9 @@ async def get_review_task_todos(
     """Get all todo items (sub-agents) for a review task.
 
     TodoItems are created during review execution with session_id = task_id.
-    This endpoint allows fetching sub-agent information for completed tasks
-    when SSE events are no longer available (e.g., after Redis stream TTL expires).
+    This endpoint allows fetching sub-agent metadata (name, status) for block-headers.
+    Detailed findings within todos are shown in block-body which is hidden via
+    allowExpand=false for external users.
     """
     await verify_project_ownership(project_id, current_user.id, db)
 
@@ -349,7 +377,14 @@ async def stream_review_events(
     This endpoint provides real-time updates about the review task progress,
     including agent steps, progress updates, and completion status.
     Supports reconnection via Last-Event-ID header.
+
+    External users receive filtered events: only status-level events
+    (block-header info) are forwarded; detailed step/timeline data is skipped.
     """
+    token = await oauth2_scheme(request)
+    claims = get_token_claims(token)
+    is_internal = claims["interior_user"]
+
     # Verify user has access to the project
     await verify_project_ownership(project_id, current_user.id, db)
 
@@ -367,12 +402,38 @@ async def stream_review_events(
             detail="Task not found",
         )
 
+    # Events that contain detailed step/timeline data — blocked for external users
+    BLOCKED_EVENTS = {
+        "step",
+        "sub_agent_step",
+        "sub_agent_step_start",
+        "sub_agent_llm_output",
+        "sub_agent_tool_call_start",
+        "sub_agent_tool_call_end",
+        "sub_agent_step_complete",
+    }
+
     # Extract Last-Event-ID header for reconnection support
     last_event_id = request.headers.get("Last-Event-ID")
 
     async def event_generator():
         async for event in sse_manager.connect(task_id, last_event_id):
-            yield event
+            if is_internal:
+                yield event
+                continue
+
+            # Filter for external users: skip blocked event types
+            for line in event.splitlines():
+                if line.startswith("data: "):
+                    try:
+                        json_data = line[6:]  # strip "data: " prefix
+                        data = json.loads(json_data)
+                        if data.get("type") in BLOCKED_EVENTS:
+                            break  # skip this entire event
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+            else:
+                yield event
 
     return StreamingResponse(
         event_generator(),

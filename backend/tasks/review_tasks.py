@@ -12,8 +12,15 @@ from backend.models import ReviewTask, ReviewResult, AgentStep
 
 logger = logging.getLogger(__name__)
 
+import time as _time
+# Progress watchdog: tracks last SSE event time per task_id
+_task_last_event_times: dict[str, float] = {}
+
 # Module-level Redis connection pool for _publish_event
 _review_redis_pool = None
+
+# Redis key prefix for task cancellation flags
+_CANCEL_KEY_PREFIX = "task:cancel:"
 
 
 def _get_review_redis():
@@ -30,6 +37,45 @@ def _get_review_redis():
             socket_keepalive=True,
         )
     return redis_lib.Redis(connection_pool=_review_redis_pool)
+
+
+def set_task_cancelled(task_id: str) -> None:
+    """Set the cancellation flag for a task in Redis.
+
+    This flag is checked by the heartbeat monitor loop to detect
+    when a user has requested cancellation via the API.
+
+    Args:
+        task_id: The ReviewTask ID
+    """
+    r = _get_review_redis()
+    key = f"{_CANCEL_KEY_PREFIX}{task_id}"
+    r.set(key, "1", ex=7200)  # Expire after 2 hours
+
+
+def is_task_cancelled(task_id: str) -> bool:
+    """Check if a task has been cancelled via the API.
+
+    Args:
+        task_id: The ReviewTask ID
+
+    Returns:
+        True if the task has been cancelled, False otherwise.
+    """
+    r = _get_review_redis()
+    key = f"{_CANCEL_KEY_PREFIX}{task_id}"
+    return r.exists(key) == 1
+
+
+def clear_task_cancelled(task_id: str) -> None:
+    """Clear the cancellation flag for a task.
+
+    Args:
+        task_id: The ReviewTask ID
+    """
+    r = _get_review_redis()
+    key = f"{_CANCEL_KEY_PREFIX}{task_id}"
+    r.delete(key)
 
 
 def run_async(coro):
@@ -96,6 +142,7 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
     """
     import traceback
     logger.info(f"[_publish_event] ENTRY: task_id={task_id}, event_type={event_type}")
+    _task_last_event_times[task_id] = _time.time()
     try:
         import redis
         from backend.config import get_settings
@@ -191,6 +238,33 @@ def _persist_step(task_id: str, event_type: str, data: dict) -> None:
         logger.warning(f"[_persist_step] Failed to persist step: {e}")
 
 
+async def _progress_watchdog(task_id: str, cancel_event: asyncio.Event):
+    """Monitor task progress and trigger cancellation if no events for too long.
+
+    Checks every 30s whether a new SSE event has been published for this task.
+    If no event for agent_progress_timeout seconds (default 600s), the task
+    is considered hung and the watchdog publishes an error event and sets
+    cancel_event to stop the agent.
+    """
+    settings = get_settings()
+    while not cancel_event.is_set():
+        await asyncio.sleep(30)
+        last_time = _task_last_event_times.get(task_id)
+        if last_time is None:
+            continue
+        elapsed = _time.time() - last_time
+        if elapsed > settings.agent_progress_timeout:
+            logger.error(
+                f"[progress_watchdog] Task {task_id} hung: "
+                f"no event for {elapsed:.0f}s (limit {settings.agent_progress_timeout}s)"
+            )
+            _publish_event(task_id, "error", {
+                "message": f"Task hung: no progress for {elapsed:.0f}s"
+            })
+            cancel_event.set()
+            break
+
+
 @celery_app.task(bind=True, name="backend.tasks.review_tasks.run_review")
 def run_review(self, task_id: str) -> dict:
     """Run the bid review process asynchronously.
@@ -201,8 +275,23 @@ def run_review(self, task_id: str) -> dict:
     3. Uses the BidReviewAgent to compare them
     4. Stores findings in the database
     5. Publishes SSE events via Redis
+
+    Handles SIGTERM gracefully for graceful cancellation.
     """
-    from celery.exceptions import SoftTimeLimitExceeded
+    import threading
+    import signal
+
+    # Threading event to signal graceful shutdown from SIGTERM handler
+    termination_event = threading.Event()
+
+    def sigterm_handler(signum, frame):
+        logger.warning(f"[run_review] Received SIGTERM for task_id={task_id}, initiating graceful shutdown")
+        termination_event.set()
+        # Also set the Redis cancel flag so heartbeat monitor picks it up
+        set_task_cancelled(task_id)
+
+    # Register SIGTERM handler for graceful cancellation
+    old_sigterm_handler = signal.signal(signal.SIGTERM, sigterm_handler)
 
     async def _run():
         # Create session factory within the event loop to avoid 'different loop' error
@@ -271,11 +360,24 @@ def run_review(self, task_id: str) -> dict:
                     # Create cancel_event for heartbeat cancellation mechanism
                     cancel_event = asyncio.Event()
 
-                    # Run the agent review — handles saving, status update, and merge trigger internally
-                    findings_count = await _run_agent_review(
-                        task_id, tender_doc, bid_doc, session_factory, cancel_event,
-                        db=db, review_task=task,
+                    # Start progress watchdog to detect hung tasks
+                    watchdog_task = asyncio.create_task(
+                        _progress_watchdog(task_id, cancel_event)
                     )
+
+                    try:
+                        # Run the agent review — handles saving, status update, and merge trigger internally
+                        findings_count = await _run_agent_review(
+                            task_id, tender_doc, bid_doc, session_factory, cancel_event,
+                            db=db, review_task=task,
+                        )
+                    finally:
+                        watchdog_task.cancel()
+                        try:
+                            await watchdog_task
+                        except asyncio.CancelledError:
+                            pass
+                        _task_last_event_times.pop(task_id, None)
 
                     # Send completion event
                     _publish_event(task_id, "complete", {
@@ -290,45 +392,32 @@ def run_review(self, task_id: str) -> dict:
                     }
 
                 except Exception as e:
-                    task.status = "failed"
-                    task.error_message = str(e)
+                    error_msg = str(e)
+                    # Preserve "cancelled" status when user requested cancellation.
+                    # The cancel API sets the Redis flag and DB status to "cancelled"
+                    # before the exception propagates here.
+                    if is_task_cancelled(task_id):
+                        task.status = "cancelled"
+                    else:
+                        task.status = "failed"
+                    task.error_message = error_msg
                     task.completed_at = datetime.utcnow()
                     await db.flush()
                     await db.commit()
-                    _publish_event(task_id, "error", {"message": str(e)})
-                    return {"status": "error", "message": str(e)}
+                    _publish_event(task_id, "error", {"message": error_msg})
+                    return {"status": "error", "message": error_msg}
         finally:
             await engine.dispose()
+            # Clean up Redis cancel flag
+            clear_task_cancelled(task_id)
+            # Restore original SIGTERM handler
+            signal.signal(signal.SIGTERM, old_sigterm_handler)
+            # Check if we were terminated gracefully
+            if termination_event.is_set():
+                logger.warning(f"[run_review] Task {task_id} was terminated gracefully via SIGTERM")
+                return {"status": "cancelled", "message": "Task cancelled by user"}
 
-    try:
-        return run_async(_run())
-    except SoftTimeLimitExceeded:
-        logger.error(f"[run_review] SoftTimeLimitExceeded for task {task_id}")
-        _publish_event(task_id, "error", {"message": "Task exceeded time limit (25 minutes)"})
-        _mark_task_failed_after_timeout(task_id, "Task exceeded time limit (25 minutes)")
-        return {"status": "error", "message": "Task exceeded time limit"}
-
-
-def _mark_task_failed_after_timeout(task_id: str, error_msg: str) -> None:
-    """Best-effort: mark a timed-out task as failed in the database."""
-    try:
-        async def _do():
-            session_factory, engine = create_session_factory()
-            try:
-                async with session_factory() as db:
-                    from sqlalchemy import select
-                    result = await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
-                    task = result.scalar_one_or_none()
-                    if task and task.status == "running":
-                        task.status = "failed"
-                        task.error_message = error_msg
-                        task.completed_at = datetime.utcnow()
-                        await db.commit()
-            finally:
-                await engine.dispose()
-        asyncio.run(_do())
-    except Exception as e:
-        logger.error(f"[run_review] Failed to mark task {task_id} as failed: {e}")
+    return run_async(_run())
 
 
 @celery_app.task(bind=True, name="backend.tasks.review_tasks.merge_review_results")
@@ -564,6 +653,7 @@ async def _run_agent_review(
         event_callback=event_cb,
         cancel_event=cancel_event,
         on_sub_agent_result=on_sub_agent_completed,
+        max_concurrency=review_task.max_concurrency,
     )
 
     try:

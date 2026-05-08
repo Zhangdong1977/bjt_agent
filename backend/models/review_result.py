@@ -27,6 +27,8 @@ class ReviewResult(Base):
     location_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     suggestion: Mapped[str | None] = mapped_column(nullable=True)
     explanation: Mapped[str | None] = mapped_column(nullable=True)
+    rule_doc_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    check_item_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Relationships
     task: Mapped["ReviewTask"] = relationship("ReviewTask", back_populates="results")

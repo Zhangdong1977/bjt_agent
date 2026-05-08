@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { reviewApi } from '@/api/client'
 
 interface TimelineStep {
   step_number: number
@@ -25,9 +25,15 @@ const props = defineProps<{
   maxStepsMap?: Record<string, number>
   taskStartTime?: number
   todos?: TodoItemState[]
+  projectId?: string
+  taskId?: string
 }>()
 
-const router = useRouter()
+const emit = defineEmits<{
+  (e: 'cancelled'): void
+}>()
+
+const isAbandoning = ref(false)
 
 // 执行容量进度：取当前运行中子代理的最大进度
 const execCapacityProgress = computed(() => {
@@ -148,8 +154,18 @@ const statusText = computed(() => {
   }
 })
 
-function goBack() {
-  router.push({ name: 'project', params: { id: router.currentRoute.value.params.id } })
+async function abandonReview() {
+  if (isAbandoning.value) return
+  if (!props.projectId || !props.taskId) return
+  isAbandoning.value = true
+  try {
+    await reviewApi.cancel(props.projectId, props.taskId)
+    emit('cancelled')
+  } catch (error) {
+    console.error('放弃审查失败:', error)
+  } finally {
+    isAbandoning.value = false
+  }
 }
 </script>
 
@@ -224,7 +240,13 @@ function goBack() {
     <div class="sidebar-section">
       <div class="section-title">操作</div>
       <div class="actions">
-        <button class="btn btn-ghost" @click="goBack">返回项目</button>
+        <button
+          class="btn btn-abandon"
+          :disabled="isAbandoning || phase === 'completed' || phase === 'failed'"
+          @click="abandonReview"
+        >
+          {{ isAbandoning ? '放弃中...' : '放弃检查' }}
+        </button>
       </div>
     </div>
   </div>
@@ -419,5 +441,21 @@ function goBack() {
   background: var(--bg2);
   border-color: var(--dim);
   color: var(--text);
+}
+
+.btn-abandon {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+}
+
+.btn-abandon:hover:not(:disabled) {
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+.btn-abandon:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>

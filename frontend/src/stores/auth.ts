@@ -1,14 +1,22 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { authApi, getAccessToken, clearTokens } from '@/api/client'
+import { authApi, getAccessToken, clearTokens, getTokenClaims } from '@/api/client'
 import type { User } from '@/types'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
   const loading = ref(false)
   const initialized = ref(false)
+  const isInteriorUser = ref(false)
+  const concurrency = ref(2)
 
   const isAuthenticated = computed(() => !!user.value)
+
+  function _restoreClaims() {
+    const claims = getTokenClaims()
+    isInteriorUser.value = claims.interior_user
+    concurrency.value = claims.concurrency
+  }
 
   async function initialize() {
     if (initialized.value) return
@@ -18,6 +26,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
     try {
       user.value = await authApi.getMe()
+      _restoreClaims()
     } catch {
       clearTokens()
     } finally {
@@ -30,16 +39,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       await authApi.login(username, password)
       user.value = await authApi.getMe()
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function register(username: string, email: string, password: string) {
-    loading.value = true
-    try {
-      await authApi.register(username, email, password)
-      await login(username, password)
+      _restoreClaims()
     } finally {
       loading.value = false
     }
@@ -48,6 +48,8 @@ export const useAuthStore = defineStore('auth', () => {
   function logout() {
     authApi.logout()
     user.value = null
+    isInteriorUser.value = false
+    concurrency.value = 2
   }
 
   return {
@@ -55,9 +57,10 @@ export const useAuthStore = defineStore('auth', () => {
     loading,
     initialized,
     isAuthenticated,
+    isInteriorUser,
+    concurrency,
     initialize,
     login,
-    register,
-    logout
+    logout,
   }
 })

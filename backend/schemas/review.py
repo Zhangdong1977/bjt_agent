@@ -17,6 +17,8 @@ class ReviewResultResponse(BaseModel):
     location_line: int | None
     suggestion: str | None
     explanation: str | None
+    rule_doc_name: str | None = None
+    check_item_name: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -34,6 +36,8 @@ class ProjectReviewResultResponse(BaseModel):
     location_line: int | None
     suggestion: str | None
     explanation: str | None
+    rule_doc_name: str | None = None
+    check_item_name: str | None = None
     source_task_id: str
     merged_from_count: int
 

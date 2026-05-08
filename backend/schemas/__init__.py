@@ -1,7 +1,6 @@
 # Pydantic schemas
 from .auth import (
-    UserCreate,
-    UserLogin,
+    LoginRequest,
     UserResponse,
     Token,
     TokenData,
@@ -25,8 +24,7 @@ from .review import (
 )
 
 __all__ = [
-    "UserCreate",
-    "UserLogin",
+    "LoginRequest",
     "UserResponse",
     "Token",
     "TokenData",

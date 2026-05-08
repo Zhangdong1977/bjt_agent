@@ -32,6 +32,7 @@ class MasterAgent:
         max_retries: int = 3,
         cancel_event: Optional[asyncio.Event] = None,
         on_sub_agent_result: Optional[Callable] = None,
+        max_concurrency: Optional[int] = None,
     ):
         self.project_id = project_id
         self.rule_library_path = rule_library_path
@@ -42,6 +43,7 @@ class MasterAgent:
         self.max_retries = max_retries
         self.cancel_event = cancel_event
         self.on_sub_agent_result = on_sub_agent_result
+        self._max_concurrency = max_concurrency or get_settings().max_sub_agent_concurrency
 
         self.scanner = RuleLibraryScannerTool()
         self._todo_items = []
@@ -115,6 +117,11 @@ class MasterAgent:
         # Phase 3: 并行执行子代理（受信号量控制）
         await self._run_sub_agents(todo_service, cancel_event)
 
+        # Skip merge phase if cancelled
+        if cancel_event and cancel_event.is_set():
+            logger.warning("[MasterAgent.run] Cancelled, skipping merge phase")
+            return {"success": False, "error": "Task cancelled by user"}
+
         # Phase 4: 汇总结果
         self._send_event("merging_started", {"message": "开始合并结果"})
         merged_result = await self._merge_results(todo_service)
@@ -129,7 +136,7 @@ class MasterAgent:
 
     async def _run_sub_agents(self, todo_service, cancel_event: Optional[asyncio.Event] = None) -> None:
         """并行执行所有子代理（受信号量控制并发数）."""
-        max_concurrency = get_settings().max_sub_agent_concurrency
+        max_concurrency = self._max_concurrency
         total = len(self._todo_items)
         logger.info(
             f"[_run_sub_agents] Starting parallel execution with {total} todos, "
@@ -165,14 +172,22 @@ class MasterAgent:
             todo_service: TodoService for sequential operations (phase 2 todo creation)
             session_factory: Optional session factory. If provided, each retry creates
                           a fresh TodoService with its own database session.
-            cancel_event: Optional asyncio.Event to signal cancellation.
+            cancel_event: Optional asyncio.Event to signal cancellation. If set, the
+                         sub-agent will stop retrying and return cancelled.
         """
         logger.info(f"[_run_single_sub_agent] Starting for todo_id={todo.id}, rule_doc_name={todo.rule_doc_name}")
         retry_count = 0
 
         while retry_count <= self.max_retries:
-            # Create a fresh cancel_event for each attempt to prevent cascade cancellation
-            attempt_cancel_event = asyncio.Event()
+            # Check parent cancel_event before each attempt — respect API cancellation
+            if cancel_event and cancel_event.is_set():
+                logger.warning(f"[_run_single_sub_agent] Parent cancel_event set, stopping for todo_id={todo.id}")
+                await task_todo_service.update_todo_status(todo.id, "failed", error_message="Task cancelled by user")
+                self._send_event("sub_agent_failed", {
+                    "todo_id": todo.id,
+                    "error": "Task cancelled by user",
+                })
+                return {"success": False, "error": "Cancelled by user"}
 
             # Create a fresh TodoService for each retry iteration if factory is available
             task_todo_service = todo_service
@@ -187,7 +202,7 @@ class MasterAgent:
                 logger.info(f"[_run_single_sub_agent] Updating todo {todo.id} status to running")
                 await task_todo_service.update_todo_status(todo.id, "running")
 
-                # 执行子代理
+                # 执行子代理 — 直接传递父级 cancel_event 使所有子代理共享取消信号
                 executor = SubAgentExecutor(
                     todo_item=todo,
                     tender_doc_path=self.tender_doc_path,
@@ -196,18 +211,31 @@ class MasterAgent:
                     session_factory=session_factory,
                     event_callback=self._create_sub_agent_callback(todo.id),
                     session_id=self._session_id,
-                    cancel_event=attempt_cancel_event,
+                    cancel_event=cancel_event,
                 )
                 logger.info(f"[_run_single_sub_agent] Calling executor.execute() for todo {todo.id}")
                 result = await executor.execute()
                 error_msg = result.get('error', '')
                 logger.info(f"[_run_single_sub_agent] executor.execute() returned for todo {todo.id}, success={result.get('success')}, error={error_msg}, findings_count={len(result.get('findings', []))}")
 
+                # 检查取消状态 — execute() 返回后（可能被 heartbeat monitor 取消）
+                if cancel_event and cancel_event.is_set():
+                    logger.warning(f"[_run_single_sub_agent] Cancelled after execute for todo_id={todo.id}")
+                    await task_todo_service.update_todo_status(todo.id, "failed", error_message="Task cancelled by user")
+                    self._send_event("sub_agent_failed", {"todo_id": todo.id, "error": "Task cancelled by user"})
+                    return {"success": False, "error": "Cancelled by user"}
+
                 # 检测异常
                 if detect_anomaly(result, todo):
                     logger.info(f"[_run_single_sub_agent] Anomaly detected for todo {todo.id}, retry_count={retry_count}")
                     if retry_count < self.max_retries:
                         retry_count += 1
+                        # Check cancel_event before retrying
+                        if cancel_event and cancel_event.is_set():
+                            logger.warning(f"[_run_single_sub_agent] Cancel requested during anomaly retry, stopping for todo_id={todo.id}")
+                            await task_todo_service.update_todo_status(todo.id, "failed", error_message="Task cancelled by user")
+                            self._send_event("sub_agent_failed", {"todo_id": todo.id, "error": "Task cancelled by user"})
+                            return {"success": False, "error": "Cancelled by user"}
                         await task_todo_service.reset_todo_for_retry(todo.id, retry_count)
                         # Exponential backoff: 2s, 4s, 8s, ...
                         backoff = 2 ** retry_count
@@ -247,10 +275,23 @@ class MasterAgent:
 
                 return result
 
+            except asyncio.CancelledError:
+                # Propagate cancellation upward — do not retry
+                logger.warning(f"[_run_single_sub_agent] CancelledError for todo {todo.id}, retry_count={retry_count}")
+                if session_to_close:
+                    await session_to_close.close()
+                raise
+
             except Exception as e:
                 logger.error(f"[_run_single_sub_agent] Exception for todo {todo.id}: {e}")
                 if retry_count < self.max_retries:
                     retry_count += 1
+                    # Check cancel_event before retrying
+                    if cancel_event and cancel_event.is_set():
+                        logger.warning(f"[_run_single_sub_agent] Cancel requested during exception retry, stopping for todo_id={todo.id}")
+                        await task_todo_service.update_todo_status(todo.id, "failed", error_message="Task cancelled by user")
+                        self._send_event("sub_agent_failed", {"todo_id": todo.id, "error": "Task cancelled by user"})
+                        return {"success": False, "error": "Cancelled by user"}
                     await task_todo_service.reset_todo_for_retry(todo.id, retry_count)
                     # Exponential backoff: 2s, 4s, 8s, ...
                     backoff = 2 ** retry_count

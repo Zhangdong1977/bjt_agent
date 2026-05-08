@@ -164,6 +164,15 @@ class SubAgentExecutor:
             findings = await agent.run_review()
             logger.info(f"[SubAgentExecutor.execute] Findings: {findings}")
 
+            # 检查取消状态 — run_review() 可能因 heartbeat monitor 取消而返回部分结果
+            if self.cancel_event and self.cancel_event.is_set():
+                logger.warning(f"[SubAgentExecutor.execute] Cancelled for todo_id={self.todo_item.id}")
+                return {
+                    "success": False,
+                    "error": "Task cancelled by user",
+                    "todo_id": self.todo_item.id,
+                }
+
             # Capture diagnostics: verify write_file was both called AND
             # returned a result (role="tool" with matching tool_call_id)
             write_file_called = False

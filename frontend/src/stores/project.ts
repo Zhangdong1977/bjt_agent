@@ -109,22 +109,23 @@ export const useProjectStore = defineStore("project", () => {
     onProgress?: (progress: UploadProgress) => void,
   ) {
     if (!currentProject.value) return;
-    const doc = await documentsApi.upload(
-      currentProject.value.id,
-      docType,
-      file,
-      (progress) => {
-        uploadProgress.value[docType] = progress;
-        onProgress?.(progress);
-      },
-    );
-    delete uploadProgress.value[docType];
-    documents.value.push(doc);
-    // Start polling for document status updates
-    pollDocumentStatus(doc.id);
-    // Connect SSE for real-time parse progress
-    connectDocParseSSE(doc.id);
-    return doc;
+    try {
+      const doc = await documentsApi.upload(
+        currentProject.value.id,
+        docType,
+        file,
+        (progress) => {
+          uploadProgress.value[docType] = progress;
+          onProgress?.(progress);
+        },
+      );
+      documents.value.push(doc);
+      pollDocumentStatus(doc.id);
+      connectDocParseSSE(doc.id);
+      return doc;
+    } finally {
+      delete uploadProgress.value[docType];
+    }
   }
 
   let documentPollIntervals: Record<string, number> = {};

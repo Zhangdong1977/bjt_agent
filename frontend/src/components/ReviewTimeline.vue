@@ -12,8 +12,10 @@ import { renderMarkdown } from '@/utils/markdown'
 import { formatToolCallDescription, getToolDisplayName } from '@/utils/toolDisplay'
 import TodoListCard from './TodoListCard.vue'
 import SubAgentCard from './SubAgentCard.vue'
+import { useAuthStore } from '@/stores/auth'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+const authStore = useAuthStore()
 
 const props = defineProps<{
   taskId: string
@@ -511,6 +513,7 @@ onUnmounted(() => {
                 :key="todo.id"
                 :todo="todo as any"
                 :agent-index="agentIndexMap.get(todo.id) || 1"
+                :show-timeline-button="authStore.isInteriorUser"
               />
             </div>
           </div>

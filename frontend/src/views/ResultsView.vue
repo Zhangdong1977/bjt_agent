@@ -1,122 +1,150 @@
 <script setup lang="ts">
-import { onMounted, computed } from 'vue'
+import { onMounted, computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
-import SummaryCard from '@/components/SummaryCard.vue'
-import ResultsTable from '@/components/ResultsTable.vue'
+import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
 
 const projectId = computed(() => route.params.id as string)
+const selectedTaskId = ref<string>('')
 
 onMounted(async () => {
   await projectStore.selectProject(projectId.value)
-  if (!projectStore.reviewResults) {
-    await projectStore.fetchReviewResults()
-  }
+  await projectStore.fetchReviewTasks()
+  await projectStore.fetchReviewResults()
 })
 
-function goBack() {
-  router.push({ name: 'project', params: { id: projectId.value } })
+function getStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    pending: '待处理',
+    running: '进行中',
+    completed: '已完成',
+    failed: '失败'
+  }
+  return labels[status] || status
 }
 
-function goToTimeline() {
-  router.push({ name: 'review-timeline', params: { id: projectId.value } })
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return 'N/A'
+  return new Date(dateStr).toLocaleString('zh-CN')
+}
+
+function goToTaskExecution() {
+  if (!selectedTaskId.value) return
+  router.push({
+    name: 'review-execution',
+    params: { id: projectId.value },
+    query: { taskId: selectedTaskId.value }
+  })
+}
+
+function goBack() {
+  router.push({ name: 'history' })
 }
 </script>
 
 <template>
   <div class="results-view">
-    <header class="header">
-      <div class="header-left">
-        <button @click="goBack" class="back-btn">← 返回</button>
-        <h1>审查结果: {{ projectStore.currentProject?.name }}</h1>
-      </div>
-      <button
-        v-if="projectStore.currentTask"
-        @click="goToTimeline"
-        class="timeline-btn"
-      >
-        查看时间线
-      </button>
-    </header>
-
     <main class="content">
-      <section v-if="projectStore.reviewResults" class="section">
-        <h2>摘要</h2>
-        <SummaryCard :summary="projectStore.reviewResults.summary" />
+      <a-breadcrumb class="breadcrumb">
+        <a-breadcrumb-item><a @click="goBack">历史标书</a></a-breadcrumb-item>
+        <a-breadcrumb-item>审查结果</a-breadcrumb-item>
+      </a-breadcrumb>
 
-        <h2>发现的问题</h2>
-        <ResultsTable :findings="projectStore.reviewResults.findings" />
+      <!-- 任务选择器 -->
+      <div v-if="projectStore.reviewTasks.length > 0" class="task-bar">
+        <label class="task-label">审查记录:</label>
+        <select v-model="selectedTaskId" class="task-select">
+          <option v-for="task in projectStore.reviewTasks" :key="task.id" :value="task.id">
+            {{ getStatusLabel(task.status) }} - {{ formatDate(task.created_at) }}
+          </option>
+        </select>
+        <button class="view-task-btn" :disabled="!selectedTaskId" @click="goToTaskExecution">
+          查看时间线
+        </button>
+      </div>
+
+      <section v-if="projectStore.reviewResults" class="section">
+        <h2>审查结果</h2>
+        <ReviewResultsArea :review-results="projectStore.reviewResults" />
       </section>
 
       <div v-else class="no-results">
         <p>暂无审查结果。</p>
-        <p>请从项目页面先运行审查。</p>
+        <a-button type="primary" @click="goBack">返回历史列表</a-button>
       </div>
     </main>
   </div>
 </template>
 
 <style scoped>
-.header {
+.content {
+  max-width: 1200px;
+  margin: 20px auto;
+  padding: 0 20px;
+}
+
+.breadcrumb {
+  margin-bottom: 20px;
+}
+
+.task-bar {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 1rem 2rem;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
   background: var(--bg1);
-  border-bottom: 1px solid var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  margin-bottom: 1rem;
 }
 
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.back-btn {
-  padding: 0.5rem 1rem;
-  background: transparent;
+.task-label {
+  font-weight: 500;
   color: var(--text);
+  white-space: nowrap;
+}
+
+.task-select {
+  padding: 0.5rem;
   border: 1px solid var(--line);
   border-radius: var(--r);
-  cursor: pointer;
-}
-
-.back-btn:hover {
-  background: var(--bg3);
-}
-
-.header h1 {
+  min-width: 200px;
+  background: var(--bg2);
   color: var(--text);
-  font-size: 1.5rem;
+  font-size: 0.9rem;
 }
 
-.timeline-btn {
+.view-task-btn {
   padding: 0.5rem 1rem;
   background: var(--blue);
   color: var(--white);
   border: none;
   border-radius: var(--r);
   cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: filter 0.2s;
 }
 
-.timeline-btn:hover {
+.view-task-btn:hover:not(:disabled) {
   filter: brightness(1.1);
 }
 
-.content {
-  max-width: 1200px;
-  margin: 2rem auto;
-  padding: 0 2rem;
+.view-task-btn:disabled {
+  background: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .section {
   background: var(--bg1);
   padding: 1.5rem;
   border-radius: var(--r2);
+  border: 1px solid var(--line);
 }
 
 .section h2 {
@@ -135,20 +163,20 @@ function goToTimeline() {
 }
 
 .no-results p {
-  margin: 0.5rem 0;
+  margin: 0 0 1rem;
 }
 
 @media (max-width: 767px) {
-  .header {
-    padding: 0.75rem 1rem;
-  }
-
   .content {
     padding: 0 1rem;
   }
 
   .section {
     padding: 1rem;
+  }
+
+  .task-bar {
+    flex-wrap: wrap;
   }
 }
 </style>

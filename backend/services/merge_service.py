@@ -348,6 +348,8 @@ class MergeService:
                     location_line=record.get("location_line"),
                     suggestion=record.get("suggestion"),
                     explanation=record.get("explanation"),
+                    rule_doc_name=record.get("rule_doc_name"),
+                    check_item_name=record.get("check_item_name"),
                     source_task_id=record["task_id"],
                     merged_from_count=1,
                     created_at=now,
@@ -559,6 +561,8 @@ class MergeService:
                 location_line=record.get("location_line"),
                 suggestion=record.get("suggestion"),
                 explanation=record.get("explanation"),
+                rule_doc_name=record.get("rule_doc_name"),
+                check_item_name=record.get("check_item_name"),
                 source_task_id=record["task_id"],
                 merged_from_count=record.get("merged_from_count", 1),
                 created_at=now,
@@ -601,6 +605,8 @@ class MergeService:
                 "location_line": r.location_line,
                 "suggestion": r.suggestion,
                 "explanation": r.explanation,
+                "rule_doc_name": r.rule_doc_name,
+                "check_item_name": r.check_item_name,
             }
             for r in records
         ]
@@ -623,6 +629,8 @@ class MergeService:
                 "location_line": r.location_line,
                 "suggestion": r.suggestion,
                 "explanation": r.explanation,
+                "rule_doc_name": r.rule_doc_name,
+                "check_item_name": r.check_item_name,
                 "task_id": str(r.source_task_id),
                 "merged_from_count": r.merged_from_count,
             }

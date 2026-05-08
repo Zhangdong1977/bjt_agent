@@ -4,6 +4,8 @@ export interface User {
   username: string;
   email: string;
   created_at: string;
+  interior_user?: boolean;
+  concurrency?: number;
 }
 
 export interface Token {
@@ -90,16 +92,15 @@ export interface ReviewResult {
   location_line: number | null;
   suggestion: string | null;
   explanation: string | null;
+  rule_doc_name: string | null;
+  check_item_name: string | null;
   created_at: string;
 }
 
 export interface ReviewSummary {
-  total_requirements: number;
-  compliant: number;
-  non_compliant: number;
-  critical: number;
-  major: number;
-  minor: number;
+  category_count: number;
+  check_item_count: number;
+  risk_item_count: number;
 }
 
 export interface ReviewResponse {

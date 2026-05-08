@@ -3,7 +3,6 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { getAccessToken, reviewApi } from '@/api/client'
-import ExecutionHeader from '@/components/execution/ExecutionHeader.vue'
 import ExecutionStepper from '@/components/execution/ExecutionStepper.vue'
 import LeftPane from '@/components/execution/LeftPane.vue'
 import RightSidebar from '@/components/execution/RightSidebar.vue'
@@ -67,6 +66,27 @@ const completedCount = computed(() =>
 )
 
 // SSE 事件处理 - 适配实际后端事件
+function computeMergedStats(findings: any[] | null | undefined): { total: number; critical: number; major: number; minor: number; compliant: number } {
+  const items = findings || []
+  let critical = 0, major = 0, minor = 0, compliant = 0
+  for (const f of items) {
+    if (f.is_compliant) {
+      compliant++
+    } else {
+      if (f.severity === 'critical') critical++
+      else if (f.severity === 'major') major++
+      else minor++
+    }
+  }
+  return {
+    total: critical + major + minor,
+    critical,
+    major,
+    minor,
+    compliant
+  }
+}
+
 async function handleSSEEvent(event: any) {
   // 详细日志，方便调试 SSE 数据
   console.log('[ReviewExecutionView] SSE event received:', event)
@@ -390,7 +410,7 @@ async function handleSSEEvent(event: any) {
       mergeProgress.value = ''
       // 获取合并后的统计数据
       console.log('[ReviewExecutionView] Merge complete', event)
-      // findingsCount 显示不合规问题数（从 summary.non_compliant 获取）
+      // findingsCount 显示风险项数
       findingsCount.value = event.non_compliant_count ?? event.total_count ?? event.merged_count ?? findingsCount.value
       // 获取合并后的详细结果
       if (projectStore.currentTask?.id) {
@@ -398,13 +418,7 @@ async function handleSSEEvent(event: any) {
           const response = await reviewApi.getResults(projectId.value)
           if (response.summary) {
             // total 应该是 non_compliant，不是 total_requirements
-            mergedStats.value = {
-              total: response.summary.non_compliant || 0,
-              critical: response.summary.critical || 0,
-              major: response.summary.major || 0,
-              minor: response.summary.minor || 0,
-              compliant: response.summary.compliant || 0
-            }
+            mergedStats.value = computeMergedStats(response.findings)
             mergedFindings.value = response.findings || null
           }
         } catch (err) {
@@ -547,12 +561,11 @@ function disconnect() {
   }
 }
 
-const currentStatus = computed(() => {
-  if (errorMessage.value) return 'failed'
-  if (phase.value === 'completed') return 'completed'
-  if (phase.value === 'running') return 'running'
-  return 'pending'
-})
+function handleCancelled() {
+  disconnect()
+  phase.value = 'failed'
+  errorMessage.value = '用户主动放弃检查'
+}
 
 // 格式化 steps 用于 LeftPane
 const timelineSteps = computed(() => steps.value.map(s => ({
@@ -652,14 +665,8 @@ onMounted(async () => {
     try {
       const response = await reviewApi.getResults(projectId.value)
       if (response.summary) {
-        mergedStats.value = {
-          total: response.summary.non_compliant || 0,
-          critical: response.summary.critical || 0,
-          major: response.summary.major || 0,
-          minor: response.summary.minor || 0,
-          compliant: response.summary.compliant || 0
-        }
-        findingsCount.value = response.summary.non_compliant || 0
+        mergedStats.value = computeMergedStats(response.findings)
+        findingsCount.value = response.summary.risk_item_count || 0
         mergedFindings.value = response.findings || null
       }
     } catch (err) {
@@ -713,11 +720,6 @@ onUnmounted(() => {
 
 <template>
   <div class="review-execution-view">
-    <ExecutionHeader
-      :project-name="projectStore.currentProject?.name || '项目'"
-      :status="currentStatus"
-    />
-
     <div class="main-layout">
       <ExecutionStepper :phase="phase" />
 
@@ -735,6 +737,8 @@ onUnmounted(() => {
         />
 
         <RightSidebar
+          :project-id="projectId"
+          :task-id="projectStore.currentTask?.id"
           :total-steps="totalSteps"
           :completed-count="completedCount"
           :findings-count="findingsCount"
@@ -743,6 +747,7 @@ onUnmounted(() => {
           :max-steps-map="maxStepsMap"
           :task-start-time="taskStartTime"
           :todos="todoList"
+          @cancelled="handleCancelled"
         />
       </div>
     </div>
@@ -751,15 +756,18 @@ onUnmounted(() => {
 
 <style scoped>
 .review-execution-view {
-  min-height: 100vh;
+  height: calc(100vh - 64px - 48px);
   background: var(--bg);
+  display: flex;
+  flex-direction: column;
 }
 
 .main-layout {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 56px);
-  padding: 20px;
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
 }
 
 .content-area {

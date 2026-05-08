@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import ReviewTimeline from '@/components/ReviewTimeline.vue'
 
 const route = useRoute()
-const router = useRouter()
 const projectStore = useProjectStore()
 
 const projectId = computed(() => route.params.id as string)
@@ -22,21 +21,10 @@ onMounted(async () => {
 onUnmounted(() => {
   timelineRef.value?.disconnect()
 })
-
-function goBack() {
-  router.push({ name: 'project', params: { id: projectId.value } })
-}
 </script>
 
 <template>
   <div class="review-timeline-view">
-    <header class="header">
-      <div class="header-left">
-        <button @click="goBack" class="back-btn">← 返回</button>
-        <h1>审查时间线: {{ projectStore.currentProject?.name }}</h1>
-      </div>
-    </header>
-
     <main class="content">
       <section class="section">
         <h2>智能体执行时间线</h2>
@@ -65,35 +53,6 @@ function goBack() {
 </template>
 
 <style scoped>
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 1rem 2rem;
-  background: var(--bg1);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.back-btn {
-  padding: 0.5rem 1rem;
-  background: var(--bg3);
-  color: var(--text);
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.header h1 {
-  color: var(--text);
-  font-size: 1.5rem;
-}
-
 .content {
   max-width: 1200px;
   margin: 2rem auto;

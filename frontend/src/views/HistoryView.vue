@@ -26,8 +26,8 @@ const filteredProjects = computed(() => {
   return projects
 })
 
-function goToProject(projectId: string) {
-  router.push({ name: 'project', params: { id: projectId } })
+function goToResults(projectId: string) {
+  router.push({ name: 'review-results', params: { id: projectId } })
 }
 
 async function deleteProject(projectId: string, event: Event) {
@@ -71,7 +71,7 @@ async function deleteProject(projectId: string, event: Event) {
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">
-            <a @click="goToProject(record.id)" class="project-link">
+            <a @click="goToResults(record.id)" class="project-link">
               {{ record.name }}
             </a>
           </template>
@@ -83,7 +83,7 @@ async function deleteProject(projectId: string, event: Event) {
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a @click="goToProject(record.id)">查看详情</a>
+              <a @click="goToResults(record.id)">审查结果</a>
               <a-divider type="vertical" />
               <a-popconfirm
                 title="确定要删除此项目吗？"

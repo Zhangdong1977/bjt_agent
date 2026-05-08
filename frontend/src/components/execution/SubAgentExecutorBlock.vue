@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useAuthStore } from '@/stores/auth'
 import BidReviewAgentBlock from './BidReviewAgentBlock.vue'
+
+const authStore = useAuthStore()
 
 interface ToolCall {
   name: string
@@ -81,6 +84,7 @@ const agentsWithSteps = computed(() => {
         :check-items="agent.checkItems"
         :steps="agent.steps"
         :findings="agent.findings"
+        :allow-expand="authStore.isInteriorUser"
       />
     </div>
   </div>

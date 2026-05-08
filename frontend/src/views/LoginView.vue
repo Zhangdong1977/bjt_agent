@@ -16,7 +16,12 @@ async function handleLogin() {
     await authStore.login(username.value, password.value)
     router.push({ name: 'home' })
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '登录失败'
+    if (e && typeof e === 'object' && 'response' in e) {
+      const resp = (e as any).response
+      error.value = resp?.data?.detail || '登录失败，请检查用户名和密码'
+    } else {
+      error.value = e instanceof Error ? e.message : '登录失败，请检查用户名和密码'
+    }
   }
 }
 </script>
@@ -56,10 +61,6 @@ async function handleLogin() {
           {{ authStore.loading ? '登录中...' : '登录' }}
         </button>
       </form>
-
-      <p class="switch-auth">
-        还没有账号？<router-link to="/register">注册</router-link>
-      </p>
     </div>
   </div>
 </template>
@@ -153,21 +154,5 @@ button:active:not(:disabled) {
   color: var(--red);
   margin-top: 1rem;
   text-align: center;
-}
-
-.switch-auth {
-  text-align: center;
-  margin-top: 1rem;
-  color: var(--sub);
-}
-
-.switch-auth a {
-  color: var(--blue);
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.switch-auth a:hover {
-  text-decoration: underline;
 }
 </style>

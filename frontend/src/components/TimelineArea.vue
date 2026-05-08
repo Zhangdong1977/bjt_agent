@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
+import { useAuthStore } from '@/stores/auth'
 import { reviewApi } from '@/api/client'
 import ReviewTimeline from '@/components/ReviewTimeline.vue'
 import { ElMessage } from 'element-plus'
@@ -15,6 +16,7 @@ const emit = defineEmits<{
 }>()
 
 const projectStore = useProjectStore()
+const authStore = useAuthStore()
 const router = useRouter()
 
 const timelineRef = ref<InstanceType<typeof ReviewTimeline> | null>(null)
@@ -127,8 +129,8 @@ function getStatusClass(status: string) {
 
 <template>
   <div class="timeline-area">
-    <!-- Task Selector -->
-    <div v-if="completedTasks.length > 0" class="task-selector">
+    <!-- Task Selector (internal users only) -->
+    <div v-if="authStore.isInteriorUser && completedTasks.length > 0" class="task-selector">
       <label>选择任务查看时间线:</label>
       <select v-model="selectedTaskId">
         <option v-for="task in completedTasks" :key="task.id" :value="task.id">
@@ -157,9 +159,9 @@ function getStatusClass(status: string) {
       </div>
     </div>
 
-    <!-- Timeline -->
+    <!-- Timeline (internal users only) -->
     <ReviewTimeline
-      v-if="selectedTaskId || projectStore.currentTask"
+      v-if="authStore.isInteriorUser && (selectedTaskId || projectStore.currentTask)"
       ref="timelineRef"
       :task-id="selectedTaskId || projectStore.currentTask?.id || ''"
       :initial-steps="historicalSteps"
