@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     max_llm_concurrency: int = 0  # Max concurrent LLM API calls, 0 = same as max_sub_agent_concurrency (env: MAX_LLM_CONCURRENCY)
 
     # Sub-Agent Heartbeat
-    sub_agent_heartbeat_timeout: int = 60  # Heartbeat timeout in seconds (env: SUB_AGENT_HEARTBEAT_TIMEOUT)
+    sub_agent_heartbeat_timeout: int = 300  # Heartbeat timeout in seconds (env: SUB_AGENT_HEARTBEAT_TIMEOUT)
 
     # Agent Progress Watchdog
     agent_progress_timeout: int = 600  # Max seconds without SSE events before task is considered hung (env: AGENT_PROGRESS_TIMEOUT)

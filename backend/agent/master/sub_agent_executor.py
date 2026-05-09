@@ -166,11 +166,18 @@ class SubAgentExecutor:
 
             # 检查取消状态 — run_review() 可能因 heartbeat monitor 取消而返回部分结果
             if self.cancel_event and self.cancel_event.is_set():
-                logger.warning(f"[SubAgentExecutor.execute] Cancelled for todo_id={self.todo_item.id}")
+                cancel_reason = getattr(self._agent, '_cancel_reason', None) or 'unknown'
+                error_msg = (
+                    "Task cancelled: heartbeat timeout (no progress detected)"
+                    if cancel_reason == "heartbeat_timeout"
+                    else "Task cancelled by user"
+                )
+                logger.warning(f"[SubAgentExecutor.execute] Cancelled for todo_id={self.todo_item.id}, reason={cancel_reason}")
                 return {
                     "success": False,
-                    "error": "Task cancelled by user",
+                    "error": error_msg,
                     "todo_id": self.todo_item.id,
+                    "_cancel_reason": cancel_reason,
                 }
 
             # Capture diagnostics: verify write_file was both called AND

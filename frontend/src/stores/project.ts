@@ -422,6 +422,7 @@ export const useProjectStore = defineStore("project", () => {
         currentTask.value?.status === "completed" ||
         currentTask.value?.status === "failed"
       ) {
+        stopHeartbeat();
         disconnectSSE();
         return;
       }
@@ -511,7 +512,8 @@ export const useProjectStore = defineStore("project", () => {
           event.total_count,
         );
         fetchReviewResults();
-        // Now disconnect after merge is complete
+        // Stop heartbeat and disconnect after merge is complete
+        stopHeartbeat();
         disconnectSSE();
         break;
       case "complete":
@@ -529,6 +531,7 @@ export const useProjectStore = defineStore("project", () => {
           currentTask.value.status = "failed";
           currentTask.value.error_message = event.message || "Unknown error";
         }
+        stopHeartbeat();
         disconnectSSE();
         break;
     }
@@ -539,7 +542,6 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   function disconnectSSE() {
-    stopHeartbeat();
     if (sseEventSource.value) {
       sseEventSource.value.close();
       sseEventSource.value = null;
@@ -559,6 +561,7 @@ export const useProjectStore = defineStore("project", () => {
     currentTask.value = null;
     reviewResults.value = null;
     uploadProgress.value = {};
+    stopHeartbeat();
     disconnectSSE();
     // Clear all document polling intervals
     Object.values(documentPollIntervals).forEach((intervalId) =>
@@ -673,9 +676,29 @@ export const useProjectStore = defineStore("project", () => {
     );
   }
 
+  // Track current heartbeat context for visibility change handler
+  let heartbeatProjectId: string | null = null;
+  let heartbeatTaskId: string | null = null;
+
+  function handleVisibilityChange() {
+    if (
+      document.visibilityState === "visible" &&
+      heartbeatProjectId &&
+      heartbeatTaskId
+    ) {
+      // Page became visible — send an immediate heartbeat
+      reviewApi
+        .heartbeat(heartbeatProjectId, heartbeatTaskId)
+        .catch(console.warn);
+    }
+  }
+
   function startHeartbeat(projectId: string, taskId: string) {
     stopHeartbeat();
     if (!projectId || !taskId) return;
+
+    heartbeatProjectId = projectId;
+    heartbeatTaskId = taskId;
 
     heartbeatTimer = window.setInterval(async () => {
       try {
@@ -688,6 +711,9 @@ export const useProjectStore = defineStore("project", () => {
 
     // Also send immediately
     reviewApi.heartbeat(projectId, taskId).catch(console.warn);
+
+    // Listen for visibility changes to send heartbeat on tab restore
+    document.addEventListener("visibilitychange", handleVisibilityChange);
   }
 
   function stopHeartbeat() {
@@ -695,6 +721,9 @@ export const useProjectStore = defineStore("project", () => {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    heartbeatProjectId = null;
+    heartbeatTaskId = null;
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
   }
 
   return {

@@ -632,6 +632,9 @@ onMounted(async () => {
       } else if (task.status === 'failed') {
         phase.value = 'failed'
         errorMessage.value = task.error_message || '审查失败'
+      } else if (task.status === 'cancelled') {
+        phase.value = 'failed'
+        errorMessage.value = '任务已被取消'
       } else if (task.status === 'running') {
         phase.value = 'running'
       }
@@ -651,6 +654,9 @@ onMounted(async () => {
       } else if (latestTask.status === 'failed') {
         phase.value = 'failed'
         errorMessage.value = projectStore.currentTask?.error_message || '审查失败'
+      } else if (latestTask.status === 'cancelled') {
+        phase.value = 'failed'
+        errorMessage.value = '任务已被取消'
       } else if (latestTask.status === 'running') {
         phase.value = 'running'
       }

@@ -103,6 +103,8 @@ class BidReviewAgent(BaseAgent):
         self._tool_results_step_start: int = 0
         # Track accumulated step data for consolidated sub_agent_step events
         self._step_data: dict[int, dict] = {}
+        # Track the reason for cancellation (heartbeat_timeout vs api_cancellation)
+        self._cancel_reason: Optional[str] = None
 
         # Initialize LLM client (MiniMax uses OpenAI protocol)
         llm_client = LLMClient(
@@ -327,6 +329,9 @@ class BidReviewAgent(BaseAgent):
 
             latency_ms = int((time.perf_counter() - call_start) * 1000)
 
+            # Update heartbeat after LLM call to keep agent alive
+            await agent_ref._update_heartbeat()
+
             # Check cancel_event after LLM call completes (heartbeat may have
             # timed out while we were waiting for the LLM response)
             if agent_ref.cancel_event and agent_ref.cancel_event.is_set():
@@ -532,6 +537,29 @@ class BidReviewAgent(BaseAgent):
             except Exception as e:
                 logger.error(f"[BidReviewAgent._send_event] Failed to send event: {e}")
 
+    async def _update_heartbeat(self) -> None:
+        """Update last_heartbeat in DB to signal agent is still alive.
+
+        Called during agent execution (after LLM calls and step completions)
+        to keep the heartbeat fresh independent of frontend connectivity.
+        """
+        if not self._task_id:
+            return
+        try:
+            from sqlalchemy import update as sql_update
+            from backend.models import ReviewTask
+            from backend.models.base import async_session_factory
+            async with async_session_factory() as db:
+                await db.execute(
+                    sql_update(ReviewTask)
+                    .where(ReviewTask.id == self._task_id)
+                    .values(last_heartbeat=datetime.utcnow())
+                )
+                await db.commit()
+        except Exception as e:
+            import logging
+            (self._logger or logging.getLogger(__name__)).debug(f"[BidReviewAgent._update_heartbeat] Failed: {e}")
+
     async def _check_heartbeat_async(self) -> bool:
         """Check if heartbeat has exceeded timeout or cancellation was requested.
 
@@ -550,6 +578,7 @@ class BidReviewAgent(BaseAgent):
         from backend.tasks.review_tasks import is_task_cancelled
         if is_task_cancelled(self._task_id):
             logger.warning("[BidReviewAgent] Cancellation requested via API")
+            self._cancel_reason = "api_cancellation"
             return False
 
         from sqlalchemy import select
@@ -568,8 +597,10 @@ class BidReviewAgent(BaseAgent):
                 elapsed = (datetime.utcnow() - task.last_heartbeat).total_seconds()
                 if elapsed > self.heartbeat_timeout:
                     logger.warning(
-                        f"[BidReviewAgent] Heartbeat timeout: {elapsed:.1f}s > {self.heartbeat_timeout}s"
+                        f"[BidReviewAgent] Heartbeat timeout: {elapsed:.1f}s > {self.heartbeat_timeout}s, "
+                        f"task_id={self._task_id}, last_heartbeat={task.last_heartbeat}"
                     )
+                    self._cancel_reason = "heartbeat_timeout"
                     return False
                 return True
         except Exception as e:
@@ -702,6 +733,15 @@ class BidReviewAgent(BaseAgent):
 
                 # Clean up
                 del self._step_data[step]
+
+            # Update heartbeat after each step to keep agent alive
+            if self._task_id:
+                try:
+                    hb_task = asyncio.ensure_future(self._update_heartbeat())
+                    hb_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                except Exception:
+                    pass
+
             logger.info(f"[BidReviewAgent._emit_event] step_complete for step {step}")
 
         elif event_type == "completed":
