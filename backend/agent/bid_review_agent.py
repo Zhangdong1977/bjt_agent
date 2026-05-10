@@ -862,6 +862,7 @@ class BidReviewAgent(BaseAgent):
 
             # Parse check items for explicit enumeration in task prompt
             check_items = self._parse_check_items(rule_doc_content)
+            self._parsed_check_items = check_items  # 保存供后续写入数据库
             self._rule_doc_name = Path(self.rule_doc_path).name
             self._check_item_name = check_items[0]["name"] if check_items else None
             check_list_lines = []

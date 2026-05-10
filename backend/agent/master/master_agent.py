@@ -269,6 +269,10 @@ class MasterAgent:
                 await task_todo_service.update_todo_status(
                     todo.id, "completed", result={"findings": findings}
                 )
+                # 持久化检查项列表，用于统计检查项总数
+                check_items = result.get("check_items", [])
+                if check_items:
+                    await task_todo_service.update_todo_check_items(todo.id, check_items)
                 await task_todo_service.increment_completed_todos(self._session_id)
 
                 self._send_event("sub_agent_completed", {

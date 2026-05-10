@@ -162,7 +162,8 @@ class SubAgentExecutor:
 
             # 执行检查 (task message is added inside run_review())
             findings = await agent.run_review()
-            logger.info(f"[SubAgentExecutor.execute] Findings: {findings}")
+            check_items = getattr(self._agent, '_parsed_check_items', [])
+            logger.info(f"[SubAgentExecutor.execute] Findings: {findings}, check_items_count={len(check_items)}")
 
             # 检查取消状态 — run_review() 可能因 heartbeat monitor 取消而返回部分结果
             if self.cancel_event and self.cancel_event.is_set():
@@ -198,6 +199,7 @@ class SubAgentExecutor:
             return {
                 "success": True,
                 "findings": findings,
+                "check_items": check_items,
                 "todo_id": self.todo_item.id,
                 "_diagnostics": {
                     "write_file_called": write_file_called,

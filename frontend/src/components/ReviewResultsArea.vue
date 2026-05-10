@@ -135,8 +135,6 @@ function getSeverityColorClass(severity: string): string {
             </div>
             <div class="group-item-right">
               <span class="group-count risk">{{ group.nonCompliantCount }}</span>
-              <span class="group-sep">/</span>
-              <span class="group-count total">{{ group.findings.length }}</span>
             </div>
           </div>
         </div>
@@ -148,7 +146,6 @@ function getSeverityColorClass(severity: string): string {
           <div class="detail-header">
             <h3 class="detail-title">{{ selectedGroup.label }}</h3>
             <div class="detail-stats">
-              <span class="detail-stat risk">风险项 {{ selectedGroup.nonCompliantCount }}</span>
               <span class="detail-stat">共 {{ selectedGroup.findings.length }} 项</span>
             </div>
           </div>

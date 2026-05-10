@@ -136,6 +136,16 @@ class TodoService:
         )
         await self.db.commit()
 
+    async def update_todo_check_items(self, todo_id: str, check_items: list) -> None:
+        """Update todo check_items."""
+        await self.db.execute(
+            update(TodoItem).where(TodoItem.id == todo_id).values(
+                check_items=check_items,
+                updated_at=datetime.now(),
+            )
+        )
+        await self.db.commit()
+
     async def reset_todo_for_retry(self, todo_id: str, retry_count: int) -> None:
         """Reset todo for retry."""
         await self.db.execute(
