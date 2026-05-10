@@ -141,9 +141,16 @@ async def get_review_results(
     )
     category_count = category_count_result.scalar()
 
+    # 从 TodoItem.check_items JSON 字段汇总真实检查项总数
+    check_item_count_result = await db.execute(
+        select(TodoItem.check_items).where(TodoItem.project_id == project_id)
+    )
+    check_items_rows = check_item_count_result.all()
+    check_item_count = sum(len(row[0] or []) for row in check_items_rows)
+
     summary = {
         "category_count": category_count,
-        "check_item_count": len(findings),
+        "check_item_count": check_item_count,
         "risk_item_count": sum(1 for f in findings if not f.is_compliant),
     }
 
