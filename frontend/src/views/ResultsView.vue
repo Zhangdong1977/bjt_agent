@@ -2,6 +2,7 @@
 import { onMounted, computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
+import { reviewApi } from '@/api/client'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 
 const route = useRoute()
@@ -44,6 +45,19 @@ function goToTaskExecution() {
 function goBack() {
   router.push({ name: 'history' })
 }
+
+async function startNewReview() {
+  if (!projectId.value) return
+  try {
+    await reviewApi.start(projectId.value)
+    router.push({
+      name: 'review-execution',
+      params: { id: projectId.value }
+    })
+  } catch (error) {
+    console.error('启动审查失败:', error)
+  }
+}
 </script>
 
 <template>
@@ -64,6 +78,9 @@ function goBack() {
         </select>
         <button class="view-task-btn" :disabled="!selectedTaskId" @click="goToTaskExecution">
           查看时间线
+        </button>
+        <button class="view-task-btn restart-btn" @click="startNewReview">
+          重新审查
         </button>
       </div>
 
@@ -138,6 +155,10 @@ function goBack() {
   background: var(--muted);
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+.restart-btn {
+  background: var(--green);
 }
 
 .section {

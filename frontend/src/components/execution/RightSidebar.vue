@@ -31,6 +31,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'cancelled'): void
+  (e: 'view-results'): void
 }>()
 
 const isAbandoning = ref(false)
@@ -167,6 +168,14 @@ async function abandonReview() {
     isAbandoning.value = false
   }
 }
+
+const showViewResults = computed(() =>
+  props.phase === 'completed'
+)
+
+function viewResults() {
+  emit('view-results')
+}
 </script>
 
 <template>
@@ -241,6 +250,14 @@ async function abandonReview() {
       <div class="section-title">操作</div>
       <div class="actions">
         <button
+          v-if="showViewResults"
+          class="btn btn-view-results"
+          @click="viewResults"
+        >
+          查看结果
+        </button>
+        <button
+          v-else
           class="btn btn-abandon"
           :disabled="isAbandoning || phase === 'completed' || phase === 'failed'"
           @click="abandonReview"
@@ -457,5 +474,16 @@ async function abandonReview() {
 .btn-abandon:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.btn-view-results {
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  color: #16a34a;
+}
+
+.btn-view-results:hover {
+  background: #dcfce7;
+  border-color: #4ade80;
 }
 </style>

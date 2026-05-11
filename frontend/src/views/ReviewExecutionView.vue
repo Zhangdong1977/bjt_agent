@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { getAccessToken, reviewApi } from '@/api/client'
 import ExecutionStepper from '@/components/execution/ExecutionStepper.vue'
@@ -9,6 +9,7 @@ import RightSidebar from '@/components/execution/RightSidebar.vue'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 const route = useRoute()
+const router = useRouter()
 const projectStore = useProjectStore()
 
 const projectId = computed(() => route.params.id as string)
@@ -567,6 +568,13 @@ function handleCancelled() {
   errorMessage.value = '用户主动放弃检查'
 }
 
+function goToResults() {
+  router.push({
+    name: 'review-results',
+    params: { id: projectId.value }
+  })
+}
+
 // 格式化 steps 用于 LeftPane
 const timelineSteps = computed(() => steps.value.map(s => ({
   step_number: s.step_number,
@@ -754,6 +762,7 @@ onUnmounted(() => {
           :task-start-time="taskStartTime"
           :todos="todoList"
           @cancelled="handleCancelled"
+          @view-results="goToResults"
         />
       </div>
     </div>
