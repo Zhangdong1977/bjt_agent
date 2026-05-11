@@ -58,6 +58,7 @@ const pendingToolCallsMap = ref<Map<string, Map<number, { tool_calls: any[], too
 
 // maxStepsMap and taskStartTime for execution stats
 const maxStepsMap = ref<Record<string, number>>({})
+const brainCapacityMap = ref<Record<string, number>>({})
 const taskStartTime = ref<number>(0)
 
 // 统计数据
@@ -151,11 +152,17 @@ async function handleSSEEvent(event: any) {
     case 'sub_agent_completed':
       // 子代理完成
       updateTodoStatus(event.todo_id, 'completed', event.findings)
+      if (event.brain_capacity !== undefined) {
+        brainCapacityMap.value[event.todo_id] = event.brain_capacity
+      }
       break
 
     case 'sub_agent_failed':
       // 子代理失败
       updateTodoStatus(event.todo_id, 'failed', undefined, event.error)
+      if (event.brain_capacity !== undefined) {
+        brainCapacityMap.value[event.todo_id] = event.brain_capacity
+      }
       break
 
     case 'merging_started':
@@ -503,6 +510,14 @@ async function loadHistoricalTodos(projectId: string, taskId: string) {
       }
 
       todos.value.set(item.id, todoItem)
+
+      // Restore brain capacity and max_steps from database
+      if (item.brain_capacity !== undefined && item.brain_capacity !== null) {
+        brainCapacityMap.value[item.id] = item.brain_capacity
+      }
+      if (item.max_steps !== undefined && item.max_steps !== null) {
+        maxStepsMap.value[item.id] = item.max_steps
+      }
     }
 
     console.log('[ReviewExecutionView] Populated todos from API, count:', todos.value.size)
@@ -744,6 +759,8 @@ onUnmounted(() => {
           :error-message="errorMessage"
           :todos="todoList"
           :sub-agent-steps-map="subAgentStepsMap"
+          :max-steps-map="maxStepsMap"
+          :brain-capacity-map="brainCapacityMap"
           :merged-stats="mergedStats"
           :is-merging="isMerging"
           :merge-progress="mergeProgress"
@@ -757,10 +774,8 @@ onUnmounted(() => {
           :completed-count="completedCount"
           :findings-count="findingsCount"
           :phase="phase"
-          :sub-agent-steps-map="subAgentStepsMap"
-          :max-steps-map="maxStepsMap"
           :task-start-time="taskStartTime"
-          :todos="todoList"
+          :duration-seconds="projectStore.currentTask?.duration_seconds ?? null"
           @cancelled="handleCancelled"
           @view-results="goToResults"
         />

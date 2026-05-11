@@ -120,6 +120,8 @@ class TodoService:
         status: str,
         result: Optional[dict] = None,
         error_message: Optional[str] = None,
+        brain_capacity: Optional[float] = None,
+        max_steps: Optional[int] = None,
     ) -> None:
         """Update todo status."""
         update_data = {"status": status, "updated_at": datetime.now()}
@@ -131,6 +133,10 @@ class TodoService:
             update_data["result"] = result
         if error_message is not None:
             update_data["error_message"] = error_message
+        if brain_capacity is not None:
+            update_data["brain_capacity"] = brain_capacity
+        if max_steps is not None:
+            update_data["max_steps"] = max_steps
         await self.db.execute(
             update(TodoItem).where(TodoItem.id == todo_id).values(**update_data)
         )

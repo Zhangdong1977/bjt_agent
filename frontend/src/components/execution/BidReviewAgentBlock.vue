@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import AgentTimelineItem from './AgentTimelineItem.vue'
 import FindingsBar from './FindingsBar.vue'
 
@@ -41,11 +41,29 @@ interface Props {
   steps: TimelineStep[]
   findings: Finding[]
   allowExpand?: boolean
+  currentStep?: number
+  maxSteps?: number
+  brainCapacity?: number
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  currentStep: 0,
+  maxSteps: 0,
+  brainCapacity: undefined
+})
 
 const isOpen = ref(false)
+
+const brainPercent = computed(() => {
+  // Use persisted brain capacity from database (for completed/failed agents)
+  if (props.brainCapacity !== undefined) return Math.round(props.brainCapacity)
+  // Calculate from step progress
+  if (props.maxSteps > 0) {
+    return Math.min(Math.round((props.currentStep / props.maxSteps) * 100), 100)
+  }
+  if (props.status === 'running') return 50
+  return 0
+})
 
 function toggle() {
   if (!props.allowExpand && props.allowExpand !== undefined) return
@@ -69,8 +87,16 @@ function getStatusText(status: string) {
         <div class="bra-sub">{{ ruleFile }}</div>
       </div>
       <div class="bra-right">
-        <div class="pbar-outer">
-          <div class="pbar-inner" :style="{ width: status === 'done' ? '100%' : status === 'running' ? '50%' : '0%' }"></div>
+        <div class="brain-cap">
+          <span class="brain-label">脑容量</span>
+          <div class="brain-pbar-outer">
+            <div
+              class="brain-pbar-inner"
+              :style="{ width: `${brainPercent}%` }"
+              :class="{ 'brain-animate': status === 'running' }"
+            ></div>
+          </div>
+          <span class="brain-pct">{{ brainPercent }}%</span>
         </div>
         <span :class="['chip', status === 'done' ? 'chip-done' : status === 'running' ? 'chip-run' : status === 'fail' ? 'chip-fail' : 'chip-wait']">
           {{ getStatusText(status) }}
@@ -148,24 +174,60 @@ function getStatusText(status: string) {
 
 .bra-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
-.pbar-outer {
-  width: 72px;
-  height: 3px;
+.brain-cap {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.brain-label {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.bra-running .brain-label { color: var(--blue); }
+.bra-done .brain-label { color: var(--green); }
+
+.brain-pbar-outer {
+  width: 48px;
+  height: 4px;
   background: var(--bg4);
   border-radius: 2px;
   overflow: hidden;
 }
 
-.pbar-inner {
+.brain-pbar-inner {
   height: 100%;
   border-radius: 2px;
   transition: width 0.5s ease;
 }
 
-.bra-done .pbar-inner { background: var(--green); }
-.bra-running .pbar-inner { background: var(--blue); }
-.bra-wait .pbar-inner { background: var(--dim); }
-.bra-fail .pbar-inner { background: var(--red); }
+.brain-animate {
+  animation: brain-shine 1.8s ease-in-out infinite;
+}
+
+@keyframes brain-shine {
+  0% { opacity: 0.8; }
+  50% { opacity: 1; }
+  100% { opacity: 0.8; }
+}
+
+.bra-done .brain-pbar-inner { background: var(--green); }
+.bra-running .brain-pbar-inner { background: var(--blue); }
+.bra-wait .brain-pbar-inner { background: var(--dim); }
+.bra-fail .brain-pbar-inner { background: var(--red); }
+
+.brain-pct {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 28px;
+  text-align: right;
+}
+
+.bra-running .brain-pct { color: var(--blue); }
+.bra-done .brain-pct { color: var(--green); }
 
 .chevron {
   font-size: 10px;

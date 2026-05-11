@@ -67,6 +67,7 @@ export interface ReviewTask {
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   started_at: string | null;
   completed_at: string | null;
+  duration_seconds: number | null;
   error_message: string | null;
   created_at: string;
 }
@@ -77,6 +78,7 @@ export interface ReviewTaskListItem {
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   started_at: string | null;
   completed_at: string | null;
+  duration_seconds: number | null;
   created_at: string;
 }
 
@@ -133,6 +135,8 @@ export interface TodoItem {
   error_message: string | null;
   retry_count: number;
   max_retries: number;
+  max_steps: number;
+  brain_capacity: number;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;

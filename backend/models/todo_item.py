@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, Text, Integer, DateTime, JSON
+from sqlalchemy import String, Text, Integer, Float, DateTime, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -24,6 +24,8 @@ class TodoItem(Base):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
+    max_steps: Mapped[int] = mapped_column(Integer, default=100)
+    brain_capacity: Mapped[float] = mapped_column(Float, default=0.0)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -43,6 +45,8 @@ class TodoItem(Base):
             "error_message": self.error_message,
             "retry_count": self.retry_count,
             "max_retries": self.max_retries,
+            "max_steps": self.max_steps,
+            "brain_capacity": self.brain_capacity,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,

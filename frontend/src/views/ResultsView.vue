@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { Modal } from 'ant-design-vue'
 import { useProjectStore } from '@/stores/project'
 import { reviewApi } from '@/api/client'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
@@ -48,15 +49,23 @@ function goBack() {
 
 async function startNewReview() {
   if (!projectId.value) return
-  try {
-    await reviewApi.start(projectId.value)
-    router.push({
-      name: 'review-execution',
-      params: { id: projectId.value }
-    })
-  } catch (error) {
-    console.error('启动审查失败:', error)
-  }
+  Modal.confirm({
+    title: '确认重新审查',
+    content: '重新审查将发起新的审查任务，当前审查结果不会被删除。确定要继续吗？',
+    okText: '确定',
+    cancelText: '取消',
+    onOk: async () => {
+      try {
+        await reviewApi.start(projectId.value)
+        router.push({
+          name: 'review-execution',
+          params: { id: projectId.value }
+        })
+      } catch (error) {
+        console.error('启动审查失败:', error)
+      }
+    }
+  })
 }
 </script>
 

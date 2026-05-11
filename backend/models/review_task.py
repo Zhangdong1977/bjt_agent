@@ -24,6 +24,7 @@ class ReviewTask(Base):
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     started_at: Mapped[datetime | None] = mapped_column(nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(nullable=True)
     last_heartbeat: Mapped[datetime | None] = mapped_column(nullable=True, index=True)  # Track frontend heartbeat - if no heartbeat for 20+ seconds, agent will cancel
     max_concurrency: Mapped[int] = mapped_column(Integer, default=2, server_default="2", nullable=False)

@@ -2,29 +2,13 @@
 import { computed, ref, watch, onUnmounted } from 'vue'
 import { reviewApi } from '@/api/client'
 
-interface TimelineStep {
-  step_number: number
-  step_type: string
-  content: string
-  timestamp: Date
-  tool_args?: { tool_calls?: any[] }
-  tool_result?: { tool_results?: any[] }
-}
-
-interface TodoItemState {
-  id: string
-  status: 'pending' | 'running' | 'completed' | 'failed'
-}
-
 const props = defineProps<{
   totalSteps: number
   completedCount: number
   findingsCount: number
   phase: 'pending' | 'running' | 'completed' | 'failed'
-  subAgentStepsMap?: Record<string, TimelineStep[]>
-  maxStepsMap?: Record<string, number>
   taskStartTime?: number
-  todos?: TodoItemState[]
+  durationSeconds?: number | null
   projectId?: string
   taskId?: string
 }>()
@@ -36,87 +20,13 @@ const emit = defineEmits<{
 
 const isAbandoning = ref(false)
 
-// 执行容量进度：取当前运行中子代理的最大进度
-const execCapacityProgress = computed(() => {
-  if (!props.maxStepsMap || Object.keys(props.maxStepsMap).length === 0) {
-    return { current: 0, total: 0, percent: 0 }
-  }
-
-  const runningTodos = props.todos?.filter(t => t.status === 'running') || []
-
-  if (runningTodos.length === 0) {
-    return { current: 0, total: 0, percent: 0 }
-  }
-
-  let maxCurrent = 0
-  let maxTotal = 0
-
-  for (const todo of runningTodos) {
-    const maxSteps = props.maxStepsMap[todo.id]
-    if (maxSteps === undefined) continue
-    const steps = props.subAgentStepsMap?.[todo.id] || []
-    const current = Math.min(steps.length, maxSteps)
-
-    if (maxTotal === 0 || current / maxSteps > maxCurrent / maxTotal) {
-      maxCurrent = current
-      maxTotal = maxSteps
-    }
-  }
-
-  if (maxTotal === 0) return { current: 0, total: 0, percent: 0 }
-
-  return {
-    current: maxCurrent,
-    total: maxTotal,
-    percent: Math.round((maxCurrent / maxTotal) * 100)
-  }
-})
-
-// 完成任务数
-const completedTasksCount = computed(() => {
-  return props.todos?.filter(t => t.status === 'completed').length || 0
-})
-
-// 总任务数
-const totalTasksCount = computed(() => {
-  return props.todos?.length || 0
-})
-
-// 运行中任务数（不含 pending）
-const runningTasksCount = computed(() => {
-  return props.todos?.filter(t => t.status === 'running').length || 0
-})
-
-// 任务执行平均耗时（秒）— 子代理平均耗时
-const avgAgentDuration = computed(() => {
-  if (!props.taskStartTime || completedTasksCount.value === 0) return 0
-  const elapsed = Date.now() - props.taskStartTime
-  return Math.round(elapsed / 1000 / completedTasksCount.value)
-})
-
-// 总步骤数（所有子代理）
-const totalAllSteps = computed(() => {
-  if (!props.subAgentStepsMap) return 0
-  let total = 0
-  for (const steps of Object.values(props.subAgentStepsMap)) {
-    total += steps.length
-  }
-  return total
-})
-
-// 每步平均耗时（秒）
-const avgStepDuration = computed(() => {
-  if (!props.taskStartTime || totalAllSteps.value === 0) return 0
-  const elapsed = Date.now() - props.taskStartTime
-  return Math.round(elapsed / 1000 / totalAllSteps.value)
-})
-
-// 任务总运行时间（每秒递增）
+// 任务总运行时间
 const totalRuntime = ref(0)
 let runtimeTimer: ReturnType<typeof setInterval> | null = null
 
 watch(() => props.phase, (newPhase) => {
   if (newPhase === 'running') {
+    // 实时计时：使用 taskStartTime 前端计数
     if (runtimeTimer) clearInterval(runtimeTimer)
     runtimeTimer = setInterval(() => {
       if (props.taskStartTime) {
@@ -128,9 +38,19 @@ watch(() => props.phase, (newPhase) => {
       clearInterval(runtimeTimer)
       runtimeTimer = null
     }
-    if (props.taskStartTime && (newPhase === 'completed' || newPhase === 'failed')) {
+    // 完成或失败时，优先使用数据库持久化的 duration_seconds
+    if (props.durationSeconds != null) {
+      totalRuntime.value = props.durationSeconds
+    } else if (props.taskStartTime && (newPhase === 'completed' || newPhase === 'failed')) {
       totalRuntime.value = Math.round((Date.now() - props.taskStartTime) / 1000)
     }
+  }
+}, { immediate: true })
+
+// phase 已经是 completed/failed 时，直接使用持久化值（历史查看场景）
+watch(() => props.durationSeconds, (val) => {
+  if (val != null && props.phase !== 'running') {
+    totalRuntime.value = val
   }
 }, { immediate: true })
 
@@ -189,54 +109,21 @@ function viewResults() {
       </div>
     </div>
 
-    <!-- 智能体健康度 -->
-    <div class="sidebar-section">
-      <div class="section-title">智能体健康度</div>
-      <div class="overall-progress">
-        <div class="progress-label">
-          <span>脑容量</span>
-          <span class="progress-pct">{{ execCapacityProgress.percent }}%</span>
-        </div>
-        <div class="progress-bar-outer">
-          <div
-            class="progress-bar-inner"
-            :style="{ width: `${execCapacityProgress.percent}%` }"
-            :class="{ 'animate': phase === 'running' }"
-          ></div>
-        </div>
-        <div class="progress-stats">
-          <span>{{ execCapacityProgress.current }} / {{ execCapacityProgress.total }} </span>
-        </div>
-      </div>
-    </div>
-
     <!-- 执行统计 -->
     <div class="sidebar-section">
       <div class="section-title">执行统计</div>
       <div class="stats-grid">
         <div class="stat-box">
-          <div class="stat-val sv-purple">{{ totalTasksCount }}</div>
-          <div class="stat-lbl">任务总数</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-val sv-green">{{ completedTasksCount }}</div>
-          <div class="stat-lbl">已完成</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-val sv-amber">{{ runningTasksCount }}</div>
-          <div class="stat-lbl">进行中</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-val sv-cyan">{{ totalAllSteps }}</div>
+          <div class="stat-val sv-cyan">{{ totalSteps }}</div>
           <div class="stat-lbl">总步骤数</div>
         </div>
         <div class="stat-box">
-          <div class="stat-val sv-cyan">{{ avgStepDuration }}s</div>
-          <div class="stat-lbl">每步均耗</div>
+          <div class="stat-val sv-green">{{ completedCount }}</div>
+          <div class="stat-lbl">已完成</div>
         </div>
         <div class="stat-box">
-          <div class="stat-val sv-cyan">{{ avgAgentDuration }}s</div>
-          <div class="stat-lbl">代理均耗</div>
+          <div class="stat-val sv-amber">{{ findingsCount }}</div>
+          <div class="stat-lbl">发现问题</div>
         </div>
         <div class="stat-box stat-box-wide">
           <div class="stat-val sv-blue">{{ formatRuntime(totalRuntime) }}</div>
@@ -336,58 +223,6 @@ function viewResults() {
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(0.8); }
-}
-
-/* 进度条 */
-.overall-progress {
-  background: var(--bg2);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  padding: 12px;
-}
-
-.progress-label {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--muted);
-  margin-bottom: 7px;
-}
-
-.progress-pct {
-  color: var(--blue);
-  font-weight: 600;
-}
-
-.progress-bar-outer {
-  height: 5px;
-  background: var(--bg4);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.progress-bar-inner {
-  height: 100%;
-  border-radius: 3px;
-  background: var(--blue);
-  transition: width 0.3s ease;
-}
-
-.progress-bar-inner.animate {
-  animation: shine 1.8s ease-in-out infinite;
-}
-
-@keyframes shine {
-  0% { opacity: 0.8; }
-  50% { opacity: 1; }
-  100% { opacity: 0.8; }
-}
-
-.progress-stats {
-  margin-top: 6px;
-  font-size: 10px;
-  color: var(--muted);
-  text-align: right;
 }
 
 /* 统计网格 */

@@ -47,17 +47,27 @@ interface SubAgentData {
 interface Props {
   agents: SubAgentData[]
   subAgentStepsMap?: Record<string, TimelineStep[]>
+  maxStepsMap?: Record<string, number>
+  brainCapacityMap?: Record<string, number>
 }
 
 const props = defineProps<Props>()
 
 const agentsWithSteps = computed(() => {
-  if (!props.subAgentStepsMap) return props.agents
-  const stepsValues = Object.values(props.subAgentStepsMap)
-  return props.agents.map((agent, idx) => ({
-    ...agent,
-    steps: stepsValues[idx] || agent.steps
-  }))
+  const stepsValues = props.subAgentStepsMap ? Object.values(props.subAgentStepsMap) : []
+  const maxStepsValues = props.maxStepsMap ? Object.values(props.maxStepsMap) : []
+  return props.agents.map((agent, idx) => {
+    const steps = stepsValues[idx] || agent.steps
+    const maxSteps = maxStepsValues[idx] || 0
+    const brainCapacity = props.brainCapacityMap?.[agent.agentId]
+    return {
+      ...agent,
+      steps,
+      currentStep: Math.min(steps.length, maxSteps || steps.length),
+      maxSteps,
+      brainCapacity
+    }
+  })
 })
 </script>
 
@@ -85,6 +95,9 @@ const agentsWithSteps = computed(() => {
         :steps="agent.steps"
         :findings="agent.findings"
         :allow-expand="authStore.isInteriorUser"
+        :current-step="agent.currentStep"
+        :max-steps="agent.maxSteps"
+        :brain-capacity="agent.brainCapacity"
       />
     </div>
   </div>

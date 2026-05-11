@@ -60,6 +60,7 @@ class ReviewTaskResponse(BaseModel):
     celery_task_id: str | None
     started_at: datetime | None
     completed_at: datetime | None
+    duration_seconds: int | None
     error_message: str | None
 
     model_config = {"from_attributes": True}
@@ -89,6 +90,7 @@ class ReviewTaskListItem(BaseModel):
     status: str
     started_at: datetime | None
     completed_at: datetime | None
+    duration_seconds: int | None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -108,6 +110,8 @@ class TodoItemResponse(BaseModel):
     error_message: str | None = None
     retry_count: int
     max_retries: int
+    max_steps: int = 100
+    brain_capacity: float = 0.0
     started_at: datetime | None = None
     completed_at: datetime | None = None
     created_at: datetime

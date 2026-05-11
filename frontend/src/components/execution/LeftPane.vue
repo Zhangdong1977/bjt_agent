@@ -61,6 +61,8 @@ interface Props {
   errorMessage?: string | null
   todos?: TodoItemState[]
   subAgentStepsMap?: Record<string, TimelineStep[]>
+  maxStepsMap?: Record<string, number>
+  brainCapacityMap?: Record<string, number>
   mergedStats?: MergedStats | null
   isMerging?: boolean
   mergeProgress?: string
@@ -237,7 +239,7 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail'
 
       <!-- SubAgentExecutor -->
       <div v-if="hasSubAgentExecutor" class="phase-block">
-        <SubAgentExecutorBlock :agents="subAgents" :sub-agent-steps-map="subAgentStepsMap" />
+        <SubAgentExecutorBlock :agents="subAgents" :sub-agent-steps-map="subAgentStepsMap" :max-steps-map="maxStepsMap" :brain-capacity-map="brainCapacityMap" />
       </div>
     </template>
 

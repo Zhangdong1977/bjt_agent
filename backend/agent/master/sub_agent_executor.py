@@ -165,6 +165,10 @@ class SubAgentExecutor:
             check_items = getattr(self._agent, '_parsed_check_items', [])
             logger.info(f"[SubAgentExecutor.execute] Findings: {findings}, check_items_count={len(check_items)}")
 
+            # Calculate actual steps and brain capacity
+            actual_steps = len(self._agent._step_data) if self._agent else 0
+            brain_capacity = min(round(actual_steps / max_steps * 100, 1), 100.0) if max_steps > 0 else 0.0
+
             # 检查取消状态 — run_review() 可能因 heartbeat monitor 取消而返回部分结果
             if self.cancel_event and self.cancel_event.is_set():
                 cancel_reason = getattr(self._agent, '_cancel_reason', None) or 'unknown'
@@ -178,6 +182,8 @@ class SubAgentExecutor:
                     "success": False,
                     "error": error_msg,
                     "todo_id": self.todo_item.id,
+                    "actual_steps": actual_steps,
+                    "brain_capacity": brain_capacity,
                     "_cancel_reason": cancel_reason,
                 }
 
@@ -201,6 +207,8 @@ class SubAgentExecutor:
                 "findings": findings,
                 "check_items": check_items,
                 "todo_id": self.todo_item.id,
+                "actual_steps": actual_steps,
+                "brain_capacity": brain_capacity,
                 "_diagnostics": {
                     "write_file_called": write_file_called,
                 },

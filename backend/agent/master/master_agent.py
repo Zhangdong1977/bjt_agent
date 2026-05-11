@@ -231,8 +231,12 @@ class MasterAgent:
                 if cancel_event and cancel_event.is_set():
                     logger.warning(f"[_run_single_sub_agent] Cancelled after execute for todo_id={todo.id}")
                     err_msg = self._cancel_error_message(result)
-                    await task_todo_service.update_todo_status(todo.id, "failed", error_message=err_msg)
-                    self._send_event("sub_agent_failed", {"todo_id": todo.id, "error": err_msg})
+                    brain_cap = result.get('brain_capacity', 0.0)
+                    await task_todo_service.update_todo_status(
+                        todo.id, "failed", error_message=err_msg,
+                        brain_capacity=brain_cap, max_steps=100,
+                    )
+                    self._send_event("sub_agent_failed", {"todo_id": todo.id, "error": err_msg, "brain_capacity": brain_cap})
                     return {"success": False, "error": err_msg}
 
                 # 检测异常
@@ -244,8 +248,12 @@ class MasterAgent:
                         if cancel_event and cancel_event.is_set():
                             logger.warning(f"[_run_single_sub_agent] Cancel requested during anomaly retry, stopping for todo_id={todo.id}")
                             err_msg = self._cancel_error_message(result)
-                            await task_todo_service.update_todo_status(todo.id, "failed", error_message=err_msg)
-                            self._send_event("sub_agent_failed", {"todo_id": todo.id, "error": err_msg})
+                            brain_cap = result.get('brain_capacity', 0.0)
+                            await task_todo_service.update_todo_status(
+                                todo.id, "failed", error_message=err_msg,
+                                brain_capacity=brain_cap, max_steps=100,
+                            )
+                            self._send_event("sub_agent_failed", {"todo_id": todo.id, "error": err_msg, "brain_capacity": brain_cap})
                             return {"success": False, "error": err_msg}
                         await task_todo_service.reset_todo_for_retry(todo.id, retry_count)
                         # Exponential backoff: 2s, 4s, 8s, ...
@@ -255,19 +263,24 @@ class MasterAgent:
                         await self._refresh_heartbeat(session_factory)
                         continue
                     else:
+                        brain_cap = result.get('brain_capacity', 0.0)
                         await task_todo_service.update_todo_status(
-                            todo.id, "failed", error_message="Max retries exceeded"
+                            todo.id, "failed", error_message="Max retries exceeded",
+                            brain_capacity=brain_cap, max_steps=100,
                         )
                         self._send_event("sub_agent_failed", {
                             "todo_id": todo.id,
                             "error": "Max retries exceeded",
+                            "brain_capacity": brain_cap,
                         })
                         return result
 
                 # 成功
                 findings = result.get("findings", [])
+                brain_cap = result.get('brain_capacity', 0.0)
                 await task_todo_service.update_todo_status(
-                    todo.id, "completed", result={"findings": findings}
+                    todo.id, "completed", result={"findings": findings},
+                    brain_capacity=brain_cap, max_steps=100,
                 )
                 # 持久化检查项列表，用于统计检查项总数
                 check_items = result.get("check_items", [])
@@ -279,6 +292,7 @@ class MasterAgent:
                     "todo_id": todo.id,
                     "findings_count": len(findings),
                     "findings": findings,
+                    "brain_capacity": brain_cap,
                 })
 
                 # Incremental save callback for ReviewResult persistence

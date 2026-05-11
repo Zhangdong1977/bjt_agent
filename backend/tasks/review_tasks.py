@@ -402,6 +402,8 @@ def run_review(self, task_id: str) -> dict:
                         task.status = "failed"
                     task.error_message = error_msg
                     task.completed_at = datetime.utcnow()
+                    if task.started_at and task.completed_at:
+                        task.duration_seconds = int((task.completed_at - task.started_at).total_seconds())
                     await db.flush()
                     await db.commit()
                     _publish_event(task_id, "error", {"message": error_msg})
@@ -681,6 +683,8 @@ async def _run_agent_review(
             # Update task status
             review_task.status = "completed"
             review_task.completed_at = datetime.utcnow()
+            if review_task.started_at and review_task.completed_at:
+                review_task.duration_seconds = int((review_task.completed_at - review_task.started_at).total_seconds())
             await db.commit()
 
             # Trigger merge task after successful completion
