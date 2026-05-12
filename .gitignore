@@ -52,3 +52,4 @@ pnpm-debug.log*
 .env.local
 .env.*.local
 .planning
+docs/rules/
