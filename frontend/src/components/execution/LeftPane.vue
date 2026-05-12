@@ -89,6 +89,7 @@ const subAgents = computed(() => {
   if (props.todos && props.todos.length > 0) {
     return props.todos.map((todo, idx) => ({
       agentId: `A${idx + 1}`,
+      todoId: todo.id,
       title: todo.rule_doc_name.replace('.md', ''),
       ruleFile: `${todo.rule_doc_name} · ${todo.check_items?.length || 0} 个检查项`,
       checkItems: todo.check_items?.map(item => ({

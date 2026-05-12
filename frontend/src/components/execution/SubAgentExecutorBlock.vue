@@ -36,6 +36,7 @@ interface TimelineStep {
 
 interface SubAgentData {
   agentId: string
+  todoId: string
   title: string
   ruleFile: string
   status: 'done' | 'running' | 'wait' | 'fail'
@@ -54,12 +55,10 @@ interface Props {
 const props = defineProps<Props>()
 
 const agentsWithSteps = computed(() => {
-  const stepsValues = props.subAgentStepsMap ? Object.values(props.subAgentStepsMap) : []
-  const maxStepsValues = props.maxStepsMap ? Object.values(props.maxStepsMap) : []
-  return props.agents.map((agent, idx) => {
-    const steps = stepsValues[idx] || agent.steps
-    const maxSteps = maxStepsValues[idx] || 0
-    const brainCapacity = props.brainCapacityMap?.[agent.agentId]
+  return props.agents.map((agent) => {
+    const steps = props.subAgentStepsMap?.[agent.todoId] || agent.steps
+    const maxSteps = props.maxStepsMap?.[agent.todoId] || 0
+    const brainCapacity = props.brainCapacityMap?.[agent.todoId]
     return {
       ...agent,
       steps,
