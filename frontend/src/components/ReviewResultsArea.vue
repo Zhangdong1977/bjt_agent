@@ -2,9 +2,13 @@
 import { computed, ref } from 'vue'
 import type { ReviewResponse, ReviewResult } from '@/types'
 import { renderMarkdown } from '@/utils/markdown'
+import { reviewApi } from '@/api/client'
 
 const props = defineProps<{
   reviewResults: ReviewResponse | null | undefined
+  todos: any[]
+  projectId: string
+  taskId: string
 }>()
 
 const summary = computed(() => props.reviewResults?.summary ?? {
@@ -18,71 +22,114 @@ const findings = computed<ReviewResult[]>(() => props.reviewResults?.findings ??
 const hasFindings = computed(() => findings.value.length > 0)
 
 const selectedKey = ref<string | null>(null)
+const reportContent = ref<string>('')
+const reportLoading = ref(false)
 
-interface FindingGroup {
+interface SubAgentGroup {
   key: string
   label: string
-  findings: ReviewResult[]
+  ruleDocName: string
+  allFindings: ReviewResult[]
   nonCompliantCount: number
   compliantCount: number
-  topSeverity: 'critical' | 'major' | 'minor'
+  topSeverity: 'critical' | 'major' | 'minor' | 'none'
+  isCompliant: boolean
 }
 
-const nonCompliantGroups = computed<FindingGroup[]>(() => {
-  const map = new Map<string, FindingGroup>()
-
+const subAgentGroups = computed<SubAgentGroup[]>(() => {
+  const findingsByAgent = new Map<string, ReviewResult[]>()
   for (const f of findings.value) {
     const key = f.rule_doc_name || f.requirement_key
-    if (!map.has(key)) {
-      map.set(key, {
-        key,
-        label: f.check_item_name || f.rule_doc_name || f.requirement_content || f.requirement_key,
-        findings: [],
-        nonCompliantCount: 0,
-        compliantCount: 0,
-        topSeverity: 'minor',
-      })
+    if (!findingsByAgent.has(key)) {
+      findingsByAgent.set(key, [])
     }
-    const g = map.get(key)!
-    g.findings.push(f)
-    if (f.is_compliant) {
-      g.compliantCount++
-    } else {
-      g.nonCompliantCount++
-      if (f.severity === 'critical') g.topSeverity = 'critical'
-      else if (f.severity === 'major' && g.topSeverity !== 'critical') g.topSeverity = 'major'
-    }
+    findingsByAgent.get(key)!.push(f)
   }
 
-  // Only keep groups that have at least one non-compliant finding
-  const filtered = [...map.values()].filter(g => g.nonCompliantCount > 0)
+  const groups: SubAgentGroup[] = []
 
-  // Sort: severity order (critical > major > minor), then by non-compliant count descending
-  const severityOrder = { critical: 0, major: 1, minor: 2 }
-  filtered.sort((a, b) => {
+  for (const todo of props.todos) {
+    if (todo.status !== 'completed') continue
+
+    const agentFindings = findingsByAgent.get(todo.rule_doc_name) || []
+    const nonCompliant = agentFindings.filter(f => !f.is_compliant)
+    const isCompliant = nonCompliant.length === 0
+
+    let topSeverity: 'critical' | 'major' | 'minor' | 'none' = 'none'
+    for (const f of nonCompliant) {
+      if (f.severity === 'critical') { topSeverity = 'critical'; break }
+      if (f.severity === 'major') topSeverity = 'major'
+      if (topSeverity === 'none') topSeverity = 'minor'
+    }
+
+    groups.push({
+      key: todo.id,
+      label: (todo.rule_doc_name || '').replace('.md', ''),
+      ruleDocName: todo.rule_doc_name,
+      allFindings: agentFindings,
+      nonCompliantCount: nonCompliant.length,
+      compliantCount: agentFindings.filter(f => f.is_compliant).length,
+      topSeverity,
+      isCompliant,
+    })
+  }
+
+  // Also include findings not matched to any todo (safety net)
+  const matchedKeys = new Set(props.todos.map((t: any) => t.rule_doc_name))
+  for (const [key, agentFindings] of findingsByAgent) {
+    if (matchedKeys.has(key)) continue
+    const nonCompliant = agentFindings.filter(f => !f.is_compliant)
+    const isCompliant = nonCompliant.length === 0
+
+    let topSeverity: 'critical' | 'major' | 'minor' | 'none' = 'none'
+    for (const f of nonCompliant) {
+      if (f.severity === 'critical') { topSeverity = 'critical'; break }
+      if (f.severity === 'major') topSeverity = 'major'
+      if (topSeverity === 'none') topSeverity = 'minor'
+    }
+
+    groups.push({
+      key,
+      label: key.replace('.md', ''),
+      ruleDocName: key,
+      allFindings: agentFindings,
+      nonCompliantCount: nonCompliant.length,
+      compliantCount: agentFindings.filter(f => f.is_compliant).length,
+      topSeverity,
+      isCompliant,
+    })
+  }
+
+  // Sort: risk items first (by severity), then compliant items
+  const severityOrder = { critical: 0, major: 1, minor: 2, none: 3 }
+  groups.sort((a, b) => {
     const sevDiff = severityOrder[a.topSeverity] - severityOrder[b.topSeverity]
     if (sevDiff !== 0) return sevDiff
     return b.nonCompliantCount - a.nonCompliantCount
   })
 
-  return filtered
+  return groups
 })
 
-const selectedGroup = computed<FindingGroup | null>(() => {
+const selectedGroup = computed<SubAgentGroup | null>(() => {
   if (!selectedKey.value) return null
-  return nonCompliantGroups.value.find(g => g.key === selectedKey.value) ?? null
+  return subAgentGroups.value.find(g => g.key === selectedKey.value) ?? null
 })
 
-function selectGroup(key: string) {
+async function selectGroup(key: string) {
   selectedKey.value = key
-}
-
-function getSeverityLabel(severity: string): string {
-  switch (severity) {
-    case 'critical': return '严重'
-    case 'major': return '主要'
-    case 'minor': return '次要'
-    default: return severity
+  reportContent.value = ''
+  reportLoading.value = true
+  try {
+    reportContent.value = await reviewApi.getTodoReport(
+      props.projectId,
+      props.taskId,
+      key,
+    )
+  } catch {
+    reportContent.value = '无法加载报告内容'
+  } finally {
+    reportLoading.value = false
   }
 }
 
@@ -116,15 +163,15 @@ function getSeverityColorClass(severity: string): string {
 
     <!-- 左右分栏 -->
     <div v-if="hasFindings" class="split-panel">
-      <!-- 左面板：风险项清单 -->
+      <!-- 左面板：检查项清单 -->
       <div class="left-panel">
         <div class="panel-header">
-          <span>风险项清单</span>
-          <span class="count-badge">{{ nonCompliantGroups.length }}</span>
+          <span>检查项清单</span>
+          <span class="count-badge">{{ subAgentGroups.length }}</span>
         </div>
         <div class="group-list">
           <div
-            v-for="group in nonCompliantGroups"
+            v-for="group in subAgentGroups"
             :key="group.key"
             :class="['group-item', { selected: selectedKey === group.key }]"
             @click="selectGroup(group.key)"
@@ -134,48 +181,31 @@ function getSeverityColorClass(severity: string): string {
               <span class="group-label">{{ group.label }}</span>
             </div>
             <div class="group-item-right">
-              <span class="group-count risk">{{ group.nonCompliantCount }}</span>
+              <span v-if="group.isCompliant" class="group-count pass">✓</span>
+              <span v-else class="group-count risk">!</span>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- 右面板：详情 -->
+      <!-- 右面板：报告内容 -->
       <div class="right-panel">
         <template v-if="selectedGroup">
           <div class="detail-header">
             <h3 class="detail-title">{{ selectedGroup.label }}</h3>
             <div class="detail-stats">
-              <span class="detail-stat">共 {{ selectedGroup.findings.length }} 项</span>
+              <span :class="['status-tag', selectedGroup.isCompliant ? 'compliant' : 'risk']">
+                {{ selectedGroup.isCompliant ? '全部合规' : `风险项 ${selectedGroup.nonCompliantCount}` }}
+              </span>
             </div>
           </div>
-          <div class="detail-list">
-            <div
-              v-for="finding in selectedGroup.findings"
-              :key="finding.id"
-              :class="['detail-card', { 'card-risk': !finding.is_compliant }]"
-            >
-              <div class="card-header">
-                <span :class="['severity-tag', getSeverityColorClass(finding.severity)]">
-                  {{ getSeverityLabel(finding.severity) }}
-                </span>
-                <span :class="['status-tag', finding.is_compliant ? 'compliant' : 'risk']">
-                  {{ finding.is_compliant ? '合规' : '风险项' }}
-                </span>
-              </div>
-              <div class="card-body">
-                <p class="requirement"><strong>要求:</strong> <span class="markdown-content" v-html="renderMarkdown(finding.requirement_content)"></span></p>
-                <p class="bid-content"><strong>应标内容:</strong> <span class="markdown-content" v-html="renderMarkdown(finding.bid_content)"></span></p>
-                <p v-if="finding.explanation" class="explanation"><span class="markdown-content" v-html="renderMarkdown(finding.explanation)"></span></p>
-                <p v-if="finding.suggestion && !finding.is_compliant" class="suggestion">
-                  <strong>建议:</strong> <span class="markdown-content" v-html="renderMarkdown(finding.suggestion)"></span>
-                </p>
-              </div>
-            </div>
+          <div class="report-content">
+            <div v-if="reportLoading" class="report-loading">加载中...</div>
+            <div v-else class="markdown-body" v-html="renderMarkdown(reportContent)"></div>
           </div>
         </template>
         <div v-else class="detail-placeholder">
-          ← 选择左侧风险项查看详情
+          ← 选择左侧检查项查看报告
         </div>
       </div>
     </div>
@@ -325,76 +355,33 @@ function getSeverityColorClass(severity: string): string {
 }
 
 .group-count.risk { color: var(--red); }
-.group-count.total { color: var(--muted); }
-.group-sep { color: var(--muted); font-size: 11px; }
+.group-count.pass { color: var(--green); }
 
 /* 右面板 */
 .right-panel {
   overflow-y: auto;
-  max-height: 500px;
+  max-height: 600px;
 }
 
 .detail-header {
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .detail-title {
   font-size: 16px;
   font-weight: 600;
   color: var(--text);
-  margin: 0 0 6px;
+  margin: 0;
 }
 
 .detail-stats {
   display: flex;
   gap: 12px;
 }
-
-.detail-stat {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.detail-stat.risk {
-  color: var(--red);
-  font-weight: 500;
-}
-
-.detail-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 16px;
-}
-
-.detail-card {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 12px;
-}
-
-.detail-card.card-risk {
-  border-color: var(--red-dim);
-  background: var(--red-bg);
-}
-
-.card-header {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.severity-tag {
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.severity-tag.sev-critical { background: var(--red-dim); color: var(--red); }
-.severity-tag.sev-major { background: var(--amber-dim, #fff3cd); color: var(--amber); }
-.severity-tag.sev-minor { background: var(--amber-dim, #fff3cd); color: var(--amber); }
 
 .status-tag {
   padding: 2px 8px;
@@ -406,69 +393,102 @@ function getSeverityColorClass(severity: string): string {
 .status-tag.compliant { background: var(--green-dim, #d4edda); color: var(--green); }
 .status-tag.risk { background: var(--red-dim); color: var(--red); }
 
-.card-body p {
-  margin: 4px 0;
-  font-size: 13px;
+/* 报告内容区域 */
+.report-content {
+  padding: 16px;
+}
+
+.report-loading {
+  text-align: center;
+  color: var(--muted);
+  padding: 2rem;
+}
+
+.markdown-body {
+  line-height: 1.7;
+  word-break: break-word;
   color: var(--text);
 }
 
-.card-body .explanation {
-  color: var(--sub);
-  font-style: italic;
+.markdown-body :deep(h1) {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid var(--line);
 }
 
-.card-body .suggestion {
-  color: var(--blue);
+.markdown-body :deep(h2) {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 16px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
 }
 
-/* Markdown 渲染样式 */
-.card-body :deep(.markdown-content) {
-  line-height: 1.6;
-  word-break: break-word;
+.markdown-body :deep(h3) {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 12px 0 6px;
 }
 
-.card-body :deep(.markdown-content p) {
-  margin: 4px 0;
+.markdown-body :deep(p) {
+  margin: 6px 0;
+  font-size: 14px;
 }
 
-.card-body :deep(.markdown-content ul),
-.card-body :deep(.markdown-content ol) {
-  padding-left: 1.2em;
-  margin: 4px 0;
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  padding-left: 1.5em;
+  margin: 6px 0;
 }
 
-.card-body :deep(.markdown-content li) {
-  margin: 2px 0;
+.markdown-body :deep(li) {
+  margin: 3px 0;
+  font-size: 14px;
 }
 
-.card-body :deep(.markdown-content strong) {
+.markdown-body :deep(strong) {
   font-weight: 600;
 }
 
-.card-body :deep(.markdown-content table) {
+.markdown-body :deep(table) {
   width: 100%;
   border-collapse: collapse;
-  margin: 6px 0;
-  font-size: 12px;
+  margin: 8px 0;
+  font-size: 13px;
 }
 
-.card-body :deep(.markdown-content th),
-.card-body :deep(.markdown-content td) {
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
   border: 1px solid var(--line);
-  padding: 4px 8px;
+  padding: 6px 10px;
   text-align: left;
 }
 
-.card-body :deep(.markdown-content th) {
+.markdown-body :deep(th) {
   background: var(--bg2);
   font-weight: 600;
 }
 
-.card-body :deep(.markdown-content code) {
+.markdown-body :deep(code) {
   background: var(--bg2);
   padding: 1px 4px;
   border-radius: 3px;
-  font-size: 12px;
+  font-size: 13px;
+}
+
+.markdown-body :deep(hr) {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 12px 0;
+}
+
+.markdown-body :deep(blockquote) {
+  border-left: 3px solid var(--blue-dim);
+  padding-left: 12px;
+  margin: 8px 0;
+  color: var(--sub);
 }
 
 /* 占位 */

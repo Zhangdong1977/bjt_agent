@@ -18,18 +18,10 @@ const projectId = computed(() => route.params.id as string)
 let eventSource: EventSource | null = null
 
 // 状态
-// phase: 根据实际事件流转 - pending -> running -> completed/failed
 const phase = ref<'pending' | 'running' | 'completed' | 'failed'>('pending')
 const steps = ref<any[]>([])
-
-// 合并阶段状态
-const isMerging = ref(false)
-const mergeProgress = ref('')
 const subAgentSteps = ref<Map<string, any[]>>(new Map())
 const errorMessage = ref<string | null>(null)
-const findingsCount = ref<number>(0)
-const mergedStats = ref<{ total: number; critical: number; major: number; minor: number; compliant: number } | null>(null)
-const mergedFindings = ref<any[] | null>(null)
 
 // Todo items state (mirrors ReviewTimeline.vue)
 interface CheckItemState {
@@ -62,32 +54,22 @@ const brainCapacityMap = ref<Record<string, number>>({})
 const taskStartTime = ref<number>(0)
 
 // 统计数据
-const totalSteps = computed(() => steps.value.length)
+// 总步骤数：显示子代理总数（MasterAgent 模式）
+const totalSteps = computed(() => todos.value.size)
+// 已完成：统计已完成 + 失败的子代理个数
 const completedCount = computed(() =>
-  steps.value.filter(s => s.step_type === 'tool_result').length
+  Array.from(todos.value.values()).filter(t => t.status === 'completed' || t.status === 'failed').length
 )
 
-// SSE 事件处理 - 适配实际后端事件
-function computeMergedStats(findings: any[] | null | undefined): { total: number; critical: number; major: number; minor: number; compliant: number } {
-  const items = findings || []
-  let critical = 0, major = 0, minor = 0, compliant = 0
-  for (const f of items) {
-    if (f.is_compliant) {
-      compliant++
-    } else {
-      if (f.severity === 'critical') critical++
-      else if (f.severity === 'major') major++
-      else minor++
-    }
-  }
-  return {
-    total: critical + major + minor,
-    critical,
-    major,
-    minor,
-    compliant
-  }
-}
+// findingsCount 从 todos 计算
+const findingsCount = computed(() => {
+  let count = 0
+  todos.value.forEach(todo => {
+    const findings = todo.result?.findings || []
+    count += findings.filter((f: any) => !f.is_compliant).length
+  })
+  return count
+})
 
 async function handleSSEEvent(event: any) {
   // 详细日志，方便调试 SSE 数据
@@ -170,20 +152,7 @@ async function handleSSEEvent(event: any) {
 
     case 'merging_completed':
       phase.value = 'completed'
-      // 从事件数据中提取合并结果（避免等待项目级合并 Celery 任务）
-      if (event.result) {
-        const r = event.result
-        mergedStats.value = {
-          total: r.total_findings || 0,
-          critical: r.critical_count || 0,
-          major: r.major_count || 0,
-          minor: r.minor_count || 0,
-          compliant: r.passed_count || 0
-        }
-        if (r.findings?.length) {
-          mergedFindings.value = r.findings
-        }
-      }
+      disconnect()
       break
 
     case 'progress':
@@ -396,43 +365,13 @@ async function handleSSEEvent(event: any) {
     case 'complete':
       // 审查完成事件
       phase.value = 'completed'
-      findingsCount.value = event.findings_count || 0
+      disconnect()
       break
 
     case 'error':
       // 错误事件
       phase.value = 'failed'
       errorMessage.value = event.message || 'Unknown error'
-      break
-
-    case 'merging':
-      // 合并历史结果
-      isMerging.value = true
-      mergeProgress.value = event.message || '正在合并历史结果...'
-      console.log('[ReviewExecutionView] Merging historical results...')
-      break
-
-    case 'merged':
-      // 合并完成
-      isMerging.value = false
-      mergeProgress.value = ''
-      // 获取合并后的统计数据
-      console.log('[ReviewExecutionView] Merge complete', event)
-      // findingsCount 显示风险项数
-      findingsCount.value = event.non_compliant_count ?? event.total_count ?? event.merged_count ?? findingsCount.value
-      // 获取合并后的详细结果
-      if (projectStore.currentTask?.id) {
-        try {
-          const response = await reviewApi.getResults(projectId.value)
-          if (response.summary) {
-            // total 应该是 non_compliant，不是 total_requirements
-            mergedStats.value = computeMergedStats(response.findings)
-            mergedFindings.value = response.findings || null
-          }
-        } catch (err) {
-          console.error('[ReviewExecutionView] Failed to fetch merged results:', err)
-        }
-      }
       break
 
     default:
@@ -690,19 +629,7 @@ onMounted(async () => {
   if (projectStore.currentTask?.id && projectStore.currentTask?.status !== 'completed' && projectStore.currentTask?.status !== 'failed') {
     connect()
   } else if (projectStore.currentTask?.id && (projectStore.currentTask?.status === 'completed' || projectStore.currentTask?.status === 'failed')) {
-    // 已完成/失败任务：通过 API 拉取结果，不走 SSE 重放
-    try {
-      const response = await reviewApi.getResults(projectId.value)
-      if (response.summary) {
-        mergedStats.value = computeMergedStats(response.findings)
-        findingsCount.value = response.summary.risk_item_count || 0
-        mergedFindings.value = response.findings || null
-      }
-    } catch (err) {
-      console.error('[ReviewExecutionView] Failed to fetch merged results on mount:', err)
-    }
-
-    // 加载历史 todo 项（子代理信息）
+    // 已完成/失败任务：通过 API 拉取数据
     await loadHistoricalTodos(projectId.value, projectStore.currentTask.id)
 
     // 加载历史步骤（master + sub-agent 时间线数据）
@@ -761,10 +688,6 @@ onUnmounted(() => {
           :sub-agent-steps-map="subAgentStepsMap"
           :max-steps-map="maxStepsMap"
           :brain-capacity-map="brainCapacityMap"
-          :merged-stats="mergedStats"
-          :is-merging="isMerging"
-          :merge-progress="mergeProgress"
-          :merged-findings="mergedFindings"
         />
 
         <RightSidebar

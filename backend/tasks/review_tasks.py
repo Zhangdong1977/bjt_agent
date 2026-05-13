@@ -663,22 +663,13 @@ async def _run_agent_review(
         result = await master.run(todo_service, session_id=task_id, session_factory=session_factory)
 
         if result.get("success"):
-            findings = result.get("merged_result", {}).get("findings", [])
-            non_compliant_findings = [f for f in findings if not f.get("is_compliant", False)]
-            logger.info(f"[_run_agent_review] project_id={review_task.project_id}, task_id={task_id}, total_findings={len(findings)}, non_compliant={len(non_compliant_findings)}")
-
-            # Remove sub-agent incremental saves, replace with merged findings
-            from sqlalchemy import delete
-            await db.execute(
-                delete(ReviewResult).where(ReviewResult.task_id == task_id)
+            # Count non-compliant findings from incremental saves
+            from sqlalchemy import select as _sel, func as _func
+            count_result = await db.execute(
+                _sel(_func.count()).where(ReviewResult.task_id == task_id)
             )
-
-            for finding_data in non_compliant_findings:
-                finding = ReviewResult(
-                    task_id=task_id,
-                    **finding_data,
-                )
-                db.add(finding)
+            non_compliant_count = count_result.scalar() or 0
+            logger.info(f"[_run_agent_review] project_id={review_task.project_id}, task_id={task_id}, non_compliant={non_compliant_count}")
 
             # Update task status
             review_task.status = "completed"
@@ -687,13 +678,9 @@ async def _run_agent_review(
                 review_task.duration_seconds = int((review_task.completed_at - review_task.started_at).total_seconds())
             await db.commit()
 
-            # Trigger merge task after successful completion
-            from backend.tasks.review_tasks import merge_review_results
-            merge_review_results.delay(project_id=review_task.project_id, latest_task_id=task_id)
+            logger.info(f"[_run_agent_review] Completed: {non_compliant_count} non-compliant findings")
 
-            logger.info(f"[_run_agent_review] Completed: saved {len(non_compliant_findings)} merged findings")
-
-            return len(non_compliant_findings)
+            return non_compliant_count
 
         else:
             error_msg = result.get("error", "Unknown error")

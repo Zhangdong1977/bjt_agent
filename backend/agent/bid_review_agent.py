@@ -103,6 +103,8 @@ class BidReviewAgent(BaseAgent):
         self._tool_results_step_start: int = 0
         # Track accumulated step data for consolidated sub_agent_step events
         self._step_data: dict[int, dict] = {}
+        # Track total completed steps (never decremented, used for brain_capacity)
+        self._total_steps: int = 0
         # Track the reason for cancellation (heartbeat_timeout vs api_cancellation)
         self._cancel_reason: Optional[str] = None
 
@@ -697,6 +699,7 @@ class BidReviewAgent(BaseAgent):
         elif event_type == "step_complete":
             # Emit consolidated sub_agent_step event
             step = data.get("step", 0)
+            self._total_steps += 1
             if step in self._step_data:
                 step_info = self._step_data[step]
                 # Convert tool_results to frontend format
@@ -858,7 +861,13 @@ class BidReviewAgent(BaseAgent):
             logger.info(f"[BidReviewAgent.run_review] === SYSTEM PROMPT END ===")
 
             # 3. Build task prompt with output md path
-            output_md_path = str(self.workspace_dir / f"review_{int(time.time())}.md")
+            # Include task_id + rule_stem to avoid collision:
+            # - Parallel sub-agents in same task: different rule_stem
+            # - Same project, different re-reviews: different task_id
+            task_id = getattr(self, "_task_id", None) or int(time.time())
+            rule_stem = Path(self.rule_doc_path).stem
+            output_md_path = str(self.workspace_dir / f"review_{task_id}_{rule_stem}.md")
+            self._output_md_path = output_md_path
 
             # Parse check items for explicit enumeration in task prompt
             check_items = self._parse_check_items(rule_doc_content)

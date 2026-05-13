@@ -115,7 +115,7 @@ function viewResults() {
       <div class="stats-grid">
         <div class="stat-box">
           <div class="stat-val sv-cyan">{{ totalSteps }}</div>
-          <div class="stat-lbl">总步骤数</div>
+          <div class="stat-lbl">子代理总数</div>
         </div>
         <div class="stat-box">
           <div class="stat-val sv-green">{{ completedCount }}</div>

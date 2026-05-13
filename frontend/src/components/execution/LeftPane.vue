@@ -4,7 +4,6 @@ import { useAuthStore } from '@/stores/auth'
 import AgentTimelineItem from './AgentTimelineItem.vue'
 import BidReviewAgentBlock from './BidReviewAgentBlock.vue'
 import SubAgentExecutorBlock from './SubAgentExecutorBlock.vue'
-import FindingsTable from './FindingsTable.vue'
 
 const authStore = useAuthStore()
 
@@ -47,14 +46,6 @@ interface CheckItemState {
   status: 'pending' | 'running' | 'completed' | 'failed'
 }
 
-interface MergedStats {
-  total: number
-  critical: number
-  major: number
-  minor: number
-  compliant: number
-}
-
 interface Props {
   phase: 'pending' | 'running' | 'completed' | 'failed'
   steps: TimelineStep[]
@@ -63,15 +54,10 @@ interface Props {
   subAgentStepsMap?: Record<string, TimelineStep[]>
   maxStepsMap?: Record<string, number>
   brainCapacityMap?: Record<string, number>
-  mergedStats?: MergedStats | null
-  isMerging?: boolean
-  mergeProgress?: string
-  mergedFindings?: any[] | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  isMerging: false,
-  mergeProgress: ''
+  errorMessage: null,
 })
 
 // BidReviewAgent 模式检测
@@ -110,51 +96,6 @@ const subAgents = computed(() => {
 const hasSubAgentExecutor = computed(() => {
   return subAgents.value.length > 0
 })
-
-// 合并阶段统计 - 如果有合并后的统计数据则使用，否则从todos计算
-const mergeStats = computed(() => {
-  // 如果有合并后的统计数据，直接使用
-  if (props.mergedStats) {
-    return props.mergedStats
-  }
-
-  if (!props.todos || props.todos.length === 0) {
-    return { total: 0, critical: 0, major: 0, minor: 0, compliant: 0 }
-  }
-
-  let critical = 0
-  let major = 0
-  let minor = 0
-  let compliant = 0
-  let totalFindings = 0
-
-  for (const todo of props.todos) {
-    const findings = todo.result?.findings || []
-    for (const f of findings) {
-      totalFindings++
-      if (f.is_compliant) {
-        compliant++
-      } else if (f.severity === 'critical') {
-        critical++
-      } else if (f.severity === 'major') {
-        major++
-      } else {
-        minor++
-      }
-    }
-  }
-
-  return { total: totalFindings, critical, major, minor, compliant }
-})
-
-// 合并步骤
-const mergeSteps = [
-  '汇总子代理结果',
-  '过滤与验证',
-  '智能去重合并',
-  '严重程度排序',
-  '生成审查报告'
-]
 
 // BidReviewAgent 模式：创建合成代理对象来展示观察结果
 const bidReviewAgentData = computed(() => {
@@ -244,74 +185,17 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail'
       </div>
     </template>
 
-    <!-- 正在合并状态 -->
-    <div v-if="phase !== 'completed' && phase !== 'failed' && isMerging" class="phase-block">
-      <div class="phase-label">合并与质检阶段</div>
-      <div class="merge-block merge-block-running">
-        <div class="merge-block-header">
-          <div class="merge-status">
-            <span class="merge-icon spin">⟳</span>
-            <span>{{ mergeProgress || '正在合并历史结果...' }}</span>
-          </div>
-          <span class="chip chip-run">进行中</span>
-        </div>
-        <div class="merge-steps">
-          <div v-for="(step, idx) in mergeSteps" :key="idx" class="merge-step">
-            <div :class="['m-dot', idx === 0 ? 'md-run' : 'md-wait']"></div>
-            <span>{{ step }}</span>
-            <span v-if="idx < mergeSteps.length - 1" class="merge-step-arr">→</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 已完成状态 -->
-    <div v-if="phase === 'completed'" class="phase-block">
-      <div class="phase-label">合并与质检阶段</div>
+    <!-- 审查完成提示 -->
+    <div v-if="phase === 'completed' && !isBidReviewAgentMode" class="phase-block">
+      <div class="phase-label">审查完成</div>
       <div class="merge-block">
         <div class="merge-block-header">
           <div class="merge-status">
             <span class="merge-icon">✓</span>
-            <span>MasterAgent 已汇总所有子代理结果</span>
+            <span>所有子代理审查完成</span>
           </div>
           <span class="chip chip-done">完成</span>
         </div>
-        <!-- 合并步骤 -->
-        <div class="merge-steps">
-          <div v-for="(step, idx) in mergeSteps" :key="idx" class="merge-step">
-            <div class="m-dot md-done"></div>
-            <span>{{ step }}</span>
-            <span v-if="idx < mergeSteps.length - 1" class="merge-step-arr">→</span>
-          </div>
-        </div>
-        <!-- 合并结果统计 -->
-        <div class="merge-result-summary">
-          <div class="summary-title">合并结果摘要</div>
-          <div class="summary-stats">
-            <div class="stat-item">
-              <span class="stat-num">{{ mergeStats.total }}</span>
-              <span class="stat-label">发现问题</span>
-            </div>
-            <div class="stat-item stat-critical" v-if="mergeStats.critical > 0">
-              <span class="stat-num">{{ mergeStats.critical }}</span>
-              <span class="stat-label">严重</span>
-            </div>
-            <div class="stat-item stat-major" v-if="mergeStats.major > 0">
-              <span class="stat-num">{{ mergeStats.major }}</span>
-              <span class="stat-label">重要</span>
-            </div>
-            <div class="stat-item stat-minor" v-if="mergeStats.minor > 0">
-              <span class="stat-num">{{ mergeStats.minor }}</span>
-              <span class="stat-label">一般</span>
-            </div>
-            <div class="stat-item stat-compliant" v-if="mergeStats.compliant > 0">
-              <span class="stat-num">{{ mergeStats.compliant }}</span>
-              <span class="stat-label">通过</span>
-            </div>
-          </div>
-        </div>
-        <!-- 审查结果明细表格 -->
-        <FindingsTable v-if="mergedFindings?.length" :findings="mergedFindings" />
       </div>
     </div>
 
@@ -382,45 +266,6 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail'
   padding: 14px;
 }
 
-.merge-block-running {
-  background: var(--amber-bg);
-  border-color: var(--amber-dim);
-}
-
-.merge-block-running .merge-status {
-  color: var(--amber);
-}
-
-.merge-block-running .m-dot.md-run {
-  background: var(--amber);
-  animation: blink 1s infinite;
-}
-
-.merge-block-running .m-dot.md-wait {
-  background: var(--line2);
-}
-
-.chip-run {
-  background: var(--blue-bg);
-  border-color: var(--blue-dim);
-  color: var(--blue);
-}
-
-.merge-icon.spin {
-  display: inline-block;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
-
 .merge-status {
   display: flex;
   align-items: center;
@@ -437,80 +282,15 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail'
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
 }
 
-.merge-steps {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 14px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--green-dim);
-}
-
-.merge-step {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--green);
-}
-
-.m-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--green);
-}
-
-.merge-step-arr {
-  color: var(--dim);
-  font-size: 11px;
-}
-
-.merge-result-summary {
-  background: var(--bg1);
-  border-radius: var(--r);
-  padding: 12px;
-}
-
-.summary-title {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--sub);
-  margin-bottom: 10px;
-}
-
-.summary-stats {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.stat-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-
-.stat-num {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.stat-label {
+.chip {
   font-size: 10px;
-  color: var(--muted);
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 3px;
+  border: 1px solid;
 }
-
-.stat-critical .stat-num { color: var(--red); }
-.stat-major .stat-num { color: var(--amber); }
-.stat-minor .stat-num { color: var(--blue); }
-.stat-compliant .stat-num { color: var(--green); }
 
 .chip-done { background: var(--green-bg); border-color: var(--green-dim); color: var(--green); }
 
@@ -589,14 +369,6 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail'
 .error-message {
   font-size: 12px;
   color: var(--text);
-}
-
-.chip {
-  font-size: 10px;
-  font-weight: 500;
-  padding: 2px 7px;
-  border-radius: 3px;
-  border: 1px solid;
 }
 
 .chip-wait { background: var(--bg3); border-color: var(--line2); color: var(--muted); }

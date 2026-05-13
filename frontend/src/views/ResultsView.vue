@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, computed, ref } from 'vue'
+import { onMounted, computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Modal } from 'ant-design-vue'
 import { useProjectStore } from '@/stores/project'
@@ -12,12 +12,30 @@ const projectStore = useProjectStore()
 
 const projectId = computed(() => route.params.id as string)
 const selectedTaskId = ref<string>('')
+const todos = ref<any[]>([])
 
 onMounted(async () => {
   await projectStore.selectProject(projectId.value)
   await projectStore.fetchReviewTasks()
-  await projectStore.fetchReviewResults()
+
+  // 默认选中最新任务并加载数据
+  if (projectStore.reviewTasks.length > 0) {
+    const latestTask = projectStore.reviewTasks[0]
+    selectedTaskId.value = latestTask.id
+  }
 })
+
+// 当 selectedTaskId 变化时加载结果和 todos
+watch(selectedTaskId, async (newTaskId) => {
+  if (!newTaskId) return
+  await projectStore.fetchReviewResults()
+  try {
+    todos.value = await reviewApi.getTodosByTask(projectId.value, newTaskId)
+  } catch (err) {
+    console.error('加载子代理数据失败:', err)
+    todos.value = []
+  }
+}, { immediate: true })
 
 function getStatusLabel(status: string): string {
   const labels: Record<string, string> = {
@@ -95,7 +113,12 @@ async function startNewReview() {
 
       <section v-if="projectStore.reviewResults" class="section">
         <h2>审查结果</h2>
-        <ReviewResultsArea :review-results="projectStore.reviewResults" />
+        <ReviewResultsArea
+          :review-results="projectStore.reviewResults"
+          :todos="todos"
+          :project-id="projectId"
+          :task-id="selectedTaskId"
+        />
       </section>
 
       <div v-else class="no-results">

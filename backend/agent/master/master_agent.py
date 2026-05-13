@@ -11,7 +11,6 @@ from sqlalchemy import update
 from .tools.rule_parser import RuleLibraryScannerTool
 from .sub_agent_executor import SubAgentExecutor, detect_anomaly
 from backend.services.todo_service import TodoService
-from backend.services.task_merge_service import TaskMergeService
 from backend.models.review_task import ReviewTask
 from backend.config import get_settings
 
@@ -122,9 +121,9 @@ class MasterAgent:
             logger.warning("[MasterAgent.run] Cancelled, skipping merge phase")
             return {"success": False, "error": "Task cancelled"}
 
-        # Phase 4: 汇总结果
-        self._send_event("merging_started", {"message": "开始合并结果"})
-        merged_result = await self._merge_results(todo_service)
+        # Phase 4: 简单汇总统计
+        self._send_event("merging_started", {"message": "汇总审查结果"})
+        merged_result = await self._simple_aggregate(todo_service)
         self._send_event("merging_completed", {"result": merged_result})
 
         return {
@@ -278,8 +277,12 @@ class MasterAgent:
                 # 成功
                 findings = result.get("findings", [])
                 brain_cap = result.get('brain_capacity', 0.0)
+                report_path = result.get("report_path")
+                result_data = {"findings": findings}
+                if report_path:
+                    result_data["report_path"] = report_path
                 await task_todo_service.update_todo_status(
-                    todo.id, "completed", result={"findings": findings},
+                    todo.id, "completed", result=result_data,
                     brain_capacity=brain_cap, max_steps=100,
                 )
                 # 持久化检查项列表，用于统计检查项总数
@@ -374,13 +377,11 @@ class MasterAgent:
         except Exception as e:
             logger.warning(f"[_refresh_heartbeat] Failed to refresh heartbeat: {e}")
 
-    async def _merge_results(self, todo_service) -> dict:
-        """合并所有子代理结果.
+    async def _simple_aggregate(self, todo_service) -> dict:
+        """简单汇总所有子代理结果，不做 LLM 合并.
 
-        Uses TaskMergeService with LLM to intelligently merge findings from sub-agents.
-        Uses a fresh session to ensure we can see all sub-agent committed updates.
+        Collects findings from all completed sub-agents and computes statistics.
         """
-        # Create a fresh session to query todos with their updated results
         merge_session = None
         merge_todo_service = todo_service
         if self._session_factory is not None:
@@ -390,44 +391,29 @@ class MasterAgent:
         try:
             todos = await merge_todo_service.get_session_todos(self._session_id)
 
-            # Collect all findings from all sub-agents
             all_findings = []
             for todo in todos:
                 if todo.result and "findings" in todo.result:
-                    for finding in todo.result["findings"]:
-                        all_findings.append(finding)
+                    all_findings.extend(todo.result["findings"])
 
-            logger.info(f"[_merge_results] Collected {len(all_findings)} findings from {len(todos)} sub-agents")
+            critical = sum(1 for f in all_findings if not f.get("is_compliant") and f.get("severity") == "critical")
+            major = sum(1 for f in all_findings if not f.get("is_compliant") and f.get("severity") == "major")
+            minor = sum(1 for f in all_findings if not f.get("is_compliant") and f.get("severity") not in ("critical", "major"))
+            passed = sum(1 for f in all_findings if f.get("is_compliant"))
 
-            # Use LLM-based merge service
-            agent = None
-            try:
-                # Import here to avoid circular imports
-                from backend.agent.bid_review_agent import BidReviewAgent
+            logger.info(
+                f"[_simple_aggregate] {len(all_findings)} findings from {len(todos)} sub-agents: "
+                f"critical={critical}, major={major}, minor={minor}, passed={passed}"
+            )
 
-                # Create BidReviewAgent for merge decisions (paths don't matter since we only use MergeDeciderTool)
-                agent = BidReviewAgent(
-                    project_id=self.project_id,
-                    tender_doc_path="",
-                    bid_doc_path="",
-                    user_id=self.user_id,
-                    rule_doc_path="",
-                    event_callback=None,
-                    max_steps=1,
-                )
-                await agent.initialize()
-
-                task_merge_service = TaskMergeService(agent)
-                result = await task_merge_service.merge_sub_agent_results(
-                    findings=all_findings,
-                    event_callback=self._send_event,
-                )
-                logger.info(f"[_merge_results] TaskMergeService returned: total={result['total_findings']}, critical={result['critical_count']}, major={result['major_count']}, minor={result['minor_count']}, passed={result['passed_count']}")
-            finally:
-                if agent is not None:
-                    await agent.close()
-
-            return result
+            return {
+                "total_findings": len(all_findings),
+                "critical_count": critical,
+                "major_count": major,
+                "minor_count": minor,
+                "passed_count": passed,
+                "findings": all_findings,
+            }
         finally:
             if merge_session is not None:
                 await merge_session.close()

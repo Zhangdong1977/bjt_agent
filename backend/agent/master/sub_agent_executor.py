@@ -166,7 +166,7 @@ class SubAgentExecutor:
             logger.info(f"[SubAgentExecutor.execute] Findings: {findings}, check_items_count={len(check_items)}")
 
             # Calculate actual steps and brain capacity
-            actual_steps = len(self._agent._step_data) if self._agent else 0
+            actual_steps = self._agent._total_steps if self._agent else 0
             brain_capacity = min(round(actual_steps / max_steps * 100, 1), 100.0) if max_steps > 0 else 0.0
 
             # 检查取消状态 — run_review() 可能因 heartbeat monitor 取消而返回部分结果
@@ -209,6 +209,7 @@ class SubAgentExecutor:
                 "todo_id": self.todo_item.id,
                 "actual_steps": actual_steps,
                 "brain_capacity": brain_capacity,
+                "report_path": getattr(self._agent, '_output_md_path', None),
                 "_diagnostics": {
                     "write_file_called": write_file_called,
                 },

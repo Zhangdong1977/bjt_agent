@@ -378,6 +378,18 @@ export const reviewApi = {
     );
     return response.data;
   },
+
+  async getTodoReport(
+    projectId: string,
+    taskId: string,
+    todoId: string,
+  ): Promise<string> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/review/tasks/${taskId}/todos/${todoId}/report`,
+      { responseType: "text" },
+    );
+    return response.data;
+  },
 };
 
 // SSE Stream API
