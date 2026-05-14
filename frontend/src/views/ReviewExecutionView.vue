@@ -86,6 +86,8 @@ async function handleSSEEvent(event: any) {
         }
       } else if (event.status === 'completed') {
         phase.value = 'completed'
+        disconnect()
+        goToResults()
       } else if (event.status === 'failed') {
         phase.value = 'failed'
       }
@@ -153,6 +155,7 @@ async function handleSSEEvent(event: any) {
     case 'merging_completed':
       phase.value = 'completed'
       disconnect()
+      goToResults()
       break
 
     case 'progress':
@@ -366,6 +369,7 @@ async function handleSSEEvent(event: any) {
       // 审查完成事件
       phase.value = 'completed'
       disconnect()
+      goToResults()
       break
 
     case 'error':
