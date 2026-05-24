@@ -915,7 +915,7 @@ class BidReviewAgent(BaseAgent):
 1. 调用 search_tender_doc(文档类型="tender", query="关键词") 查找招标书中的要求
 2. 调用 search_tender_doc(文档类型="bid", query="关键词") 查找投标书中所有对应位置
 3. 如需精确判断，调用 compare_bid(requirement=..., bid_content=...) 进行深入比对
-4. 如搜索结果含 image_refs，调用 understand_image 分析图片
+4. 如搜索结果含 image_refs，优先使用 get_image_ocr 提取图片文字；仅在 OCR 不够时调用 understand_image
 5. 记录结果后，继续下一个检查项
 
 所有 {total_items} 个检查项完成后，调用 write_file 将完整结果写入 {output_md_path}。
@@ -925,7 +925,9 @@ class BidReviewAgent(BaseAgent):
 - 禁止在一次工具调用中尝试完成多个检查项
 - 必须逐项检查，每个检查项至少调用 search_tender_doc 两次
 - 必须使用 write_file 写入最终结果
-- understand_image 的 prompt 中禁止使用"身份证""身份证号码""姓名""护照号码"等敏感词，使用"证件""证件编号""人员名称"等替代"""
+- 图片分析优先使用 get_image_ocr（本地 OCR，不受内容安全过滤影响），understand_image 仅作后备
+- understand_image 的 prompt 中禁止使用"身份证""身份证号码""姓名""护照号码"等敏感词，使用"证件""证件编号""人员名称"等替代
+- 如 understand_image 报错（如 1026 敏感内容），以 OCR 结果为准继续审查"""
             self.add_user_message(task)
             logger.info(f"[BidReviewAgent.run_review] Task prompt added, output_md_path={output_md_path}")
 
