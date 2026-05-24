@@ -16,8 +16,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from mini_agent.llm import LLMClient
-from mini_agent.schema import LLMProvider, Message
+from mini_agent.schema import Message
+
+from backend.services.llm_factory import create_llm_client
 
 from backend.config import get_settings
 
@@ -178,12 +179,7 @@ class QualityEvaluator:
 
     def __init__(self):
         """Initialize the quality evaluator."""
-        self._llm_client = LLMClient(
-            api_key=settings.mini_agent_api_key,
-            provider=LLMProvider.OPENAI,
-            api_base=settings.mini_agent_api_base,
-            model=settings.mini_agent_model,
-        )
+        self._llm_client = create_llm_client()
 
     async def evaluate_compliance_accuracy(self, finding: dict) -> ComplianceAccuracyResult:
         """Evaluate whether the compliance determination is accurate.

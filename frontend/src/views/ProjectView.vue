@@ -178,13 +178,13 @@ function getStatusClass(status: string) {
               <input
                 v-else
                 type="file"
-                accept=".docx"
+                accept=".pdf,.docx"
                 :id="'tender-upload'"
                 class="file-input"
                 @change="handleUpload($event, 'tender')"
               />
               <label v-if="!projectStore.uploadProgress['tender']" for="tender-upload" class="upload-label">
-                点击上传 Word 文件 (.docx)
+                点击上传 PDF 或 Word 文件 (.pdf, .docx)
               </label>
             </div>
           </div>
@@ -242,13 +242,13 @@ function getStatusClass(status: string) {
               <input
                 v-else
                 type="file"
-                accept=".docx"
+                accept=".pdf,.docx"
                 :id="'bid-upload'"
                 class="file-input"
                 @change="handleUpload($event, 'bid')"
               />
               <label v-if="!projectStore.uploadProgress['bid']" for="bid-upload" class="upload-label">
-                点击上传 Word 文件 (.docx)
+                点击上传 PDF 或 Word 文件 (.pdf, .docx)
               </label>
             </div>
           </div>

@@ -283,7 +283,16 @@ export const documentsApi = {
           // Handle 401 for XHR upload - will trigger token refresh via interceptor
           reject(new Error("Unauthorized - please login again"));
         } else {
-          reject(new Error(`Upload failed with status ${xhr.status}`));
+          try {
+            const errorData = JSON.parse(xhr.responseText);
+            reject(
+              new Error(
+                errorData.detail || `Upload failed with status ${xhr.status}`,
+              ),
+            );
+          } catch {
+            reject(new Error(`Upload failed with status ${xhr.status}`));
+          }
         }
       };
 

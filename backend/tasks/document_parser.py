@@ -215,6 +215,12 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
 
     document.parsed_markdown_path = str(md_path)
     document.word_count = len(md_content.split())
+    document.page_count = parsed_data.get("page_count")
+
+    docling_json = parsed_data.get("docling_json_path")
+    if docling_json:
+        document.docling_json_path = str(docling_json)
+
     document.status = "parsed"
 
     _publish_parse_progress(document_id, "saving", 3, 3, 0)
@@ -223,45 +229,51 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
         "status": "success",
         "document_id": document.id,
         "parsed_markdown_path": str(md_path),
-        "page_count": None,
+        "page_count": document.page_count,
         "word_count": document.word_count,
     }
 
 
 async def _parse_document_internal(document: Document, file_path: Path, settings) -> dict:
-    """Internal document parsing logic for DOCX files."""
+    """Internal document parsing logic for DOCX/PDF files."""
     import time as time_module
 
     suffix = file_path.suffix.lower()
     start_time = time_module.time()
 
-    logger.info(f"[PARSE] Starting DOCX parsing: document_id={document.id}, file_path={file_path}")
+    logger.info(f"[PARSE] Starting parsing: document_id={document.id}, file_path={file_path}, type={suffix}")
 
-    # Progress tracking for DOCX parsing via mammoth
-    # mammoth's _visit_all is called recursively for nested elements (runs, table cells, etc.),
-    # but the progress callback now only fires from the top-level document.children iteration.
-    # processed is the count of top-level elements visited so far (at 10-element intervals).
-    last_published_time = 0
-    MIN_PUBLISH_INTERVAL = 0.5  # seconds between publishes
+    if suffix == ".pdf":
+        _publish_parse_progress(document.id, "extracting_text", 0, 1, 0)
+        parsed_data = await _parse_pdf_with_docling(file_path, document_id=document.id)
+        _publish_parse_progress(document.id, "extracting_text", 1, 1, 0)
+        logger.info(f"[PARSE] PDF parsing completed, markdown length: {len(parsed_data.get('text', ''))}")
+    else:
+        # DOCX/DOC parsing with mammoth progress callback
+        last_published_time = 0
+        MIN_PUBLISH_INTERVAL = 0.5
 
-    def docx_progress_callback(processed: int, total: int):
-        nonlocal last_published_time
-        logger.info(f"[PARSE] DOCX progress callback: processed={processed}, total={total}")
+        def docx_progress_callback(processed: int, total: int):
+            nonlocal last_published_time
+            logger.info(f"[PARSE] DOCX progress callback: processed={processed}, total={total}")
 
-        if total <= 0:
-            return
+            if total <= 0:
+                return
 
-        current_time = time_module.time()
-        # Always publish final progress (processed >= total) to prevent frontend stalling
-        # Time-based throttling: skip non-final events within 0.5s window
-        if processed < total and current_time - last_published_time < MIN_PUBLISH_INTERVAL:
-            return
+            current_time = time_module.time()
+            if processed < total and current_time - last_published_time < MIN_PUBLISH_INTERVAL:
+                return
 
-        last_published_time = current_time
-        _publish_parse_progress(document.id, "extracting_text", processed, total, 0)
+            last_published_time = current_time
+            _publish_parse_progress(document.id, "extracting_text", processed, total, 0)
 
-    parsed_data = await _parse_docx(file_path, progress_callback=docx_progress_callback, document_id=document.id)
-    logger.info(f"[PARSE] DOCX parsing completed, markdown length: {len(parsed_data.get('text', ''))}")
+        parsed_data = await _parse_docx(file_path, progress_callback=docx_progress_callback, document_id=document.id)
+        logger.info(f"[PARSE] DOCX parsing completed, markdown length: {len(parsed_data.get('text', ''))}")
+
+    # Check for scanned PDF (empty/very short content)
+    md_text = parsed_data.get("text", "")
+    if suffix == ".pdf" and len(md_text.strip()) < 100:
+        raise ValueError("该 PDF 似乎为扫描件（无可提取文字），暂不支持 OCR，请上传文字版 PDF 或 Word 文档")
 
     return await _save_parsed_content(file_path, parsed_data, document, settings, document.id)
 
@@ -335,71 +347,42 @@ def parse_document(self, document_id: str) -> dict:
         loop.close()
 
 
-async def _parse_pdf(file_path: Path) -> dict:
-    """Parse PDF file and extract text and images.
+async def _parse_pdf_with_docling(file_path: Path, document_id: str = "") -> dict:
+    """Parse PDF file using Docling converter.
 
-    Handles corrupted PDFs gracefully by catching exceptions.
+    Produces Markdown with image file links + DoclingDocument JSON.
+    OCR is disabled during parsing (deferred to review-time tools).
+
+    Args:
+        file_path: Path to the PDF file
+        document_id: Document UUID for progress reporting
+
+    Returns:
+        Dict with text (Markdown), images, and page_count
     """
-    import fitz  # PyMuPDF
+    from backend.parsers.docling_converter import DoclingConverter
 
-    text_parts = []
-    images = []
-    page_count = 0
+    file_size = file_path.stat().st_size
+    logger.info(f"Docling PDF parsing: {file_path} ({file_size / (1024*1024):.2f}MB)")
 
-    try:
-        doc = fitz.open(str(file_path))
+    images_dir = file_path.parent / f"{file_path.stem}_images"
+    docling_json_path = file_path.parent / f"{file_path.stem}_docling.json"
 
-        # Check if PDF is corrupted
-        if doc.is_closed or doc.is_encrypted:
-            raise ValueError(f"PDF is corrupted or encrypted: {file_path}")
+    converter = DoclingConverter()
+    result = await asyncio.to_thread(
+        converter.convert, file_path, images_dir=images_dir, docling_json_path=docling_json_path
+    )
 
-        page_count = len(doc)
-
-        # Limit page processing for very large documents
-        max_pages = 500
-        if page_count > max_pages:
-            logger.warning(f"PDF has {page_count} pages, limiting to first {max_pages}")
-            page_count = max_pages
-
-        for page_num, page in enumerate(doc):
-            if page_num >= max_pages:
-                break
-
-            try:
-                text_parts.append(page.get_text())
-            except Exception as e:
-                logger.warning(f"Failed to extract text from page {page_num + 1}: {e}")
-                text_parts.append(f"[Page {page_num + 1} text extraction failed]")
-
-            # Extract images
-            try:
-                for img_index, img in enumerate(page.get_images()):
-                    try:
-                        xref = img[0]
-                        base_image = doc.extract_image(xref)
-                        image_bytes = base_image["image"]
-                        image_ext = base_image["ext"]
-                        # Limit image size to 10MB
-                        if len(image_bytes) > 10 * 1024 * 1024:
-                            logger.warning(f"Skipping large image ({len(image_bytes)} bytes) on page {page_num + 1}")
-                            continue
-                        image_filename = f"page_{page_num + 1}_img_{img_index + 1}.{image_ext}"
-                        images.append({"filename": image_filename, "data": image_bytes})
-                    except Exception as e:
-                        logger.warning(f"Failed to extract image {img_index} from page {page_num + 1}: {e}")
-            except Exception as e:
-                logger.warning(f"Failed to get images from page {page_num + 1}: {e}")
-
-        doc.close()
-
-    except Exception as e:
-        logger.error(f"Failed to parse PDF {file_path}: {e}")
-        raise ValueError(f"Failed to parse PDF: {e}")
+    logger.info(
+        f"Docling PDF conversion: {len(result.markdown_content)} chars, "
+        f"{len(result.images)} images, {result.page_count} pages"
+    )
 
     return {
-        "text": "\n\n".join(text_parts),
-        "images": images,
-        "page_count": page_count,
+        "text": result.markdown_content,
+        "images": [{"filename": img.filename, "data": img.data} for img in result.images],
+        "page_count": result.page_count,
+        "docling_json_path": str(docling_json_path),
     }
 
 
@@ -432,5 +415,5 @@ async def _parse_docx(file_path: Path, progress_callback=None, document_id: str 
     return {
         "text": result.markdown_content,
         "images": [{"filename": img.filename, "data": img.data} for img in result.images],
-        "page_count": None,
+        "page_count": result.page_count,
     }

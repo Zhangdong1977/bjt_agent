@@ -1,4 +1,4 @@
-"""Markitdown converter module for DOCX/DOC to Markdown conversion."""
+"""Markitdown converter module for DOCX/DOC/PDF to Markdown conversion."""
 
 import logging
 import sys
@@ -60,11 +60,11 @@ class DirectFileImageHandler:
 
 
 class MarkitdownConverter:
-    """Markitdown converter for DOCX/DOC files to Markdown format.
+    """Markitdown converter for DOCX/DOC/PDF files to Markdown format.
 
     Uses the markitdown library to extract text and images from documents.
-    Images are written directly to disk via a custom mammoth image handler,
-    avoiding the base64 round-trip overhead.
+    For DOCX/DOC, images are written directly to disk via a custom mammoth image handler.
+    For PDF, uses markitdown's built-in PdfConverter for text/tables and PyMuPDF for images.
     """
 
     def __init__(self, timeout: int = 300):
@@ -75,49 +75,171 @@ class MarkitdownConverter:
             raise FileNotFoundError(f"Input file not found: {file_path}")
 
         suffix = file_path.suffix.lower()
-        if suffix not in [".docx", ".doc"]:
-            raise ValueError(f"Unsupported file type: {suffix}. Expected .docx or .doc")
+        if suffix not in [".docx", ".doc", ".pdf"]:
+            raise ValueError(f"Unsupported file type: {suffix}. Expected .docx, .doc, or .pdf")
 
         file_size = file_path.stat().st_size
         logger.info(f"Markitdown conversion: {file_path} ({file_size / (1024 * 1024):.2f}MB)")
 
         if images_dir is None:
             images_dir = file_path.parent / f"{file_path.stem}_images"
-        images_dir_name = images_dir.name
 
         try:
             markitdown_path = Path(__file__).parent.parent.parent / "third_party" / "markitdown" / "packages" / "markitdown" / "src"
-            mammoth_path = Path(__file__).parent.parent.parent / "third_party" / "mammoth"
 
-            for p in [str(markitdown_path), str(mammoth_path)]:
-                if p not in sys.path:
-                    sys.path.insert(0, p)
+            if str(markitdown_path) not in sys.path:
+                sys.path.insert(0, str(markitdown_path))
 
-            import mammoth
             from markitdown import MarkItDown
 
-            handler = DirectFileImageHandler(images_dir, images_dir_name)
-
             converter = MarkItDown()
-            kwargs = {"convert_image": mammoth.images.img_element(handler)}
-            if progress_callback:
-                kwargs["progress_callback"] = progress_callback
 
-            result = converter.convert(source=file_path, **kwargs)
+            if suffix in [".docx", ".doc"]:
+                return self._convert_docx(converter, file_path, images_dir, progress_callback)
+            else:
+                return self._convert_pdf(converter, file_path, images_dir)
 
-            logger.info(f"Markitdown conversion successful: {len(result.markdown)} chars, {len(handler.images)} images")
-
-            return ConversionResult(
-                markdown_content=result.markdown or "",
-                images=handler.images,
-                page_count=None
-            )
-
+        except MarkitdownConversionError:
+            raise
         except Exception as e:
             logger.error(f"Markitdown conversion failed: {e}")
             raise MarkitdownConversionError(f"Markitdown conversion failed: {e}")
+
+    def _convert_docx(self, converter, file_path: Path, images_dir: Path, progress_callback) -> ConversionResult:
+        """Convert DOCX/DOC file to Markdown."""
+        mammoth_path = Path(__file__).parent.parent.parent / "third_party" / "mammoth"
+        if str(mammoth_path) not in sys.path:
+            sys.path.insert(0, str(mammoth_path))
+
+        import mammoth
+
+        images_dir_name = images_dir.name
+        handler = DirectFileImageHandler(images_dir, images_dir_name)
+
+        kwargs = {"convert_image": mammoth.images.img_element(handler)}
+        if progress_callback:
+            kwargs["progress_callback"] = progress_callback
+
+        result = converter.convert(source=file_path, **kwargs)
+
+        logger.info(f"DOCX conversion successful: {len(result.markdown)} chars, {len(handler.images)} images")
+
+        return ConversionResult(
+            markdown_content=result.markdown or "",
+            images=handler.images,
+            page_count=None,
+        )
+
+    def _convert_pdf(self, converter, file_path: Path, images_dir: Path) -> ConversionResult:
+        """Convert PDF file to Markdown.
+
+        Primary: markitdown's PdfConverter (pdfplumber + pdfminer, with table support).
+        Fallback: PyMuPDF (fitz) for PDFs with non-standard structure.
+        """
+        markdown_content = ""
+        try:
+            result = converter.convert(source=file_path)
+            markdown_content = result.markdown or ""
+            logger.info(f"PDF markitdown conversion: {len(markdown_content)} chars")
+        except Exception as e:
+            logger.warning(f"markitdown PdfConverter failed ({e}), falling back to PyMuPDF")
+            markdown_content = _extract_pdf_text_with_fitz(file_path)
+
+        images = _extract_pdf_images(file_path, images_dir)
+        page_count = _get_pdf_page_count(file_path)
+
+        logger.info(f"PDF conversion result: {len(markdown_content)} chars, {len(images)} images, {page_count} pages")
+
+        return ConversionResult(
+            markdown_content=markdown_content,
+            images=images,
+            page_count=page_count,
+        )
 
 
 def convert_to_markdown(file_path: Path) -> ConversionResult:
     converter = MarkitdownConverter()
     return converter.convert(file_path)
+
+
+def _extract_pdf_text_with_fitz(file_path: Path) -> str:
+    """Extract text from PDF using PyMuPDF as a fallback when markitdown fails."""
+    import fitz
+
+    text_parts = []
+    try:
+        doc = fitz.open(str(file_path))
+        if doc.is_encrypted:
+            doc.close()
+            raise ValueError("PDF is encrypted")
+
+        max_pages = 500
+        for page_num in range(min(len(doc), max_pages)):
+            page = doc[page_num]
+            try:
+                text = page.get_text()
+                if text and text.strip():
+                    text_parts.append(text.strip())
+            except Exception as e:
+                logger.warning(f"Failed to extract text from page {page_num + 1}: {e}")
+        doc.close()
+    except Exception as e:
+        logger.error(f"PyMuPDF text extraction failed for {file_path}: {e}")
+        raise
+
+    return "\n\n".join(text_parts)
+
+
+def _extract_pdf_images(file_path: Path, images_dir: Path) -> list[ImageInfo]:
+    """Extract embedded images from PDF using PyMuPDF."""
+    import fitz
+
+    images: list[ImageInfo] = []
+
+    try:
+        doc = fitz.open(str(file_path))
+        if doc.is_encrypted:
+            logger.warning(f"PDF is encrypted, skipping image extraction: {file_path}")
+            doc.close()
+            return images
+
+        max_pages = 500
+        for page_num in range(min(len(doc), max_pages)):
+            page = doc[page_num]
+            try:
+                for img_index, img in enumerate(page.get_images()):
+                    try:
+                        xref = img[0]
+                        base_image = doc.extract_image(xref)
+                        image_bytes = base_image["image"]
+                        image_ext = base_image["ext"]
+                        if len(image_bytes) > 10 * 1024 * 1024:
+                            continue
+                        filename = f"page_{page_num + 1}_img_{img_index + 1}.{image_ext}"
+                        images_dir.mkdir(parents=True, exist_ok=True)
+                        (images_dir / filename).write_bytes(image_bytes)
+                        images.append(ImageInfo(filename=filename, data=image_bytes))
+                    except Exception as e:
+                        logger.warning(f"Failed to extract image {img_index} from page {page_num + 1}: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to get images from page {page_num + 1}: {e}")
+
+        doc.close()
+    except Exception as e:
+        logger.warning(f"PDF image extraction failed for {file_path}: {e}")
+
+    return images
+
+
+def _get_pdf_page_count(file_path: Path) -> Optional[int]:
+    """Get PDF page count using PyMuPDF."""
+    import fitz
+
+    try:
+        doc = fitz.open(str(file_path))
+        count = len(doc)
+        doc.close()
+        return count
+    except Exception as e:
+        logger.warning(f"Failed to get PDF page count: {e}")
+        return None

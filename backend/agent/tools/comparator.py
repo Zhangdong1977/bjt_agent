@@ -4,14 +4,11 @@ import json
 import re
 from typing import Optional
 
-from mini_agent.llm import LLMClient
-from mini_agent.schema import LLMProvider, Message
+from mini_agent.schema import Message
 from backend.agent.tools.base import ToolResult
 from mini_agent.tools.base import Tool as BaseTool
 
-from backend.config import get_settings
-
-settings = get_settings()
+from backend.services.llm_factory import create_llm_client
 
 # 比对提示词 - 增强版，支持位置提取
 COMPARISON_PROMPT = """你是一位专业的招投标合规分析师。
@@ -69,13 +66,7 @@ class ComparatorTool(BaseTool):
     def __init__(self):
         """初始化比对工具。"""
         super().__init__()
-        # 初始化 MiniMax 的 LLM 客户端
-        self._llm_client = LLMClient(
-            api_key=settings.mini_agent_api_key,
-            provider=LLMProvider.OPENAI,  # MiniMax 使用 OpenAI 协议
-            api_base=settings.mini_agent_api_base,
-            model=settings.mini_agent_model,
-        )
+        self._llm_client = create_llm_client()
 
     @property
     def name(self) -> str:

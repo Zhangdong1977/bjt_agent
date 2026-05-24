@@ -16,8 +16,9 @@ from backend.utils.mini_agent_utils import setup_mini_agent_path
 setup_mini_agent_path()
 
 from mini_agent.agent import Agent as BaseAgent
-from mini_agent.llm import LLMClient
-from mini_agent.schema import LLMProvider, Message
+from mini_agent.schema import Message
+
+from backend.services.llm_factory import create_llm_client
 from mini_agent.tools.mcp_loader import load_mcp_tools_async, cleanup_mcp_connections
 from mini_agent.tools.file_tools import WriteTool, ReadTool
 
@@ -25,6 +26,13 @@ from backend.config import get_settings
 from backend.agent.tools.doc_search import DocSearchTool
 from backend.agent.tools.rag_search import RAGSearchTool
 from backend.agent.tools.comparator import ComparatorTool
+from backend.agent.tools.structure_tools import (
+    DocumentTocTool,
+    SectionContentTool,
+    SectionImagesTool,
+    ImageOcrTool,
+    StructureDataLoader,
+)
 from backend.agent.tools import MergeDeciderTool
 from backend.agent.prompt import SYSTEM_PROMPT_WITH_RULE
 
@@ -108,14 +116,8 @@ class BidReviewAgent(BaseAgent):
         # Track the reason for cancellation (heartbeat_timeout vs api_cancellation)
         self._cancel_reason: Optional[str] = None
 
-        # Initialize LLM client (MiniMax uses OpenAI protocol)
-        llm_client = LLMClient(
-            api_key=settings.mini_agent_api_key,
-            provider=LLMProvider.OPENAI,  # MiniMax uses OpenAI-compatible API
-            api_base=settings.mini_agent_api_base,
-            model=settings.mini_agent_model,
-            timeout=120.0,  # 2min per API call to prevent indefinite hangs
-        )
+        # Initialize LLM client via factory (supports MiniMax / Volcengine)
+        llm_client = create_llm_client(timeout=120.0)
         self.llm_client = llm_client  # Store for _call_llm_with_retry
 
         # Set up workspace
@@ -123,11 +125,19 @@ class BidReviewAgent(BaseAgent):
         workspace_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize tools
+        # Shared loaders for structured tools (avoids duplicate file reads)
+        from backend.agent.tools.structure_tools import _create_shared_loaders
+        _shared_loaders = _create_shared_loaders(tender_doc_path, bid_doc_path)
+
         tools = [
             DocSearchTool(tender_doc_path=tender_doc_path, bid_doc_path=bid_doc_path),
             RAGSearchTool(user_id=user_id),
             ComparatorTool(),
             MergeDeciderTool(),
+            DocumentTocTool(loaders=_shared_loaders),
+            SectionContentTool(loaders=_shared_loaders),
+            SectionImagesTool(loaders=_shared_loaders),
+            ImageOcrTool(loaders=_shared_loaders),
             WriteTool(workspace_dir=str(workspace_dir)),
             ReadTool(workspace_dir=str(workspace_dir)),
         ]
@@ -254,6 +264,13 @@ class BidReviewAgent(BaseAgent):
                     logger.info("[BidReviewAgent.initialize] Image understanding tool (understand_image) is available")
                 if "web_search" in loaded_tool_names:
                     logger.info("[BidReviewAgent.initialize] Web search tool (web_search) is available")
+
+                # Override understand_image with Volcengine vision tool when using volcengine provider
+                if settings.llm_provider == "volcengine":
+                    from backend.agent.tools.volcengine_vision import VolcengineVisionTool
+                    vision_tool = VolcengineVisionTool()
+                    self.tools[vision_tool.name] = vision_tool
+                    logger.info("[BidReviewAgent.initialize] Overrode understand_image with Volcengine vision tool")
             else:
                 logger.warning(f"[BidReviewAgent.initialize] MCP config not found at {mcp_config_path}")
 

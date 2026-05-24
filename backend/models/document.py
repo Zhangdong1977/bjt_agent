@@ -24,6 +24,7 @@ class Document(Base):
     parsed_html_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     parsed_markdown_path: Mapped[str | None] = mapped_column(String(500), nullable=True)  # Markdown 文件路径
     parsed_images_dir: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    docling_json_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     word_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending", index=True)  # pending, parsing, parsed, failed

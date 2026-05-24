@@ -39,10 +39,19 @@ class Settings(BaseSettings):
     # RAG Memory Service
     rag_memory_service_url: str = "http://localhost:3001"
 
-    # Mini-Agent
+    # LLM Provider: "minimax" or "volcengine"
+    llm_provider: str = "minimax"
+
+    # MiniMax
     mini_agent_api_key: str = ""
     mini_agent_api_base: str = "https://api.minimaxi.com"
     mini_agent_model: str = "MiniMax-M2.7-highspeed"
+
+    # Volcengine / 火山引擎
+    volcengine_api_key: str = ""
+    volcengine_api_base: str = "https://ark.cn-beijing.volces.com/api/v3"
+    volcengine_model: str = "doubao-seed-2-0-pro-260215"
+    volcengine_embedding_model: str = "doubao-embedding"
 
     # Mini-Max MCP
     minimax_api_key: str = ""
@@ -63,8 +72,8 @@ class Settings(BaseSettings):
         return Path(__file__).parent.parent / self.knowledge_base_dir
 
     # File Upload
-    max_upload_size_mb: int = 250  # Maximum file upload size in MB (supports large documents like 投标文件.docx ~219MB)
-    max_upload_size_bytes: int = 250 * 1024 * 1024  # Calculated bytes
+    max_upload_size_mb: int = 500  # Maximum file upload size in MB (supports large documents like 投标文件.docx)
+    max_upload_size_bytes: int = 500 * 1024 * 1024  # Calculated bytes
 
     # Rate Limiting
     rate_limit_per_minute: int = 60  # Default rate limit per minute

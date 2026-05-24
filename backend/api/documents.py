@@ -170,8 +170,8 @@ async def get_document_content(
     content_format = "html"
     images = []
 
-    if file_ext in [".docx", ".doc"]:
-        # Return Markdown content if available, otherwise fallback to HTML
+    if file_ext in [".docx", ".doc", ".pdf"]:
+        # Return Markdown content for DOCX/PDF files
         content_format = "markdown"
         workspace_dir = settings.workspace_path
         workspace_rel_path = ""
@@ -190,7 +190,7 @@ async def get_document_content(
                     return f"![{alt_text}]({new_src})"
                 content = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', fix_markdown_img_src, content)
         elif document.parsed_html_path and Path(document.parsed_html_path).exists():
-            # Fallback to HTML if markdown is not available
+            # Fallback to HTML if markdown is not available (legacy DOCX)
             content_format = "html"
             html_content = Path(document.parsed_html_path).read_text(encoding="utf-8")
 
@@ -222,40 +222,6 @@ async def get_document_content(
                 if p.is_file():
                     rel_path = p.relative_to(workspace_dir)
                     images.append(f"/files/{rel_path}")
-
-    else:
-        # PDF: return HTML content (existing logic)
-        if document.parsed_html_path and Path(document.parsed_html_path).exists():
-            html_content = Path(document.parsed_html_path).read_text(encoding="utf-8")
-
-            # Get image paths and fix HTML image src paths
-            workspace_dir = settings.workspace_path
-            workspace_rel_path = ""
-            if document.parsed_images_dir and Path(document.parsed_images_dir).exists():
-                for p in Path(document.parsed_images_dir).iterdir():
-                    if p.is_file():
-                        rel_path = p.relative_to(workspace_dir)
-                        images.append(f"/files/{rel_path}")
-                workspace_rel_path = Path(document.parsed_images_dir).relative_to(workspace_dir).parent
-
-            # Fix relative image paths in HTML to use /files/ URLs
-            if workspace_rel_path:
-                import re
-
-                def fix_img_src(match):
-                    img_tag = match.group(0)
-                    src_match = re.search(r'src=["\']([^"\']+)["\']', img_tag)
-                    if not src_match:
-                        return img_tag
-                    src = src_match.group(1)
-                    if src.startswith(('http://', 'https://', '/')):
-                        return img_tag
-                    new_src = f"/files/{workspace_rel_path}/{src}"
-                    return img_tag.replace(f'"{src}"', f'"{new_src}"').replace(f"'{src}'", f"'{new_src}'")
-
-                html_content = re.sub(r'<img[^>]+>', fix_img_src, html_content)
-
-            content = html_content
 
     return DocumentContentResponse(content=content, images=images, format=content_format)
 

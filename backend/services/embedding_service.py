@@ -23,15 +23,20 @@ class EmbeddingService:
 
     def __init__(self):
         settings = get_settings()
-        # Ensure base_url has /v1 suffix for Mini-Max API
-        base_url = settings.mini_agent_api_base.rstrip('/')
-        if not base_url.endswith('/v1'):
-            base_url = base_url + '/v1'
+        if settings.llm_provider == "volcengine":
+            base_url = settings.volcengine_api_base.rstrip('/')
+            api_key = settings.volcengine_api_key
+            self.model = settings.volcengine_embedding_model
+        else:
+            base_url = settings.mini_agent_api_base.rstrip('/')
+            if not base_url.endswith('/v1'):
+                base_url = base_url + '/v1'
+            api_key = settings.mini_agent_api_key
+            self.model = "embeddings"
         self.client = AsyncOpenAI(
-            api_key=settings.mini_agent_api_key,
+            api_key=api_key,
             base_url=base_url,
         )
-        self.model = "embeddings"  # MiniMax embedding model
 
     async def get_embedding(self, text: str) -> list[float]:
         """Get embedding vector for a single text.
