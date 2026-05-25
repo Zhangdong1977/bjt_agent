@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # RAG Memory Service
     rag_memory_service_url: str = "http://localhost:3001"
 
+    # OCR Service (empty = local RapidOCR, url = remote microservice)
+    ocr_service_url: str = ""
+
     # LLM Provider: "minimax" or "volcengine"
     llm_provider: str = "minimax"
 

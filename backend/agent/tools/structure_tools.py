@@ -8,6 +8,7 @@ Provides 4 tools for structured document access:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+
+import httpx
 
 from backend.agent.tools.base import ToolResult
 from mini_agent.tools.base import Tool as BaseTool
@@ -400,18 +403,12 @@ class SectionImagesTool(BaseTool):
 
 
 class ImageOcrTool(BaseTool):
-    """对文档中的指定图片进行 OCR 文字识别。"""
+    """对文档中的指定图片进行 OCR 文字识别。支持本地和远程两种模式。"""
 
-    def __init__(self, loaders: dict[str, StructureDataLoader]):
+    def __init__(self, loaders: dict[str, StructureDataLoader], ocr_service_url: str | None = None):
         self._loaders = loaders
         self._ocr_engine = None
-
-    def _get_ocr_engine(self):
-        """Lazy-init OCR engine (loads model once, reuses across calls)."""
-        if self._ocr_engine is None:
-            from rapidocr import RapidOCR
-            self._ocr_engine = RapidOCR()
-        return self._ocr_engine
+        self._ocr_service_url = ocr_service_url or None
 
     @property
     def name(self) -> str:
@@ -460,7 +457,11 @@ class ImageOcrTool(BaseTool):
             if not full_path.exists():
                 return ToolResult(success=False, content="", error=f"图片文件不存在: {full_path}")
 
-            ocr_text = await asyncio.to_thread(self._run_ocr, full_path)
+            if self._ocr_service_url:
+                ocr_text = await self._remote_ocr(full_path)
+            else:
+                ocr_text = await asyncio.to_thread(self._run_ocr_local, full_path)
+
             if not ocr_text.strip():
                 return ToolResult(
                     success=True,
@@ -478,17 +479,36 @@ class ImageOcrTool(BaseTool):
             logger.error(f"ImageOcrTool error: {e}")
             return ToolResult(success=False, content="", error=str(e))
 
-    def _run_ocr(self, image_path: Path) -> str:
-        """Synchronous OCR using RapidOCR (run in thread pool)."""
+    def _run_ocr_local(self, image_path: Path) -> str:
+        """Synchronous local OCR using RapidOCR (run in thread pool)."""
+        if self._ocr_engine is None:
+            from rapidocr import RapidOCR
+            self._ocr_engine = RapidOCR()
+
+        ocr = self._ocr_engine
+        output = ocr(str(image_path))
+        if output.txts is None or len(output.txts) == 0:
+            return ""
+        return "\n".join(output.txts)
+
+    async def _remote_ocr(self, image_path: Path) -> str:
+        """Remote OCR via HTTP microservice."""
+        suffix = image_path.suffix.lstrip(".") or "png"
+        image_b64 = base64.b64encode(image_path.read_bytes()).decode()
+
         try:
-            ocr = self._get_ocr_engine()
-            output = ocr(str(image_path))
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{self._ocr_service_url}/api/ocr",
+                    json={"image_base64": image_b64, "image_format": suffix},
+                )
+                response.raise_for_status()
+                result = response.json()
+        except httpx.ConnectError:
+            raise RuntimeError(f"无法连接到 OCR 服务: {self._ocr_service_url}")
+        except httpx.TimeoutException:
+            raise RuntimeError("OCR 服务请求超时 (60s)")
 
-            if output.txts is None or len(output.txts) == 0:
-                return ""
-
-            return "\n".join(output.txts)
-
-        except Exception as e:
-            logger.error(f"OCR failed for {image_path}: {e}")
-            raise
+        if not result.get("success"):
+            raise RuntimeError(result.get("error", "OCR failed"))
+        return result.get("ocr_text", "")

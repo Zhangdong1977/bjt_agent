@@ -137,7 +137,7 @@ class BidReviewAgent(BaseAgent):
             DocumentTocTool(loaders=_shared_loaders),
             SectionContentTool(loaders=_shared_loaders),
             SectionImagesTool(loaders=_shared_loaders),
-            ImageOcrTool(loaders=_shared_loaders),
+            ImageOcrTool(loaders=_shared_loaders, ocr_service_url=settings.ocr_service_url),
             WriteTool(workspace_dir=str(workspace_dir)),
             ReadTool(workspace_dir=str(workspace_dir)),
         ]
