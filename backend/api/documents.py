@@ -184,8 +184,18 @@ async def get_document_content(
                 def fix_markdown_img_src(match):
                     alt_text = match.group(1)
                     src = match.group(2)
-                    if src.startswith(('http://', 'https://', '/')):
+                    # Skip external URLs
+                    if src.startswith(('http://', 'https://')):
                         return match.group(0)
+                    # Already rewritten
+                    if src.startswith('/files/'):
+                        return match.group(0)
+                    # Absolute local path within workspace -> rewrite to /files/ URL
+                    abs_workspace = str(workspace_dir)
+                    if src.startswith(abs_workspace):
+                        rel = Path(src).relative_to(workspace_dir)
+                        return f"![{alt_text}](/files/{rel})"
+                    # Relative path -> prefix with workspace rel path
                     new_src = f"/files/{workspace_rel_path}/{src}"
                     return f"![{alt_text}]({new_src})"
                 content = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', fix_markdown_img_src, content)
@@ -207,8 +217,15 @@ async def get_document_content(
                     if not src_match:
                         return img_tag
                     src = src_match.group(1)
-                    if src.startswith(('http://', 'https://', '/')):
+                    if src.startswith(('http://', 'https://')):
                         return img_tag
+                    if src.startswith('/files/'):
+                        return img_tag
+                    abs_workspace = str(workspace_dir)
+                    if src.startswith(abs_workspace):
+                        rel = Path(src).relative_to(workspace_dir)
+                        new_src = f"/files/{rel}"
+                        return img_tag.replace(f'"{src}"', f'"{new_src}"').replace(f"'{src}'", f"'{new_src}'")
                     new_src = f"/files/{workspace_rel_path}/{src}"
                     return img_tag.replace(f'"{src}"', f'"{new_src}"').replace(f"'{src}'", f"'{new_src}'")
 

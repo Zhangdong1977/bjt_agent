@@ -9,6 +9,8 @@ from pathlib import Path
 
 from typing import Literal
 
+from billiard.exceptions import SoftTimeLimitExceeded
+
 from backend.celery_app import celery_app
 from backend.models import Document
 
@@ -46,15 +48,26 @@ def _get_redis_pool():
         )
     return _redis_connection_pool
 
-def _publish_parse_progress(document_id: str, stage: str, processed: int, total: int, eta_seconds: int) -> None:
+def _publish_parse_progress(
+    document_id: str,
+    stage: str,
+    processed: int,
+    total: int,
+    eta_seconds: int,
+    sub_stage: str | None = None,
+    stage_counts: dict[str, int] | None = None,
+) -> None:
     """Publish a parse progress event to Redis Stream.
 
     Args:
         document_id: The document UUID
-        stage: Stage name (e.g., "extracting_text", "saving")
+        stage: Stage name (e.g., "extracting_text", "saving", "parsing_pdf")
         processed: Number of elements processed so far
         total: Total number of elements to process
         eta_seconds: Estimated seconds remaining
+        sub_stage: Optional Docling internal stage (e.g., "layout", "table")
+        stage_counts: Optional per-stage real page counts
+            {"preprocess": 42, "layout": 30, "table": 28, "assemble": 25}
     """
     import redis
 
@@ -69,10 +82,11 @@ def _publish_parse_progress(document_id: str, stage: str, processed: int, total:
             "total": total,
             "eta_seconds": eta_seconds,
         }
-        pct = int(processed * 100 / total) if total > 0 else 0
-        # logger.info(f"[PROGRESS] Publishing to {stream_key}: stage={stage}, processed={processed}, total={total}, pct={pct}%")
+        if sub_stage is not None:
+            event["sub_stage"] = sub_stage
+        if stage_counts is not None:
+            event["stage_counts"] = stage_counts
         r.xadd(stream_key, {"data": json.dumps(event)})
-        # logger.info(f"[PROGRESS] Successfully published progress event for document {document_id}")
     except Exception as e:
         logger.warning(f"[PROGRESS] Failed to publish parse progress for {document_id}: {e}")
 
@@ -240,14 +254,22 @@ async def _parse_document_internal(document: Document, file_path: Path, settings
 
     suffix = file_path.suffix.lower()
     start_time = time_module.time()
+    file_size_mb = file_path.stat().st_size / (1024 * 1024)
 
-    logger.info(f"[PARSE] Starting parsing: document_id={document.id}, file_path={file_path}, type={suffix}")
+    logger.info(
+        f"[PARSE] Starting: document_id={document.id}, file={file_path.name}, "
+        f"type={suffix}, size={file_size_mb:.2f}MB"
+    )
 
     if suffix == ".pdf":
-        _publish_parse_progress(document.id, "extracting_text", 0, 1, 0)
         parsed_data = await _parse_pdf_with_docling(file_path, document_id=document.id)
-        _publish_parse_progress(document.id, "extracting_text", 1, 1, 0)
-        logger.info(f"[PARSE] PDF parsing completed, markdown length: {len(parsed_data.get('text', ''))}")
+        elapsed = time_module.time() - start_time
+        logger.info(
+            f"[PARSE] PDF done: document_id={document.id}, elapsed={elapsed:.1f}s, "
+            f"md_length={len(parsed_data.get('text', ''))}, "
+            f"images={len(parsed_data.get('images', []))}, "
+            f"pages={parsed_data.get('page_count')}"
+        )
     else:
         # DOCX/DOC parsing with mammoth progress callback
         last_published_time = 0
@@ -268,7 +290,11 @@ async def _parse_document_internal(document: Document, file_path: Path, settings
             _publish_parse_progress(document.id, "extracting_text", processed, total, 0)
 
         parsed_data = await _parse_docx(file_path, progress_callback=docx_progress_callback, document_id=document.id)
-        logger.info(f"[PARSE] DOCX parsing completed, markdown length: {len(parsed_data.get('text', ''))}")
+        elapsed = time_module.time() - start_time
+        logger.info(
+            f"[PARSE] DOCX done: document_id={document.id}, elapsed={elapsed:.1f}s, "
+            f"md_length={len(parsed_data.get('text', ''))}"
+        )
 
     # Check for scanned PDF (empty/very short content)
     md_text = parsed_data.get("text", "")
@@ -285,8 +311,12 @@ def parse_document(self, document_id: str) -> dict:
     This is a Celery task that runs asynchronously.
     After text extraction, it optionally processes images with LLM understanding.
     """
+    import time as time_module
     from backend.config import get_settings
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    task_start = time_module.time()
+    logger.info(f"[PARSE] ====== Task received: document_id={document_id} ======")
 
     settings = get_settings()
 
@@ -313,6 +343,7 @@ def parse_document(self, document_id: str) -> dict:
             document = result.scalar_one_or_none()
 
             if not document:
+                logger.error(f"[PARSE] Document not found in DB: {document_id}")
                 return {"status": "error", "message": "Document not found"}
 
             document.status = "parsing"
@@ -323,35 +354,68 @@ def parse_document(self, document_id: str) -> dict:
                 document.status = "failed"
                 document.parse_error = "File not found"
                 await db.flush()
+                logger.error(f"[PARSE] File not found on disk: {file_path}")
                 return {"status": "error", "message": "File not found"}
 
             try:
                 result = await _parse_document_internal(document, file_path, settings)
+                elapsed = time_module.time() - task_start
+                logger.info(
+                    f"[PARSE] ====== Task completed: document_id={document_id}, "
+                    f"elapsed={elapsed:.1f}s, pages={result.get('page_count')}, "
+                    f"word_count={result.get('word_count')} ======"
+                )
                 await db.commit()
                 # Publish completion event after successful save and commit
                 _publish_parse_progress(document.id, "completed", 1, 1, 0)
                 return result
             except Exception as e:
+                elapsed = time_module.time() - task_start
+                logger.error(
+                    f"[PARSE] ====== Task FAILED: document_id={document_id}, "
+                    f"elapsed={elapsed:.1f}s, error_type={type(e).__name__}, "
+                    f"error={e} ======",
+                    exc_info=True,
+                )
                 document.status = "failed"
                 document.parse_error = str(e)
                 await db.flush()
                 await db.commit()
+                _publish_parse_progress(document.id, "failed", 0, 0, 0, sub_stage="error")
                 return {"status": "error", "message": str(e)}
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         return loop.run_until_complete(_parse())
+    except SoftTimeLimitExceeded:
+        elapsed = time_module.time() - task_start
+        logger.error(
+            f"[PARSE] ====== Task TIMEOUT (SoftTimeLimitExceeded): document_id={document_id}, "
+            f"elapsed={elapsed:.1f}s ======"
+        )
+        error_msg = "文档解析超时，文件过大或内容过于复杂。建议上传较小的文件或拆分后重新上传。"
+        _publish_parse_progress(document_id, "failed", 0, 0, 0, sub_stage="timeout")
+        _mark_document_failed(document_id, error_msg, session_factory)
+        return {"status": "error", "message": error_msg}
     finally:
-        loop.run_until_complete(engine.dispose())
+        try:
+            loop.run_until_complete(engine.dispose())
+        except Exception:
+            pass
         loop.close()
 
 
 async def _parse_pdf_with_docling(file_path: Path, document_id: str = "") -> dict:
-    """Parse PDF file using Docling converter.
+    """Parse PDF file using Docling converter with multi-stage weighted progress.
 
     Produces Markdown with image file links + DoclingDocument JSON.
     OCR is disabled during parsing (deferred to review-time tools).
+
+    Progress is reported as weighted page-equivalents across 4 pipeline stages
+    (preprocess, layout, table, assemble), each contributing 25% weight.
+    This provides continuous feedback from the first page entering the pipeline,
+    instead of waiting for pages to clear all stages.
 
     Args:
         file_path: Path to the PDF file
@@ -360,23 +424,109 @@ async def _parse_pdf_with_docling(file_path: Path, document_id: str = "") -> dic
     Returns:
         Dict with text (Markdown), images, and page_count
     """
-    from backend.parsers.docling_converter import DoclingConverter
+    import threading
+    import time as time_module
+    from backend.parsers.docling_converter import DoclingConverter, ProgressReportingPdfPipeline
 
     file_size = file_path.stat().st_size
-    logger.info(f"Docling PDF parsing: {file_path} ({file_size / (1024*1024):.2f}MB)")
+    logger.info(f"[DOCLING] Starting: {file_path.name} ({file_size / (1024*1024):.2f}MB)")
+
+    # Get total page count instantly via PyMuPDF for progress reporting
+    total_pages = 0
+    try:
+        import fitz
+        doc = fitz.open(str(file_path))
+        total_pages = len(doc)
+        doc.close()
+        logger.info(f"[DOCLING] PDF total pages (PyMuPDF): {total_pages}")
+    except Exception as e:
+        logger.warning(f"[DOCLING] Failed to get PDF page count via PyMuPDF: {e}")
+
+    # Per-stage real page tracking (4 active stages, ocr skipped)
+    STAGE_NAMES = ["preprocess", "layout", "table", "assemble"]
+
+    # Report initial progress: loading models
+    _publish_parse_progress(document_id, "parsing_pdf", 0, total_pages, 0, sub_stage="loading_models")
+
+    # Set up per-stage progress callback using sets for accurate counting
+    last_published_time = 0.0
+    stage_pages: dict[str, set[int]] = {}
+    progress_lock = threading.Lock()
+    MIN_PUBLISH_INTERVAL = 0.5
+    callback_invoke_count = 0
+
+    def on_stage_progress(stage_name: str, page_no: int):
+        nonlocal last_published_time, callback_invoke_count
+        callback_invoke_count += 1
+        with progress_lock:
+            stage_pages.setdefault(stage_name, set()).add(page_no)
+
+            # Log first call and every 100th call
+            if callback_invoke_count == 1:
+                logger.info(
+                    f"[DOCLING] First page finished stage: stage={stage_name}, page={page_no}, "
+                    f"doc_id={document_id}"
+                )
+            elif callback_invoke_count % 100 == 0:
+                counts_debug = {name: len(stage_pages.get(name, set())) for name in STAGE_NAMES}
+                logger.info(
+                    f"[DOCLING] Progress: calls={callback_invoke_count}, "
+                    f"stages={counts_debug}, doc_id={document_id}"
+                )
+
+            current_time = time_module.time()
+            if current_time - last_published_time < MIN_PUBLISH_INTERVAL:
+                return
+            last_published_time = current_time
+
+            counts = {name: len(stage_pages.get(name, set())) for name in STAGE_NAMES}
+            effective_count = min(counts.values()) if counts else 0
+
+            _publish_parse_progress(
+                document_id, "parsing_pdf",
+                effective_count, total_pages, 0,
+                stage_counts=counts,
+            )
+
+    ProgressReportingPdfPipeline.set_callback(on_stage_progress)
 
     images_dir = file_path.parent / f"{file_path.stem}_images"
     docling_json_path = file_path.parent / f"{file_path.stem}_docling.json"
 
+    convert_start = time_module.time()
     converter = DoclingConverter()
+    logger.info(f"[DOCLING] Calling converter.convert()...")
     result = await asyncio.to_thread(
         converter.convert, file_path, images_dir=images_dir, docling_json_path=docling_json_path
     )
+    convert_elapsed = time_module.time() - convert_start
 
-    logger.info(
-        f"Docling PDF conversion: {len(result.markdown_content)} chars, "
-        f"{len(result.images)} images, {result.page_count} pages"
+    # Clear callback after conversion
+    ProgressReportingPdfPipeline.set_callback(None)
+
+    # Publish final parsing completion with all stages at total
+    final_counts = {name: total_pages for name in STAGE_NAMES}
+    _publish_parse_progress(
+        document_id, "parsing_pdf", total_pages, total_pages, 0,
+        stage_counts=final_counts,
     )
+
+    # Log coverage: Docling parsed pages vs PDF total pages
+    parsed_pages = result.page_count or 0
+    coverage_pct = (parsed_pages / total_pages * 100) if total_pages > 0 else 0
+    logger.info(
+        f"[DOCLING] Conversion done: elapsed={convert_elapsed:.1f}s, "
+        f"md={len(result.markdown_content)} chars, "
+        f"{len(result.images)} images, "
+        f"parsed_pages={parsed_pages}/{total_pages} ({coverage_pct:.1f}%)"
+    )
+
+    # Warn if significant content was missed
+    if total_pages > 0 and parsed_pages < total_pages:
+        logger.warning(
+            f"[DOCLING] INCOMPLETE: Docling only parsed {parsed_pages}/{total_pages} pages "
+            f"({coverage_pct:.1f}%). Possible causes: document_timeout, memory, or pipeline error."
+        )
 
     return {
         "text": result.markdown_content,
@@ -417,3 +567,27 @@ async def _parse_docx(file_path: Path, progress_callback=None, document_id: str 
         "images": [{"filename": img.filename, "data": img.data} for img in result.images],
         "page_count": result.page_count,
     }
+
+
+def _mark_document_failed(document_id: str, error_msg: str, session_factory) -> None:
+    """Update document status to failed in a fresh event loop.
+
+    Called when SoftTimeLimitExceeded interrupts the main event loop,
+    so we create a new loop to safely access the database.
+    """
+    cleanup_loop = asyncio.new_event_loop()
+    try:
+        async def _update():
+            async with session_factory() as db:
+                from sqlalchemy import select
+                result = await db.execute(select(Document).where(Document.id == document_id))
+                document = result.scalar_one_or_none()
+                if document:
+                    document.status = "failed"
+                    document.parse_error = error_msg
+                    await db.commit()
+        cleanup_loop.run_until_complete(_update())
+    except Exception as e:
+        logger.error(f"Failed to mark document {document_id} as failed: {e}")
+    finally:
+        cleanup_loop.close()

@@ -247,12 +247,34 @@ export const useProjectStore = defineStore("project", () => {
     documentId: string,
     data: {
       stage: string;
+      sub_stage?: string;
       processed: number;
       total: number;
       eta_seconds: number;
+      stage_counts?: Record<string, number>;
     },
   ) {
     // Handle completion event — update document status and clean up resources
+    if (data.stage === "failed") {
+      console.log(
+        "[updateDocumentParseProgress] Parse failed for documentId:",
+        documentId,
+      );
+      const index = documents.value.findIndex((d) => d.id === documentId);
+      if (index !== -1) {
+        documents.value[index].status = "failed";
+        documents.value[index].parse_error =
+          data.sub_stage === "timeout"
+            ? "文档解析超时，文件过大或内容过于复杂。建议上传较小的文件或拆分后重新上传。"
+            : "文档解析失败，请重试或更换文件格式。";
+      }
+      delete lastProcessedCount.value[documentId];
+      delete lastStage.value[documentId];
+      clearDocumentPoll(documentId);
+      disconnectDocParseSSE(documentId);
+      return;
+    }
+
     if (data.stage === "completed") {
       console.log(
         "[updateDocumentParseProgress] Parse completed for documentId:",
@@ -309,9 +331,11 @@ export const useProjectStore = defineStore("project", () => {
       const doc = documents.value[index];
       doc.parse_progress = {
         stage: data.stage,
+        subStage: data.sub_stage,
         processed: data.processed,
         total: data.total,
         etaSeconds: data.eta_seconds,
+        stageCounts: data.stage_counts,
       };
       console.log(
         "[updateDocumentParseProgress] After update, parse_progress:",

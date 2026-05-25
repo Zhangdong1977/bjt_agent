@@ -483,7 +483,9 @@ class ImageOcrTool(BaseTool):
         """Synchronous local OCR using RapidOCR (run in thread pool)."""
         if self._ocr_engine is None:
             from rapidocr import RapidOCR
-            self._ocr_engine = RapidOCR()
+            from backend.config import get_settings
+            model_dir = str(get_settings().ocr_model_dir)
+            self._ocr_engine = RapidOCR(params={"Global.model_root_dir": model_dir})
 
         ocr = self._ocr_engine
         output = ocr(str(image_path))

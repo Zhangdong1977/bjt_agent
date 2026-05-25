@@ -21,7 +21,11 @@ def _get_engine():
             if _engine is None:
                 from rapidocr import RapidOCR
 
-                _engine = RapidOCR()
+                _project_model_dir = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "models", "RapidOcr",
+                )
+                _engine = RapidOCR(params={"Global.model_root_dir": _project_model_dir})
                 logger.info("RapidOCR engine loaded")
     return _engine
 

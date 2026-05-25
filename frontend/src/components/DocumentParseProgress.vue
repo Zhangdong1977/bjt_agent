@@ -1,73 +1,99 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 
 const props = defineProps<{
   documentId: string
   stage: string
+  subStage?: string
   processed: number
   total: number
   etaSeconds: number
+  stageCounts?: Record<string, number>
 }>()
 
-// Track history of processed values to show "increasing" effect
-const history = ref<number[]>([])
+interface StageInfo {
+  key: string
+  label: string
+  count: number
+  percent: number
+}
 
-// Keep last 5 distinct values for display
-watch(() => props.processed, (newVal, oldVal) => {
-  if (newVal !== oldVal && newVal > 0) {
-    history.value.push(newVal)
-    if (history.value.length > 5) {
-      history.value.shift()
+const STAGE_LABELS: Record<string, string> = {
+  preprocess: '预处理页面',
+  layout: '文档布局分析',
+  table: '表格结构识别',
+  assemble: '文档组装',
+}
+
+const stages = computed<StageInfo[]>(() => {
+  if (!props.stageCounts) return []
+  return Object.entries(STAGE_LABELS).map(([key, label]) => {
+    const count = props.stageCounts?.[key] ?? 0
+    return {
+      key,
+      label,
+      count,
+      percent: props.total > 0 ? Math.min(Math.round((count / props.total) * 100), 100) : 0,
     }
-  }
+  })
 })
 
-const latestValue = computed(() => props.processed)
-const maxHistoryVal = computed(() => Math.max(...history.value, 1))
+const hasStageCounts = computed(() => stages.value.length > 0)
 
-// Get stage display text
+const fallbackPercent = computed(() => {
+  if (props.total <= 0) return 0
+  return Math.min(Math.round((props.processed / props.total) * 100), 100)
+})
+
 const stageLabel = computed(() => {
+  if (props.stage === 'parsing_pdf' && props.subStage) {
+    return STAGE_LABELS[props.subStage] || '正在解析文档'
+  }
+  if (props.stage === 'parsing_pdf') {
+    return props.processed === 0 ? '正在初始化解析器' : '正在解析文档'
+  }
   if (props.stage === 'extracting_text') return '正在提取文本'
   if (props.stage === 'processing_images') return '正在处理图片'
   if (props.stage === 'saving') return '正在保存结果'
   return '正在解析文档'
 })
-
-// Whether to show processed count (saving stage doesn't have meaningful element count)
-const showProcessedCount = computed(() => props.stage !== 'saving')
 </script>
 
 <template>
   <div class="doc-parse-progress">
-    <!-- Pulsing indicator -->
     <div class="pulse-indicator">
       <div class="pulse-ring"></div>
       <div class="pulse-core"></div>
     </div>
 
-    <!-- Main stats -->
-    <div class="stats-container">
-      <div class="stats-label">{{ stageLabel }}</div>
-      <div class="stats-value" v-if="showProcessedCount">
-        <span class="count-number">{{ latestValue.toLocaleString('zh-CN') }}</span>
-        <span class="count-unit">个元素已处理</span>
+    <!-- Multi-stage progress (PDF with Docling) -->
+    <div class="progress-body" v-if="hasStageCounts">
+      <div class="progress-header">
+        <span class="stage-label">文档解析中</span>
+        <span class="total-label">{{ total.toLocaleString('zh-CN') }} 页</span>
       </div>
-      <div class="stats-value" v-else>
-        <span class="count-number">...</span>
-        <span class="count-unit">请稍候</span>
+      <div class="stage-rows">
+        <div class="stage-row" v-for="s in stages" :key="s.key">
+          <span class="stage-name">{{ s.label }}</span>
+          <div class="stage-bar-track">
+            <div class="stage-bar-fill" :style="{ width: s.percent + '%' }"></div>
+          </div>
+          <span class="stage-count">{{ s.count }}/{{ total }}</span>
+        </div>
       </div>
     </div>
 
-    <!-- Recent activity trail -->
-    <div class="activity-trail" v-if="history.length > 1">
-      <div class="trail-label">处理进度</div>
-      <div class="trail-bars">
-        <div
-          v-for="(val, idx) in history"
-          :key="idx"
-          class="trail-bar"
-          :style="{ height: Math.max(8, (val / maxHistoryVal) * 32) + 'px' }"
-        ></div>
+    <!-- Fallback single progress (DOCX, etc.) -->
+    <div class="progress-body" v-else>
+      <div class="progress-header">
+        <span class="stage-label">{{ stageLabel }}</span>
+        <span class="percent-value" v-if="stage !== 'saving'">{{ fallbackPercent }}%</span>
+      </div>
+      <div class="stage-bar-track" v-if="stage !== 'saving'">
+        <div class="stage-bar-fill" :style="{ width: fallbackPercent + '%' }"></div>
+      </div>
+      <div class="progress-footer" v-else>
+        <span class="eta-label">请稍候...</span>
       </div>
     </div>
   </div>
@@ -76,20 +102,20 @@ const showProcessedCount = computed(() => props.stage !== 'saving')
 <style scoped>
 .doc-parse-progress {
   display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  padding: 1rem;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
   background: var(--bg2);
   border-radius: 12px;
   border: 1px solid var(--bg4);
 }
 
-/* Pulsing indicator */
 .pulse-indicator {
   position: relative;
-  width: 48px;
-  height: 48px;
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .pulse-ring {
@@ -103,99 +129,102 @@ const showProcessedCount = computed(() => props.stage !== 'saving')
 
 .pulse-core {
   position: absolute;
-  inset: 12px;
+  inset: 8px;
   border-radius: 50%;
   background: var(--blue);
   animation: pulse-core 1.5s ease-in-out infinite;
 }
 
 @keyframes pulse-ring {
-  0% {
-    transform: scale(0.8);
-    opacity: 0.3;
-  }
-  50% {
-    transform: scale(1.1);
-    opacity: 0.15;
-  }
-  100% {
-    transform: scale(1.3);
-    opacity: 0;
-  }
+  0% { transform: scale(0.8); opacity: 0.3; }
+  50% { transform: scale(1.1); opacity: 0.15; }
+  100% { transform: scale(1.3); opacity: 0; }
 }
 
 @keyframes pulse-core {
-  0%, 100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(0.85);
-  }
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(0.85); }
 }
 
-/* Stats display */
-.stats-container {
+.progress-body {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  min-width: 180px;
+  gap: 0.375rem;
 }
 
-.stats-label {
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.stage-label {
   font-size: 0.8rem;
   color: var(--muted);
 }
 
-.stats-value {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-}
-
-.count-number {
-  font-size: 2rem;
-  font-weight: 700;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-  transition: transform 0.2s ease-out, color 0.2s;
-}
-
-.count-unit {
-  font-size: 0.85rem;
+.total-label {
+  font-size: 0.75rem;
   color: var(--sub);
 }
 
-/* Activity trail */
-.activity-trail {
+.percent-value {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Multi-stage rows */
+.stage-rows {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  padding-left: 1rem;
-  border-left: 1px solid var(--bg4);
-  min-width: 100px;
 }
 
-.trail-label {
+.stage-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 70px;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.stage-name {
   font-size: 0.7rem;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  white-space: nowrap;
 }
 
-.trail-bars {
-  display: flex;
-  align-items: flex-end;
-  gap: 3px;
-  height: 32px;
+.stage-bar-track {
+  height: 5px;
+  background: var(--bg3, #e5e7eb);
+  border-radius: 2.5px;
+  overflow: hidden;
 }
 
-.trail-bar {
-  width: 6px;
+.stage-bar-fill {
+  height: 100%;
   background: var(--blue);
-  border-radius: 2px;
-  opacity: 0.6;
-  transition: height 0.3s ease-out;
+  border-radius: 2.5px;
+  transition: width 0.3s ease-out;
 }
 
+.stage-count {
+  font-size: 0.65rem;
+  color: var(--sub);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fallback footer */
+.progress-footer {
+  margin-top: 0.125rem;
+}
+
+.eta-label {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
 </style>

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
 
     # OCR Service (empty = local RapidOCR, url = remote microservice)
     ocr_service_url: str = ""
+    ocr_model_dir: Path = Path(__file__).parent.parent / "models" / "RapidOcr"
 
     # LLM Provider: "minimax" or "volcengine"
     llm_provider: str = "minimax"

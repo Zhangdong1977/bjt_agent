@@ -23,7 +23,7 @@ celery_app.conf.update(
     task_track_started=True,
     worker_prefetch_multiplier=1,
     # Safety nets to prevent worker hangs
-    task_time_limit=7200,            # 2h hard limit — ultimate safety net
+    task_time_limit=28800,           # 8h hard limit — large tender docs need long parse time
     worker_max_tasks_per_child=10,   # Recycle worker process every 10 tasks
     task_routes={
         "backend.tasks.review_tasks.run_review": {"queue": "review"},
@@ -32,7 +32,7 @@ celery_app.conf.update(
     },
     task_annotations={
         "backend.tasks.review_tasks.run_review": {
-            "time_limit": 7200,
+            "time_limit": 28800,
             "soft_time_limit": None,
         },
         "backend.tasks.review_tasks.merge_review_results": {
@@ -40,8 +40,8 @@ celery_app.conf.update(
             "soft_time_limit": 480,
         },
         "backend.tasks.document_parser.parse_document": {
-            "time_limit": 900,
-            "soft_time_limit": 750,
+            "time_limit": None,
+            "soft_time_limit": None,
         },
     },
 )

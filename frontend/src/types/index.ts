@@ -32,9 +32,11 @@ export interface CreateProjectRequest {
 // Document parse progress (from SSE events)
 export interface ParseProgress {
   stage: string;
+  subStage?: string;
   processed: number;
   total: number;
   etaSeconds: number;
+  stageCounts?: Record<string, number>; // {"preprocess": 42, "layout": 30, ...}
 }
 
 // Document types
