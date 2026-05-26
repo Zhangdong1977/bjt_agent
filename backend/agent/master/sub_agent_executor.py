@@ -63,7 +63,7 @@ class SubAgentExecutor:
     def _send_event(self, event_type: str, data: dict):
         """发送 SSE 事件，并写入数据库."""
         logger = logging.getLogger(__name__)
-        # 如果是 sub_agent_step 事件，同步写入 AgentStep 表
+        # 如果是 sub_agent_step 事件，异步写入 AgentStep 表
         if event_type == "sub_agent_step":
             self._record_agent_step(data)
 
@@ -74,18 +74,21 @@ class SubAgentExecutor:
                 logger.warning(f"[_send_event] Event callback failed: event_type={event_type}, error={e}")
 
     def _record_agent_step(self, data: dict) -> None:
-        """同步写入 AgentStep 到数据库."""
-        import concurrent.futures
-        import logging
-        from backend.models.agent_step import AgentStep
+        """将 AgentStep 写入数据库.
 
+        优先通过当前事件循环的 create_task() 在主循环中异步执行，
+        避免创建新的引擎/线程/事件循环。仅在无运行循环时回退。
+        """
+        import logging
         logger = logging.getLogger(__name__)
 
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(asyncio.run, self._record_agent_step_async(data))
-                future.result()
-            logger.info(f"[_record_agent_step] Successfully recorded step {data.get('step_number')} for todo {self.todo_item.id}")
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._record_agent_step_async(data))
+            logger.info(f"[_record_agent_step] Scheduled step {data.get('step_number')} for todo {self.todo_item.id} via create_task")
+        except RuntimeError:
+            # No running loop — this shouldn't happen in normal flow, but handle gracefully
+            logger.warning(f"[_record_agent_step] No running event loop, skipping step {data.get('step_number')}")
         except Exception as e:
             logger.error(f"[_record_agent_step] Failed to record step: {e}")
 
@@ -162,6 +165,19 @@ class SubAgentExecutor:
 
             # 执行检查 (task message is added inside run_review())
             findings = await agent.run_review()
+
+            # Check if max_steps was exceeded — fail fast, no partial results
+            if getattr(self._agent, '_max_steps_exceeded', False):
+                actual_steps = self._agent._total_steps if self._agent else 0
+                logger.warning(f"[SubAgentExecutor.execute] Max steps exceeded for todo_id={self.todo_item.id}, steps={actual_steps}/{max_steps}")
+                return {
+                    "success": False,
+                    "error": f"Max steps exceeded ({actual_steps}/{max_steps})",
+                    "todo_id": self.todo_item.id,
+                    "actual_steps": actual_steps,
+                    "brain_capacity": 100.0,
+                }
+
             check_items = getattr(self._agent, '_parsed_check_items', [])
             logger.info(f"[SubAgentExecutor.execute] Findings: {findings}, check_items_count={len(check_items)}")
 

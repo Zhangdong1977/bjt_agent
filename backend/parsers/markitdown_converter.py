@@ -97,7 +97,7 @@ class MarkitdownConverter:
             if suffix in [".docx", ".doc"]:
                 return self._convert_docx(converter, file_path, images_dir, progress_callback)
             else:
-                return self._convert_pdf(converter, file_path, images_dir)
+                return self._convert_pdf(converter, file_path, images_dir, progress_callback)
 
         except MarkitdownConversionError:
             raise
@@ -130,30 +130,67 @@ class MarkitdownConverter:
             page_count=None,
         )
 
-    def _convert_pdf(self, converter, file_path: Path, images_dir: Path) -> ConversionResult:
-        """Convert PDF file to Markdown.
+    def _convert_pdf(self, converter, file_path: Path, images_dir: Path, progress_callback=None) -> ConversionResult:
+        """Convert PDF file to Markdown using PyMuPDF page-by-page extraction.
 
-        Primary: markitdown's PdfConverter (pdfplumber + pdfminer, with table support).
-        Fallback: PyMuPDF (fitz) for PDFs with non-standard structure.
+        Extracts text and images per page, inserting image references inline
+        after each page's text content.
         """
-        markdown_content = ""
-        try:
-            result = converter.convert(source=file_path)
-            markdown_content = result.markdown or ""
-            logger.info(f"PDF markitdown conversion: {len(markdown_content)} chars")
-        except Exception as e:
-            logger.warning(f"markitdown PdfConverter failed ({e}), falling back to PyMuPDF")
-            markdown_content = _extract_pdf_text_with_fitz(file_path)
+        import fitz
 
-        images = _extract_pdf_images(file_path, images_dir)
-        page_count = _get_pdf_page_count(file_path)
+        images_dir.mkdir(parents=True, exist_ok=True)
+        images_dir_name = images_dir.name
 
-        logger.info(f"PDF conversion result: {len(markdown_content)} chars, {len(images)} images, {page_count} pages")
+        page_parts: list[str] = []
+        all_images: list[ImageInfo] = []
+
+        doc = fitz.open(str(file_path))
+        if doc.is_encrypted:
+            doc.close()
+            raise MarkitdownConversionError("PDF is encrypted")
+
+        total_pages = len(doc)
+        logger.info(f"PDF fitz conversion: {file_path.name}, {total_pages} pages")
+
+        for page_num in range(total_pages):
+            page = doc[page_num]
+            page_text = page.get_text().strip()
+            page_image_refs: list[str] = []
+
+            try:
+                for img_index, img in enumerate(page.get_images()):
+                    try:
+                        xref = img[0]
+                        base_image = doc.extract_image(xref)
+                        image_bytes = base_image["image"]
+                        image_ext = base_image["ext"]
+                        if len(image_bytes) > 10 * 1024 * 1024:
+                            continue
+                        filename = f"page_{page_num + 1}_img_{img_index + 1}.{image_ext}"
+                        (images_dir / filename).write_bytes(image_bytes)
+                        all_images.append(ImageInfo(filename=filename, data=image_bytes))
+                        page_image_refs.append(f"![{filename}]({images_dir_name}/{filename})")
+                    except Exception as e:
+                        logger.warning(f"Failed to extract image {img_index} from page {page_num + 1}: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to get images from page {page_num + 1}: {e}")
+
+            if page_text:
+                page_parts.append(page_text)
+            page_parts.extend(page_image_refs)
+
+            if progress_callback:
+                progress_callback(page_num + 1, total_pages)
+
+        doc.close()
+
+        markdown_content = "\n\n".join(page_parts)
+        logger.info(f"PDF fitz conversion result: {len(markdown_content)} chars, {len(all_images)} images, {total_pages} pages")
 
         return ConversionResult(
             markdown_content=markdown_content,
-            images=images,
-            page_count=page_count,
+            images=all_images,
+            page_count=total_pages,
         )
 
 

@@ -4,51 +4,17 @@ import { computed } from 'vue'
 const props = defineProps<{
   documentId: string
   stage: string
-  subStage?: string
   processed: number
   total: number
   etaSeconds: number
-  stageCounts?: Record<string, number>
 }>()
 
-interface StageInfo {
-  key: string
-  label: string
-  count: number
-  percent: number
-}
-
-const STAGE_LABELS: Record<string, string> = {
-  preprocess: '预处理页面',
-  layout: '文档布局分析',
-  table: '表格结构识别',
-  assemble: '文档组装',
-}
-
-const stages = computed<StageInfo[]>(() => {
-  if (!props.stageCounts) return []
-  return Object.entries(STAGE_LABELS).map(([key, label]) => {
-    const count = props.stageCounts?.[key] ?? 0
-    return {
-      key,
-      label,
-      count,
-      percent: props.total > 0 ? Math.min(Math.round((count / props.total) * 100), 100) : 0,
-    }
-  })
-})
-
-const hasStageCounts = computed(() => stages.value.length > 0)
-
-const fallbackPercent = computed(() => {
+const percent = computed(() => {
   if (props.total <= 0) return 0
   return Math.min(Math.round((props.processed / props.total) * 100), 100)
 })
 
 const stageLabel = computed(() => {
-  if (props.stage === 'parsing_pdf' && props.subStage) {
-    return STAGE_LABELS[props.subStage] || '正在解析文档'
-  }
   if (props.stage === 'parsing_pdf') {
     return props.processed === 0 ? '正在初始化解析器' : '正在解析文档'
   }
@@ -66,31 +32,13 @@ const stageLabel = computed(() => {
       <div class="pulse-core"></div>
     </div>
 
-    <!-- Multi-stage progress (PDF with Docling) -->
-    <div class="progress-body" v-if="hasStageCounts">
-      <div class="progress-header">
-        <span class="stage-label">文档解析中</span>
-        <span class="total-label">{{ total.toLocaleString('zh-CN') }} 页</span>
-      </div>
-      <div class="stage-rows">
-        <div class="stage-row" v-for="s in stages" :key="s.key">
-          <span class="stage-name">{{ s.label }}</span>
-          <div class="stage-bar-track">
-            <div class="stage-bar-fill" :style="{ width: s.percent + '%' }"></div>
-          </div>
-          <span class="stage-count">{{ s.count }}/{{ total }}</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Fallback single progress (DOCX, etc.) -->
-    <div class="progress-body" v-else>
+    <div class="progress-body">
       <div class="progress-header">
         <span class="stage-label">{{ stageLabel }}</span>
-        <span class="percent-value" v-if="stage !== 'saving'">{{ fallbackPercent }}%</span>
+        <span class="percent-value" v-if="stage !== 'saving'">{{ percent }}%</span>
       </div>
       <div class="stage-bar-track" v-if="stage !== 'saving'">
-        <div class="stage-bar-fill" :style="{ width: fallbackPercent + '%' }"></div>
+        <div class="stage-bar-fill" :style="{ width: percent + '%' }"></div>
       </div>
       <div class="progress-footer" v-else>
         <span class="eta-label">请稍候...</span>
@@ -165,36 +113,11 @@ const stageLabel = computed(() => {
   color: var(--muted);
 }
 
-.total-label {
-  font-size: 0.75rem;
-  color: var(--sub);
-}
-
 .percent-value {
   font-size: 0.95rem;
   font-weight: 700;
   color: var(--text);
   font-variant-numeric: tabular-nums;
-}
-
-/* Multi-stage rows */
-.stage-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.stage-row {
-  display: grid;
-  grid-template-columns: 90px 1fr 70px;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.stage-name {
-  font-size: 0.7rem;
-  color: var(--muted);
-  white-space: nowrap;
 }
 
 .stage-bar-track {
@@ -211,14 +134,6 @@ const stageLabel = computed(() => {
   transition: width 0.3s ease-out;
 }
 
-.stage-count {
-  font-size: 0.65rem;
-  color: var(--sub);
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Fallback footer */
 .progress-footer {
   margin-top: 0.125rem;
 }

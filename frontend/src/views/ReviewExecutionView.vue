@@ -44,6 +44,9 @@ interface TodoItemState {
 const todos = ref<Map<string, TodoItemState>>(new Map())
 const todoList = computed(() => Array.from(todos.value.values()))
 
+// 是否为历史视图（查看已完成的任务时间线，不应自动跳转）
+const isHistorical = ref(false)
+
 // 追踪待处理的 tool_calls 和 tool_results，用于组合细粒度事件
 // Map<todo_id, Map<step_number, { tool_calls: any[], tool_results: any[] }>>
 const pendingToolCallsMap = ref<Map<string, Map<number, { tool_calls: any[], tool_results: any[] }>>>(new Map())
@@ -87,7 +90,7 @@ async function handleSSEEvent(event: any) {
       } else if (event.status === 'completed') {
         phase.value = 'completed'
         disconnect()
-        goToResults()
+        if (!isHistorical.value) goToResults()
       } else if (event.status === 'failed') {
         phase.value = 'failed'
       }
@@ -155,7 +158,7 @@ async function handleSSEEvent(event: any) {
     case 'merging_completed':
       phase.value = 'completed'
       disconnect()
-      goToResults()
+      if (!isHistorical.value) goToResults()
       break
 
     case 'progress':
@@ -369,7 +372,7 @@ async function handleSSEEvent(event: any) {
       // 审查完成事件
       phase.value = 'completed'
       disconnect()
-      goToResults()
+      if (!isHistorical.value) goToResults()
       break
 
     case 'error':
@@ -588,13 +591,15 @@ onMounted(async () => {
 
   // 检查是否有指定的 taskId
   if (route.query.taskId) {
-    // 有指定 taskId，使用指定任务
+    // 有指定 taskId，使用指定任务（历史查看模式，不自动跳转）
     console.log('[ReviewExecutionView] Using specified taskId:', route.query.taskId)
+    isHistorical.value = true
     await projectStore.selectReviewTask(route.query.taskId as string)
     const task = projectStore.currentTask
     if (task) {
       if (task.status === 'completed') {
         phase.value = 'completed'
+        isHistorical.value = true
       } else if (task.status === 'failed') {
         phase.value = 'failed'
         errorMessage.value = task.error_message || '审查失败'
@@ -614,9 +619,9 @@ onMounted(async () => {
 
       await projectStore.selectReviewTask(latestTask.id)
 
-      // 如果任务已完成或失败，设置相应状态
       if (latestTask.status === 'completed') {
         phase.value = 'completed'
+        isHistorical.value = true
       } else if (latestTask.status === 'failed') {
         phase.value = 'failed'
         errorMessage.value = projectStore.currentTask?.error_message || '审查失败'

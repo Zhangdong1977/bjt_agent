@@ -185,6 +185,23 @@ class DocSearchTool(BaseTool):
                         "full_match": img_match.group(0),
                     })
 
+                # 如果当前行无图片引用，扫描邻近行（±3行）寻找图片
+                if not image_refs:
+                    _NEARBY_WINDOW = 3
+                    for offset in range(-_NEARBY_WINDOW, _NEARBY_WINDOW + 1):
+                        if offset == 0:
+                            continue
+                        nearby_idx = i + offset
+                        if nearby_idx < 0 or nearby_idx >= len(lines):
+                            continue
+                        for img_match in re.finditer(r'!\[([^\]]*)\]\(([^)]+)\)', lines[nearby_idx]):
+                            image_refs.append({
+                                "alt_text": img_match.group(1),
+                                "path": img_match.group(2),
+                                "full_match": img_match.group(0),
+                                "nearby_line_number": nearby_idx + 1,
+                            })
+
                 results.append({
                     "line_number": i + 1,  # 从1开始编号
                     "line_content": smart_truncate(strip_html_tags(line.strip()), 400),

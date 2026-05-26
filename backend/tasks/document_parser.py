@@ -231,10 +231,6 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
     document.word_count = len(md_content.split())
     document.page_count = parsed_data.get("page_count")
 
-    docling_json = parsed_data.get("docling_json_path")
-    if docling_json:
-        document.docling_json_path = str(docling_json)
-
     document.status = "parsed"
 
     _publish_parse_progress(document_id, "saving", 3, 3, 0)
@@ -262,7 +258,7 @@ async def _parse_document_internal(document: Document, file_path: Path, settings
     )
 
     if suffix == ".pdf":
-        parsed_data = await _parse_pdf_with_docling(file_path, document_id=document.id)
+        parsed_data = await _parse_pdf_with_markitdown(file_path, document_id=document.id)
         elapsed = time_module.time() - start_time
         logger.info(
             f"[PARSE] PDF done: document_id={document.id}, elapsed={elapsed:.1f}s, "
@@ -326,6 +322,7 @@ def parse_document(self, document_id: str) -> dict:
         pool_pre_ping=True,
         pool_size=2,
         max_overflow=5,
+        pool_recycle=1800,
     )
     session_factory = async_sessionmaker(
         engine,
@@ -533,6 +530,60 @@ async def _parse_pdf_with_docling(file_path: Path, document_id: str = "") -> dic
         "images": [{"filename": img.filename, "data": img.data} for img in result.images],
         "page_count": result.page_count,
         "docling_json_path": str(docling_json_path),
+    }
+
+
+async def _parse_pdf_with_markitdown(file_path: Path, document_id: str = "") -> dict:
+    """Parse PDF file using Markitdown converter with per-page progress reporting.
+
+    Uses PyMuPDF (fitz) for page-by-page text and image extraction.
+    Progress is reported after each page is processed.
+
+    Args:
+        file_path: Path to the PDF file
+        document_id: Document UUID for progress reporting
+
+    Returns:
+        Dict with text (Markdown), images, and page_count
+    """
+    import time as time_module
+    from backend.parsers.markitdown_converter import MarkitdownConverter
+
+    file_size = file_path.stat().st_size
+    logger.info(f"[MARKITDOWN] Starting PDF: {file_path.name} ({file_size / (1024*1024):.2f}MB)")
+
+    images_dir = file_path.parent / f"{file_path.stem}_images"
+
+    last_published_time = 0.0
+    MIN_PUBLISH_INTERVAL = 0.5
+
+    def on_page_progress(processed: int, total: int):
+        nonlocal last_published_time
+        current_time = time_module.time()
+        if processed < total and current_time - last_published_time < MIN_PUBLISH_INTERVAL:
+            return
+        last_published_time = current_time
+        _publish_parse_progress(document_id, "parsing_pdf", processed, total, 0)
+
+    convert_start = time_module.time()
+    converter = MarkitdownConverter()
+    result = await asyncio.to_thread(
+        converter.convert, file_path, images_dir=images_dir, progress_callback=on_page_progress
+    )
+    convert_elapsed = time_module.time() - convert_start
+
+    _publish_parse_progress(document_id, "parsing_pdf", result.page_count or 0, result.page_count or 0, 0)
+
+    logger.info(
+        f"[MARKITDOWN] Conversion done: elapsed={convert_elapsed:.1f}s, "
+        f"md={len(result.markdown_content)} chars, "
+        f"{len(result.images)} images, pages={result.page_count}"
+    )
+
+    return {
+        "text": result.markdown_content,
+        "images": [{"filename": img.filename, "data": img.data} for img in result.images],
+        "page_count": result.page_count,
     }
 
 

@@ -115,6 +115,8 @@ class BidReviewAgent(BaseAgent):
         self._total_steps: int = 0
         # Track the reason for cancellation (heartbeat_timeout vs api_cancellation)
         self._cancel_reason: Optional[str] = None
+        # Track whether max_steps was reached during execution
+        self._max_steps_exceeded: bool = False
 
         # Initialize LLM client via factory (supports MiniMax / Volcengine)
         llm_client = create_llm_client(timeout=120.0)
@@ -313,9 +315,12 @@ class BidReviewAgent(BaseAgent):
             agent_ref._log_llm_request(call_index, messages, tools)
 
             try:
-                async with _get_llm_semaphore():
-                    async with asyncio.timeout(180.0):
-                        response = await original_generate(*args, **kwargs)
+                # Distributed rate limit across all worker processes
+                from backend.services.llm_rate_limiter import acquire_llm_rate_limit
+                async with acquire_llm_rate_limit():
+                    async with _get_llm_semaphore():
+                        async with asyncio.timeout(180.0):
+                            response = await original_generate(*args, **kwargs)
             except TimeoutError:
                 latency_ms = int((time.perf_counter() - call_start) * 1000)
                 logger.error(
@@ -373,9 +378,47 @@ class BidReviewAgent(BaseAgent):
                 "response": agent_ref._build_response_detail(response),
             })
 
+            # Write metrics to Redis for perf_monitor.py to read
+            agent_ref._write_llm_metrics(call_index, latency_ms, response)
+
             return response
 
         self.llm_client.generate = wrapped_generate
+
+    def _write_llm_metrics(self, call_index: int, latency_ms: int, response: Any) -> None:
+        """Write LLM call metrics to Redis for external monitoring."""
+        try:
+            import redis as redis_lib
+            r = redis_lib.Redis.from_url(
+                settings.redis_url,
+                max_connections=1,
+                socket_timeout=2.0,
+                socket_connect_timeout=2.0,
+                decode_responses=True,
+            )
+            key = f"metrics:llm:{self.project_id}"
+            existing = r.get(key)
+            metrics = json.loads(existing) if existing else {
+                "call_count": 0,
+                "total_latency_ms": 0,
+                "total_tokens": 0,
+                "min_latency_ms": 999999,
+                "max_latency_ms": 0,
+                "start_time": datetime.now().isoformat(),
+            }
+            metrics["call_count"] += 1
+            metrics["total_latency_ms"] += latency_ms
+            metrics["min_latency_ms"] = min(metrics["min_latency_ms"], latency_ms)
+            metrics["max_latency_ms"] = max(metrics["max_latency_ms"], latency_ms)
+            metrics["last_latency_ms"] = latency_ms
+            metrics["last_call_time"] = datetime.now().isoformat()
+            # Extract token usage if available
+            if hasattr(response, "usage") and response.usage:
+                metrics["total_tokens"] += getattr(response.usage, "total_tokens", 0)
+            r.set(key, json.dumps(metrics), ex=7200)  # TTL 2h
+            r.close()
+        except Exception:
+            pass  # Metrics collection must not affect business logic
 
     def _build_request_summary(self, messages: list, tools: list) -> dict:
         """Build a summary dict of the LLM request."""
@@ -915,8 +958,9 @@ class BidReviewAgent(BaseAgent):
 1. 调用 search_tender_doc(文档类型="tender", query="关键词") 查找招标书中的要求
 2. 调用 search_tender_doc(文档类型="bid", query="关键词") 查找投标书中所有对应位置
 3. 如需精确判断，调用 compare_bid(requirement=..., bid_content=...) 进行深入比对
-4. 如搜索结果含 image_refs，优先使用 get_image_ocr 提取图片文字；仅在 OCR 不够时调用 understand_image
-5. 记录结果后，继续下一个检查项
+4. 如搜索结果含 image_refs，优先使用 understand_image 分析图片；understand_image 失败时再用 get_image_ocr
+5. 如果 get_section_images 返回"无图片"，不要立即判定为无图片。改用 search_tender_doc(query="相关关键词") 搜索，结果可能包含 image_refs
+6. 记录结果后，继续下一个检查项
 
 所有 {total_items} 个检查项完成后，调用 write_file 将完整结果写入 {output_md_path}。
 
@@ -925,9 +969,9 @@ class BidReviewAgent(BaseAgent):
 - 禁止在一次工具调用中尝试完成多个检查项
 - 必须逐项检查，每个检查项至少调用 search_tender_doc 两次
 - 必须使用 write_file 写入最终结果
-- 图片分析优先使用 get_image_ocr（本地 OCR，不受内容安全过滤影响），understand_image 仅作后备
+- 图片分析优先使用 understand_image（VLM 视觉理解），understand_image 失败时再用 get_image_ocr
 - understand_image 的 prompt 中禁止使用"身份证""身份证号码""姓名""护照号码"等敏感词，使用"证件""证件编号""人员名称"等替代
-- 如 understand_image 报错（如 1026 敏感内容），以 OCR 结果为准继续审查"""
+- 如 understand_image 报错（如 1026 敏感内容），回退使用 get_image_ocr 继续审查"""
             self.add_user_message(task)
             logger.info(f"[BidReviewAgent.run_review] Task prompt added, output_md_path={output_md_path}")
 
@@ -967,7 +1011,9 @@ class BidReviewAgent(BaseAgent):
                     logger.warning("[BidReviewAgent.run_review] Agent execution was cancelled by user")
                     is_normal = False
                 elif run_result.startswith("Task couldn't be completed"):
-                    logger.warning(f"[BidReviewAgent.run_review] {run_result} — will try to extract partial results")
+                    logger.warning(f"[BidReviewAgent.run_review] {run_result}")
+                    self._max_steps_exceeded = True
+                    is_normal = False
             finally:
                 heartbeat_monitor.cancel()
                 try:

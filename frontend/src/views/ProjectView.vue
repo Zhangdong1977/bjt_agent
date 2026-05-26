@@ -137,11 +137,9 @@ function getStatusClass(status: string) {
                     v-if="tenderDoc.status === 'parsing' || tenderDoc.status === 'pending'"
                     :document-id="tenderDoc.id"
                     :stage="tenderDoc.parse_progress?.stage || 'extracting_text'"
-                    :sub-stage="tenderDoc.parse_progress?.subStage"
                     :processed="tenderDoc.parse_progress?.processed || 0"
                     :total="tenderDoc.parse_progress?.total || 1"
                     :eta-seconds="tenderDoc.parse_progress?.etaSeconds || 0"
-                    :stage-counts="tenderDoc.parse_progress?.stageCounts"
                   />
                   <div v-else-if="tenderDoc.status === 'failed'" class="parse-error-block">
                     <span class="status status-error">解析失败</span>
@@ -207,11 +205,9 @@ function getStatusClass(status: string) {
                     v-if="bidDoc.status === 'parsing' || bidDoc.status === 'pending'"
                     :document-id="bidDoc.id"
                     :stage="bidDoc.parse_progress?.stage || 'extracting_text'"
-                    :sub-stage="bidDoc.parse_progress?.subStage"
                     :processed="bidDoc.parse_progress?.processed || 0"
                     :total="bidDoc.parse_progress?.total || 1"
                     :eta-seconds="bidDoc.parse_progress?.etaSeconds || 0"
-                    :stage-counts="bidDoc.parse_progress?.stageCounts"
                   />
                   <div v-else-if="bidDoc.status === 'failed'" class="parse-error-block">
                     <span class="status status-error">解析失败</span>

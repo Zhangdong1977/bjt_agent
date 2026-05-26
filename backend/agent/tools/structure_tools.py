@@ -99,6 +99,34 @@ class StructureDataLoader:
                     break
             sec.children_count = count
 
+        # Fallback for documents without markdown headings: split by blank lines
+        # into virtual sections so get_section_images can still find images.
+        if not sections:
+            lines = self.markdown_lines
+            current_start = 1
+            section_idx = 0
+            _MIN_SECTION_LINES = 5
+            for i in range(len(lines)):
+                if lines[i].strip() == "" and (i + 1) >= current_start + _MIN_SECTION_LINES:
+                    section_idx += 1
+                    sections.append(SectionInfo(
+                        section_id=f"s{section_idx}",
+                        title=f"段落 {section_idx}",
+                        level=1,
+                        start_line=current_start,
+                        end_line=i + 1,
+                    ))
+                    current_start = i + 2
+            if current_start <= len(lines):
+                section_idx += 1
+                sections.append(SectionInfo(
+                    section_id=f"s{section_idx}",
+                    title=f"段落 {section_idx}",
+                    level=1,
+                    start_line=current_start,
+                    end_line=len(lines),
+                ))
+
         self._sections = sections
         return sections
 

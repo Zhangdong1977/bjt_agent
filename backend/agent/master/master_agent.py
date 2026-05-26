@@ -238,6 +238,21 @@ class MasterAgent:
                     self._send_event("sub_agent_failed", {"todo_id": todo.id, "error": err_msg, "brain_capacity": brain_cap})
                     return {"success": False, "error": err_msg}
 
+                # Max steps exceeded — fail fast, no retry (retrying would hit the same limit)
+                is_max_steps = result.get("error", "").startswith("Max steps exceeded")
+                if is_max_steps:
+                    brain_cap = result.get('brain_capacity', 0.0)
+                    await task_todo_service.update_todo_status(
+                        todo.id, "failed", error_message=result["error"],
+                        brain_capacity=brain_cap, max_steps=100,
+                    )
+                    self._send_event("sub_agent_failed", {
+                        "todo_id": todo.id,
+                        "error": result["error"],
+                        "brain_capacity": brain_cap,
+                    })
+                    return result
+
                 # 检测异常
                 if detect_anomaly(result, todo):
                     logger.info(f"[_run_single_sub_agent] Anomaly detected for todo {todo.id}, retry_count={retry_count}")

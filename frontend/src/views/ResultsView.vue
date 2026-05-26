@@ -5,6 +5,7 @@ import { Modal } from 'ant-design-vue'
 import { useProjectStore } from '@/stores/project'
 import { reviewApi } from '@/api/client'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
+import type { ReviewResponse } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -13,6 +14,7 @@ const projectStore = useProjectStore()
 const projectId = computed(() => route.params.id as string)
 const selectedTaskId = ref<string>('')
 const todos = ref<any[]>([])
+const taskResults = ref<ReviewResponse | null>(null)
 
 onMounted(async () => {
   await projectStore.selectProject(projectId.value)
@@ -28,11 +30,24 @@ onMounted(async () => {
 // 当 selectedTaskId 变化时加载结果和 todos
 watch(selectedTaskId, async (newTaskId) => {
   if (!newTaskId) return
-  await projectStore.fetchReviewResults()
   try {
-    todos.value = await reviewApi.getTodosByTask(projectId.value, newTaskId)
+    const [findings, taskTodos] = await Promise.all([
+      reviewApi.getResultsByTask(projectId.value, newTaskId).catch(() => []),
+      reviewApi.getTodosByTask(projectId.value, newTaskId).catch(() => []),
+    ])
+    todos.value = taskTodos
+    const nonCompliant = findings.filter((f: any) => !f.is_compliant)
+    taskResults.value = {
+      summary: {
+        category_count: taskTodos.length,
+        check_item_count: taskTodos.reduce((sum: number, t: any) => sum + (t.check_items?.length || 0), 0),
+        risk_item_count: new Set(nonCompliant.map((f: any) => f.check_item_name).filter(Boolean)).size,
+      },
+      findings,
+    }
   } catch (err) {
-    console.error('加载子代理数据失败:', err)
+    console.error('加载审查结果失败:', err)
+    taskResults.value = null
     todos.value = []
   }
 }, { immediate: true })
@@ -111,10 +126,10 @@ async function startNewReview() {
         </button>
       </div>
 
-      <section v-if="projectStore.reviewResults" class="section">
+      <section v-if="taskResults" class="section">
         <h2>审查结果</h2>
         <ReviewResultsArea
-          :review-results="projectStore.reviewResults"
+          :review-results="taskResults"
           :todos="todos"
           :project-id="projectId"
           :task-id="selectedTaskId"

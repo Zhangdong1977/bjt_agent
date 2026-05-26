@@ -11,6 +11,8 @@ cd "$SCRIPT_DIR/.."
 mkdir -p "$SCRIPT_DIR/logs"
 
 export PYTHONPATH="$PWD"
+# Sub-agent concurrency: increase from default 2 to 3 for better throughput
+export MAX_SUB_AGENT_CONCURRENCY="${MAX_SUB_AGENT_CONCURRENCY:-3}"
 BACKEND_DIR="$PWD/backend"
 FRONTEND_DIR="$PWD/frontend"
 RAG_MEMORY_DIR="$PWD/rag_memory_service"
@@ -92,7 +94,7 @@ is_running() {
 start_celery_review() {
     log "Starting Celery Worker (review queue)..."
     cd "$BACKEND_DIR"
-    celery -A celery_app worker --loglevel=info --concurrency=2 -Q review --max-tasks-per-child=10 > "$SCRIPT_DIR/logs/celery_review.log" 2>&1 &
+    celery -A celery_app worker --loglevel=info --concurrency=3 -Q review --max-tasks-per-child=5 --max-memory-per-child=6000000 > "$SCRIPT_DIR/logs/celery_review.log" 2>&1 &
     save_pid "celery_review" "$!"
     log "Celery Review started (PID: $(get_pid celery_review))"
 }

@@ -108,6 +108,11 @@ def create_session_factory():
         pool_pre_ping=True,
         pool_size=5,
         max_overflow=10,
+        pool_recycle=1800,
+        connect_args={
+            "timeout": 30,
+            "command_timeout": 120,
+        },
     )
     session_factory = async_sessionmaker(
         engine,
@@ -134,11 +139,19 @@ def _get_stream_key(task_id: str) -> str:
     return f"sse:stream:{task_id}"
 
 
-def _publish_event(task_id: str, event_type: str, data: dict) -> None:
+def _publish_event(task_id: str, event_type: str, data: dict, session_factory=None) -> None:
     """Publish an event to Redis Stream for SSE forwarding.
 
     Uses Redis Streams for reliable message delivery with persistence.
     XADD + Lua script ensures atomic stream operations.
+
+    Args:
+        task_id: The review task ID.
+        event_type: Event type string.
+        data: Event data dict.
+        session_factory: Optional async session factory for DB persistence.
+            When provided, step events are persisted via loop.create_task()
+            instead of creating new engines/threads.
     """
     import traceback
     logger.info(f"[_publish_event] ENTRY: task_id={task_id}, event_type={event_type}")
@@ -178,64 +191,123 @@ def _publish_event(task_id: str, event_type: str, data: dict) -> None:
 
     # Persist step events to database for historical timeline display
     if event_type in ("step", "sub_agent_step") and data.get("step_number") is not None:
-        _persist_step(task_id, event_type, data)
+        _persist_step(task_id, event_type, data, session_factory=session_factory)
 
 
-def _persist_step(task_id: str, event_type: str, data: dict) -> None:
-    """Persist a step event to agent_steps table for historical timeline."""
+def _persist_step(task_id: str, event_type: str, data: dict, session_factory=None) -> None:
+    """Persist a step event to agent_steps table for historical timeline.
+
+    When session_factory is provided (from the main task engine), schedules the
+    DB write via loop.create_task() on the current event loop — avoiding new
+    engines, new threads, and new event loops.
+
+    Falls back to a background thread + asyncio.run() only when no session_factory
+    is available (backward compatibility).
+    """
     try:
-        import asyncio as _aio
-
-        async def _save():
-            sf, eng = create_session_factory()
-            try:
-                async with sf() as db:
-                    step_number = data["step_number"]
-                    todo_id = data.get("todo_id")
-
-                    # Check if step already exists (upsert by task_id + step_number + todo_id)
-                    from sqlalchemy import select as _sel
-                    query = _sel(AgentStep).where(
-                        AgentStep.task_id == task_id,
-                        AgentStep.step_number == step_number,
-                    )
-                    if todo_id:
-                        query = query.where(AgentStep.todo_id == todo_id)
-                    else:
-                        query = query.where(AgentStep.todo_id.is_(None))
-
-                    existing = (await db.execute(query)).scalar_one_or_none()
-                    if existing:
-                        # Update existing step (e.g., tool_results arriving after initial step)
-                        if data.get("content") is not None:
-                            existing.content = str(data["content"])[:500]
-                        if data.get("step_type"):
-                            existing.step_type = data["step_type"]
-                        if data.get("tool_calls"):
-                            existing.tool_args = {"tool_calls": data["tool_calls"]}
-                        if data.get("tool_results"):
-                            existing.tool_result = {"tool_results": data["tool_results"]}
-                    else:
-                        step = AgentStep(
-                            task_id=task_id,
-                            todo_id=todo_id,
-                            step_number=step_number,
-                            step_type=data.get("step_type", "thought"),
-                            content=str(data.get("content", ""))[:500],
-                            tool_args={"tool_calls": data["tool_calls"]} if data.get("tool_calls") else None,
-                            tool_result={"tool_results": data["tool_results"]} if data.get("tool_results") else None,
-                        )
-                        db.add(step)
-                    await db.commit()
-            finally:
-                await eng.dispose()
-
-        # Run in a background thread to avoid blocking the Celery event loop
-        import threading
-        t = threading.Thread(target=lambda: _aio.run(_save()), daemon=True)
-        t.start()
+        if session_factory is not None:
+            # Preferred path: reuse existing engine via current event loop
+            loop = asyncio.get_running_loop()
+            loop.create_task(_persist_step_async(session_factory, task_id, data))
+        else:
+            # Fallback: create a new engine (backward compatible, but wasteful)
+            _persist_step_fallback(task_id, data)
+    except RuntimeError:
+        # No running loop — use fallback
+        _persist_step_fallback(task_id, data)
     except Exception as e:
         logger.warning(f"[_persist_step] Failed to persist step: {e}")
+
+
+async def _persist_step_async(session_factory, task_id: str, data: dict) -> None:
+    """Persist a step using the shared session_factory on the current event loop."""
+    try:
+        async with session_factory() as db:
+            step_number = data["step_number"]
+            todo_id = data.get("todo_id")
+
+            from sqlalchemy import select as _sel
+            query = _sel(AgentStep).where(
+                AgentStep.task_id == task_id,
+                AgentStep.step_number == step_number,
+            )
+            if todo_id:
+                query = query.where(AgentStep.todo_id == todo_id)
+            else:
+                query = query.where(AgentStep.todo_id.is_(None))
+
+            existing = (await db.execute(query)).scalar_one_or_none()
+            if existing:
+                if data.get("content") is not None:
+                    existing.content = str(data["content"])[:500]
+                if data.get("step_type"):
+                    existing.step_type = data["step_type"]
+                if data.get("tool_calls"):
+                    existing.tool_args = {"tool_calls": data["tool_calls"]}
+                if data.get("tool_results"):
+                    existing.tool_result = {"tool_results": data["tool_results"]}
+            else:
+                step = AgentStep(
+                    task_id=task_id,
+                    todo_id=todo_id,
+                    step_number=step_number,
+                    step_type=data.get("step_type", "thought"),
+                    content=str(data.get("content", ""))[:500],
+                    tool_args={"tool_calls": data["tool_calls"]} if data.get("tool_calls") else None,
+                    tool_result={"tool_results": data["tool_results"]} if data.get("tool_results") else None,
+                )
+                db.add(step)
+            await db.commit()
+    except Exception as e:
+        logger.warning(f"[_persist_step_async] Failed: {e}")
+
+
+def _persist_step_fallback(task_id: str, data: dict) -> None:
+    """Fallback: persist step using a new engine in a background thread."""
+    import threading
+
+    async def _save():
+        sf, eng = create_session_factory()
+        try:
+            async with sf() as db:
+                step_number = data["step_number"]
+                todo_id = data.get("todo_id")
+                from sqlalchemy import select as _sel
+                query = _sel(AgentStep).where(
+                    AgentStep.task_id == task_id,
+                    AgentStep.step_number == step_number,
+                )
+                if todo_id:
+                    query = query.where(AgentStep.todo_id == todo_id)
+                else:
+                    query = query.where(AgentStep.todo_id.is_(None))
+                existing = (await db.execute(query)).scalar_one_or_none()
+                if existing:
+                    if data.get("content") is not None:
+                        existing.content = str(data["content"])[:500]
+                    if data.get("step_type"):
+                        existing.step_type = data["step_type"]
+                    if data.get("tool_calls"):
+                        existing.tool_args = {"tool_calls": data["tool_calls"]}
+                    if data.get("tool_results"):
+                        existing.tool_result = {"tool_results": data["tool_results"]}
+                else:
+                    step = AgentStep(
+                        task_id=task_id,
+                        todo_id=todo_id,
+                        step_number=step_number,
+                        step_type=data.get("step_type", "thought"),
+                        content=str(data.get("content", ""))[:500],
+                        tool_args={"tool_calls": data["tool_calls"]} if data.get("tool_calls") else None,
+                        tool_result={"tool_results": data["tool_results"]} if data.get("tool_results") else None,
+                    )
+                    db.add(step)
+                await db.commit()
+        finally:
+            await eng.dispose()
+
+    t = threading.Thread(target=lambda: asyncio.run(_save()), daemon=True)
+    t.start()
 
 
 async def _progress_watchdog(task_id: str, cancel_event: asyncio.Event):
@@ -296,118 +368,138 @@ def run_review(self, task_id: str) -> dict:
     async def _run():
         # Create session factory within the event loop to avoid 'different loop' error
         session_factory, engine = create_session_factory()
-        try:
-            async with session_factory() as db:
-                from sqlalchemy import select
+        from sqlalchemy import select
 
-                # Get the review task
+        try:
+            from backend.models import Project, Document
+
+            # Phase 1: Load data with a short-lived session.
+            # The session is closed before the long-running master.run() call
+            # so the connection does not sit idle for hours and get dropped
+            # by network middleboxes or server-side timeout.
+            async with session_factory() as db:
                 result = await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
                 task = result.scalar_one_or_none()
 
                 if not task:
                     return {"status": "error", "message": ERROR_TASK_NOT_FOUND}
 
-                try:
-                    task.status = "running"
-                    task.started_at = datetime.utcnow()
-                    await db.flush()
-                    await db.commit()  # Commit immediately so API can see status change
+                task.status = "running"
+                task.started_at = datetime.utcnow()
+                await db.commit()
 
-                    # Send SSE event (Redis Streams handles reliability - no sleep needed)
-                    _publish_event(task_id, "status", {"status": "running"})
+                _publish_event(task_id, "status", {"status": "running"})
 
-                    # Get project and documents
-                    from backend.models import Project, Document
-                    result = await db.execute(select(Project).where(Project.id == task.project_id))
-                    project = result.scalar_one_or_none()
+                # Get project
+                result = await db.execute(select(Project).where(Project.id == task.project_id))
+                project = result.scalar_one_or_none()
 
-                    if not project:
-                        task.status = "failed"
-                        task.error_message = ERROR_PROJECT_NOT_FOUND
-                        await db.flush()
-                        await db.commit()
-                        _publish_event(task_id, "error", {"message": ERROR_PROJECT_NOT_FOUND})
-                        return {"status": "error", "message": ERROR_PROJECT_NOT_FOUND}
-
-                    # Get tender and bid documents
-                    result = await db.execute(
-                        select(Document).where(Document.project_id == task.project_id)
-                    )
-                    documents = result.scalars().all()
-
-                    tender_doc = next((d for d in documents if d.doc_type == "tender"), None)
-                    bid_doc = next((d for d in documents if d.doc_type == "bid"), None)
-
-                    if not tender_doc:
-                        task.status = "failed"
-                        task.error_message = ERROR_TENDER_NOT_FOUND
-                        await db.flush()
-                        await db.commit()
-                        _publish_event(task_id, "error", {"message": ERROR_TENDER_NOT_FOUND})
-                        return {"status": "error", "message": ERROR_TENDER_NOT_FOUND}
-
-                    if not bid_doc:
-                        task.status = "failed"
-                        task.error_message = ERROR_BID_NOT_FOUND
-                        await db.flush()
-                        await db.commit()
-                        _publish_event(task_id, "error", {"message": ERROR_BID_NOT_FOUND})
-                        return {"status": "error", "message": ERROR_BID_NOT_FOUND}
-
-                    # Send progress event
-                    _publish_event(task_id, "progress", {"message": "Starting document analysis..."})
-
-                    # Create cancel_event for heartbeat cancellation mechanism
-                    cancel_event = asyncio.Event()
-
-                    # Start progress watchdog to detect hung tasks
-                    watchdog_task = asyncio.create_task(
-                        _progress_watchdog(task_id, cancel_event)
-                    )
-
-                    try:
-                        # Run the agent review — handles saving, status update, and merge trigger internally
-                        findings_count = await _run_agent_review(
-                            task_id, tender_doc, bid_doc, session_factory, cancel_event,
-                            db=db, review_task=task,
-                        )
-                    finally:
-                        watchdog_task.cancel()
-                        try:
-                            await watchdog_task
-                        except asyncio.CancelledError:
-                            pass
-                        _task_last_event_times.pop(task_id, None)
-
-                    # Send completion event
-                    _publish_event(task_id, "complete", {
-                        "status": "completed",
-                        "findings_count": findings_count,
-                    })
-
-                    return {
-                        "status": "success",
-                        "task_id": task_id,
-                        "findings_count": findings_count,
-                    }
-
-                except Exception as e:
-                    error_msg = str(e)
-                    # Preserve "cancelled" status when user requested cancellation.
-                    # The cancel API sets the Redis flag and DB status to "cancelled"
-                    # before the exception propagates here.
-                    if is_task_cancelled(task_id):
-                        task.status = "cancelled"
-                    else:
-                        task.status = "failed"
-                    task.error_message = error_msg
-                    task.completed_at = datetime.utcnow()
-                    if task.started_at and task.completed_at:
-                        task.duration_seconds = int((task.completed_at - task.started_at).total_seconds())
-                    await db.flush()
+                if not project:
+                    task.status = "failed"
+                    task.error_message = ERROR_PROJECT_NOT_FOUND
                     await db.commit()
-                    _publish_event(task_id, "error", {"message": error_msg})
-                    return {"status": "error", "message": error_msg}
+                    _publish_event(task_id, "error", {"message": ERROR_PROJECT_NOT_FOUND})
+                    return {"status": "error", "message": ERROR_PROJECT_NOT_FOUND}
+
+                # Get tender and bid documents
+                result = await db.execute(
+                    select(Document).where(Document.project_id == task.project_id)
+                )
+                documents = result.scalars().all()
+
+                tender_doc = next((d for d in documents if d.doc_type == "tender"), None)
+                bid_doc = next((d for d in documents if d.doc_type == "bid"), None)
+
+                if not tender_doc:
+                    task.status = "failed"
+                    task.error_message = ERROR_TENDER_NOT_FOUND
+                    await db.commit()
+                    _publish_event(task_id, "error", {"message": ERROR_TENDER_NOT_FOUND})
+                    return {"status": "error", "message": ERROR_TENDER_NOT_FOUND}
+
+                if not bid_doc:
+                    task.status = "failed"
+                    task.error_message = ERROR_BID_NOT_FOUND
+                    await db.commit()
+                    _publish_event(task_id, "error", {"message": ERROR_BID_NOT_FOUND})
+                    return {"status": "error", "message": ERROR_BID_NOT_FOUND}
+
+                # Extract needed values before session closes
+                project_id = str(task.project_id)
+                max_concurrency = task.max_concurrency
+                tender_path = tender_doc.parsed_markdown_path or tender_doc.parsed_html_path or ""
+                bid_path = bid_doc.parsed_markdown_path or bid_doc.parsed_html_path or ""
+                user_id = ""
+                if hasattr(project, 'user_id'):
+                    user_id = str(project.user_id)
+            # Session closed — connection returned to pool
+
+            # Phase 2: Run review (no DB session held during the long-running agent)
+            _publish_event(task_id, "progress", {"message": "Starting document analysis..."})
+
+            cancel_event = asyncio.Event()
+            watchdog_task = asyncio.create_task(
+                _progress_watchdog(task_id, cancel_event)
+            )
+
+            try:
+                findings_count = await _run_agent_review(
+                    task_id=task_id,
+                    tender_path=tender_path,
+                    bid_path=bid_path,
+                    project_id=project_id,
+                    user_id=user_id,
+                    max_concurrency=max_concurrency,
+                    session_factory=session_factory,
+                    cancel_event=cancel_event,
+                )
+            finally:
+                watchdog_task.cancel()
+                try:
+                    await watchdog_task
+                except asyncio.CancelledError:
+                    pass
+                _task_last_event_times.pop(task_id, None)
+
+            # Phase 3: Success
+            _publish_event(task_id, "complete", {
+                "status": "completed",
+                "findings_count": findings_count,
+            })
+
+            return {
+                "status": "success",
+                "task_id": task_id,
+                "findings_count": findings_count,
+            }
+
+        except Exception as e:
+            error_msg = str(e)
+            # Use a fresh session to update task status, since the original
+            # session was closed after Phase 1.
+            try:
+                async with session_factory() as status_db:
+                    result = await status_db.execute(
+                        select(ReviewTask).where(ReviewTask.id == task_id)
+                    )
+                    task = result.scalar_one_or_none()
+                    if task:
+                        if is_task_cancelled(task_id):
+                            task.status = "cancelled"
+                        else:
+                            task.status = "failed"
+                        task.error_message = error_msg
+                        task.completed_at = datetime.utcnow()
+                        if task.started_at and task.completed_at:
+                            task.duration_seconds = int(
+                                (task.completed_at - task.started_at).total_seconds()
+                            )
+                        await status_db.commit()
+            except Exception as db_err:
+                logger.error(f"[run_review] Failed to update task status for {task_id}: {db_err}")
+
+            _publish_event(task_id, "error", {"message": error_msg})
+            return {"status": "error", "message": error_msg}
         finally:
             await engine.dispose()
             # Clean up Redis cancel flag
@@ -435,7 +527,7 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
     from celery.exceptions import SoftTimeLimitExceeded
 
     def event_cb(event_type: str, data: dict):
-        _publish_event(latest_task_id, event_type, data)
+        _publish_event(latest_task_id, event_type, data, session_factory=None)
 
     async def _run_merge():
         session_factory, engine = create_session_factory()
@@ -576,12 +668,13 @@ def _parse_findings_result(result) -> list[dict]:
 
 async def _run_agent_review(
     task_id: str,
-    tender_doc,
-    bid_doc,
+    tender_path: str,
+    bid_path: str,
+    project_id: str,
+    user_id: str,
+    max_concurrency: int,
     session_factory,
     cancel_event: asyncio.Event,
-    db,  # Main DB session for saving ReviewResult records
-    review_task,  # ReviewTask instance for status updates
 ) -> int:
     """Run the agent review process and return non-compliant findings count.
 
@@ -589,14 +682,18 @@ async def _run_agent_review(
     Saves findings incrementally after each sub-agent, then replaces with merged
     results after TaskMergeService completes.
 
+    All database access uses short-lived sessions from session_factory to avoid
+    holding connections idle during the long-running master.run() call.
+
     Args:
         task_id: Review task ID
-        tender_doc: Tender document model
-        bid_doc: Bid document model
+        tender_path: Path to parsed tender document
+        bid_path: Path to parsed bid document
+        project_id: Project ID string
+        user_id: User ID string
+        max_concurrency: Max concurrent sub-agents
         session_factory: Async session factory for database operations.
         cancel_event: asyncio.Event for cancellation.
-        db: Main async database session for persisting ReviewResult records.
-        review_task: ReviewTask instance for status updates.
     """
     from backend.agent.master import MasterAgent
     from backend.services.todo_service import TodoService
@@ -604,8 +701,6 @@ async def _run_agent_review(
     # Create a separate session for todo operations
     todo_db = session_factory()
     todo_service = TodoService(todo_db)
-    tender_path = tender_doc.parsed_markdown_path or tender_doc.parsed_html_path or ""
-    bid_path = bid_doc.parsed_markdown_path or bid_doc.parsed_html_path or ""
 
     if not tender_path or not Path(tender_path).exists():
         raise FileNotFoundError("Tender document not parsed")
@@ -616,14 +711,10 @@ async def _run_agent_review(
     # Rule library path from config
     rule_library_path = str(get_settings().rule_library_dir)
 
-    # Create event callback for SSE
+    # Create event callback for SSE — passes session_factory so _publish_event
+    # can reuse the main task engine instead of creating new ones.
     def event_cb(event_type: str, data: dict):
-        _publish_event(task_id, event_type, data)
-
-    # Initialize the agent
-    user_id = ""
-    if hasattr(tender_doc.project, 'user_id'):
-        user_id = str(tender_doc.project.user_id)
+        _publish_event(task_id, event_type, data, session_factory=session_factory)
 
     # Callback for incremental saving after each sub-agent completes.
     # Uses an independent session from session_factory to avoid sharing the
@@ -647,7 +738,7 @@ async def _run_agent_review(
                 await cb_db.rollback()
 
     master = MasterAgent(
-        project_id=str(tender_doc.project_id),
+        project_id=project_id,
         rule_library_path=rule_library_path,
         tender_doc_path=tender_path,
         bid_doc_path=bid_path,
@@ -655,7 +746,7 @@ async def _run_agent_review(
         event_callback=event_cb,
         cancel_event=cancel_event,
         on_sub_agent_result=on_sub_agent_completed,
-        max_concurrency=review_task.max_concurrency,
+        max_concurrency=max_concurrency,
     )
 
     try:
@@ -663,20 +754,30 @@ async def _run_agent_review(
         result = await master.run(todo_service, session_id=task_id, session_factory=session_factory)
 
         if result.get("success"):
-            # Count non-compliant findings from incremental saves
+            # Count non-compliant findings and update task status
+            # Use a fresh short-lived session instead of a long-held one
+            # to avoid connection timeout issues.
             from sqlalchemy import select as _sel, func as _func
-            count_result = await db.execute(
-                _sel(_func.count()).where(ReviewResult.task_id == task_id)
-            )
-            non_compliant_count = count_result.scalar() or 0
-            logger.info(f"[_run_agent_review] project_id={review_task.project_id}, task_id={task_id}, non_compliant={non_compliant_count}")
+            async with session_factory() as update_db:
+                count_result = await update_db.execute(
+                    _sel(_func.count()).where(ReviewResult.task_id == task_id)
+                )
+                non_compliant_count = count_result.scalar() or 0
+                logger.info(f"[_run_agent_review] project_id={project_id}, task_id={task_id}, non_compliant={non_compliant_count}")
 
-            # Update task status
-            review_task.status = "completed"
-            review_task.completed_at = datetime.utcnow()
-            if review_task.started_at and review_task.completed_at:
-                review_task.duration_seconds = int((review_task.completed_at - review_task.started_at).total_seconds())
-            await db.commit()
+                # Update task status
+                task_result = await update_db.execute(
+                    _sel(ReviewTask).where(ReviewTask.id == task_id)
+                )
+                review_task = task_result.scalar_one_or_none()
+                if review_task:
+                    review_task.status = "completed"
+                    review_task.completed_at = datetime.utcnow()
+                    if review_task.started_at and review_task.completed_at:
+                        review_task.duration_seconds = int(
+                            (review_task.completed_at - review_task.started_at).total_seconds()
+                        )
+                    await update_db.commit()
 
             logger.info(f"[_run_agent_review] Completed: {non_compliant_count} non-compliant findings")
 
