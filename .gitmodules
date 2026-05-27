@@ -8,3 +8,12 @@
 [submodule "third_party/mammoth"]
 	path = third_party/mammoth
 	url = https://github.com/Zhangdong1977/python-mammoth.git
+[submodule "third_party/docling"]
+	path = third_party/docling
+	url = https://github.com/Zhangdong1977/docling.git
+[submodule "third_party/MinerU"]
+	path = third_party/MinerU
+	url = https://github.com/opendatalab/MinerU.git
+[submodule "third_party/pdf.js"]
+	path = third_party/pdf.js
+	url = https://github.com/mozilla/pdf.js.git
