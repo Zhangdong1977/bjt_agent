@@ -30,6 +30,17 @@ def create_llm_client(timeout: float | None = None) -> LLMClient:
             timeout=timeout,
         )
 
+    if settings.llm_provider == "deepseek":
+        return LLMClient(
+            api_key=settings.deepseek_api_key,
+            provider=LLMProvider.OPENAI,
+            api_base=settings.deepseek_api_base,
+            model=settings.deepseek_model,
+            reasoning_split=False,
+            reasoning_mode="deepseek",
+            timeout=timeout,
+        )
+
     # Default: MiniMax
     return LLMClient(
         api_key=settings.mini_agent_api_key,
