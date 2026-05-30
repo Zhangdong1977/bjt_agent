@@ -79,20 +79,9 @@ class BidReviewAgent(BaseAgent):
         cancel_event: Optional[asyncio.Event] = None,
         heartbeat_timeout: int = 60,
     ):
+        """Initialize the bid review agent (synchronous part).
+
         初始化投标评审代理的同步部分，配置项目参数、工作空间、工具集及LLM客户端。
-    
-    Args:
-        project_id (str): 用于组织工作空间的项目ID
-        tender_doc_path (str): 已解析的招标文档路径
-        bid_doc_path (str): 已解析的投标文档路径
-        user_id (str): 用于工作空间组织的用户ID
-        rule_doc_path (str): 本次评审使用的规则文档路径
-        event_callback: 可选的SSE事件发布回调函数
-        logger: 可选的文件输出日志记录器，若为None则使用模块级日志
-        max_steps (int): 代理执行的最大步数，默认100
-        cancel_event (Optional[asyncio.Event]): 用于发出取消信号的异步事件对象
-        heartbeat_timeout (int): 心跳超时时间（秒），默认60
-    """Initialize the bid review agent (synchronous part).
 
         Args:
             project_id: The project ID for organizing workspace
