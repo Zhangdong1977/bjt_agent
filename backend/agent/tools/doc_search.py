@@ -160,20 +160,37 @@ class DocSearchTool(BaseTool):
                 })
         return image_refs
 
-    def _search_by_keyword(self, lines: list[str], query: str, max_results: int = MAX_LINES_PER_QUERY) -> list[dict]:
+    # 默认上下文窗口大小（匹配行前后各N行）
+    _DEFAULT_CONTEXT_WINDOW = 5
+
+    def _search_by_keyword(self, lines: list[str], query: str, max_results: int = MAX_LINES_PER_QUERY, context_lines: int = _DEFAULT_CONTEXT_WINDOW) -> list[dict]:
         """按关键词搜索文档行并返回带上下文的匹配结果。
 
-        返回列表: {line_number, line_content, context, image_refs}。
+        Args:
+            context_lines: 匹配行前后各返回的上下文行数
+
+        返回列表: {line_number, line_content, context_before, context_after, image_refs}。
         """
         results = []
         query_lower = query.lower()
 
         for i, line in enumerate(lines):
             if query_lower in line.lower():
-                # 获取上下文（前后各一行）
+                # 获取上下文（前后各 context_lines 行）
                 # 先去除HTML，再截断，避免在标签中间截断
-                context_before = smart_truncate(strip_html_tags(lines[max(0, i - 1)].strip()), 150) if i > 0 else ""
-                context_after = smart_truncate(strip_html_tags(lines[min(len(lines) - 1, i + 1)].strip()), 150) if i < len(lines) - 1 else ""
+                before_start = max(0, i - context_lines)
+                before_lines = [
+                    smart_truncate(strip_html_tags(lines[j].strip()), 200)
+                    for j in range(before_start, i)
+                ]
+                context_before = "\n".join(before_lines)
+
+                after_end = min(len(lines), i + context_lines + 1)
+                after_lines = [
+                    smart_truncate(strip_html_tags(lines[j].strip()), 200)
+                    for j in range(i + 1, after_end)
+                ]
+                context_after = "\n".join(after_lines)
 
                 # 从当前行提取图片引用
                 image_refs = []
@@ -265,6 +282,7 @@ class DocSearchTool(BaseTool):
 - "query": 搜索关键词，必填。返回所有包含该关键词的行及上下文
 - "chunk": 分页编号（从0开始），大文档分页时使用
 - "full_content": 设为true返回完整文档（仅在无query时使用）
+- "context_lines": 匹配行前后各返回的上下文行数，默认5。精确引用用1-3，理解语义用5-10
 
 返回：匹配行的行号、内容和上下文。"""
 
@@ -292,6 +310,11 @@ class DocSearchTool(BaseTool):
                     "description": "如果为true，返回完整文档内容（可能被截断）",
                     "default": False,
                 },
+                "context_lines": {
+                    "type": "integer",
+                    "description": "关键词搜索时，匹配行前后各返回的上下文行数。默认5行。需要精确引用时可设小（如1-3），需要理解上下文语义时可设大（如5-10）",
+                    "default": 5,
+                },
             },
             "required": ["文档类型"],
         }
@@ -302,6 +325,7 @@ class DocSearchTool(BaseTool):
         query: str = None,
         chunk: int = 0,
         full_content: bool = False,
+        context_lines: int = 5,
         # 兼容中英文参数名
         doc_type: str = None,
         **kwargs,
@@ -314,6 +338,7 @@ class DocSearchTool(BaseTool):
             query: 可选的查询字符串，用于过滤行
             chunk: 大文档分页的分块编号
             full_content: 如果为True，返回完整文档（可能被截断）
+            context_lines: 关键词搜索时匹配行前后各返回的上下文行数
 
         Returns:
             包含文档内容和元数据的ToolResult
@@ -365,7 +390,7 @@ class DocSearchTool(BaseTool):
                 query_match_info = ""
                 keyword_matches = []
                 if query:
-                    keyword_matches = self._search_by_keyword(lines, query)
+                    keyword_matches = self._search_by_keyword(lines, query, context_lines=context_lines)
                     if keyword_matches:
                         query_match_info = f"\n\n📌 关键词\"{query}\"匹配情况：找到 **{len(keyword_matches)}** 处"
                         # 显示前3个匹配作为示例
@@ -399,7 +424,7 @@ class DocSearchTool(BaseTool):
 
             # 如果提供了query，按关键词搜索
             if query:
-                matches = self._search_by_keyword(lines, query)
+                matches = self._search_by_keyword(lines, query, context_lines=context_lines)
 
                 if not matches:
                     doc_label = "招标" if resolved_doc_type == "tender" else "投标"
@@ -446,9 +471,17 @@ class DocSearchTool(BaseTool):
                     # 格式化引用，包含行号和引用内容
                     formatted.append(f"{i}. {m['line_content']}")
                     if m.get('context_before'):
-                        formatted.append(f"   ↳ 上文: {m['context_before']}")
+                        before_lines = m['context_before'].split('\n')
+                        formatted.append(f"   ↳ 上文({len(before_lines)}行):")
+                        for bl in before_lines:
+                            if bl:
+                                formatted.append(f"      {bl}")
                     if m.get('context_after'):
-                        formatted.append(f"   ↳ 下文: {m['context_after']}")
+                        after_lines = m['context_after'].split('\n')
+                        formatted.append(f"   ↳ 下文({len(after_lines)}行):")
+                        for al in after_lines:
+                            if al:
+                                formatted.append(f"      {al}")
                     # 检查此匹配中的图片引用
                     img_refs = m.get('image_refs', [])
                     if img_refs:
