@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
-import { ElMessage } from 'element-plus'
+import { message } from 'ant-design-vue'
 
 const router = useRouter()
 const projectStore = useProjectStore()
@@ -15,7 +15,7 @@ const formState = ref({
 
 async function createProject() {
   if (!formState.value.name.trim()) {
-    ElMessage.warning('请输入项目名称')
+    message.warning('请输入项目名称')
     return
   }
 
@@ -29,7 +29,7 @@ async function createProject() {
       router.push({ name: 'project', params: { id: project.id } })
     }
   } catch {
-    ElMessage.error('创建项目失败')
+    message.error('创建项目失败')
   } finally {
     loading.value = false
   }
@@ -82,9 +82,9 @@ async function createProject() {
       <template #title>使用说明</template>
       <ol class="help-list">
         <li>创建新项目，填写项目名称和描述</li>
-        <li>上传招标文件（Word文档）</li>
-        <li>上传投标文件（Word文档）</li>
-        <li>点击"立即检查"启动AI审查流程</li>
+        <li>上传招标文件（Word 文档）</li>
+        <li>上传投标文件（Word 文档）</li>
+        <li>点击"立即检查"启动 AI 审查流程</li>
         <li>查看审查结果，导出报告</li>
       </ol>
     </a-card>
@@ -102,24 +102,25 @@ async function createProject() {
 }
 
 .create-card {
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md);
+  transition: box-shadow 0.25s ease;
 }
 
 .create-card:hover {
-  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
+  box-shadow: var(--shadow-lg);
 }
 
 .card-title {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 600;
-  color: var(--text);
+  color: var(--bright);
 }
 
 .help-card {
   margin-top: 24px;
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .help-list {

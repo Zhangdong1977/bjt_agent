@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { documentsApi } from '@/api/client'
 import type { DocumentContent } from '@/types'
-import { ElMessage } from 'element-plus'
+import { message } from 'ant-design-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
@@ -28,8 +28,16 @@ const router = useRouter()
 const projectStore = useProjectStore()
 
 const projectId = computed(() => route.params.id as string)
-const tenderDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'tender'))
-const bidDoc = computed(() => projectStore.documents.find(d => d.doc_type === 'bid'))
+const tenderDocs = computed(() => projectStore.documents.filter(d => d.doc_type === 'tender'))
+const bidDocs = computed(() => projectStore.documents.filter(d => d.doc_type === 'bid'))
+const hasParsedTender = computed(() => tenderDocs.value.some(d => d.status === 'parsed'))
+const hasParsedBid = computed(() => bidDocs.value.some(d => d.status === 'parsed'))
+
+// Get upload progress for a given doc type
+const getUploadProgress = (docType: 'tender' | 'bid') => {
+  const key = Object.keys(projectStore.uploadProgress).find(k => k.startsWith(`${docType}_`))
+  return key ? projectStore.uploadProgress[key] : null
+}
 
 // Document viewer state
 const showDocViewer = ref(false)
@@ -51,14 +59,19 @@ function renderMarkdown(content: string): string {
 
 async function handleUpload(event: Event, docType: 'tender' | 'bid') {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  try {
-    await projectStore.uploadDocument(docType, file)
-    ElMessage.success(`${docType === 'tender' ? '招标文件' : '投标文件'}上传成功`)
-  } catch {
-    ElMessage.error(`${docType === 'tender' ? '招标文件' : '投标文件'}上传失败`)
+  const files = input.files
+  if (!files?.length) return
+
+  for (const file of files) {
+    try {
+      await projectStore.uploadDocument(docType, file)
+      message.success(`${file.name} 上传成功`)
+    } catch {
+      message.error(`${file.name} 上传失败`)
+    }
   }
+  // Reset input so the same file can be re-uploaded
+  input.value = ''
 }
 
 async function handleViewDoc(documentId: string) {
@@ -74,7 +87,7 @@ async function handleViewDoc(documentId: string) {
     docViewerTitle.value = doc ? `${doc.doc_type === 'tender' ? '招标文件' : '投标文件'} - ${doc.original_filename}` : '文档'
   } catch (error) {
     console.error('Failed to load document:', error)
-    ElMessage.error('加载文档内容失败')
+    message.error('加载文档内容失败')
     showDocViewer.value = false
   } finally {
     docViewerLoading.value = false
@@ -97,7 +110,7 @@ async function handleStartReview() {
     await projectStore.startReview()
     router.push({ name: 'review-execution', params: { id: projectId.value } })
   } catch {
-    ElMessage.error('启动审查失败')
+    message.error('启动审查失败')
   }
 }
 
@@ -125,138 +138,152 @@ function getStatusClass(status: string) {
         <h2>招标文件、投标文件</h2>
 
         <div class="documents-grid">
-          <!-- Tender Document -->
+          <!-- Tender Documents -->
           <div class="document-card">
-            <h3>招标文件</h3>
-            <div v-if="tenderDoc" class="document-info">
-              <div class="doc-header">
-                <div class="doc-icon">📄</div>
-                <div class="doc-main">
-                  <p class="filename">{{ tenderDoc.original_filename }}</p>
-                  <DocumentParseProgress
-                    v-if="tenderDoc.status === 'parsing' || tenderDoc.status === 'pending'"
-                    :document-id="tenderDoc.id"
-                    :stage="tenderDoc.parse_progress?.stage || 'extracting_text'"
-                    :processed="tenderDoc.parse_progress?.processed || 0"
-                    :total="tenderDoc.parse_progress?.total || 1"
-                    :eta-seconds="tenderDoc.parse_progress?.etaSeconds || 0"
-                  />
-                  <div v-else-if="tenderDoc.status === 'failed'" class="parse-error-block">
-                    <span class="status status-error">解析失败</span>
-                    <p class="error-message">{{ tenderDoc.parse_error || '文档解析失败，请重试' }}</p>
+            <h3>招标文件 ({{ tenderDocs.length }})</h3>
+
+            <!-- Document list -->
+            <div v-if="tenderDocs.length > 0" class="doc-list">
+              <div v-for="doc in tenderDocs" :key="doc.id" class="doc-item">
+                <div class="doc-header">
+                  <div class="doc-icon">📄</div>
+                  <div class="doc-main">
+                    <p class="filename">{{ doc.original_filename }}</p>
+                    <DocumentParseProgress
+                      v-if="doc.status === 'parsing' || doc.status === 'pending'"
+                      :document-id="doc.id"
+                      :stage="doc.parse_progress?.stage || 'extracting_text'"
+                      :processed="doc.parse_progress?.processed || 0"
+                      :total="doc.parse_progress?.total || 1"
+                      :eta-seconds="doc.parse_progress?.etaSeconds || 0"
+                    />
+                    <div v-else-if="doc.status === 'failed'" class="parse-error-block">
+                      <span class="status status-error">解析失败</span>
+                      <p class="error-message">{{ doc.parse_error || '文档解析失败，请重试' }}</p>
+                    </div>
+                    <span v-else :class="['status', getStatusClass(doc.status)]">
+                      {{ doc.status }}
+                    </span>
+                    <p v-if="doc.page_count" class="doc-meta text-mono">
+                      {{ doc.page_count }} 页, {{ doc.word_count }} 字
+                    </p>
                   </div>
-                  <span
-                    v-else
-                    :class="['status', getStatusClass(tenderDoc.status)]"
+                </div>
+                <div class="doc-actions">
+                  <button
+                    v-if="doc.status === 'parsed'"
+                    class="view-btn"
+                    @click="handleViewDoc(doc.id)"
                   >
-                    {{ tenderDoc.status }}
-                  </span>
-                  <p v-if="tenderDoc.page_count" class="doc-meta">
-                    {{ tenderDoc.page_count }} 页, {{ tenderDoc.word_count }} 字
-                  </p>
+                    查看内容
+                  </button>
+                  <button
+                    class="delete-btn"
+                    @click="handleDeleteDoc(doc.id)"
+                  >
+                    删除
+                  </button>
                 </div>
               </div>
-              <div class="doc-actions">
-                <button
-                  v-if="tenderDoc.status === 'parsed'"
-                  class="view-btn"
-                  @click="handleViewDoc(tenderDoc.id)"
-                >
-                  查看内容
-                </button>
-                <button
-                  class="delete-btn"
-                  @click="handleDeleteDoc(tenderDoc.id)"
-                >
-                  删除
-                </button>
-              </div>
+            </div>
+
+            <!-- Upload area -->
+            <div v-if="tenderDocs.length >= 10" class="upload-limit">
+              已达上限（10个文件）
             </div>
             <div v-else class="upload-area">
-              <el-progress
-                v-if="projectStore.uploadProgress['tender']"
-                :percentage="projectStore.uploadProgress['tender'].percent"
+              <a-progress
+                v-if="getUploadProgress('tender')"
+                :percent="getUploadProgress('tender')!.percent"
                 :stroke-width="8"
-                :show-text="true"
+                :show-info="true"
               />
               <input
                 v-else
                 type="file"
-                accept=".pdf,.docx"
+                accept=".pdf,.docx,.doc"
                 :id="'tender-upload'"
                 class="file-input"
+                multiple
                 @change="handleUpload($event, 'tender')"
               />
-              <label v-if="!projectStore.uploadProgress['tender']" for="tender-upload" class="upload-label">
-                点击上传 PDF 或 Word 文件 (.pdf, .docx)
+              <label v-if="!getUploadProgress('tender')" for="tender-upload" class="upload-label">
+                点击上传 PDF 或 Word 文件
               </label>
             </div>
           </div>
 
-          <!-- Bid Document -->
+          <!-- Bid Documents -->
           <div class="document-card">
-            <h3>投标文件</h3>
-            <div v-if="bidDoc" class="document-info">
-              <div class="doc-header">
-                <div class="doc-icon">📄</div>
-                <div class="doc-main">
-                  <p class="filename">{{ bidDoc.original_filename }}</p>
-                  <DocumentParseProgress
-                    v-if="bidDoc.status === 'parsing' || bidDoc.status === 'pending'"
-                    :document-id="bidDoc.id"
-                    :stage="bidDoc.parse_progress?.stage || 'extracting_text'"
-                    :processed="bidDoc.parse_progress?.processed || 0"
-                    :total="bidDoc.parse_progress?.total || 1"
-                    :eta-seconds="bidDoc.parse_progress?.etaSeconds || 0"
-                  />
-                  <div v-else-if="bidDoc.status === 'failed'" class="parse-error-block">
-                    <span class="status status-error">解析失败</span>
-                    <p class="error-message">{{ bidDoc.parse_error || '文档解析失败，请重试' }}</p>
+            <h3>投标文件 ({{ bidDocs.length }})</h3>
+
+            <!-- Document list -->
+            <div v-if="bidDocs.length > 0" class="doc-list">
+              <div v-for="doc in bidDocs" :key="doc.id" class="doc-item">
+                <div class="doc-header">
+                  <div class="doc-icon">📄</div>
+                  <div class="doc-main">
+                    <p class="filename">{{ doc.original_filename }}</p>
+                    <DocumentParseProgress
+                      v-if="doc.status === 'parsing' || doc.status === 'pending'"
+                      :document-id="doc.id"
+                      :stage="doc.parse_progress?.stage || 'extracting_text'"
+                      :processed="doc.parse_progress?.processed || 0"
+                      :total="doc.parse_progress?.total || 1"
+                      :eta-seconds="doc.parse_progress?.etaSeconds || 0"
+                    />
+                    <div v-else-if="doc.status === 'failed'" class="parse-error-block">
+                      <span class="status status-error">解析失败</span>
+                      <p class="error-message">{{ doc.parse_error || '文档解析失败，请重试' }}</p>
+                    </div>
+                    <span v-else :class="['status', getStatusClass(doc.status)]">
+                      {{ doc.status }}
+                    </span>
+                    <p v-if="doc.page_count" class="doc-meta text-mono">
+                      {{ doc.page_count }} 页, {{ doc.word_count }} 字
+                    </p>
                   </div>
-                  <span
-                    v-else
-                    :class="['status', getStatusClass(bidDoc.status)]"
+                </div>
+                <div class="doc-actions">
+                  <button
+                    v-if="doc.status === 'parsed'"
+                    class="view-btn"
+                    @click="handleViewDoc(doc.id)"
                   >
-                    {{ bidDoc.status }}
-                  </span>
-                  <p v-if="bidDoc.page_count" class="doc-meta">
-                    {{ bidDoc.page_count }} 页, {{ bidDoc.word_count }} 字
-                  </p>
+                    查看内容
+                  </button>
+                  <button
+                    class="delete-btn"
+                    @click="handleDeleteDoc(doc.id)"
+                  >
+                    删除
+                  </button>
                 </div>
               </div>
-              <div class="doc-actions">
-                <button
-                  v-if="bidDoc.status === 'parsed'"
-                  class="view-btn"
-                  @click="handleViewDoc(bidDoc.id)"
-                >
-                  查看内容
-                </button>
-                <button
-                  class="delete-btn"
-                  @click="handleDeleteDoc(bidDoc.id)"
-                >
-                  删除
-                </button>
-              </div>
+            </div>
+
+            <!-- Upload area -->
+            <div v-if="bidDocs.length >= 10" class="upload-limit">
+              已达上限（10个文件）
             </div>
             <div v-else class="upload-area">
-              <el-progress
-                v-if="projectStore.uploadProgress['bid']"
-                :percentage="projectStore.uploadProgress['bid'].percent"
+              <a-progress
+                v-if="getUploadProgress('bid')"
+                :percent="getUploadProgress('bid')!.percent"
                 :stroke-width="8"
-                :show-text="true"
+                :show-info="true"
               />
               <input
                 v-else
                 type="file"
-                accept=".pdf,.docx"
+                accept=".pdf,.docx,.doc"
                 :id="'bid-upload'"
                 class="file-input"
+                multiple
                 @change="handleUpload($event, 'bid')"
               />
-              <label v-if="!projectStore.uploadProgress['bid']" for="bid-upload" class="upload-label">
-                点击上传 PDF 或 Word 文件 (.pdf, .docx)
+              <label v-if="!getUploadProgress('bid')" for="bid-upload" class="upload-label">
+                点击上传 PDF 或 Word 文件
               </label>
             </div>
           </div>
@@ -267,7 +294,7 @@ function getStatusClass(status: string) {
       <div class="review-action-bar">
         <button
           class="start-review-btn"
-          :disabled="!tenderDoc || !bidDoc || tenderDoc.status !== 'parsed' || bidDoc.status !== 'parsed'"
+          :disabled="!hasParsedTender || !hasParsedBid"
           @click="handleStartReview"
         >
           {{ projectStore.reviewLoading ? '启动中...' : '立即检查' }}
@@ -288,7 +315,7 @@ function getStatusClass(status: string) {
             <!-- Markdown 渲染 (DOCX/DOC) -->
             <div
               v-if="docViewerContent.format === 'markdown'"
-              class="markdown-body markdown-content"
+              class="markdown-content"
               v-html="renderMarkdown(docViewerContent.content)"
             />
             <!-- HTML 渲染 (PDF) -->
@@ -318,7 +345,7 @@ function getStatusClass(status: string) {
 .section {
   background: var(--bg1);
   padding: 1.5rem;
-  border-radius: var(--r2);
+  border-radius: var(--r-lg);
   border: 1px solid var(--line);
   margin-bottom: 2rem;
 }
@@ -338,44 +365,54 @@ function getStatusClass(status: string) {
 
 .document-card {
   border: 1px solid var(--line);
-  border-radius: var(--r2);
+  border-radius: var(--r);
   padding: 1.25rem;
   background: var(--bg1);
-  transition: box-shadow 0.2s ease;
+  transition: box-shadow 0.25s ease;
 }
 
 .document-card:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-md);
 }
 
 .document-card h3 {
-  color: var(--text);
-  font-size: 0.85rem;
+  color: var(--muted);
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   margin-bottom: 1rem;
   padding-bottom: 0.75rem;
-  border-bottom: 1px solid var(--bg3);
+  border-bottom: 1px solid var(--line);
 }
 
-.document-info {
-  text-align: left;
+.doc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.doc-item {
+  padding: 0.75rem;
+  background: var(--bg2);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
 }
 
 .doc-header {
   display: flex;
   align-items: flex-start;
   gap: 0.75rem;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.5rem;
 }
 
 .doc-icon {
   flex-shrink: 0;
   width: 36px;
   height: 36px;
-  background: var(--bg);
-  border-radius: var(--r);
+  background: var(--bg3);
+  border-radius: var(--r-sm);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -388,9 +425,9 @@ function getStatusClass(status: string) {
 }
 
 .filename {
-  color: var(--text);
+  color: var(--bright);
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.9375rem;
   word-break: break-all;
   margin: 0;
   line-height: 1.3;
@@ -406,6 +443,16 @@ function getStatusClass(status: string) {
   position: relative;
 }
 
+.upload-limit {
+  text-align: center;
+  padding: 1rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  background: var(--bg2);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+}
+
 .file-input {
   position: absolute;
   width: 100%;
@@ -418,23 +465,26 @@ function getStatusClass(status: string) {
 
 .upload-label {
   display: block;
-  padding: 2rem;
-  border: 2px dashed var(--blue);
-  border-radius: var(--r2);
+  padding: 1.5rem;
+  border: 2px dashed var(--blue-dim);
+  border-radius: var(--r);
   color: var(--blue);
   cursor: pointer;
-  transition: background-color 0.2s ease;
+  text-align: center;
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
 }
 
 .upload-label:hover {
-  background: var(--bg);
+  background: var(--blue-bg);
+  border-color: var(--blue);
 }
 
 .status {
   display: inline-flex;
   align-items: center;
   padding: 0.2rem 0.6rem;
-  border-radius: 9999px;
+  border-radius: var(--r-full);
   font-size: 0.75rem;
   font-weight: 600;
 }
@@ -471,34 +521,35 @@ function getStatusClass(status: string) {
   margin: 0;
   padding: 0.4rem 0.6rem;
   background: var(--red-bg);
-  border-radius: var(--r);
+  border-radius: var(--r-sm);
   line-height: 1.4;
 }
 
 .doc-actions {
   display: flex;
   gap: 0.5rem;
-  margin-top: 0.75rem;
+  margin-top: 0.5rem;
 }
 
 .view-btn, .delete-btn {
   flex: 1;
-  padding: 0.5rem 0.75rem;
+  padding: 0.4rem 0.6rem;
   border: none;
-  border-radius: var(--r);
+  border-radius: var(--r-sm);
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 500;
-  transition: filter 0.2s ease;
+  transition: all 0.2s ease;
+  font-family: inherit;
 }
 
 .view-btn {
   background: var(--blue);
-  color: var(--white);
+  color: #fff;
 }
 
 .view-btn:hover {
-  filter: brightness(1.1);
+  filter: brightness(1.08);
 }
 
 .delete-btn {
@@ -518,17 +569,19 @@ function getStatusClass(status: string) {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
   justify-content: center;
   align-items: center;
   z-index: 100;
+  backdrop-filter: blur(4px);
 }
 
 .doc-viewer-modal {
   background: var(--bg1);
-  border-radius: var(--r2);
+  border-radius: var(--r-lg);
   border: 1px solid var(--line);
+  box-shadow: var(--shadow-lg);
   width: 90%;
   max-width: 900px;
   max-height: 80vh;
@@ -548,8 +601,8 @@ function getStatusClass(status: string) {
 
 .doc-viewer-header h3 {
   margin: 0;
-  color: var(--text);
-  font-size: 1.1rem;
+  color: var(--bright);
+  font-size: 1rem;
 }
 
 .close-btn {
@@ -564,10 +617,13 @@ function getStatusClass(status: string) {
   display: flex;
   align-items: center;
   justify-content: center;
+  border-radius: var(--r-sm);
+  transition: all 0.2s ease;
 }
 
 .close-btn:hover {
   color: var(--text);
+  background: var(--bg3);
 }
 
 .doc-viewer-body {
@@ -583,7 +639,7 @@ function getStatusClass(status: string) {
 }
 
 .doc-content {
-  font-size: 0.95rem;
+  font-size: 0.9375rem;
 }
 
 .html-content {
@@ -635,81 +691,7 @@ function getStatusClass(status: string) {
   padding: 2rem;
 }
 
-/* Markdown styles */
-.markdown-content {
-  line-height: 1.6;
-  color: var(--text);
-}
-
-.markdown-content h1,
-.markdown-content h2,
-.markdown-content h3 {
-  margin-top: 1.5em;
-  margin-bottom: 0.5em;
-  font-weight: 600;
-}
-
-.markdown-content h1 { font-size: 1.75em; }
-.markdown-content h2 { font-size: 1.5em; }
-.markdown-content h3 { font-size: 1.25em; }
-
-.markdown-content p {
-  margin-bottom: 1em;
-}
-
-.markdown-content ul,
-.markdown-content ol {
-  margin-bottom: 1em;
-  padding-left: 2em;
-}
-
-.markdown-content li {
-  margin-bottom: 0.5em;
-}
-
-.markdown-content img {
-  max-width: 100%;
-  height: auto;
-  display: block;
-  margin: 1em 0;
-}
-
-.markdown-content table {
-  border-collapse: collapse;
-  width: 100%;
-  margin-bottom: 1em;
-}
-
-.markdown-content th,
-.markdown-content td {
-  border: 1px solid var(--line);
-  padding: 8px;
-}
-
-.markdown-content th {
-  background-color: var(--bg2);
-  font-weight: 600;
-}
-
-.markdown-content code {
-  background-color: var(--bg2);
-  padding: 0.2em 0.4em;
-  border-radius: 3px;
-  font-size: 0.9em;
-}
-
-.markdown-content pre {
-  background-color: var(--bg2);
-  padding: 1em;
-  border-radius: var(--r);
-  overflow-x: auto;
-  margin-bottom: 1em;
-}
-
-.markdown-content pre code {
-  background: none;
-  padding: 0;
-}
+/* Markdown — uses global .markdown-content from common.css */
 
 .review-action-bar {
   display: flex;
@@ -720,24 +702,30 @@ function getStatusClass(status: string) {
 .start-review-btn {
   padding: 0.75rem 2.5rem;
   background: var(--blue);
-  color: var(--white);
+  color: #fff;
   border: none;
-  border-radius: var(--r2);
+  border-radius: var(--r);
   cursor: pointer;
   font-size: 1rem;
   font-weight: 600;
-  transition: filter 0.2s, transform 0.15s;
+  transition: all 0.2s ease;
+  font-family: inherit;
 }
 
 .start-review-btn:hover:not(:disabled) {
-  filter: brightness(1.1);
+  filter: brightness(1.08);
   transform: translateY(-1px);
+  box-shadow: 0 4px 12px var(--blue-bg);
+}
+
+.start-review-btn:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 .start-review-btn:disabled {
-  background: var(--muted);
+  background: var(--dim);
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 @media (max-width: 767px) {
@@ -753,5 +741,4 @@ function getStatusClass(status: string) {
     padding: 1rem;
   }
 }
-
 </style>

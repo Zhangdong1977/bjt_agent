@@ -27,12 +27,23 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="auth-container">
-    <div class="auth-card">
-      <h1>标书审查智能体</h1>
-      <h2>登录</h2>
+  <div class="auth-page">
+    <!-- 背景装饰 -->
+    <div class="auth-bg">
+      <div class="auth-bg__orb auth-bg__orb--1"></div>
+      <div class="auth-bg__orb auth-bg__orb--2"></div>
+    </div>
 
-      <form @submit.prevent="handleLogin">
+    <div class="auth-card">
+      <!-- Logo 区域 -->
+      <div class="auth-logo">
+        <img src="/logo.ico" alt="标书审查智能体" width="48" height="48" />
+      </div>
+
+      <h1 class="auth-title">标书审查智能体</h1>
+      <p class="auth-subtitle">登录您的标捷通账户</p>
+
+      <form @submit.prevent="handleLogin" class="auth-form">
         <div class="form-group">
           <label for="username">用户名</label>
           <input
@@ -41,6 +52,7 @@ async function handleLogin() {
             type="text"
             required
             autocomplete="username"
+            placeholder="请输入用户名"
           />
         </div>
 
@@ -52,12 +64,14 @@ async function handleLogin() {
             type="password"
             required
             autocomplete="current-password"
+            placeholder="请输入密码"
           />
         </div>
 
-        <div v-if="error" class="error">{{ error }}</div>
+        <div v-if="error" class="error-msg">{{ error }}</div>
 
-        <button type="submit" :disabled="authStore.loading">
+        <button type="submit" :disabled="authStore.loading" class="auth-btn">
+          <span v-if="authStore.loading" class="btn-loading"></span>
           {{ authStore.loading ? '登录中...' : '登录' }}
         </button>
       </form>
@@ -66,93 +80,178 @@ async function handleLogin() {
 </template>
 
 <style scoped>
-.auth-container {
+.auth-page {
   display: flex;
   justify-content: center;
   align-items: center;
   min-height: 100vh;
   background: var(--bg);
+  position: relative;
+  overflow: hidden;
 }
 
+/* 背景装饰光斑 */
+.auth-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.auth-bg__orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.15;
+}
+
+.auth-bg__orb--1 {
+  width: 400px;
+  height: 400px;
+  background: var(--blue);
+  top: -100px;
+  right: -100px;
+}
+
+.auth-bg__orb--2 {
+  width: 300px;
+  height: 300px;
+  background: var(--purple);
+  bottom: -80px;
+  left: -80px;
+}
+
+/* 卡片 */
 .auth-card {
+  position: relative;
   background: var(--bg1);
-  padding: 2rem;
-  border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 2.5rem;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
   width: 100%;
   max-width: 400px;
+  z-index: 1;
 }
 
-h1 {
+/* Logo */
+.auth-logo {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1.25rem;
+}
+
+/* 标题 */
+.auth-title {
   text-align: center;
-  color: var(--blue);
-  margin-bottom: 0.5rem;
+  color: var(--bright);
   font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+  letter-spacing: -0.02em;
 }
 
-h2 {
+.auth-subtitle {
   text-align: center;
-  color: var(--text);
-  margin-bottom: 1.5rem;
-  font-weight: 500;
+  color: var(--muted);
+  font-size: 0.875rem;
+  margin-bottom: 2rem;
+}
+
+/* 表单 */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
 .form-group {
-  margin-bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
 }
 
 label {
-  display: block;
-  margin-bottom: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
   color: var(--sub);
+  letter-spacing: 0.01em;
 }
 
 input {
   width: 100%;
-  padding: 0.75rem;
+  padding: 0.75rem 1rem;
   border: 1px solid var(--line);
-  border-radius: 4px;
-  font-size: 1rem;
+  border-radius: var(--r-sm);
+  font-size: 0.9375rem;
   background: var(--bg2);
   color: var(--text);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  font-family: inherit;
+}
+
+input::placeholder {
+  color: var(--muted);
+  opacity: 0.6;
 }
 
 input:focus {
   outline: none;
   border-color: var(--blue);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+  box-shadow: 0 0 0 3px var(--blue-bg);
 }
 
-button {
+/* 错误消息 */
+.error-msg {
+  color: var(--red);
+  font-size: 0.8125rem;
+  text-align: center;
+  padding: 0.5rem;
+  background: var(--red-bg);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--red-dim);
+}
+
+/* 登录按钮 */
+.auth-btn {
   width: 100%;
   padding: 0.75rem;
   background: var(--blue);
-  color: var(--white);
+  color: #fff;
   border: none;
-  border-radius: 6px;
-  font-size: 1rem;
+  border-radius: var(--r-sm);
+  font-size: 0.9375rem;
+  font-weight: 600;
   cursor: pointer;
-  margin-top: 1rem;
-  font-weight: 500;
-  transition: background-color 0.2s ease, transform 0.1s ease;
+  margin-top: 0.5rem;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
-button:disabled {
-  opacity: 0.7;
+.auth-btn:disabled {
+  opacity: 0.6;
   cursor: not-allowed;
 }
 
-button:hover:not(:disabled) {
-  background: var(--blue-dim);
+.auth-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 4px 12px var(--blue-bg);
 }
 
-button:active:not(:disabled) {
+.auth-btn:active:not(:disabled) {
   transform: scale(0.98);
 }
 
-.error {
-  color: var(--red);
-  margin-top: 1rem;
-  text-align: center;
+/* 加载动画 */
+.btn-loading {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
 }
 </style>

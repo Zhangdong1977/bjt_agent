@@ -1,21 +1,18 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
-import { getAccessToken, reviewApi } from '@/api/client'
+import { reviewApi } from '@/api/client'
 import ExecutionStepper from '@/components/execution/ExecutionStepper.vue'
 import LeftPane from '@/components/execution/LeftPane.vue'
 import RightSidebar from '@/components/execution/RightSidebar.vue'
+import { useSSE } from '@/composables/useSSE'
 
-const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
 
 const projectId = computed(() => route.params.id as string)
-
-// SSE 连接
-let eventSource: EventSource | null = null
 
 // 状态
 const phase = ref<'pending' | 'running' | 'completed' | 'failed'>('pending')
@@ -472,55 +469,25 @@ async function loadHistoricalTodos(projectId: string, taskId: string) {
   }
 }
 
+// 使用统一的 SSE composable（支持指数退避重连 + Last-Event-ID + RAF 批量处理）
+const { connect: sseConnect, disconnect: sseDisconnect } = useSSE({
+  onEvent: handleSSEEvent,
+  enableBatching: true,  // 保持 RAF 批量处理
+  shouldStop: () => {
+    return phase.value === 'completed' || phase.value === 'failed'
+  },
+})
+
 function connect() {
   if (!projectStore.currentTask?.id) {
     console.log('[ReviewExecutionView] No currentTask.id, skipping SSE connection')
     return
   }
-
-  disconnect()
-  const token = getAccessToken()
-  const url = token
-    ? `${API_BASE}/events/tasks/${projectStore.currentTask.id}/stream?token=${encodeURIComponent(token)}`
-    : `${API_BASE}/events/tasks/${projectStore.currentTask.id}/stream`
-  console.log('[ReviewExecutionView] Connecting to SSE:', url)
-
-  eventSource = new EventSource(url)
-
-  eventSource.onopen = () => {
-    console.log('[ReviewExecutionView] SSE connection opened')
-  }
-
-  // 节流：用 requestAnimationFrame 批量处理 SSE 事件
-  let pendingEvents: any[] = []
-  let rafId: number | null = null
-
-  eventSource.onmessage = (e) => {
-    try {
-      pendingEvents.push(JSON.parse(e.data))
-      if (!rafId) {
-        rafId = requestAnimationFrame(() => {
-          pendingEvents.forEach(evt => handleSSEEvent(evt))
-          pendingEvents = []
-          rafId = null
-        })
-      }
-    } catch (err) {
-      console.error('[ReviewExecutionView] Failed to parse SSE event:', err)
-    }
-  }
-
-  eventSource.onerror = () => {
-    console.error('[ReviewExecutionView] SSE error, disconnecting')
-    disconnect()
-  }
+  sseConnect(projectStore.currentTask.id)
 }
 
 function disconnect() {
-  if (eventSource) {
-    eventSource.close()
-    eventSource = null
-  }
+  sseDisconnect()
 }
 
 function handleCancelled() {
@@ -677,10 +644,6 @@ onMounted(async () => {
     console.log('[ReviewExecutionView] No currentTask, SSE will not connect')
   }
 })
-
-onUnmounted(() => {
-  disconnect()
-})
 </script>
 
 <template>
@@ -718,7 +681,7 @@ onUnmounted(() => {
 
 <style scoped>
 .review-execution-view {
-  height: calc(100vh - 64px - 48px);
+  height: calc(100vh - 58px - 48px);
   background: var(--bg);
   display: flex;
   flex-direction: column;
@@ -737,8 +700,9 @@ onUnmounted(() => {
   grid-template-columns: 1fr 320px;
   flex: 1;
   min-height: 0;
-  border-radius: var(--r2);
+  border-radius: var(--r);
   overflow: hidden;
   border: 1px solid var(--line);
+  box-shadow: var(--shadow-sm);
 }
 </style>

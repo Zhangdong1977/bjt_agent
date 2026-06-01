@@ -79,7 +79,7 @@ async function deleteProject(projectId: string, event: Event) {
             {{ record.description || '-' }}
           </template>
           <template v-else-if="column.key === 'created_at'">
-            {{ new Date(record.created_at).toLocaleDateString() }}
+            <span class="text-mono">{{ new Date(record.created_at).toLocaleDateString() }}</span>
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
@@ -115,8 +115,8 @@ async function deleteProject(projectId: string, event: Event) {
 
 .filter-card,
 .list-card {
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md);
   margin-bottom: 24px;
 }
 
@@ -129,17 +129,19 @@ async function deleteProject(projectId: string, event: Event) {
 .project-link {
   color: var(--blue);
   font-weight: 500;
+  transition: color 0.2s ease;
 }
 
 .project-link:hover {
-  color: var(--blue-dim);
+  opacity: 0.8;
 }
 
 .delete-link {
   color: var(--red);
+  transition: color 0.2s ease;
 }
 
 .delete-link:hover {
-  color: var(--red-dim);
+  opacity: 0.8;
 }
 </style>

@@ -16,8 +16,6 @@ import type {
   ReviewTaskListItem,
 } from "@/types";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "/api";
-
 export interface AgentStep {
   step_number: number;
   step_type: string;
@@ -29,6 +27,7 @@ export interface AgentStep {
 }
 
 export const useProjectStore = defineStore("project", () => {
+  const API_BASE = import.meta.env.VITE_API_BASE || "/api";
   const projects = ref<Project[]>([]);
   const currentProject = ref<Project | null>(null);
   const documents = ref<Document[]>([]);
@@ -109,13 +108,14 @@ export const useProjectStore = defineStore("project", () => {
     onProgress?: (progress: UploadProgress) => void,
   ) {
     if (!currentProject.value) return;
+    const uploadKey = `${docType}_${Date.now()}`;
     try {
       const doc = await documentsApi.upload(
         currentProject.value.id,
         docType,
         file,
         (progress) => {
-          uploadProgress.value[docType] = progress;
+          uploadProgress.value[uploadKey] = progress;
           onProgress?.(progress);
         },
       );
@@ -124,7 +124,7 @@ export const useProjectStore = defineStore("project", () => {
       connectDocParseSSE(doc.id);
       return doc;
     } finally {
-      delete uploadProgress.value[docType];
+      delete uploadProgress.value[uploadKey];
     }
   }
 
@@ -370,27 +370,11 @@ export const useProjectStore = defineStore("project", () => {
     reviewResults.value = results;
   }
 
-  // SSE reconnection state
-  let sseReconnectAttempts = 0;
-  const MAX_RECONNECT_DELAY = 30000; // 30 seconds max
-  const BASE_RECONNECT_DELAY = 1000; // 1 second base
-  let sseReconnectTimeout: number | null = null;
-  let currentSseTaskId: string | null = null;
-
-  function getReconnectDelay(): number {
-    // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (capped)
-    const delay = Math.min(
-      BASE_RECONNECT_DELAY * Math.pow(2, sseReconnectAttempts),
-      MAX_RECONNECT_DELAY,
-    );
-    // Add jitter (0-500ms)
-    return delay + Math.random() * 500;
-  }
+  // SSE reconnection state — managed by useSSE composable
+  // (exponential backoff + Last-Event-ID handled internally)
 
   function connectSSE(taskId: string) {
     disconnectSSE();
-    currentSseTaskId = taskId;
-    sseReconnectAttempts = 0;
 
     const token = getAccessToken();
     const url = token
@@ -399,9 +383,10 @@ export const useProjectStore = defineStore("project", () => {
 
     console.log("[connectSSE] Connecting to SSE URL:", url, "taskId:", taskId);
 
-    sseEventSource.value = new EventSource(url);
+    const es = new EventSource(url);
+    sseEventSource.value = es;
 
-    sseEventSource.value.onopen = () => {
+    es.onopen = () => {
       console.log(
         "[connectSSE] SSE connection opened successfully for taskId:",
         taskId,
@@ -412,7 +397,7 @@ export const useProjectStore = defineStore("project", () => {
       }
     };
 
-    sseEventSource.value.onmessage = (event) => {
+    es.onmessage = (event) => {
       try {
         const data: SSEEvent = JSON.parse(event.data);
         console.log(
@@ -434,7 +419,7 @@ export const useProjectStore = defineStore("project", () => {
       }
     };
 
-    sseEventSource.value.onerror = (e) => {
+    es.onerror = () => {
       // If task is completed or failed, don't reconnect
       if (
         currentTask.value?.status === "completed" ||
@@ -445,27 +430,12 @@ export const useProjectStore = defineStore("project", () => {
         return;
       }
 
-      // Exponential backoff reconnection
-      const delay = getReconnectDelay();
-      sseReconnectAttempts++;
-
-      console.error(
-        `SSE connection error, reconnecting in ${Math.round(delay)}ms (attempt ${sseReconnectAttempts}):`,
-        e,
+      // 让浏览器原生 EventSource 自动重连
+      // 后端发送的 `id:` 字段会被浏览器记录，
+      // 重连时自动附加 `Last-Event-ID` 请求头，实现断线续传
+      console.log(
+        "[connectSSE] SSE connection error, browser will auto-reconnect with Last-Event-ID",
       );
-
-      if (sseReconnectTimeout) {
-        clearTimeout(sseReconnectTimeout);
-      }
-
-      sseReconnectTimeout = window.setTimeout(() => {
-        if (
-          currentSseTaskId &&
-          (currentTask.value?.status === "running" || !currentTask.value)
-        ) {
-          connectSSE(currentSseTaskId);
-        }
-      }, delay);
     };
   }
 
@@ -564,12 +534,6 @@ export const useProjectStore = defineStore("project", () => {
       sseEventSource.value.close();
       sseEventSource.value = null;
     }
-    if (sseReconnectTimeout) {
-      clearTimeout(sseReconnectTimeout);
-      sseReconnectTimeout = null;
-    }
-    currentSseTaskId = null;
-    sseReconnectAttempts = 0;
   }
 
   function $reset() {

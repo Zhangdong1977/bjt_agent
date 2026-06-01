@@ -162,7 +162,7 @@ async function startNewReview() {
   padding: 0.75rem 1rem;
   background: var(--bg1);
   border: 1px solid var(--line);
-  border-radius: var(--r2);
+  border-radius: var(--r-lg);
   margin-bottom: 1rem;
 }
 
@@ -211,7 +211,7 @@ async function startNewReview() {
 .section {
   background: var(--bg1);
   padding: 1.5rem;
-  border-radius: var(--r2);
+  border-radius: var(--r-lg);
   border: 1px solid var(--line);
 }
 
@@ -227,7 +227,7 @@ async function startNewReview() {
   padding: 3rem;
   color: var(--sub);
   background: var(--bg1);
-  border-radius: var(--r2);
+  border-radius: var(--r-lg);
 }
 
 .no-results p {
