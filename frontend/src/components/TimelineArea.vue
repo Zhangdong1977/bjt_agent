@@ -5,7 +5,7 @@ import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
 import { reviewApi } from '@/api/client'
 import ReviewTimeline from '@/components/ReviewTimeline.vue'
-import { ElMessage } from 'element-plus'
+import { message } from 'ant-design-vue'
 
 const props = defineProps<{
   projectId: string
@@ -75,7 +75,7 @@ async function loadHistoricalSteps() {
       return
     }
     console.error('Failed to load historical steps:', error)
-    ElMessage.error('加载历史时间线失败')
+    message.error('加载历史时间线失败')
   }
 }
 
@@ -87,7 +87,7 @@ async function startReview() {
     historicalSteps.value = []
 
     await projectStore.startReview()
-    ElMessage.success('审查已启动，正在跳转...')
+    message.success('审查已启动，正在跳转...')
 
     // Navigate to review execution page
     if (projectStore.currentProject?.id) {
@@ -98,7 +98,7 @@ async function startReview() {
     }
   } catch (error) {
     console.error('Failed to start review:', error)
-    ElMessage.error('启动审查失败')
+    message.error('启动审查失败')
   }
 }
 

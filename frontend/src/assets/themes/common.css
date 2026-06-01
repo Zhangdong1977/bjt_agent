@@ -2,38 +2,102 @@
    Global Styles - CSS Variable Based
    ======================================== */
 
-/* 通用容器 */
+/* ---- Typography Scale ---- */
+h1 { font-size: 1.75rem; letter-spacing: -0.025em; }
+h2 { font-size: 1.375rem; letter-spacing: -0.02em; }
+h3 { font-size: 1.125rem; }
+h4 { font-size: 1rem; }
+
+.text-display {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.text-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.text-mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 动画 ---- */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ---- 通用容器 ---- */
 .container {
   max-width: 1200px;
   margin: 0 auto;
   padding: 0 2rem;
 }
 
-/* 通用卡片 */
+/* ---- 卡片 ---- */
 .card {
   background: var(--bg1);
   border: 1px solid var(--line);
-  border-radius: var(--r2);
-  padding: 1rem;
-  transition: box-shadow 0.2s ease;
+  border-radius: var(--r);
+  padding: 1.25rem;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .card:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-md);
 }
 
-/* 通用按钮 */
+.card-elevated {
+  background: var(--bg1);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.25s ease, transform 0.25s ease;
+}
+
+.card-elevated:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+/* ---- 按钮 ---- */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   padding: 0.5rem 1rem;
   border: none;
-  border-radius: var(--r);
+  border-radius: var(--r-sm);
   cursor: pointer;
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 600;
   transition: all 0.2s ease;
+}
+
+.btn:active {
+  transform: scale(0.97);
 }
 
 .btn-primary {
@@ -42,7 +106,7 @@
 }
 
 .btn-primary:hover {
-  filter: brightness(1.1);
+  filter: brightness(1.08);
 }
 
 .btn-secondary {
@@ -55,12 +119,13 @@
   background: var(--bg4);
 }
 
-/* 状态标签 */
+/* ---- 状态标签（全局统一） ---- */
 .badge {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   padding: 0.2rem 0.6rem;
-  border-radius: 9999px;
+  border-radius: var(--r-full);
   font-size: 0.75rem;
   font-weight: 600;
   border: 1px solid transparent;
@@ -90,11 +155,224 @@
   border-color: var(--blue-dim);
 }
 
-/* Section */
+/* ---- 状态芯片（紧凑版，替代各组件重复的 chip 样式） ---- */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.chip-done {
+  background: var(--green-bg);
+  border-color: var(--green-dim);
+  color: var(--green);
+}
+
+.chip-running {
+  background: var(--blue-bg);
+  border-color: var(--blue-dim);
+  color: var(--blue);
+}
+
+.chip-pending {
+  background: var(--bg3);
+  border-color: var(--line2);
+  color: var(--muted);
+}
+
+.chip-error {
+  background: var(--red-bg);
+  border-color: var(--red-dim);
+  color: var(--red);
+}
+
+.chip-wait {
+  background: var(--bg3);
+  border-color: var(--line2);
+  color: var(--muted);
+}
+
+.chip-fail {
+  background: var(--red-bg);
+  border-color: var(--red-dim);
+  color: var(--red);
+}
+
+.chip-run {
+  background: var(--blue-bg);
+  border-color: var(--blue-dim);
+  color: var(--blue);
+}
+
+/* ---- 状态点 ---- */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.status-dot.running,
+.status-dot-run {
+  background: var(--blue);
+  animation: pulse 2s infinite;
+}
+
+.status-dot.completed,
+.status-dot-done {
+  background: var(--green);
+}
+
+.status-dot.failed,
+.status-dot-fail {
+  background: var(--red);
+}
+
+.status-dot.pending,
+.status-dot-wait {
+  background: var(--muted);
+}
+
+/* ---- Markdown 内容（全局统一） ---- */
+.markdown-content h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 1.5rem 0 0.75rem;
+  color: var(--bright);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.5rem;
+}
+
+.markdown-content h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 1.25rem 0 0.5rem;
+  color: var(--bright);
+}
+
+.markdown-content h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
+  color: var(--bright);
+}
+
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0.75rem 0 0.5rem;
+  color: var(--text);
+}
+
+.markdown-content p {
+  margin: 0.5rem 0;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 1.5rem;
+  margin: 0.5rem 0;
+  color: var(--text);
+}
+
+.markdown-content li {
+  margin: 0.25rem 0;
+  line-height: 1.6;
+}
+
+.markdown-content code {
+  font-family: var(--mono);
+  font-size: 0.875em;
+  background: var(--bg3);
+  padding: 0.15em 0.4em;
+  border-radius: var(--r-sm);
+  color: var(--blue);
+}
+
+.markdown-content pre {
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 1rem;
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.markdown-content pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  color: var(--text);
+}
+
+.markdown-content blockquote {
+  border-left: 3px solid var(--blue);
+  padding: 0.5rem 1rem;
+  margin: 0.75rem 0;
+  background: var(--bg2);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  color: var(--sub);
+}
+
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.875rem;
+}
+
+.markdown-content th {
+  background: var(--bg2);
+  font-weight: 600;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  color: var(--sub);
+}
+
+.markdown-content td {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+.markdown-content a {
+  color: var(--blue);
+  text-decoration: none;
+}
+
+.markdown-content a:hover {
+  text-decoration: underline;
+}
+
+.markdown-content strong {
+  color: var(--bright);
+  font-weight: 600;
+}
+
+.markdown-content hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 1rem 0;
+}
+
+/* ---- Section ---- */
 .section {
   background: var(--bg1);
   border: 1px solid var(--line);
-  border-radius: var(--r2);
+  border-radius: var(--r);
   padding: 1.5rem;
   margin-bottom: 1.5rem;
 }
@@ -108,14 +386,14 @@
   border-bottom: 2px solid var(--blue);
 }
 
-/* 响应式网格 */
+/* ---- 响应式网格 ---- */
 .grid-responsive {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 1.5rem;
 }
 
-/* Header */
+/* ---- Header ---- */
 .app-header {
   display: flex;
   justify-content: space-between;
@@ -137,7 +415,7 @@
   gap: 1rem;
 }
 
-/* 响应式断点 */
+/* ---- 响应式断点 ---- */
 @media (max-width: 1199px) {
   .container {
     padding: 0 1.5rem;

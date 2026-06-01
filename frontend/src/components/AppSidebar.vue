@@ -2,11 +2,8 @@
 import { useRouter, useRoute } from 'vue-router'
 import { ref, watch } from 'vue'
 import { FileSearchOutlined, HistoryOutlined } from '@ant-design/icons-vue'
-import { useTheme } from '@/composables/useTheme'
-
 const router = useRouter()
 const route = useRoute()
-const { theme } = useTheme()
 
 const menuItems = [
   { key: '/home/check', label: '标书检查', icon: FileSearchOutlined },
@@ -22,43 +19,98 @@ watch(() => route.path, (newPath) => {
 function navigate(path: string) {
   router.push(path)
 }
-
-function handleMenuClick(e: { key: string }) {
-  navigate(e.key)
-}
 </script>
 
 <template>
-  <a-menu
-    v-model:selectedKeys="selectedKeys"
-    mode="inline"
-    :theme="theme"
-    class="app-sidebar"
-    @click="handleMenuClick"
-  >
-    <a-menu-item v-for="item in menuItems" :key="item.key">
-      <template #icon>
-        <component :is="item.icon" />
-      </template>
-      {{ item.label }}
-    </a-menu-item>
-  </a-menu>
+  <nav class="sidebar">
+    <div class="sidebar-section-label">导航</div>
+    <ul class="sidebar-menu">
+      <li
+        v-for="item in menuItems"
+        :key="item.key"
+        :class="['sidebar-item', { 'sidebar-item--active': selectedKeys.includes(item.key) }]"
+        @click="navigate(item.key)"
+      >
+        <span class="sidebar-item__indicator"></span>
+        <component :is="item.icon" class="sidebar-item__icon" />
+        <span class="sidebar-item__label">{{ item.label }}</span>
+      </li>
+    </ul>
+  </nav>
 </template>
 
 <style scoped>
-.app-sidebar {
+.sidebar {
+  padding: 16px 0;
   height: 100%;
-  background: var(--bg2);
-  border-right: 1px solid var(--line);
 }
 
-.app-sidebar :deep(.ant-menu-item) {
-  margin: 4px 8px;
-  border-radius: 8px;
+.sidebar-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 20px;
+  margin-bottom: 8px;
 }
 
-.app-sidebar :deep(.ant-menu-item-selected) {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--blue) 10%, transparent) 0%, transparent 100%);
-  border-left: 2px solid var(--blue);
+.sidebar-menu {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+  color: var(--sub);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.sidebar-item:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+
+.sidebar-item__indicator {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%) scaleY(0);
+  width: 3px;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: var(--blue);
+  transition: transform 0.2s ease;
+}
+
+.sidebar-item--active {
+  color: var(--blue);
+  background: var(--blue-bg);
+}
+
+.sidebar-item--active .sidebar-item__indicator {
+  transform: translateY(-50%) scaleY(1);
+}
+
+.sidebar-item--active:hover {
+  background: var(--blue-bg);
+  color: var(--blue);
+}
+
+.sidebar-item__icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.sidebar-item__label {
+  white-space: nowrap;
 }
 </style>

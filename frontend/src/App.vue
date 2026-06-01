@@ -17,7 +17,10 @@ const isDark = computed(() => appTheme.value === 'dark')
 
 const antdTheme = computed(() => ({
   token: {
-    colorPrimary: '#3b82f6',
+    colorPrimary: '#4f6ef7',
+    borderRadius: 8,
+    fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    fontSize: 14,
   },
   algorithm: isDark.value ? theme.darkAlgorithm : theme.defaultAlgorithm,
 }))
@@ -30,7 +33,7 @@ const antdTheme = computed(() => ({
 </template>
 
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&family=Poppins:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap');
 @import '@/assets/themes/themes.css';
 @import '@/assets/themes/common.css';
 
@@ -41,18 +44,33 @@ const antdTheme = computed(() => ({
 }
 
 body {
-  font-family: 'Open Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg);
   color: var(--text);
   line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeSpeed;
 }
 
 h1, h2, h3, h4, h5, h6 {
-  font-family: 'Poppins', sans-serif;
-  font-weight: 600;
+  font-family: 'Plus Jakarta Sans', 'DM Sans', sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 #app {
   min-height: 100vh;
+}
+
+/* 全局焦点样式 */
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* 平滑滚动 */
+html {
+  scroll-behavior: smooth;
 }
 </style>

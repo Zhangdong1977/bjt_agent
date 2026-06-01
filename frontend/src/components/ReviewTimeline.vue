@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import type { SSEEvent } from '@/types'
 import {
   CheckOutlined,
@@ -13,8 +13,8 @@ import { formatToolCallDescription, getToolDisplayName } from '@/utils/toolDispl
 import TodoListCard from './TodoListCard.vue'
 import SubAgentCard from './SubAgentCard.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useSSE } from '@/composables/useSSE'
 
-const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 const authStore = useAuthStore()
 
 const props = defineProps<{
@@ -86,7 +86,14 @@ const agentIndexMap = computed(() => {
   }
   return map
 })
-let eventSource: EventSource | null = null
+// 使用统一的 SSE composable（支持指数退避重连 + Last-Event-ID）
+const { connect: sseConnect, disconnect: sseDisconnect } = useSSE({
+  onEvent: handleSSEEvent,
+  shouldStop: () => {
+    // 已完成/失败的任务不需要重连
+    return phase.value === 'completed'
+  },
+})
 
 onMounted(() => {
   // Always set initial steps if available, regardless of historicalMode
@@ -246,28 +253,11 @@ function handleSSEEvent(event: SSEEvent) {
 }
 
 function connect(taskId: string) {
-  disconnect()
-  eventSource = new EventSource(`${API_BASE}/events/tasks/${taskId}/stream`)
-
-  eventSource.onmessage = (e) => {
-    try {
-      const data: SSEEvent = JSON.parse(e.data)
-      handleSSEEvent(data)
-    } catch (err) {
-      console.error('Failed to parse SSE event:', err)
-    }
-  }
-
-  eventSource.onerror = () => {
-    disconnect()
-  }
+  sseConnect(taskId)
 }
 
 function disconnect() {
-  if (eventSource) {
-    eventSource.close()
-    eventSource = null
-  }
+  sseDisconnect()
 }
 
 function reset() {
@@ -404,10 +394,6 @@ function getStepIcon(step: TimelineStep) {
 }
 
 defineExpose({ connect, disconnect, reset })
-
-onUnmounted(() => {
-  disconnect()
-})
 </script>
 
 <template>
