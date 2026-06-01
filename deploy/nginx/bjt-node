@@ -1,0 +1,63 @@
+# ============================================================
+# BJT Agent - 单节点 Nginx 配置（用于集群中每个 API 节点）
+# 每个 API 节点本地运行 Nginx，反代到本机 gunicorn
+#
+# 使用方式：
+#   sudo cp bjt-node /etc/nginx/sites-available/bjt
+#   sudo ln -s /etc/nginx/sites-available/bjt /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+# ============================================================
+
+upstream bjt_local {
+    server 127.0.0.1:8001;
+    keepalive 16;
+}
+
+server {
+    listen 8000;
+    server_name _;
+
+    root /home/bjt/bjt_agent/frontend/dist;
+    index index.html;
+
+    client_max_body_size 500M;
+
+    location ^~ /health {
+        proxy_pass http://bjt_local;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 86400;
+    }
+
+    location ^~ /api {
+        proxy_pass http://bjt_local;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+        proxy_connect_timeout 60s;
+
+        chunked_transfer_encoding on;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+}

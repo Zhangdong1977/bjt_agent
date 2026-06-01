@@ -1,0 +1,89 @@
+# ============================================================
+# BJT Agent - 集群模式 Nginx 配置
+# 部署于独立 LB 节点或每台 API 节点（任选）
+#
+# 使用方式：
+#   sudo cp bjt-cluster /etc/nginx/sites-available/bjt-cluster
+#   sudo ln -s /etc/nginx/sites-available/bjt-cluster /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# 注意：将 node1/node2/node3 替换为实际 IP 或主机名
+# ============================================================
+
+# SSE 连接数上限（单个 worker），集群 3 节点 × 默认 512 = 1536
+# 放在 http 块或 /etc/nginx/nginx.conf 中：
+# worker_connections 2048;
+
+upstream bjt_backend {
+    # ip_hash: SSE 长连接会话粘滞，同一客户端请求始终路由到同一后端
+    ip_hash;
+
+    # --- 按实际 IP 修改 ---
+    server node1:8001 max_fails=3 fail_timeout=30s;
+    server node2:8001 max_fails=3 fail_timeout=30s;
+    server node3:8001 max_fails=3 fail_timeout=30s;
+    # -----------------------
+
+    # 备用：当所有节点都 down 时返回 502
+    # 保持连接长连接，减少 TCP 握手开销
+    keepalive 32;
+}
+
+server {
+    listen 8000;
+    server_name _;
+
+    root /home/bjt/bjt_agent/frontend/dist;
+    index index.html;
+
+    client_max_body_size 500M;
+
+    # ---- Backend API + SSE 反向代理 ----
+    location ^~ /health {
+        proxy_pass http://bjt_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 健康检查短超时
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+
+    location ^~ /api {
+        proxy_pass http://bjt_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # SSE 关键配置
+        proxy_buffering off;
+        proxy_cache off;
+
+        # SSE 长连接：审查任务最长 8 小时 + 余量
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+        proxy_connect_timeout 60s;
+
+        # 禁用 Nginx 缓冲，确保 SSE 事件实时推送
+        # (后端也会发送 X-Accel-Buffering: no，双重保障)
+        chunked_transfer_encoding on;
+
+        # HTTP/1.1 长连接（upstream keepalive 需要）
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+    }
+
+    # ---- 前端路由 ----
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # ---- 静态资源缓存 ----
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+}
