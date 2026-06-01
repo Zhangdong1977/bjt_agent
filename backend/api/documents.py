@@ -64,12 +64,26 @@ async def upload_document(
     After uploading, the document will be automatically parsed
     to extract text content and images.
     """
-    await verify_project_ownership(project_id, current_user.id, db)
+    project = await verify_project_ownership(project_id, current_user.id, db)
 
     if doc_type not in ("tender", "bid"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="doc_type must be 'tender' or 'bid'",
+        )
+
+    # Check document count limit per type (max 10) — query directly to avoid lazy load
+    count_result = await db.execute(
+        select(Document).where(
+            Document.project_id == project_id,
+            Document.doc_type == doc_type,
+        )
+    )
+    existing_count = len(count_result.scalars().all())
+    if existing_count >= 10:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"该类型文档已达上限（10个），请先删除后再上传",
         )
 
     # Validate file extension

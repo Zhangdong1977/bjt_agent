@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # Database
     database_url: str = ""  # Must be set via environment variable
 
+    # Connection pool tuning (for PgBouncer cluster deployment)
+    db_use_pgbouncer: bool = False  # Set true when connecting through PgBouncer (env: DB_USE_PGBOUNCER)
+    db_pool_size: int = 10  # SQLAlchemy pool_size (env: DB_POOL_SIZE, PgBouncer: 5)
+    db_max_overflow: int = 20  # SQLAlchemy max_overflow (env: DB_MAX_OVERFLOW, PgBouncer: 5)
+
     # Redis
     redis_url: str = ""  # Must be set via environment variable
 
@@ -94,6 +99,9 @@ class Settings(BaseSettings):
 
     # Sub-Agent Heartbeat
     sub_agent_heartbeat_timeout: int = 300  # Heartbeat timeout in seconds (env: SUB_AGENT_HEARTBEAT_TIMEOUT)
+
+    # Agent Token Limit (上下文压缩触发阈值，DeepSeek/MiniMax 支持 1M 上下文)
+    agent_token_limit: int = 800000  # 800K tokens, 环境变量: AGENT_TOKEN_LIMIT
 
     # Agent Progress Watchdog
     agent_progress_timeout: int = 600  # Max seconds without SSE events before task is considered hung (env: AGENT_PROGRESS_TIMEOUT)

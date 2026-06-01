@@ -12,17 +12,30 @@ from backend.config import get_settings
 
 settings = get_settings()
 
+# 连接池配置 — 支持直连和 PgBouncer 两种模式
+# PgBouncer (transaction mode): pool_size=5, max_overflow=5, server_side_prepared_statements=False
+# 直连 PostgreSQL:               pool_size=10, max_overflow=20 (默认)
+#
+# 通过环境变量 DB_POOL_SIZE / DB_MAX_OVERFLOW 控制
+# PgBouncer 模式下，实际服务端连接由 PgBouncer 管理，应用侧连接池可以更小
+
+_connect_args = {
+    "timeout": 30,
+    "command_timeout": 120,
+}
+
+# PgBouncer transaction 模式不支持 prepared statements
+if settings.db_use_pgbouncer:
+    _connect_args["statement_cache_size"] = 0
+
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
     pool_recycle=1800,
-    connect_args={
-        "timeout": 30,
-        "command_timeout": 120,
-    },
+    connect_args=_connect_args,
 )
 
 async_session_factory = async_sessionmaker(

@@ -407,17 +407,30 @@ def run_review(self, task_id: str) -> dict:
                 )
                 documents = result.scalars().all()
 
-                tender_doc = next((d for d in documents if d.doc_type == "tender"), None)
-                bid_doc = next((d for d in documents if d.doc_type == "bid"), None)
+                # Collect all parsed documents per type as [(filename, path), ...]
+                tender_docs = [
+                    (d.original_filename, d.parsed_markdown_path or d.parsed_html_path)
+                    for d in documents
+                    if d.doc_type == "tender"
+                    and d.status == "parsed"
+                    and (d.parsed_markdown_path or d.parsed_html_path)
+                ]
+                bid_docs = [
+                    (d.original_filename, d.parsed_markdown_path or d.parsed_html_path)
+                    for d in documents
+                    if d.doc_type == "bid"
+                    and d.status == "parsed"
+                    and (d.parsed_markdown_path or d.parsed_html_path)
+                ]
 
-                if not tender_doc:
+                if not tender_docs:
                     task.status = "failed"
                     task.error_message = ERROR_TENDER_NOT_FOUND
                     await db.commit()
                     _publish_event(task_id, "error", {"message": ERROR_TENDER_NOT_FOUND})
                     return {"status": "error", "message": ERROR_TENDER_NOT_FOUND}
 
-                if not bid_doc:
+                if not bid_docs:
                     task.status = "failed"
                     task.error_message = ERROR_BID_NOT_FOUND
                     await db.commit()
@@ -427,8 +440,6 @@ def run_review(self, task_id: str) -> dict:
                 # Extract needed values before session closes
                 project_id = str(task.project_id)
                 max_concurrency = task.max_concurrency
-                tender_path = tender_doc.parsed_markdown_path or tender_doc.parsed_html_path or ""
-                bid_path = bid_doc.parsed_markdown_path or bid_doc.parsed_html_path or ""
                 user_id = ""
                 if hasattr(project, 'user_id'):
                     user_id = str(project.user_id)
@@ -445,8 +456,8 @@ def run_review(self, task_id: str) -> dict:
             try:
                 findings_count = await _run_agent_review(
                     task_id=task_id,
-                    tender_path=tender_path,
-                    bid_path=bid_path,
+                    tender_docs=tender_docs,
+                    bid_docs=bid_docs,
                     project_id=project_id,
                     user_id=user_id,
                     max_concurrency=max_concurrency,
@@ -668,8 +679,8 @@ def _parse_findings_result(result) -> list[dict]:
 
 async def _run_agent_review(
     task_id: str,
-    tender_path: str,
-    bid_path: str,
+    tender_docs: list[tuple[str, str]],
+    bid_docs: list[tuple[str, str]],
     project_id: str,
     user_id: str,
     max_concurrency: int,
@@ -687,8 +698,8 @@ async def _run_agent_review(
 
     Args:
         task_id: Review task ID
-        tender_path: Path to parsed tender document
-        bid_path: Path to parsed bid document
+        tender_docs: List of (filename, parsed_md_path) for tender documents
+        bid_docs: List of (filename, parsed_md_path) for bid documents
         project_id: Project ID string
         user_id: User ID string
         max_concurrency: Max concurrent sub-agents
@@ -702,11 +713,14 @@ async def _run_agent_review(
     todo_db = session_factory()
     todo_service = TodoService(todo_db)
 
-    if not tender_path or not Path(tender_path).exists():
-        raise FileNotFoundError("Tender document not parsed")
+    # Validate all document paths exist
+    for name, path in tender_docs:
+        if not path or not Path(path).exists():
+            raise FileNotFoundError(f"Tender document not parsed: {name}")
 
-    if not bid_path or not Path(bid_path).exists():
-        raise FileNotFoundError("Bid document not parsed")
+    for name, path in bid_docs:
+        if not path or not Path(path).exists():
+            raise FileNotFoundError(f"Bid document not parsed: {name}")
 
     # Rule library path from config
     rule_library_path = str(get_settings().rule_library_dir)
@@ -740,8 +754,8 @@ async def _run_agent_review(
     master = MasterAgent(
         project_id=project_id,
         rule_library_path=rule_library_path,
-        tender_doc_path=tender_path,
-        bid_doc_path=bid_path,
+        tender_docs=tender_docs,
+        bid_docs=bid_docs,
         user_id=user_id,
         event_callback=event_cb,
         cancel_event=cancel_event,
