@@ -42,8 +42,8 @@ class SubAgentExecutor:
     def __init__(
         self,
         todo_item: TodoItem,
-        tender_doc_path: str,
-        bid_doc_path: str,
+        tender_docs: list[tuple[str, str]],
+        bid_docs: list[tuple[str, str]],
         user_id: str,
         session_factory,
         event_callback: Optional[Callable] = None,
@@ -51,8 +51,8 @@ class SubAgentExecutor:
         cancel_event: Optional[asyncio.Event] = None,
     ):
         self.todo_item = todo_item
-        self.tender_doc_path = tender_doc_path
-        self.bid_doc_path = bid_doc_path
+        self.tender_docs = tender_docs
+        self.bid_docs = bid_docs
         self.user_id = user_id
         self.session_factory = session_factory
         self.event_callback = event_callback
@@ -120,8 +120,8 @@ class SubAgentExecutor:
 
         agent = BidReviewAgent(
             project_id=self.todo_item.project_id,
-            tender_doc_path=self.tender_doc_path,
-            bid_doc_path=self.bid_doc_path,
+            tender_docs=self.tender_docs,
+            bid_docs=self.bid_docs,
             user_id=self.user_id,
             rule_doc_path=self.todo_item.rule_doc_path,
             event_callback=self.event_callback,

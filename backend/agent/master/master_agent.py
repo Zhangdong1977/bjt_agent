@@ -24,8 +24,8 @@ class MasterAgent:
         self,
         project_id: str,
         rule_library_path: str,
-        tender_doc_path: str,
-        bid_doc_path: str,
+        tender_docs: list[tuple[str, str]],
+        bid_docs: list[tuple[str, str]],
         user_id: str,
         event_callback: Optional[Callable] = None,
         max_retries: int = 3,
@@ -35,8 +35,8 @@ class MasterAgent:
     ):
         self.project_id = project_id
         self.rule_library_path = rule_library_path
-        self.tender_doc_path = tender_doc_path
-        self.bid_doc_path = bid_doc_path
+        self.tender_docs = tender_docs
+        self.bid_docs = bid_docs
         self.user_id = user_id
         self.event_callback = event_callback
         self.max_retries = max_retries
@@ -213,8 +213,8 @@ class MasterAgent:
                 # 执行子代理 — 直接传递父级 cancel_event 使所有子代理共享取消信号
                 executor = SubAgentExecutor(
                     todo_item=todo,
-                    tender_doc_path=self.tender_doc_path,
-                    bid_doc_path=self.bid_doc_path,
+                    tender_docs=self.tender_docs,
+                    bid_docs=self.bid_docs,
                     user_id=self.user_id,
                     session_factory=session_factory,
                     event_callback=self._create_sub_agent_callback(todo.id),

@@ -61,18 +61,30 @@ _CATEGORY_PATTERNS = {
 
 
 class DocSearchTool(BaseTool):
-    """用于搜索和读取招标书/应标书内容的工具。"""
+    """用于搜索和读取招标书/应标书内容的工具。
 
-    def __init__(self, tender_doc_path: str, bid_doc_path: str, chunk_size: int = DEFAULT_CHUNK_SIZE):
+    支持每种文档类型（招标/投标）的多个文件。LLM 可通过 doc_name 参数
+    指定搜索某个特定文件，不指定则搜索该类型所有文件。
+    """
+
+    def __init__(
+        self,
+        tender_docs: list[tuple[str, str]],
+        bid_docs: list[tuple[str, str]],
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ):
         """初始化文档搜索工具。
 
         Args:
-            tender_doc_path: 已解析的招标书HTML文件路径
-            bid_doc_path: 已解析的应标书HTML文件路径
+            tender_docs: 招标文件列表 [(文件名, 解析后路径), ...]
+            bid_docs: 投标文件列表 [(文件名, 解析后路径), ...]
             chunk_size: 大文档每块的最大字符数
         """
-        self.tender_doc_path = tender_doc_path
-        self.bid_doc_path = bid_doc_path
+        # 存储多文档映射 {doc_type: {doc_name: path}}
+        self._docs: dict[str, dict[str, str]] = {
+            "tender": {name: path for name, path in tender_docs},
+            "bid": {name: path for name, path in bid_docs},
+        }
         self.chunk_size = chunk_size
         # 文档缓存，避免重复磁盘读取
         self._cache: dict[str, tuple[str, list[str]]] = {}
@@ -94,6 +106,14 @@ class DocSearchTool(BaseTool):
         lines = content.split("\n")
         self._cache[cache_key] = (content, lines)
         return content, lines
+
+    def _load_all_documents(self, doc_type: str) -> list[tuple[str, str, list[str]]]:
+        """加载某类型所有文档，返回 [(doc_name, content, lines), ...]。"""
+        result = []
+        for name, path in self._docs[doc_type].items():
+            _, lines = self._load_document(Path(path))
+            result.append((name, "\n".join(lines), lines))
+        return result
 
     def _find_line_around(self, lines: list[str], keyword: str, target_line: int = None) -> tuple[int, str]:
         """查找关键词匹配的行号和内容。
@@ -273,18 +293,29 @@ class DocSearchTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return """【招标/投标文档专用搜索工具】查询招标书(tender)或投标书(bid)中的内容。
+        # 动态构建可用文档列表
+        doc_list_parts = []
+        for doc_type, docs in self._docs.items():
+            label = "招标文件" if doc_type == "tender" else "投标文件"
+            names = "、".join(f"\"{n}\"" for n in docs.keys())
+            doc_list_parts.append(f"{label}({len(docs)}份): {names}")
+        doc_list_str = "；".join(doc_list_parts)
+
+        return f"""【招标/投标文档专用搜索工具】查询招标书(tender)或投标书(bid)中的内容。
 
 这是查询招标书和投标书的唯一正确工具。禁止使用 read_file 读取招标书或投标书。
 
+当前项目可用文档：{doc_list_str}
+
 参数说明（JSON对象）：
 - "文档类型": "tender"（查招标书）或 "bid"（查投标书），必填
+- "doc_name": 可选，指定搜索某个特定文件（如"补充通知.docx"）。不指定则搜索该类型所有文件
 - "query": 搜索关键词，必填。返回所有包含该关键词的行及上下文
 - "chunk": 分页编号（从0开始），大文档分页时使用
 - "full_content": 设为true返回完整文档（仅在无query时使用）
 - "context_lines": 匹配行前后各返回的上下文行数，默认5。精确引用用1-3，理解语义用5-10
 
-返回：匹配行的行号、内容和上下文。"""
+返回：匹配行的行号、内容和上下文，多文件搜索时每条结果会标注来源文件名。"""
 
     @property
     def parameters(self) -> dict:
@@ -295,6 +326,10 @@ class DocSearchTool(BaseTool):
                     "type": "string",
                     "enum": ["tender", "bid"],
                     "description": "要搜索的文档类型",
+                },
+                "doc_name": {
+                    "type": "string",
+                    "description": "可选，指定搜索某个特定文件（如文件名'补充通知.docx'）。不指定则搜索该类型所有文件",
                 },
                 "query": {
                     "type": "string",
@@ -326,6 +361,7 @@ class DocSearchTool(BaseTool):
         chunk: int = 0,
         full_content: bool = False,
         context_lines: int = 5,
+        doc_name: str = None,
         # 兼容中英文参数名
         doc_type: str = None,
         **kwargs,
@@ -339,6 +375,7 @@ class DocSearchTool(BaseTool):
             chunk: 大文档分页的分块编号
             full_content: 如果为True，返回完整文档（可能被截断）
             context_lines: 关键词搜索时匹配行前后各返回的上下文行数
+            doc_name: 可选，指定搜索某个特定文件。不指定则搜索该类型所有文件
 
         Returns:
             包含文档内容和元数据的ToolResult
@@ -348,185 +385,55 @@ class DocSearchTool(BaseTool):
         if not resolved_doc_type:
             return ToolResult(success=False, content="", error="缺少必需参数: 文档类型 或 doc_type")
 
+        if resolved_doc_type not in self._docs:
+            return ToolResult(success=False, content="", error=f"未知文档类型: {resolved_doc_type}")
+
+        doc_map = self._docs[resolved_doc_type]
+        if not doc_map:
+            doc_label = "招标" if resolved_doc_type == "tender" else "投标"
+            return ToolResult(success=False, content="", error=f"没有可用的{doc_label}文件")
+
+        # 确定要搜索的目标文档
+        if doc_name:
+            if doc_name not in doc_map:
+                available = "、".join(f"\"{n}\"" for n in doc_map.keys())
+                return ToolResult(
+                    success=False,
+                    content="",
+                    error=f"未找到文档 \"{doc_name}\"。可用文档：{available}",
+                )
+            targets = {doc_name: doc_map[doc_name]}
+        else:
+            targets = doc_map
+
         try:
-            doc_path = Path(self.tender_doc_path if resolved_doc_type == "tender" else self.bid_doc_path)
-            _, lines = self._load_document(doc_path)
-
-            # 如果请求完整内容，返回友好摘要
+            # === full_content 模式 ===
             if full_content:
-                full_text = "\n".join(lines)
-                total_lines = len(lines)
-                total_chunks = (len(full_text) + self.chunk_size - 1) // self.chunk_size if len(full_text) > self.chunk_size * 3 else 1
-
-                if len(full_text) > self.chunk_size * 3:
-                    full_text = self._chunk_content(full_text, chunk)
-                    if chunk > 0:
-                        full_text = f"[... 第 {chunk} 块 ...]\n{full_text}"
-                        current_chunk_lines = len(full_text.split('\n'))
-                    else:
-                        current_chunk_lines = len(full_text.split('\n'))
-                else:
-                    current_chunk_lines = total_lines
-
-                # 生成友好摘要
-                summary = self._extract_summary(full_text)
-                doc_label = "招标" if resolved_doc_type == "tender" else "投标"
-
-                # 分页提示
-                if chunk > 0:
-                    pagination_note = f"\n📄 当前第 {chunk + 1} 块，共 {total_chunks} 块"
-                else:
-                    pagination_note = ""
-
-                friendly_content = f"""📄 {doc_label}书内容摘要
-
-这份{doc_label}书共 {total_lines} 行，内容如下：
-
-{summary}{pagination_note}
-
-[完整文档已加载]"""
-
-                # 如果也提供了query，包含关键词匹配摘要
-                query_match_info = ""
-                keyword_matches = []
-                if query:
-                    keyword_matches = self._search_by_keyword(lines, query, context_lines=context_lines)
-                    if keyword_matches:
-                        query_match_info = f"\n\n📌 关键词\"{query}\"匹配情况：找到 **{len(keyword_matches)}** 处"
-                        # 显示前3个匹配作为示例
-                        for i, m in enumerate(keyword_matches[:3], 1):
-                            query_match_info += f"\n   {i}. {m['line_content'][:80]}..."
-                    else:
-                        query_match_info = f"\n\n📌 关键词\"{query}\"未在正文匹配（可能在分类标题中）"
-                    # 将query信息追加到内容
-                    friendly_content += query_match_info
-
-                # 从完整文档提取所有图片引用
-                all_image_refs = self._extract_image_refs(full_text)
-                has_images = len(all_image_refs) > 0
-                if has_images:
-                    friendly_content += f"\n\n📷 文档包含 **{len(all_image_refs)}** 张图片"
-
-                return ToolResult(
-                    success=True,
-                    content=friendly_content,
-                    data={
-                        "line_count": total_lines,
-                        "chunk": chunk,
-                        "total_chunks": total_chunks,
-                        "current_chunk_lines": current_chunk_lines,
-                        "full_content": full_text,
-                        "query_matches": len(keyword_matches),
-                        "has_images": has_images,
-                        "image_refs": all_image_refs,
-                    },
+                return self._execute_full_content(
+                    resolved_doc_type, targets, query, chunk, doc_name
                 )
 
-            # 如果提供了query，按关键词搜索
+            # === 关键词搜索模式 ===
             if query:
-                matches = self._search_by_keyword(lines, query, context_lines=context_lines)
-
-                if not matches:
-                    doc_label = "招标" if resolved_doc_type == "tender" else "投标"
-                    # 检查query是否可能在分类标题中
-                    query_lower = query.lower()
-                    header_matches = []
-                    category_indicators = ["技术", "工期", "预算", "资质", "要求", "规格", "标准", "条件"]
-                    for i, line in enumerate(lines):
-                        line_stripped = strip_html_tags(line.strip()).lower()
-                        if query_lower in line_stripped:
-                            # 检查这是否像标题（包含分类标识符）
-                            if any(cat in line_stripped for cat in category_indicators):
-                                header_matches.append(strip_html_tags(line.strip())[:100])
-                            if len(header_matches) >= 3:
-                                break
-
-                    if header_matches:
-                        hint_lines = "\n".join(f"   • {h}" for h in header_matches[:3])
-                        return ToolResult(
-                            success=True,
-                            content=f"""抱歉，未在{doc_label}书中找到与"{query}"直接匹配的内容。
-
-💡 可能匹配的场景：
-{hint_lines}
-
-这表明"{query}"可能出现在分类标题中，而非正文内容。建议使用 full_content=true 获取完整文档后人工查阅相关章节。""",
-                            data={"query": query, "matches": 0, "search_mode": "keyword", "header_matches": header_matches},
-                        )
-                    else:
-                        return ToolResult(
-                            success=True,
-                            content=f"抱歉，未在{doc_label}书中找到与\"{query}\"相关的内容。",
-                            data={"query": query, "matches": 0, "search_mode": "keyword"},
-                        )
-
-                # 格式化结果，包含上下文和引用
-                doc_label = "招标" if resolved_doc_type == "tender" else "投标"
-                display_matches = matches[:10]
-                formatted = [f"🔍 在{doc_label}书中找到 **{len(matches)}** 处提到\"{query}\"：\n"]
-                citations = []
-                has_images = False
-                all_image_refs = []
-                for i, m in enumerate(display_matches, 1):
-                    # 格式化引用，包含行号和引用内容
-                    formatted.append(f"{i}. {m['line_content']}")
-                    if m.get('context_before'):
-                        before_lines = m['context_before'].split('\n')
-                        formatted.append(f"   ↳ 上文({len(before_lines)}行):")
-                        for bl in before_lines:
-                            if bl:
-                                formatted.append(f"      {bl}")
-                    if m.get('context_after'):
-                        after_lines = m['context_after'].split('\n')
-                        formatted.append(f"   ↳ 下文({len(after_lines)}行):")
-                        for al in after_lines:
-                            if al:
-                                formatted.append(f"      {al}")
-                    # 检查此匹配中的图片引用
-                    img_refs = m.get('image_refs', [])
-                    if img_refs:
-                        has_images = True
-                        for img in img_refs:
-                            img["line_number"] = m['line_number']
-                            all_image_refs.append(img)
-                        formatted.append(f"   📷 图片: {img_refs[0]['path']}")
-                        if len(img_refs) > 1:
-                            formatted.append(f"   (还有 {len(img_refs) - 1} 张图片)")
-                    # 构建结构化引用数据
-                    citations.append({
-                        "index": i,
-                        "line_number": m['line_number'],
-                        "quote": m['line_content'],
-                        "context_before": m.get('context_before', ''),
-                        "context_after": m.get('context_after', ''),
-                        "image_refs": img_refs,
-                    })
-
-                if len(matches) > 10:
-                    formatted.append(f"\n... 还有 {len(matches) - 10} 处匹配")
-
-                return ToolResult(
-                    success=True,
-                    content="\n".join(formatted),
-                    data={
-                        "query": query,
-                        "matches": len(matches),
-                        "results": matches,
-                        "citations": citations,
-                        "has_images": has_images,
-                        "image_refs": all_image_refs,
-                    },
+                return self._execute_keyword_search(
+                    resolved_doc_type, targets, query, context_lines, doc_name
                 )
 
-            # 无query时，返回文档信息
-            doc_label = "招标" if doc_type == "tender" else "投标"
+            # === 无 query，返回文档信息 ===
+            doc_label = "招标" if resolved_doc_type == "tender" else "投标"
+            info_parts = []
+            for name, path in targets.items():
+                _, lines = self._load_document(Path(path))
+                info_parts.append(f"📄 {name}: {len(lines)} 行")
             return ToolResult(
                 success=True,
-                content=f"📄 已加载{doc_label}书，共 {len(lines)} 行。",
+                content=f"{doc_label}书已加载：\n" + "\n".join(info_parts),
                 data={
-                    "line_count": len(lines),
-                    "doc_type": doc_type,
-                    "path": str(doc_path),
+                    "doc_type": resolved_doc_type,
+                    "documents": [
+                        {"name": name, "line_count": len(self._load_document(Path(path))[1])}
+                        for name, path in targets.items()
+                    ],
                 },
             )
 
@@ -538,6 +445,217 @@ class DocSearchTool(BaseTool):
             )
         except Exception as e:
             return ToolResult(success=False, content="", error=str(e))
+
+    def _execute_full_content(
+        self,
+        resolved_doc_type: str,
+        targets: dict[str, str],
+        query: str | None,
+        chunk: int,
+        doc_name: str | None,
+    ) -> ToolResult:
+        """处理 full_content 模式的搜索。"""
+        doc_label = "招标" if resolved_doc_type == "tender" else "投标"
+        is_multi = len(targets) > 1
+
+        all_lines: list[str] = []
+        # 记录每个文档在合并 lines 中的偏移量，用于标注来源
+        doc_offsets: list[tuple[str, int, int]] = []  # (name, start, end)
+
+        for name, path in targets.items():
+            _, lines = self._load_document(Path(path))
+            start_offset = len(all_lines)
+            if is_multi:
+                all_lines.append(f"========== 文档: {name} ==========")
+            all_lines.extend(lines)
+            doc_offsets.append((name, start_offset, len(all_lines)))
+
+        full_text = "\n".join(all_lines)
+        total_lines = len(all_lines)
+        total_chunks = (len(full_text) + self.chunk_size - 1) // self.chunk_size if len(full_text) > self.chunk_size * 3 else 1
+
+        if len(full_text) > self.chunk_size * 3:
+            full_text = self._chunk_content(full_text, chunk)
+            if chunk > 0:
+                full_text = f"[... 第 {chunk} 块 ...]\n{full_text}"
+                current_chunk_lines = len(full_text.split('\n'))
+            else:
+                current_chunk_lines = len(full_text.split('\n'))
+        else:
+            current_chunk_lines = total_lines
+
+        # 生成友好摘要
+        summary = self._extract_summary(full_text)
+
+        # 分页提示
+        if chunk > 0:
+            pagination_note = f"\n📄 当前第 {chunk + 1} 块，共 {total_chunks} 块"
+        else:
+            pagination_note = ""
+
+        file_count_note = f"（共 {len(targets)} 份文件）" if is_multi else ""
+        friendly_content = f"""📄 {doc_label}书内容摘要{file_count_note}
+
+这份{doc_label}书共 {total_lines} 行，内容如下：
+
+{summary}{pagination_note}
+
+[完整文档已加载]"""
+
+        # 如果也提供了query，包含关键词匹配摘要
+        keyword_matches: list[dict] = []
+        if query:
+            keyword_matches = self._search_by_keyword(all_lines, query)
+            if keyword_matches:
+                friendly_content += f"\n\n📌 关键词\"{query}\"匹配情况：找到 **{len(keyword_matches)}** 处"
+                for i, m in enumerate(keyword_matches[:3], 1):
+                    friendly_content += f"\n   {i}. {m['line_content'][:80]}..."
+            else:
+                friendly_content += f"\n\n📌 关键词\"{query}\"未在正文匹配（可能在分类标题中）"
+
+        # 从完整文档提取所有图片引用
+        all_image_refs = self._extract_image_refs(full_text)
+        has_images = len(all_image_refs) > 0
+        if has_images:
+            friendly_content += f"\n\n📷 文档包含 **{len(all_image_refs)}** 张图片"
+
+        return ToolResult(
+            success=True,
+            content=friendly_content,
+            data={
+                "line_count": total_lines,
+                "chunk": chunk,
+                "total_chunks": total_chunks,
+                "current_chunk_lines": current_chunk_lines,
+                "full_content": full_text,
+                "query_matches": len(keyword_matches),
+                "has_images": has_images,
+                "image_refs": all_image_refs,
+            },
+        )
+
+    def _execute_keyword_search(
+        self,
+        resolved_doc_type: str,
+        targets: dict[str, str],
+        query: str,
+        context_lines: int,
+        doc_name: str | None,
+    ) -> ToolResult:
+        """处理关键词搜索模式。"""
+        doc_label = "招标" if resolved_doc_type == "tender" else "投标"
+        is_multi = len(targets) > 1
+
+        # 收集所有文档的搜索结果
+        all_matches: list[dict] = []
+        for name, path in targets.items():
+            _, lines = self._load_document(Path(path))
+            matches = self._search_by_keyword(lines, query, context_lines=context_lines)
+            for m in matches:
+                m["source_doc"] = name
+                if is_multi:
+                    # 多文件时，在 line_content 前标注来源
+                    m["display_prefix"] = f"[{name}] "
+                else:
+                    m["display_prefix"] = ""
+            all_matches.extend(matches)
+
+        if not all_matches:
+            # 检查query是否可能在分类标题中
+            query_lower = query.lower()
+            header_matches = []
+            category_indicators = ["技术", "工期", "预算", "资质", "要求", "规格", "标准", "条件"]
+            for name, path in targets.items():
+                _, lines = self._load_document(Path(path))
+                for line in lines:
+                    line_stripped = strip_html_tags(line.strip()).lower()
+                    if query_lower in line_stripped:
+                        if any(cat in line_stripped for cat in category_indicators):
+                            header_matches.append(strip_html_tags(line.strip())[:100])
+                        if len(header_matches) >= 3:
+                            break
+                if len(header_matches) >= 3:
+                    break
+
+            if header_matches:
+                hint_lines = "\n".join(f"   • {h}" for h in header_matches[:3])
+                return ToolResult(
+                    success=True,
+                    content=f"""抱歉，未在{doc_label}书中找到与"{query}"直接匹配的内容。
+
+💡 可能匹配的场景：
+{hint_lines}
+
+这表明"{query}"可能出现在分类标题中，而非正文内容。建议使用 full_content=true 获取完整文档后人工查阅相关章节。""",
+                    data={"query": query, "matches": 0, "search_mode": "keyword", "header_matches": header_matches},
+                )
+            else:
+                return ToolResult(
+                    success=True,
+                    content=f"抱歉，未在{doc_label}书中找到与\"{query}\"相关的内容。",
+                    data={"query": query, "matches": 0, "search_mode": "keyword"},
+                )
+
+        # 格式化结果
+        display_matches = all_matches[:10]
+        formatted = [f"🔍 在{doc_label}书中找到 **{len(all_matches)}** 处提到\"{query}\"：\n"]
+        citations = []
+        has_images = False
+        all_image_refs = []
+
+        for i, m in enumerate(display_matches, 1):
+            prefix = m.get("display_prefix", "")
+            formatted.append(f"{i}. {prefix}{m['line_content']}")
+            if m.get('context_before'):
+                before_lines = m['context_before'].split('\n')
+                formatted.append(f"   ↳ 上文({len(before_lines)}行):")
+                for bl in before_lines:
+                    if bl:
+                        formatted.append(f"      {bl}")
+            if m.get('context_after'):
+                after_lines = m['context_after'].split('\n')
+                formatted.append(f"   ↳ 下文({len(after_lines)}行):")
+                for al in after_lines:
+                    if al:
+                        formatted.append(f"      {al}")
+            # 检查此匹配中的图片引用
+            img_refs = m.get('image_refs', [])
+            if img_refs:
+                has_images = True
+                for img in img_refs:
+                    img["line_number"] = m['line_number']
+                    all_image_refs.append(img)
+                formatted.append(f"   📷 图片: {img_refs[0]['path']}")
+                if len(img_refs) > 1:
+                    formatted.append(f"   (还有 {len(img_refs) - 1} 张图片)")
+            # 构建结构化引用数据
+            citation = {
+                "index": i,
+                "line_number": m['line_number'],
+                "quote": m['line_content'],
+                "context_before": m.get('context_before', ''),
+                "context_after": m.get('context_after', ''),
+                "image_refs": img_refs,
+            }
+            if "source_doc" in m:
+                citation["source_doc"] = m["source_doc"]
+            citations.append(citation)
+
+        if len(all_matches) > 10:
+            formatted.append(f"\n... 还有 {len(all_matches) - 10} 处匹配")
+
+        return ToolResult(
+            success=True,
+            content="\n".join(formatted),
+            data={
+                "query": query,
+                "matches": len(all_matches),
+                "results": all_matches,
+                "citations": citations,
+                "has_images": has_images,
+                "image_refs": all_image_refs,
+            },
+        )
 
     def clear_cache(self) -> None:
         """清除文档缓存。"""

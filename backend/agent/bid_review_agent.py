@@ -69,8 +69,8 @@ class BidReviewAgent(BaseAgent):
     def __init__(
         self,
         project_id: str,
-        tender_doc_path: str,
-        bid_doc_path: str,
+        tender_docs: list[tuple[str, str]],
+        bid_docs: list[tuple[str, str]],
         user_id: str,
         rule_doc_path: str,
         event_callback=None,
@@ -85,8 +85,8 @@ class BidReviewAgent(BaseAgent):
 
         Args:
             project_id: The project ID for organizing workspace
-            tender_doc_path: Path to the parsed tender document
-            bid_doc_path: Path to the parsed bid document
+            tender_docs: List of (filename, parsed_md_path) for tender documents
+            bid_docs: List of (filename, parsed_md_path) for bid documents
             user_id: The user ID for workspace organization
             rule_doc_path: Path to the rule document for this review
             event_callback: Optional callback for SSE event publishing
@@ -96,8 +96,8 @@ class BidReviewAgent(BaseAgent):
             heartbeat_timeout: Heartbeat timeout in seconds (default 60)
         """
         self.project_id = project_id
-        self.tender_doc_path = tender_doc_path
-        self.bid_doc_path = bid_doc_path
+        self.tender_docs = tender_docs
+        self.bid_docs = bid_docs
         self.user_id = user_id
         self.rule_doc_path = rule_doc_path
         self.event_callback = event_callback
@@ -120,6 +120,12 @@ class BidReviewAgent(BaseAgent):
         # Track whether max_steps was reached during execution
         self._max_steps_exceeded: bool = False
 
+        # Duplicate action detection
+        from collections import deque
+        self._tool_call_history: deque = deque(maxlen=20)  # Recent tool call signatures
+        self._duplicate_warning_count: int = 0  # Warnings issued so far
+        self._write_file_called: bool = False  # Whether write_file has been invoked
+
         # Initialize LLM client via factory (supports MiniMax / Volcengine)
         llm_client = create_llm_client(timeout=120.0)
         self.llm_client = llm_client  # Store for _call_llm_with_retry
@@ -131,10 +137,10 @@ class BidReviewAgent(BaseAgent):
         # Initialize tools
         # Shared loaders for structured tools (avoids duplicate file reads)
         from backend.agent.tools.structure_tools import _create_shared_loaders
-        _shared_loaders = _create_shared_loaders(tender_doc_path, bid_doc_path)
+        _shared_loaders = _create_shared_loaders(tender_docs, bid_docs)
 
         tools = [
-            DocSearchTool(tender_doc_path=tender_doc_path, bid_doc_path=bid_doc_path),
+            DocSearchTool(tender_docs=tender_docs, bid_docs=bid_docs),
             RAGSearchTool(user_id=user_id),
             ComparatorTool(),
             MergeDeciderTool(),
@@ -154,6 +160,7 @@ class BidReviewAgent(BaseAgent):
             workspace_dir=str(workspace_dir),
             max_steps=max_steps,
             event_callback=event_callback,
+            token_limit=settings.agent_token_limit,
         )
 
         # Set cancel_event AFTER super().__init__() to avoid being overwritten
@@ -340,6 +347,18 @@ class BidReviewAgent(BaseAgent):
                 raise
             except Exception as e:
                 latency_ms = int((time.perf_counter() - call_start) * 1000)
+
+                # 检测 429 Rate Limit 错误并记录到 Redis 监控计数器
+                error_str = str(e)
+                status_code = getattr(
+                    getattr(e, "response", None), "status_code", None
+                ) or getattr(e, "status_code", None)
+                if status_code == 429 or "429" in error_str or "rate_limit" in error_str.lower():
+                    agent_ref._record_llm_429(call_index, latency_ms, error_str)
+                    logger.error(
+                        f"[LLM Interaction #{call_index}] RATE LIMITED (429) after {latency_ms}ms: {e}"
+                    )
+
                 logger.error(
                     f"[LLM Interaction #{call_index}] FAILED after {latency_ms}ms: {e}"
                 )
@@ -421,6 +440,44 @@ class BidReviewAgent(BaseAgent):
             r.close()
         except Exception:
             pass  # Metrics collection must not affect business logic
+
+    def _record_llm_429(self, call_index: int, latency_ms: int, error_str: str) -> None:
+        """Record LLM 429 rate limit errors to Redis for cluster-wide monitoring.
+
+        Tracks 429 error count and timestamps so that operations can detect
+        API rate limit saturation and trigger alerts.
+        """
+        try:
+            import redis as redis_lib
+            r = redis_lib.Redis.from_url(
+                settings.redis_url,
+                max_connections=1,
+                socket_timeout=2.0,
+                socket_connect_timeout=2.0,
+                decode_responses=True,
+            )
+            now = datetime.now()
+
+            # 全局 429 计数器（集群级，按小时滚动）
+            hour_key = f"metrics:llm_429:{now.strftime('%Y%m%d%H')}"
+            r.incr(hour_key)
+            r.expire(hour_key, 86400)  # 保留 24 小时
+
+            # 本项目的 429 日志（最近 100 条）
+            log_key = f"metrics:llm_429_log:{self.project_id}"
+            entry = json.dumps({
+                "call_index": call_index,
+                "timestamp": now.isoformat(),
+                "latency_ms": latency_ms,
+                "error": error_str[:500],
+            })
+            r.lpush(log_key, entry)
+            r.ltrim(log_key, 0, 99)  # 保留最近 100 条
+            r.expire(log_key, 3600)  # TTL 1 小时
+
+            r.close()
+        except Exception:
+            pass  # 监控记录不能影响业务逻辑
 
     def _build_request_summary(self, messages: list, tools: list) -> dict:
         """Build a summary dict of the LLM request."""
@@ -571,8 +628,12 @@ class BidReviewAgent(BaseAgent):
                     "type": "session_meta",
                     "project_id": self.project_id,
                     "user_id": self.user_id,
-                    "tender_doc": self.tender_doc_path,
-                    "bid_doc": self.bid_doc_path,
+                    "tender_docs": [
+                        {"filename": fn, "path": p} for fn, p in (self.tender_docs or [])
+                    ],
+                    "bid_docs": [
+                        {"filename": fn, "path": p} for fn, p in (self.bid_docs or [])
+                    ],
                     "rule_doc": self.rule_doc_path,
                     "total_llm_calls": len(self._interactions_log),
                     "written_at": datetime.now().isoformat(),
@@ -687,6 +748,95 @@ class BidReviewAgent(BaseAgent):
                 self.cancel_event.set()
                 break
 
+    def _extract_tool_signature(self, tool_call: dict) -> tuple[str, str]:
+        """Extract a (tool_name, key_arg) signature for duplicate detection.
+
+        Args:
+            tool_call: Dict with 'name' and 'arguments' keys.
+
+        Returns:
+            Tuple of (tool_name, key_arg) where key_arg is the most relevant
+            parameter for identifying repeated operations.
+        """
+        name = tool_call.get("name", "")
+        arguments = tool_call.get("arguments") or {}
+
+        # Extract the most relevant parameter per tool
+        if name == "search_tender_doc":
+            key_arg = arguments.get("query", "")
+        elif name == "get_document_toc":
+            key_arg = arguments.get("doc_type", "")
+        elif name == "get_section_content":
+            key_arg = arguments.get("section_id", "")
+        elif name == "understand_image":
+            key_arg = arguments.get("image_path", "")
+        else:
+            key_arg = ""
+
+        return (name, str(key_arg))
+
+    def _check_duplicate_actions(self, tool_calls: list[dict]) -> Optional[str]:
+        """Check for repeated tool calls and return a warning message if detected.
+
+        Detects two patterns:
+        1. Same (tool_name, key_arg) pair appearing ≥3 times in recent history
+        2. Same tool_name accumulating too many total calls (≥3 for get_document_toc)
+
+        Args:
+            tool_calls: List of tool call dicts from the current step.
+
+        Returns:
+            Warning message string if duplicates detected, None otherwise.
+        """
+        if self._write_file_called:
+            return None
+
+        # Record current step's tool calls
+        for tc in tool_calls:
+            sig = self._extract_tool_signature(tc)
+            self._tool_call_history.append(sig)
+
+        if not self._tool_call_history:
+            return None
+
+        # --- Pattern 1: Same exact (tool, key_arg) repeated ≥3 times ---
+        history_list = list(self._tool_call_history)
+        from collections import Counter
+        sig_counts = Counter(history_list)
+
+        for (name, key_arg), count in sig_counts.items():
+            if count >= 3 and name in (
+                "search_tender_doc", "get_document_toc",
+                "get_section_content", "understand_image",
+            ):
+                # Only warn for search-type tools with meaningful key_arg
+                if key_arg:
+                    display_arg = key_arg if len(key_arg) <= 30 else key_arg[:27] + "..."
+                    return (
+                        f"你已经多次使用相同参数调用 {name}（"
+                        f"参数 '{display_arg}' 已执行 {count} 次），"
+                        f"这些内容已经检索过了，无需重复搜索。"
+                        f"请停止重复搜索，基于已有信息进行分析，"
+                        f"并调用 write_file 写出审查结果。"
+                    )
+
+        # --- Pattern 2: Single tool called too many times overall ---
+        tool_total_counts = Counter(name for name, _ in history_list)
+        tool_limits = {
+            "get_document_toc": 3,
+            "get_section_images": 5,
+        }
+        for tool_name, limit in tool_limits.items():
+            if tool_total_counts.get(tool_name, 0) >= limit:
+                count = tool_total_counts[tool_name]
+                return (
+                    f"你已经多次调用 {tool_name}（{count} 次），"
+                    f"文档结构不会改变，无需重复获取。"
+                    f"请直接基于已有信息继续工作。"
+                )
+
+        return None
+
     def _emit_event(self, event_type: str, data: dict) -> None:
         """Override _emit_event to consolidate granular events into sub_agent_step.
 
@@ -735,6 +885,11 @@ class BidReviewAgent(BaseAgent):
                     "thinking": thinking,
                     "tool_calls": data.get("tool_calls", []),
                 })
+                # Track if write_file has been called - suppresses future duplicate warnings
+                for tc in data.get("tool_calls", []) or []:
+                    if tc.get("name") == "write_file":
+                        self._write_file_called = True
+                        break
                 logger.info(f"[BidReviewAgent._emit_event] llm_output for step {step}, tool_calls_count={len(data.get('tool_calls', []))}")
 
         elif event_type == "tool_call_start":
@@ -762,8 +917,11 @@ class BidReviewAgent(BaseAgent):
             # Emit consolidated sub_agent_step event
             step = data.get("step", 0)
             self._total_steps += 1
+            captured_step_tool_calls: list[dict] = []
             if step in self._step_data:
                 step_info = self._step_data[step]
+                # Capture tool_calls for duplicate detection before cleanup
+                captured_step_tool_calls = list(step_info.get("tool_calls", []))
                 # Convert tool_results to frontend format
                 frontend_tool_results = []
                 for tr in step_info["tool_results"]:
@@ -808,6 +966,18 @@ class BidReviewAgent(BaseAgent):
                     pass
 
             logger.info(f"[BidReviewAgent._emit_event] step_complete for step {step}")
+
+            # Duplicate action detection: check and inject warning if needed
+            if captured_step_tool_calls:
+                warning = self._check_duplicate_actions(captured_step_tool_calls)
+                if warning:
+                    self._duplicate_warning_count += 1
+                    logger.warning(f"[BidReviewAgent] Duplicate action detected (warning #{self._duplicate_warning_count}): {warning[:80]}")
+                    # Inject warning as a user message to guide the LLM
+                    self.messages.append(Message(
+                        role="user",
+                        content=f"[系统提醒] {warning}",
+                    ))
 
         elif event_type == "completed":
             # Agent completed - forward to callback
@@ -880,12 +1050,32 @@ class BidReviewAgent(BaseAgent):
         Returns:
             System prompt string with rule content embedded.
         """
-        tender_doc_directory = str(Path(self.tender_doc_path).parent)
-        bid_doc_directory = str(Path(self.bid_doc_path).parent)
+        # Build document inventory listing
+        inventory_parts = []
+        tender_names = [name for name, _ in self.tender_docs]
+        bid_names = [name for name, _ in self.bid_docs]
+        inventory_parts.append(f"招标文件（共 {len(tender_names)} 份）：")
+        for i, name in enumerate(tender_names, 1):
+            inventory_parts.append(f"  {i}. {name}")
+        inventory_parts.append(f"投标文件（共 {len(bid_names)} 份）：")
+        for i, name in enumerate(bid_names, 1):
+            inventory_parts.append(f"  {i}. {name}")
+        doc_inventory = "\n".join(inventory_parts)
+
+        # Build image directory mapping per document
+        image_dir_parts = []
+        for name, path in self.tender_docs:
+            img_dir = str(Path(path).parent)
+            image_dir_parts.append(f"  招标书 \"{name}\" → {img_dir}/{{image_path}}")
+        for name, path in self.bid_docs:
+            img_dir = str(Path(path).parent)
+            image_dir_parts.append(f"  投标书 \"{name}\" → {img_dir}/{{image_path}}")
+        image_directory_map = "\n".join(image_dir_parts)
+
         return SYSTEM_PROMPT_WITH_RULE.format(
             rule_doc_content=rule_doc_content,
-            tender_doc_directory=tender_doc_directory,
-            bid_doc_directory=bid_doc_directory,
+            doc_inventory=doc_inventory,
+            image_directory_map=image_directory_map,
         )
 
     async def run_review(self) -> list[dict]:
@@ -903,7 +1093,7 @@ class BidReviewAgent(BaseAgent):
         import logging
         import time
         logger = self._logger or logging.getLogger(__name__)
-        logger.info(f"[BidReviewAgent.run_review] Starting, tender={self.tender_doc_path}, bid={self.bid_doc_path}, rule_doc={self.rule_doc_path}")
+        logger.info(f"[BidReviewAgent.run_review] Starting, tender_docs={self.tender_docs}, bid_docs={self.bid_docs}, rule_doc={self.rule_doc_path}")
 
         try:
             # 1. Read rule file
@@ -945,11 +1135,25 @@ class BidReviewAgent(BaseAgent):
             check_list_str = "\n".join(check_list_lines)
             total_items = len(check_items) if check_items else "所有"
 
+            # Build document inventory listings (multi-document: list of (filename, path))
+            def _fmt_doc_inventory(docs: list[tuple[str, str]] | None) -> str:
+                if not docs:
+                    return "  （无）"
+                lines = []
+                for fn, p in docs:
+                    lines.append(f"  - {fn} → {p}")
+                return "\n".join(lines)
+
+            tender_inventory = _fmt_doc_inventory(self.tender_docs)
+            bid_inventory = _fmt_doc_inventory(self.bid_docs)
+
             task = f"""请执行投标文件审查任务。
 
 文档信息：
-- 招标书路径: {self.tender_doc_path}
-- 投标书路径: {self.bid_doc_path}
+- 招标书（共 {len(self.tender_docs or [])} 份）：
+{tender_inventory}
+- 投标书（共 {len(self.bid_docs or [])} 份）：
+{bid_inventory}
 - 审查结果输出文件: {output_md_path}
 
 共有 {total_items} 个检查项：
