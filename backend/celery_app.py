@@ -10,7 +10,7 @@ celery_app = Celery(
     "bid_review_agent",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["backend.tasks.review_tasks", "backend.tasks.document_parser"],
+    include=["backend.tasks.review_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks"],
 )
 
 # Celery configuration

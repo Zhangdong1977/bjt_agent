@@ -3,6 +3,8 @@ import { computed, ref } from 'vue'
 import type { ReviewResponse, ReviewResult } from '@/types'
 import { renderMarkdown } from '@/utils/markdown'
 import { reviewApi } from '@/api/client'
+import BatchConfirmBar from '@/components/feedback/BatchConfirmBar.vue'
+import FindingsTable from '@/components/execution/FindingsTable.vue'
 
 const props = defineProps<{
   reviewResults: ReviewResponse | null | undefined
@@ -197,11 +199,25 @@ function getSeverityColorClass(severity: string): string {
               <span :class="['status-tag', selectedGroup.isCompliant ? 'compliant' : 'risk']">
                 {{ selectedGroup.isCompliant ? '全部合规' : `风险项 ${selectedGroup.nonCompliantCount}` }}
               </span>
+              <BatchConfirmBar
+                v-if="!selectedGroup.isCompliant"
+                :project-id="projectId"
+                :task-id="taskId"
+                :rule-doc-name="selectedGroup.ruleDocName"
+                :finding-count="selectedGroup.nonCompliantCount"
+                @batch-confirmed="() => {}"
+              />
             </div>
           </div>
           <div class="report-content">
             <div v-if="reportLoading" class="report-loading">加载中...</div>
             <div v-else class="markdown-body" v-html="renderMarkdown(reportContent)"></div>
+            <!-- Findings detail table with feedback -->
+            <FindingsTable
+              v-if="selectedGroup.allFindings.length > 0"
+              :findings="selectedGroup.allFindings"
+              :project-id="projectId"
+            />
           </div>
         </template>
         <div v-else class="detail-placeholder">

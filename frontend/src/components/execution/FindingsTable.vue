@@ -1,22 +1,29 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
+import FindingFeedbackBar from '@/components/feedback/FindingFeedbackBar.vue'
+import FeedbackStatusBadge from '@/components/feedback/FeedbackStatusBadge.vue'
+import type { ReviewResult, FeedbackResponse } from '@/types'
 
-interface Finding {
+interface Finding extends ReviewResult {
   id: string
-  requirement_key: string
-  requirement_content: string
-  bid_content: string | null
-  is_compliant: boolean
-  severity: string
-  location_page: number | null
-  location_line: number | null
-  suggestion: string | null
-  explanation: string | null
 }
 
 defineProps<{
   findings: Finding[]
+  projectId?: string
 }>()
+
+// Track feedback per finding (keyed by finding.id)
+const feedbackMap = ref<Map<string, FeedbackResponse>>(new Map())
+
+function getUserFeedback(findingId: string): FeedbackResponse | null {
+  return feedbackMap.value.get(findingId) ?? null
+}
+
+function onFeedbackSubmitted(feedback: FeedbackResponse) {
+  feedbackMap.value = new Map(feedbackMap.value).set(feedback.finding_id, feedback)
+}
 
 function getSeverityLabel(severity: string): string {
   const map: Record<string, string> = {
@@ -39,6 +46,7 @@ function getSeverityLabel(severity: string): string {
             <th class="col-key">检查项</th>
             <th class="col-status">检查结果</th>
             <th class="col-severity">严重程度</th>
+            <th class="col-feedback">反馈</th>
           </tr>
         </thead>
         <tbody>
@@ -61,9 +69,12 @@ function getSeverityLabel(severity: string): string {
                 </span>
                 <span v-else class="severity-dash">-</span>
               </td>
+              <td class="col-feedback">
+                <FeedbackStatusBadge :feedback="getUserFeedback(finding.id)" />
+              </td>
             </tr>
             <tr v-if="!finding.is_compliant" class="detail-row">
-              <td colspan="4">
+              <td colspan="5">
                 <div class="detail-content">
                   <div v-if="finding.bid_content" class="detail-field">
                     <span class="detail-label">应标内容:</span>
@@ -81,6 +92,14 @@ function getSeverityLabel(severity: string): string {
                     <span class="detail-label">位置:</span>
                     <span>第 {{ finding.location_page }} 页{{ finding.location_line ? `, 第 ${finding.location_line} 行` : '' }}</span>
                   </div>
+                  <!-- Feedback bar for non-compliant findings -->
+                  <FindingFeedbackBar
+                    v-if="projectId"
+                    :finding="finding"
+                    :project-id="projectId"
+                    :existing-feedback="getUserFeedback(finding.id)"
+                    @feedback-submitted="onFeedbackSubmitted"
+                  />
                 </div>
               </td>
             </tr>
@@ -165,6 +184,12 @@ function getSeverityLabel(severity: string): string {
   width: 72px;
   text-align: center;
   padding: 8px 6px;
+}
+
+.col-feedback {
+  width: 64px;
+  text-align: center;
+  padding: 8px 4px;
 }
 
 .req-content {

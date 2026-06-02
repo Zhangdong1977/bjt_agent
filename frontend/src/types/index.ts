@@ -206,6 +206,55 @@ export interface UploadProgress {
   percent: number;
 }
 
+// Feedback types
+export interface FeedbackResponse {
+  id: string;
+  finding_id: string;
+  user_id: string;
+  project_id: string;
+  task_id: string;
+  feedback_type: "confirm" | "contradict" | "refine";
+  contradict_reason: string | null;
+  corrected_severity: string | null;
+  corrected_suggestion: string | null;
+  corrected_is_compliant: boolean | null;
+  comment: string | null;
+  status: "pending" | "accepted" | "rejected" | "superseded";
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  affected_skill_id: string | null;
+  confidence_delta: number;
+  batch_id: string | null;
+  rule_doc_name: string | null;
+  created_at: string;
+}
+
+export interface FeedbackSummary {
+  total_feedback: number;
+  by_type: Record<string, number>;
+  by_status: Record<string, number>;
+  agreement_rate: number;
+  top_contradicted_rules: Array<{ rule_doc_name: string; count: number }>;
+}
+
+export interface BatchFeedbackResponse {
+  created_count: number;
+  superseded_count: number;
+}
+
+export interface FeedbackCreateRequest {
+  feedback_type: "confirm" | "contradict" | "refine";
+  contradict_reason?:
+    | "should_comply"
+    | "severity_too_high"
+    | "severity_too_low"
+    | "item_not_applicable";
+  corrected_severity?: "critical" | "major" | "minor";
+  corrected_suggestion?: string;
+  corrected_is_compliant?: boolean;
+  comment?: string;
+}
+
 // RAG Search types
 export interface RAGSearchResult {
   source: string;

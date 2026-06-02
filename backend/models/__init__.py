@@ -9,6 +9,7 @@ from .project_review_result import ProjectReviewResult
 from .agent_step import AgentStep
 from .todo_item import TodoItem
 from .review_session import ReviewSession
+from backend.experience.models import ExperienceFeedback
 
 __all__ = [
     "Base",
@@ -26,4 +27,5 @@ __all__ = [
     "AgentStep",
     "TodoItem",
     "ReviewSession",
+    "ExperienceFeedback",
 ]

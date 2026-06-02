@@ -15,6 +15,10 @@ import type {
   AgentStep,
   ReviewResult,
   TodoItem,
+  FeedbackResponse,
+  FeedbackSummary,
+  BatchFeedbackResponse,
+  FeedbackCreateRequest,
 } from "@/types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
@@ -478,6 +482,83 @@ export const knowledgeApi = {
 
   getIndexStatus: () => {
     return apiClient.get("/knowledge/index-status");
+  },
+};
+
+// Feedback API
+export const feedbackApi = {
+  submitFeedback: async (
+    projectId: string,
+    findingId: string,
+    data: FeedbackCreateRequest,
+  ): Promise<FeedbackResponse> => {
+    const response = await apiClient.post(
+      `/projects/${projectId}/findings/${findingId}/feedback`,
+      data,
+    );
+    return response.data;
+  },
+
+  getForFinding: async (
+    projectId: string,
+    findingId: string,
+  ): Promise<FeedbackResponse[]> => {
+    const response = await apiClient.get(
+      `/projects/${projectId}/findings/${findingId}/feedback`,
+    );
+    return response.data;
+  },
+
+  batchConfirm: async (
+    projectId: string,
+    taskId: string,
+    ruleDocName?: string | null,
+    comment?: string,
+  ): Promise<BatchFeedbackResponse> => {
+    const response = await apiClient.post(
+      `/projects/${projectId}/tasks/${taskId}/batch-feedback`,
+      { rule_doc_name: ruleDocName ?? null, comment: comment ?? null },
+    );
+    return response.data;
+  },
+
+  getSummary: async (projectId: string): Promise<FeedbackSummary> => {
+    const response = await apiClient.get(
+      `/projects/${projectId}/feedback/summary`,
+    );
+    return response.data;
+  },
+
+  getMyFeedback: async (
+    projectId: string,
+    limit = 50,
+    offset = 0,
+  ): Promise<FeedbackResponse[]> => {
+    const response = await apiClient.get(
+      `/projects/${projectId}/feedback/history`,
+      { params: { limit, offset } },
+    );
+    return response.data;
+  },
+
+  getDashboard: async (projectId: string) => {
+    const response = await apiClient.get(
+      `/projects/${projectId}/experience/dashboard`,
+    );
+    return response.data;
+  },
+
+  reviewFeedback: async (
+    projectId: string,
+    feedbackId: string,
+    action: "accept" | "reject",
+    reason?: string,
+  ): Promise<FeedbackResponse> => {
+    const response = await apiClient.patch(
+      `/projects/${projectId}/feedback/${feedbackId}/review`,
+      { action, reason: reason ?? null },
+    );
+    return response.data;
   },
 };
 

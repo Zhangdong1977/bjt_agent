@@ -1,0 +1,233 @@
+"""Celery tasks for feedback processing pipeline.
+
+Handles:
+- Single feedback processing (skill linkage + confidence update)
+- Batch feedback processing
+- Skill content rewriting triggered by refine feedback
+"""
+
+import logging
+from datetime import datetime
+
+from celery import shared_task
+from sqlalchemy import select, and_
+
+logger = logging.getLogger(__name__)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+def process_feedback(self, feedback_id: str) -> dict:
+    """Process a single accepted feedback record.
+
+    Pipeline stages:
+    1. Resolve skill linkage (find affected_skill_id)
+    2. Apply confidence delta to the linked skill
+    3. Trigger downstream actions (retirement check, skill rewrite)
+
+    Returns a summary dict for audit purposes.
+    """
+    import asyncio
+    return asyncio.run(_process_feedback_async(feedback_id))
+
+
+async def _process_feedback_async(feedback_id: str) -> dict:
+    """Async implementation of feedback processing."""
+    from backend.models.base import async_session_factory
+    from backend.experience.models import ExperienceFeedback
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(ExperienceFeedback).where(
+                ExperienceFeedback.id == feedback_id,
+                ExperienceFeedback.status == "accepted",
+            )
+        )
+        feedback = result.scalar_one_or_none()
+        if not feedback:
+            logger.warning(f"Feedback {feedback_id} not found or not accepted")
+            return {"status": "skipped", "reason": "not_found"}
+
+        summary = {
+            "feedback_id": feedback_id,
+            "feedback_type": feedback.feedback_type,
+            "confidence_delta": feedback.confidence_delta,
+            "skill_resolved": False,
+            "downstream_action": "none",
+        }
+
+        # --- Stage 2: Resolve skill linkage ---
+        skill_id = await _resolve_skill_linkage(db, feedback)
+        if skill_id:
+            feedback.affected_skill_id = skill_id
+            summary["skill_resolved"] = True
+            summary["skill_id"] = skill_id
+
+            # --- Stage 4: Apply confidence delta ---
+            await _apply_confidence_delta(db, skill_id, feedback.confidence_delta)
+
+            # --- Stage 5: Downstream triggers ---
+            action = await _trigger_downstream(db, skill_id, feedback)
+            summary["downstream_action"] = action
+        else:
+            logger.info(
+                f"No matching skill found for feedback {feedback_id}, "
+                f"rule_doc={feedback.rule_doc_name}. "
+                f"Feedback stored but has no immediate effect."
+            )
+
+        feedback.updated_at = datetime.utcnow()
+        await db.commit()
+
+    return summary
+
+
+async def _resolve_skill_linkage(db, feedback) -> str | None:
+    """Find the most relevant experience_skill for this feedback.
+
+    Currently uses rule_doc_name matching. When experience_skills table
+    is implemented (Phase 2 of the self-learning plan), this will use
+    embedding-based retrieval via the ExperienceRetriever.
+    """
+    # NOTE: experience_skills table does not exist yet (Phase 2).
+    # For now, return None — feedback is stored and linked later.
+    # When skills are available, query by group_id = rule_doc_stem.
+    return None
+
+
+async def _apply_confidence_delta(db, skill_id: str, delta: float) -> None:
+    """Apply confidence change to a skill.
+
+    The actual implementation will update the experience_skills table
+    once it exists (Phase 2). This is a placeholder that logs the action.
+    """
+    logger.info(
+        f"Would apply confidence delta {delta:+.2f} to skill {skill_id}"
+    )
+    # TODO: When experience_skills exists:
+    # skill = await db.get(ExperienceSkill, skill_id)
+    # skill.confidence = max(0.0, min(0.95, skill.confidence + delta))
+    # skill.updated_at = datetime.utcnow()
+
+
+async def _trigger_downstream(db, skill_id: str, feedback) -> str:
+    """Trigger downstream actions based on feedback type.
+
+    Returns the action taken for audit.
+    """
+    if feedback.feedback_type == "confirm":
+        return "confidence_bumped"
+
+    if feedback.feedback_type == "contradict":
+        # Check retirement threshold
+        # TODO: Check if confidence < 0.1 after delta application
+        return "confidence_reduced"
+
+    if feedback.feedback_type == "refine":
+        # Trigger skill rewrite
+        rewrite_skill_from_feedback.delay(feedback.id)
+        return "skill_rewrite_triggered"
+
+    return "none"
+
+
+@shared_task(bind=True, max_retries=1, default_retry_delay=60)
+def process_batch_feedback(self, batch_id: str) -> dict:
+    """Process all feedback records in a batch.
+
+    Iterates through all feedback records with the given batch_id
+    and runs the processing pipeline for each.
+    """
+    import asyncio
+    return asyncio.run(_process_batch_async(batch_id))
+
+
+async def _process_batch_async(batch_id: str) -> dict:
+    """Async implementation of batch feedback processing."""
+    from backend.models.base import async_session_factory
+    from backend.experience.models import ExperienceFeedback
+
+    processed = 0
+    skipped = 0
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(ExperienceFeedback).where(
+                ExperienceFeedback.batch_id == batch_id,
+                ExperienceFeedback.status == "accepted",
+            )
+        )
+        feedbacks = result.scalars().all()
+
+        for feedback in feedbacks:
+            skill_id = await _resolve_skill_linkage(db, feedback)
+            if skill_id:
+                feedback.affected_skill_id = skill_id
+                await _apply_confidence_delta(db, skill_id, feedback.confidence_delta)
+                processed += 1
+            else:
+                skipped += 1
+
+            feedback.updated_at = datetime.utcnow()
+
+        await db.commit()
+
+    logger.info(
+        f"Batch {batch_id}: processed={processed}, skipped={skipped}"
+    )
+    return {"batch_id": batch_id, "processed": processed, "skipped": skipped}
+
+
+@shared_task(bind=True, max_retries=1, default_retry_delay=30)
+def rewrite_skill_from_feedback(self, feedback_id: str) -> dict:
+    """Rewrite a skill's content based on user refine feedback.
+
+    Uses the LLM to incorporate the user's correction into the skill SOP.
+    Triggered when a refine feedback is accepted.
+
+    NOTE: This task will be fully implemented in Phase 2 when
+    experience_skills table and SkillExtractor are available.
+    """
+    import asyncio
+    return asyncio.run(_rewrite_skill_async(feedback_id))
+
+
+async def _rewrite_skill_async(feedback_id: str) -> dict:
+    """Async implementation of skill rewriting."""
+    from backend.models.base import async_session_factory
+    from backend.experience.models import ExperienceFeedback
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(ExperienceFeedback).where(
+                ExperienceFeedback.id == feedback_id,
+                ExperienceFeedback.feedback_type == "refine",
+                ExperienceFeedback.status == "accepted",
+            )
+        )
+        feedback = result.scalar_one_or_none()
+        if not feedback:
+            return {"status": "skipped", "reason": "not_found"}
+
+        if not feedback.affected_skill_id:
+            logger.info(
+                f"Feedback {feedback_id} has no linked skill, skipping rewrite"
+            )
+            return {"status": "skipped", "reason": "no_skill"}
+
+        # TODO (Phase 2):
+        # 1. Load the skill content from experience_skills
+        # 2. Call SkillExtractor with original content + corrections
+        # 3. Update skill content and trigger MaturityScorer re-evaluation
+        logger.info(
+            f"Skill rewrite for feedback {feedback_id} -> skill {feedback.affected_skill_id} "
+            f"(corrections: severity={feedback.corrected_severity}, "
+            f"suggestion={'yes' if feedback.corrected_suggestion else 'no'}, "
+            f"compliant={feedback.corrected_is_compliant})"
+        )
+
+        return {
+            "status": "placeholder",
+            "feedback_id": feedback_id,
+            "skill_id": feedback.affected_skill_id,
+            "message": "Will be fully implemented in Phase 2 with SkillExtractor",
+        }

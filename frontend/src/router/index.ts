@@ -62,6 +62,12 @@ const router = createRouter({
           name: "review-results",
           component: () => import("@/views/ResultsView.vue"),
         },
+        {
+          path: "experience",
+          name: "experience-dashboard",
+          component: () => import("@/views/ExperienceDashboard.vue"),
+          meta: { interiorOnly: true },
+        },
       ],
     },
   ],
