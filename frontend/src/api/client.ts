@@ -19,6 +19,7 @@ import type {
   FeedbackSummary,
   BatchFeedbackResponse,
   FeedbackCreateRequest,
+  PaginatedProjectSummary,
 } from "@/types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
@@ -541,6 +542,34 @@ export const feedbackApi = {
     return response.data;
   },
 
+  getPendingFeedback: async (
+    projectId: string,
+    limit = 100,
+    offset = 0,
+  ): Promise<FeedbackResponse[]> => {
+    const response = await apiClient.get(
+      `/projects/${projectId}/feedback/pending`,
+      { params: { limit, offset } },
+    );
+    return response.data;
+  },
+
+  getAllFeedback: async (
+    projectId: string,
+    params?: {
+      status?: string;
+      feedback_type?: string;
+      limit?: number;
+      offset?: number;
+    },
+  ): Promise<FeedbackResponse[]> => {
+    const response = await apiClient.get(
+      `/projects/${projectId}/feedback/all`,
+      { params },
+    );
+    return response.data;
+  },
+
   getDashboard: async (projectId: string) => {
     const response = await apiClient.get(
       `/projects/${projectId}/experience/dashboard`,
@@ -558,6 +587,22 @@ export const feedbackApi = {
       `/projects/${projectId}/feedback/${feedbackId}/review`,
       { action, reason: reason ?? null },
     );
+    return response.data;
+  },
+
+  getProjectsSummary: async (params?: {
+    limit?: number;
+    offset?: number;
+    time_range?: string;
+    start_date?: string;
+    end_date?: string;
+    username?: string;
+    project_name?: string;
+    project_id?: string;
+  }): Promise<PaginatedProjectSummary> => {
+    const response = await apiClient.get("/experience/projects-summary", {
+      params,
+    });
     return response.data;
   },
 };

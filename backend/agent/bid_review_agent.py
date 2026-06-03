@@ -1041,16 +1041,16 @@ class BidReviewAgent(BaseAgent):
 
         return items
 
-    def _build_system_prompt(self, rule_doc_content: str) -> str:
+    def _build_system_prompt(self, rule_doc_content: str, experience_skills: list[dict] | None = None) -> str:
         """Build system prompt containing rule document content.
 
         Args:
             rule_doc_content: Full text content of the rule document.
+            experience_skills: Optional list of experience skills to inject.
 
         Returns:
             System prompt string with rule content embedded.
         """
-        # Build document inventory listing
         inventory_parts = []
         tender_names = [name for name, _ in self.tender_docs]
         bid_names = [name for name, _ in self.bid_docs]
@@ -1062,7 +1062,6 @@ class BidReviewAgent(BaseAgent):
             inventory_parts.append(f"  {i}. {name}")
         doc_inventory = "\n".join(inventory_parts)
 
-        # Build image directory mapping per document
         image_dir_parts = []
         for name, path in self.tender_docs:
             img_dir = str(Path(path).parent)
@@ -1072,11 +1071,47 @@ class BidReviewAgent(BaseAgent):
             image_dir_parts.append(f"  投标书 \"{name}\" → {img_dir}/{{image_path}}")
         image_directory_map = "\n".join(image_dir_parts)
 
+        experience_guidance = ""
+        if experience_skills:
+            experience_guidance = self._render_experience_guidance(experience_skills)
+
         return SYSTEM_PROMPT_WITH_RULE.format(
             rule_doc_content=rule_doc_content,
             doc_inventory=doc_inventory,
             image_directory_map=image_directory_map,
+            experience_guidance=experience_guidance,
         )
+
+    def _render_experience_guidance(self, skills: list[dict]) -> str:
+        if not skills:
+            return ""
+
+        parts = [
+            "> 以下经验来自历史审查案例，由系统自动提炼。",
+            "> 请参考但不盲从——若与本次实际情况冲突，以本次为准。",
+            "",
+        ]
+        for i, skill in enumerate(skills[:3], 1):
+            form_hint = ""
+            if skill.get("skill_form") == "hypothesis":
+                form_hint = "（来自失败案例，谨慎参考）"
+            parts.append(
+                f"### 经验 {i}：{skill['name']}"
+                f"（置信度 {skill['confidence']:.2f}，"
+                f"成熟度 {skill['maturity_score']:.2f}）{form_hint}"
+            )
+            parts.append(skill.get("description", ""))
+            content = skill.get("content", "")
+            if len(content) > 150:
+                last_period = content[:150].rfind("。")
+                if last_period > 50:
+                    content = content[: last_period + 1]
+                else:
+                    content = content[:150] + "..."
+            parts.append(content)
+            parts.append("")
+
+        return "\n".join(parts)
 
     async def run_review(self) -> list[dict]:
         """Run the bid review process using rule file.
@@ -1100,8 +1135,24 @@ class BidReviewAgent(BaseAgent):
             rule_doc_content = self._load_rule_doc()
             logger.info(f"[BidReviewAgent.run_review] Rule doc loaded, size={len(rule_doc_content)} chars")
 
-            # 2. Build system prompt
-            system_prompt = self._build_system_prompt(rule_doc_content)
+            # 2. Retrieve experience skills (if enabled)
+            experience_skills = None
+            if get_settings().experience_injection_enabled:
+                try:
+                    from backend.experience.retriever import ExperienceRetriever
+                    retriever = ExperienceRetriever()
+                    group_id = Path(self.rule_doc_path).stem
+                    experience_skills = await retriever.retrieve(
+                        group_id=group_id,
+                        query=rule_doc_content[:500],
+                    )
+                    if experience_skills:
+                        logger.info(f"[BidReviewAgent.run_review] Injected {len(experience_skills)} experience skills")
+                except Exception as e:
+                    logger.warning(f"Experience retrieval failed: {e}")
+
+            # 3. Build system prompt with experience
+            system_prompt = self._build_system_prompt(rule_doc_content, experience_skills)
             self.system_prompt = system_prompt
             # Update system message in messages list
             self.messages[0] = Message(role="system", content=system_prompt)

@@ -106,6 +106,13 @@ class Settings(BaseSettings):
     # Agent Progress Watchdog
     agent_progress_timeout: int = 600  # Max seconds without SSE events before task is considered hung (env: AGENT_PROGRESS_TIMEOUT)
 
+    # Experience Self-Learning
+    experience_injection_enabled: bool = False
+    experience_max_inject: int = 3
+    experience_maturity_threshold: float = 0.6
+    experience_confidence_retire: float = 0.1
+    experience_quality_threshold: float = 0.5
+
     # Celery
     celery_broker_url: str = ""  # Must be set via environment variable
     celery_result_backend: str = ""  # Must be set via environment variable

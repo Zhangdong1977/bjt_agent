@@ -1,0 +1,7 @@
+from .case_filter_zh import CASE_FILTER_PROMPT
+from .case_compress_zh import CASE_COMPRESS_PROMPT
+from .cluster_assign_zh import CLUSTER_ASSIGN_PROMPT
+from .skill_success_extract_zh import SKILL_SUCCESS_EXTRACT_PROMPT
+from .skill_failure_extract_zh import SKILL_FAILURE_EXTRACT_PROMPT
+from .skill_maturity_score_zh import SKILL_MATURITY_SCORE_PROMPT
+from .skill_relevance_verify_zh import SKILL_RELEVANCE_VERIFY_PROMPT

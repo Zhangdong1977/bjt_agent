@@ -1,16 +1,69 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { feedbackApi } from '@/api/client'
-import type { FeedbackResponse, FeedbackSummary } from '@/types'
+import { useAuthStore } from '@/stores/auth'
+import type { FeedbackResponse, FeedbackSummary, ProjectFeedbackSummary } from '@/types'
+import FeedbackReviewCard from '@/components/feedback/FeedbackReviewCard.vue'
 
+const authStore = useAuthStore()
 const loading = ref(true)
 const summary = ref<FeedbackSummary | null>(null)
 const recentFeedback = ref<FeedbackResponse[]>([])
+const pendingFeedback = ref<FeedbackResponse[]>([])
+const allFeedback = ref<FeedbackResponse[]>([])
 const error = ref<string | null>(null)
+const activeTab = ref<'overview' | 'pending' | 'all'>('overview')
+const filterStatus = ref('')
+const filterType = ref('')
 
-// Use a placeholder project ID — in production this would come from route or global state
-// The dashboard aggregates across all projects the user has access to
 const projectId = ref('')
+
+// Project list state
+const projectList = ref<ProjectFeedbackSummary[]>([])
+const projectListLoading = ref(true)
+
+// Pagination
+const pagination = ref({ limit: 20, offset: 0, total: 0 })
+const currentPage = computed(() =>
+  Math.floor(pagination.value.offset / pagination.value.limit) + 1,
+)
+const totalPages = computed(() =>
+  Math.ceil(pagination.value.total / pagination.value.limit) || 1,
+)
+
+// Visible page numbers for pagination control
+const visiblePages = computed(() => {
+  const total = totalPages.value
+  const current = currentPage.value
+  if (total <= 7) {
+    return Array.from({ length: total }, (_, i) => i + 1)
+  }
+  const pages: number[] = [1]
+  const start = Math.max(2, current - 1)
+  const end = Math.min(total - 1, current + 1)
+  if (start > 2) pages.push(-1) // ellipsis
+  for (let i = start; i <= end; i++) pages.push(i)
+  if (end < total - 1) pages.push(-1) // ellipsis
+  pages.push(total)
+  return pages
+})
+
+// Search / filter
+const filterTimeRange = ref('')
+const filterStartDate = ref('')
+const filterEndDate = ref('')
+const filterUsername = ref('')
+const filterProjectName = ref('')
+const filterProjectId = ref('')
+
+const isInteriorUser = computed(() => authStore.isInteriorUser)
+
+const pendingCount = computed(() => {
+  if (summary.value?.by_status) {
+    return summary.value.by_status.pending ?? 0
+  }
+  return pendingFeedback.value.length
+})
 
 const totalFeedback = computed(() => summary.value?.total_feedback ?? 0)
 const agreementRate = computed(() =>
@@ -32,27 +85,121 @@ const statusLabels: Record<string, string> = {
 }
 
 onMounted(async () => {
-  // Dashboard requires a project context for now.
-  // TODO: Add global dashboard endpoint that aggregates across all projects.
-  // For now, show instructions when no project is selected.
   loading.value = false
+  if (isInteriorUser.value) {
+    await loadProjectList()
+  }
 })
+
+async function loadProjectList() {
+  projectListLoading.value = true
+  try {
+    const result = await feedbackApi.getProjectsSummary({
+      limit: pagination.value.limit,
+      offset: pagination.value.offset,
+      time_range: filterTimeRange.value || undefined,
+      start_date: filterStartDate.value || undefined,
+      end_date: filterEndDate.value || undefined,
+      username: filterUsername.value || undefined,
+      project_name: filterProjectName.value || undefined,
+      project_id: filterProjectId.value || undefined,
+    })
+    projectList.value = result.items
+    pagination.value.total = result.total
+  } catch {
+    // Error handled silently
+  } finally {
+    projectListLoading.value = false
+  }
+}
+
+function goToPage(page: number) {
+  pagination.value.offset = (page - 1) * pagination.value.limit
+  loadProjectList()
+}
+
+function applyFilters() {
+  pagination.value.offset = 0
+  loadProjectList()
+}
+
+function resetFilters() {
+  filterTimeRange.value = ''
+  filterStartDate.value = ''
+  filterEndDate.value = ''
+  filterUsername.value = ''
+  filterProjectName.value = ''
+  filterProjectId.value = ''
+  pagination.value.offset = 0
+  loadProjectList()
+}
 
 async function loadDashboard(pid: string) {
   loading.value = true
   error.value = null
   projectId.value = pid
   try {
-    const [summaryData, feedbackData] = await Promise.all([
+    const requests: Promise<any>[] = [
       feedbackApi.getSummary(pid),
       feedbackApi.getMyFeedback(pid, 20),
-    ])
-    summary.value = summaryData
-    recentFeedback.value = feedbackData
+    ]
+    if (isInteriorUser.value) {
+      requests.push(feedbackApi.getPendingFeedback(pid))
+    }
+    const results = await Promise.all(requests)
+    summary.value = results[0]
+    recentFeedback.value = results[1]
+    if (results[2]) {
+      pendingFeedback.value = results[2]
+    }
+    if (pendingCount.value > 0) {
+      activeTab.value = 'pending'
+    }
   } catch (err: any) {
     error.value = err?.response?.data?.detail || '加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+function clearProject() {
+  projectId.value = ''
+  summary.value = null
+  recentFeedback.value = []
+  pendingFeedback.value = []
+  allFeedback.value = []
+  activeTab.value = 'overview'
+  error.value = null
+  loadProjectList()
+}
+
+async function loadAllFeedback() {
+  if (!projectId.value) return
+  try {
+    const params: any = { limit: 200 }
+    if (filterStatus.value) params.status = filterStatus.value
+    if (filterType.value) params.feedback_type = filterType.value
+    allFeedback.value = await feedbackApi.getAllFeedback(projectId.value, params)
+  } catch {
+    // Error handled silently
+  }
+}
+
+async function handleReviewed(feedback: FeedbackResponse) {
+  pendingFeedback.value = pendingFeedback.value.filter(f => f.id !== feedback.id)
+  if (projectId.value) {
+    try {
+      summary.value = await feedbackApi.getSummary(projectId.value)
+    } catch {
+      // Refresh silently
+    }
+  }
+}
+
+function switchTab(tab: 'overview' | 'pending' | 'all') {
+  activeTab.value = tab
+  if (tab === 'all' && allFeedback.value.length === 0) {
+    loadAllFeedback()
   }
 }
 
@@ -70,21 +217,138 @@ function formatDate(dateStr: string): string {
   <div class="experience-dashboard">
     <div class="dashboard-header">
       <h2>经验仪表盘</h2>
-      <p class="dashboard-desc">审查经验自学习系统的运行状态与反馈统计</p>
+      <p class="dashboard-desc">审查经验自学习系统的运行状态与反馈审核</p>
     </div>
 
-    <!-- No project selected state -->
-    <div v-if="!projectId && !loading" class="dashboard-empty">
-      <p>请输入项目 ID 查看经验仪表盘数据</p>
-      <div class="project-input">
-        <input
-          v-model="projectId"
-          class="input-field"
-          placeholder="输入项目 ID"
-          @keyup.enter="loadDashboard(projectId)"
-        />
-        <button class="load-btn" @click="loadDashboard(projectId)">加载</button>
+    <!-- Project list view (interior users, primary view) -->
+    <template v-if="!projectId && !loading && isInteriorUser">
+      <div class="project-list-card">
+        <!-- Filter bar -->
+        <div class="project-filter-bar">
+          <select v-model="filterTimeRange" class="filter-select">
+            <option value="">全部时间</option>
+            <option value="today">今天</option>
+            <option value="7d">近7天</option>
+            <option value="30d">近30天</option>
+            <option value="custom">自定义</option>
+          </select>
+          <template v-if="filterTimeRange === 'custom'">
+            <input
+              v-model="filterStartDate"
+              type="date"
+              class="filter-input date-input"
+              placeholder="开始日期"
+            />
+            <input
+              v-model="filterEndDate"
+              type="date"
+              class="filter-input date-input"
+              placeholder="结束日期"
+            />
+          </template>
+          <input
+            v-model="filterUsername"
+            class="filter-input"
+            placeholder="用户名"
+            @keyup.enter="applyFilters"
+          />
+          <input
+            v-model="filterProjectName"
+            class="filter-input"
+            placeholder="项目名称"
+            @keyup.enter="applyFilters"
+          />
+          <input
+            v-model="filterProjectId"
+            class="filter-input"
+            placeholder="项目 ID"
+            @keyup.enter="applyFilters"
+          />
+          <button class="filter-btn" @click="applyFilters">搜索</button>
+          <button class="filter-btn filter-btn-secondary" @click="resetFilters">重置</button>
+        </div>
+
+        <div v-if="projectListLoading" class="dashboard-loading">加载中...</div>
+        <template v-else>
+          <div v-if="projectList.length === 0" class="empty-state">
+            <div class="empty-icon">📋</div>
+            <div class="empty-text">暂无项目</div>
+          </div>
+          <template v-else>
+            <table class="project-table">
+              <thead>
+                <tr>
+                  <th>用户</th>
+                  <th>项目名称</th>
+                  <th>项目 ID</th>
+                  <th class="num-col">反馈总数</th>
+                  <th class="num-col">已审核</th>
+                  <th class="num-col">待审核</th>
+                  <th>创建时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="proj in projectList"
+                  :key="proj.project_id"
+                  class="project-row"
+                  @click="loadDashboard(proj.project_id)"
+                >
+                  <td class="username-cell">{{ proj.username }}</td>
+                  <td class="project-name-cell">{{ proj.project_name }}</td>
+                  <td class="id-cell">{{ proj.project_id.substring(0, 8) }}…</td>
+                  <td class="num-col">{{ proj.total_feedback }}</td>
+                  <td class="num-col">{{ proj.reviewed_feedback }}</td>
+                  <td class="num-col">
+                    <span v-if="proj.unreviewed_feedback > 0" class="pending-badge">
+                      {{ proj.unreviewed_feedback }}
+                    </span>
+                    <span v-else class="num-zero">0</span>
+                  </td>
+                  <td class="time-cell">{{ formatDate(proj.created_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- Pagination -->
+            <div v-if="pagination.total > 0" class="pagination-bar">
+              <span class="pagination-info">
+                共 {{ pagination.total }} 条 &nbsp; 第 {{ currentPage }} / {{ totalPages }} 页
+              </span>
+              <div class="pagination-controls">
+                <button
+                  class="page-btn"
+                  :disabled="currentPage <= 1"
+                  @click="goToPage(currentPage - 1)"
+                >上一页</button>
+                <template v-for="p in visiblePages" :key="p">
+                  <span v-if="p === -1" class="page-ellipsis">…</span>
+                  <button
+                    v-else
+                    :class="['page-btn', { active: p === currentPage }]"
+                    @click="goToPage(p)"
+                  >{{ p }}</button>
+                </template>
+                <button
+                  class="page-btn"
+                  :disabled="currentPage >= totalPages"
+                  @click="goToPage(currentPage + 1)"
+                >下一页</button>
+              </div>
+            </div>
+          </template>
+        </template>
       </div>
+    </template>
+
+    <!-- No project selected state (non-interior fallback) -->
+    <div v-if="!projectId && !loading && !isInteriorUser" class="dashboard-empty">
+      <p>请联系管理员查看经验仪表盘数据</p>
+    </div>
+
+    <!-- Back to project list -->
+    <div v-if="projectId && !loading" class="back-nav">
+      <a class="back-link" @click="clearProject">← 返回项目列表</a>
     </div>
 
     <!-- Loading -->
@@ -95,77 +359,165 @@ function formatDate(dateStr: string): string {
 
     <!-- Dashboard content -->
     <template v-if="summary && !loading">
-      <!-- KPI cards -->
-      <div class="kpi-grid">
-        <div class="kpi-card">
-          <div class="kpi-value">{{ summary.by_type.confirm ?? 0 }}</div>
-          <div class="kpi-label">确认反馈</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-value kpi-red">{{ summary.by_type.contradict ?? 0 }}</div>
-          <div class="kpi-label">反对反馈</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-value kpi-amber">{{ summary.by_type.refine ?? 0 }}</div>
-          <div class="kpi-label">修正反馈</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-value kpi-blue">{{ agreementRate }}</div>
-          <div class="kpi-label">用户同意率</div>
-        </div>
+      <!-- Tab navigation -->
+      <div class="tab-nav">
+        <button
+          :class="['tab-btn', { active: activeTab === 'overview' }]"
+          @click="switchTab('overview')"
+        >
+          概览
+        </button>
+        <button
+          v-if="isInteriorUser"
+          :class="['tab-btn', { active: activeTab === 'pending' }]"
+          @click="switchTab('pending')"
+        >
+          待审核
+          <span v-if="pendingCount > 0" class="tab-badge">{{ pendingCount }}</span>
+        </button>
+        <button
+          v-if="isInteriorUser"
+          :class="['tab-btn', { active: activeTab === 'all' }]"
+          @click="switchTab('all')"
+        >
+          全部反馈
+        </button>
       </div>
 
-      <!-- Feedback distribution + top contradicted -->
-      <div class="charts-row">
-        <div class="chart-card">
-          <h3 class="chart-title">反馈分布</h3>
-          <div class="distribution-bars">
-            <div v-for="(count, type) in summary.by_type" :key="type" class="dist-item">
-              <span class="dist-label">{{ typeLabels[type] || type }}</span>
-              <div class="dist-bar-bg">
-                <div
-                  :class="['dist-bar-fill', type]"
-                  :style="{ width: `${totalFeedback > 0 ? (count / totalFeedback) * 100 : 0}%` }"
-                ></div>
+      <!-- Overview tab -->
+      <template v-if="activeTab === 'overview'">
+        <!-- KPI cards -->
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-value">{{ summary.by_type.confirm ?? 0 }}</div>
+            <div class="kpi-label">确认反馈</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-value kpi-red">{{ summary.by_type.contradict ?? 0 }}</div>
+            <div class="kpi-label">反对反馈</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-value kpi-amber">{{ summary.by_type.refine ?? 0 }}</div>
+            <div class="kpi-label">修正反馈</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-value kpi-blue">{{ agreementRate }}</div>
+            <div class="kpi-label">用户同意率</div>
+          </div>
+        </div>
+
+        <!-- Feedback distribution + top contradicted -->
+        <div class="charts-row">
+          <div class="chart-card">
+            <h3 class="chart-title">反馈分布</h3>
+            <div class="distribution-bars">
+              <div v-for="(count, type) in summary.by_type" :key="type" class="dist-item">
+                <span class="dist-label">{{ typeLabels[type] || type }}</span>
+                <div class="dist-bar-bg">
+                  <div
+                    :class="['dist-bar-fill', type]"
+                    :style="{ width: `${totalFeedback > 0 ? (count / totalFeedback) * 100 : 0}%` }"
+                  ></div>
+                </div>
+                <span class="dist-count">{{ count }}</span>
               </div>
-              <span class="dist-count">{{ count }}</span>
+            </div>
+          </div>
+
+          <div class="chart-card">
+            <h3 class="chart-title">反对最多的规则文档</h3>
+            <div v-if="topContradicted.length === 0" class="empty-hint">暂无反对记录</div>
+            <div v-for="item in topContradicted" :key="item.rule_doc_name" class="contradict-item">
+              <span class="contradict-name">{{ item.rule_doc_name?.replace('.md', '') }}</span>
+              <span class="contradict-count">{{ item.count }} 次</span>
             </div>
           </div>
         </div>
 
+        <!-- Recent feedback -->
         <div class="chart-card">
-          <h3 class="chart-title">反对最多的规则文档</h3>
-          <div v-if="topContradicted.length === 0" class="empty-hint">暂无反对记录</div>
-          <div v-for="item in topContradicted" :key="item.rule_doc_name" class="contradict-item">
-            <span class="contradict-name">{{ item.rule_doc_name?.replace('.md', '') }}</span>
-            <span class="contradict-count">{{ item.count }} 次</span>
+          <h3 class="chart-title">最近反馈</h3>
+          <div v-if="recentFeedback.length === 0" class="empty-hint">暂无反馈记录</div>
+          <div class="feedback-table" v-else>
+            <div class="fb-table-header">
+              <span>时间</span>
+              <span>类型</span>
+              <span>状态</span>
+              <span>说明</span>
+            </div>
+            <div v-for="fb in recentFeedback" :key="fb.id" class="fb-table-row">
+              <span class="fb-time">{{ formatDate(fb.created_at) }}</span>
+              <span :class="['fb-type-badge', fb.feedback_type]">
+                {{ typeLabels[fb.feedback_type] || fb.feedback_type }}
+              </span>
+              <span :class="['fb-status', fb.status]">
+                {{ statusLabels[fb.status] || fb.status }}
+              </span>
+              <span class="fb-comment">{{ fb.comment || fb.contradict_reason || '-' }}</span>
+            </div>
           </div>
         </div>
-      </div>
+      </template>
 
-      <!-- Recent feedback -->
-      <div class="chart-card">
-        <h3 class="chart-title">最近反馈</h3>
-        <div v-if="recentFeedback.length === 0" class="empty-hint">暂无反馈记录</div>
-        <div class="feedback-table" v-else>
-          <div class="fb-table-header">
-            <span>时间</span>
-            <span>类型</span>
-            <span>状态</span>
-            <span>说明</span>
+      <!-- Pending review tab -->
+      <template v-if="activeTab === 'pending' && isInteriorUser">
+        <div class="section-card">
+          <div class="section-header">
+            <h3 class="section-title">待审核反馈</h3>
+            <p class="section-desc">审核用户提交的反馈，接受的反馈将进入经验提取工作流</p>
           </div>
-          <div v-for="fb in recentFeedback" :key="fb.id" class="fb-table-row">
-            <span class="fb-time">{{ formatDate(fb.created_at) }}</span>
-            <span :class="['fb-type-badge', fb.feedback_type]">
-              {{ typeLabels[fb.feedback_type] || fb.feedback_type }}
-            </span>
-            <span :class="['fb-status', fb.status]">
-              {{ statusLabels[fb.status] || fb.status }}
-            </span>
-            <span class="fb-comment">{{ fb.comment || fb.contradict_reason || '-' }}</span>
+
+          <div v-if="pendingFeedback.length === 0" class="empty-state">
+            <div class="empty-icon">✓</div>
+            <div class="empty-text">所有反馈已审核完毕</div>
+          </div>
+
+          <div v-else class="review-list">
+            <FeedbackReviewCard
+              v-for="fb in pendingFeedback"
+              :key="fb.id"
+              :feedback="fb"
+              :project-id="projectId"
+              @reviewed="handleReviewed"
+            />
           </div>
         </div>
-      </div>
+      </template>
+
+      <!-- All feedback tab -->
+      <template v-if="activeTab === 'all' && isInteriorUser">
+        <div class="section-card">
+          <div class="section-header">
+            <h3 class="section-title">全部反馈</h3>
+            <div class="filter-bar">
+              <select v-model="filterStatus" class="filter-select" @change="loadAllFeedback()">
+                <option value="">全部状态</option>
+                <option value="pending">待审核</option>
+                <option value="accepted">已接受</option>
+                <option value="rejected">已拒绝</option>
+              </select>
+              <select v-model="filterType" class="filter-select" @change="loadAllFeedback()">
+                <option value="">全部类型</option>
+                <option value="confirm">同意</option>
+                <option value="contradict">反对</option>
+                <option value="refine">修正</option>
+              </select>
+            </div>
+          </div>
+
+          <div v-if="allFeedback.length === 0" class="empty-hint">暂无反馈记录</div>
+
+          <div v-else class="review-list">
+            <FeedbackReviewCard
+              v-for="fb in allFeedback"
+              :key="fb.id"
+              :feedback="fb"
+              :project-id="projectId"
+              @reviewed="handleReviewed"
+            />
+          </div>
+        </div>
+      </template>
     </template>
   </div>
 </template>
@@ -192,6 +544,53 @@ function formatDate(dateStr: string): string {
   color: var(--muted);
   font-size: 13px;
   margin: 0;
+}
+
+/* Tab navigation */
+.tab-nav {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0;
+}
+
+.tab-btn {
+  padding: 8px 18px;
+  background: transparent;
+  color: var(--sub);
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn.active {
+  color: var(--blue);
+  border-bottom-color: var(--blue);
+}
+
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: var(--red);
+  color: var(--white);
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 9px;
 }
 
 /* KPI cards */
@@ -391,6 +790,76 @@ function formatDate(dateStr: string): string {
   white-space: nowrap;
 }
 
+/* Section card for review tabs */
+.section-card {
+  background: var(--bg1);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 20px;
+}
+
+.section-header {
+  margin-bottom: 16px;
+}
+
+.section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 4px;
+}
+
+.section-desc {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* Filter bar */
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.filter-select {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.filter-select:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+/* Review list */
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Empty state */
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.empty-icon {
+  font-size: 36px;
+  color: var(--green);
+  margin-bottom: 8px;
+}
+
+.empty-text {
+  font-size: 13px;
+  color: var(--muted);
+}
+
 /* Empty / loading states */
 .empty-hint {
   color: var(--muted);
@@ -418,36 +887,238 @@ function formatDate(dateStr: string): string {
   color: var(--muted);
 }
 
-.project-input {
-  display: flex;
-  gap: 8px;
-  justify-content: center;
-  margin-top: 12px;
+/* Project list */
+.project-list-card {
+  background: var(--bg1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg, var(--r));
+  overflow: hidden;
 }
 
-.input-field {
-  padding: 6px 12px;
+/* Filter bar */
+.project-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+}
+
+.filter-input {
+  padding: 5px 10px;
   border: 1px solid var(--line);
   border-radius: var(--r);
-  background: var(--bg2);
+  font-size: 13px;
+  background: var(--bg1);
   color: var(--text);
-  font-size: 13px;
-  min-width: 240px;
+  width: 130px;
+  box-sizing: border-box;
 }
 
-.load-btn {
-  padding: 6px 16px;
-  background: var(--blue);
-  color: var(--white);
-  border: none;
+.filter-input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.filter-input::placeholder {
+  color: var(--muted);
+}
+
+.date-input {
+  width: 140px;
+}
+
+.filter-btn {
+  padding: 5px 14px;
+  border: 1px solid var(--blue);
   border-radius: var(--r);
-  cursor: pointer;
-  font-size: 13px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 12px;
   font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
 }
 
-.load-btn:hover {
-  filter: brightness(1.1);
+.filter-btn:hover {
+  opacity: 0.85;
+}
+
+.filter-btn-secondary {
+  background: transparent;
+  color: var(--sub);
+  border-color: var(--line);
+}
+
+.filter-btn-secondary:hover {
+  border-color: var(--sub);
+}
+
+.project-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.project-table thead {
+  background: var(--bg2);
+}
+
+.project-table th {
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border-bottom: 1px solid var(--line);
+}
+
+.project-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+}
+
+.num-col {
+  text-align: right;
+  width: 72px;
+}
+
+.project-row {
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.project-row:hover {
+  background: var(--bg2);
+}
+
+.project-row:last-child td {
+  border-bottom: none;
+}
+
+.username-cell {
+  color: var(--sub);
+  font-weight: 500;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-name-cell {
+  font-weight: 500;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.id-cell {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--muted);
+  width: 90px;
+}
+
+.pending-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  background: var(--amber-bg);
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 10px;
+}
+
+.num-zero {
+  color: var(--muted);
+}
+
+.time-cell {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Pagination */
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--sub);
+}
+
+.pagination-info {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.page-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg1);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.12s;
+  min-width: 32px;
+  text-align: center;
+}
+
+.page-btn:hover:not(:disabled) {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.page-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.page-btn.active {
+  background: var(--blue);
+  color: #fff;
+  border-color: var(--blue);
+}
+
+.page-ellipsis {
+  padding: 0 4px;
+  color: var(--muted);
+}
+
+/* Back navigation */
+.back-nav {
+  margin-bottom: 12px;
+}
+
+.back-link {
+  color: var(--blue);
+  font-size: 13px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.back-link:hover {
+  opacity: 0.8;
 }
 
 @media (max-width: 767px) {
@@ -462,6 +1133,47 @@ function formatDate(dateStr: string): string {
   .fb-table-header,
   .fb-table-row {
     grid-template-columns: 80px 50px 50px 1fr;
+  }
+
+  .project-filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filter-input {
+    width: 100%;
+  }
+
+  .date-input {
+    width: 100%;
+  }
+
+  .project-table th,
+  .project-table td {
+    padding: 8px 6px;
+    font-size: 12px;
+  }
+
+  .username-cell {
+    max-width: 60px;
+  }
+
+  .project-name-cell {
+    max-width: 120px;
+  }
+
+  .id-cell {
+    display: none;
+  }
+
+  .time-cell {
+    display: none;
+  }
+
+  .pagination-bar {
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
   }
 }
 </style>

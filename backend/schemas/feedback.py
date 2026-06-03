@@ -138,3 +138,25 @@ class DashboardResponse(BaseModel):
     top_contradicted_rules: list[dict]
     recent_feedback: list[FeedbackResponse]
     skills: list[SkillSummary]
+
+
+class ProjectFeedbackSummary(BaseModel):
+    """Single project row with aggregated feedback counts."""
+
+    project_id: str
+    project_name: str
+    user_id: str
+    username: str
+    total_feedback: int
+    reviewed_feedback: int
+    unreviewed_feedback: int
+    created_at: datetime
+
+
+class PaginatedProjectSummary(BaseModel):
+    """Paginated response for project feedback summary list."""
+
+    items: list[ProjectFeedbackSummary]
+    total: int
+    limit: int
+    offset: int

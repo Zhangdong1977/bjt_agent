@@ -795,6 +795,12 @@ async def _run_agent_review(
 
             logger.info(f"[_run_agent_review] Completed: {non_compliant_count} non-compliant findings")
 
+            try:
+                from backend.tasks.experience_tasks import extract_experience
+                extract_experience.delay(str(task_id))
+            except Exception as e:
+                logger.warning(f"Failed to dispatch experience extraction: {e}")
+
             return non_compliant_count
 
         else:

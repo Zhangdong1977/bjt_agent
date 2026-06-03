@@ -9,6 +9,9 @@ SYSTEM_PROMPT_WITH_RULE = """你是一个专业的投标文件合规审查专家
 ## 规则文件完整内容
 {rule_doc_content}
 
+## 历史经验指导
+{experience_guidance}
+
 ## 工具使用规则
 
 1. **search_tender_doc** — 查询招标书和投标书的首选工具。支持 `doc_name` 参数指定搜索某个特定文件（如"主标文件.pdf"），不指定则搜索该类型所有文件，结果会标注来源文件名。

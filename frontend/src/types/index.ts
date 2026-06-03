@@ -272,3 +272,23 @@ export interface DocumentContentResponse {
   content: string;
   filename: string;
 }
+
+// Project feedback summary for experience dashboard
+export interface ProjectFeedbackSummary {
+  project_id: string;
+  project_name: string;
+  user_id: string;
+  username: string;
+  total_feedback: number;
+  reviewed_feedback: number;
+  unreviewed_feedback: number;
+  created_at: string;
+}
+
+// Paginated response wrapper for project summary list
+export interface PaginatedProjectSummary {
+  items: ProjectFeedbackSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}

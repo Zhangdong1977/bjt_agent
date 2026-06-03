@@ -82,31 +82,45 @@ async def _process_feedback_async(feedback_id: str) -> dict:
 
 
 async def _resolve_skill_linkage(db, feedback) -> str | None:
-    """Find the most relevant experience_skill for this feedback.
+    from backend.experience.models import ExperienceSkill
 
-    Currently uses rule_doc_name matching. When experience_skills table
-    is implemented (Phase 2 of the self-learning plan), this will use
-    embedding-based retrieval via the ExperienceRetriever.
-    """
-    # NOTE: experience_skills table does not exist yet (Phase 2).
-    # For now, return None — feedback is stored and linked later.
-    # When skills are available, query by group_id = rule_doc_stem.
-    return None
+    group_id = feedback.rule_doc_name.rsplit(".", 1)[0] if feedback.rule_doc_name else None
+    if not group_id:
+        return None
+
+    result = await db.execute(
+        select(ExperienceSkill).where(
+            ExperienceSkill.group_id == group_id,
+            ExperienceSkill.retired_at.is_(None),
+        ).order_by(
+            ExperienceSkill.confidence.desc()
+        ).limit(1)
+    )
+    skill = result.scalar_one_or_none()
+    return str(skill.id) if skill else None
 
 
 async def _apply_confidence_delta(db, skill_id: str, delta: float) -> None:
-    """Apply confidence change to a skill.
+    from backend.experience.models import ExperienceSkill
+    from backend.config import get_settings
 
-    The actual implementation will update the experience_skills table
-    once it exists (Phase 2). This is a placeholder that logs the action.
-    """
-    logger.info(
-        f"Would apply confidence delta {delta:+.2f} to skill {skill_id}"
+    result = await db.execute(
+        select(ExperienceSkill).where(ExperienceSkill.id == skill_id)
     )
-    # TODO: When experience_skills exists:
-    # skill = await db.get(ExperienceSkill, skill_id)
-    # skill.confidence = max(0.0, min(0.95, skill.confidence + delta))
-    # skill.updated_at = datetime.utcnow()
+    skill = result.scalar_one_or_none()
+    if not skill:
+        return
+
+    old_confidence = skill.confidence
+    skill.confidence = max(0.0, min(0.95, skill.confidence + delta))
+    skill.updated_at = datetime.utcnow()
+
+    if skill.confidence < get_settings().experience_confidence_retire:
+        skill.retired_at = datetime.utcnow()
+        logger.info(
+            f"Skill {skill_id} retired: confidence {old_confidence:.2f} "
+            f"→ {skill.confidence:.2f} (below retire threshold)"
+        )
 
 
 async def _trigger_downstream(db, skill_id: str, feedback) -> str:
@@ -118,8 +132,6 @@ async def _trigger_downstream(db, skill_id: str, feedback) -> str:
         return "confidence_bumped"
 
     if feedback.feedback_type == "contradict":
-        # Check retirement threshold
-        # TODO: Check if confidence < 0.1 after delta application
         return "confidence_reduced"
 
     if feedback.feedback_type == "refine":
@@ -192,9 +204,11 @@ def rewrite_skill_from_feedback(self, feedback_id: str) -> dict:
 
 
 async def _rewrite_skill_async(feedback_id: str) -> dict:
-    """Async implementation of skill rewriting."""
     from backend.models.base import async_session_factory
-    from backend.experience.models import ExperienceFeedback
+    from backend.experience.models import ExperienceFeedback, ExperienceSkill
+    from backend.experience.maturity_scorer import MaturityScorer
+    from backend.services.llm_factory import create_llm_client
+    from mini_agent.schema import Message
 
     async with async_session_factory() as db:
         result = await db.execute(
@@ -214,20 +228,69 @@ async def _rewrite_skill_async(feedback_id: str) -> dict:
             )
             return {"status": "skipped", "reason": "no_skill"}
 
-        # TODO (Phase 2):
-        # 1. Load the skill content from experience_skills
-        # 2. Call SkillExtractor with original content + corrections
-        # 3. Update skill content and trigger MaturityScorer re-evaluation
-        logger.info(
-            f"Skill rewrite for feedback {feedback_id} -> skill {feedback.affected_skill_id} "
-            f"(corrections: severity={feedback.corrected_severity}, "
-            f"suggestion={'yes' if feedback.corrected_suggestion else 'no'}, "
-            f"compliant={feedback.corrected_is_compliant})"
+        skill_result = await db.execute(
+            select(ExperienceSkill).where(
+                ExperienceSkill.id == feedback.affected_skill_id
+            )
         )
+        skill = skill_result.scalar_one_or_none()
+        if not skill:
+            return {"status": "skipped", "reason": "skill_not_found"}
 
-        return {
-            "status": "placeholder",
-            "feedback_id": feedback_id,
-            "skill_id": feedback.affected_skill_id,
-            "message": "Will be fully implemented in Phase 2 with SkillExtractor",
-        }
+        old_content = skill.content
+
+        rewrite_prompt = f"""请根据用户修正意见重写以下审查经验技能的内容。
+
+原始技能内容：
+{skill.content}
+
+用户修正：
+- 修正后严重度：{feedback.corrected_severity or '未修改'}
+- 修正后建议：{feedback.corrected_suggestion or '未修改'}
+- 修正后合规判定：{feedback.corrected_is_compliant or '未修改'}
+- 用户备注：{feedback.comment or '无'}
+
+要求：
+1. 保留原有的 ## Steps / ## Pitfalls 结构
+2. 将用户修正融入相应步骤
+3. 如果修正涉及新的判断逻辑，添加为新的决策分支
+4. 仅输出重写后的完整内容，不要输出其他内容"""
+
+        try:
+            llm_client = create_llm_client()
+            messages = [
+                Message(role="system", content="你是审查经验技能重写器。"),
+                Message(role="user", content=rewrite_prompt),
+            ]
+            response = await llm_client.generate(messages=messages)
+            new_content = response.content.strip()
+
+            if new_content:
+                skill.content = new_content
+                skill.updated_at = datetime.utcnow()
+
+                scorer = MaturityScorer()
+                if scorer.should_rescore(
+                    old_content=old_content,
+                    new_content=new_content,
+                    is_promotion=False,
+                    current_maturity=skill.maturity_score,
+                    confidence_delta=-0.1,
+                ):
+                    score_result = await scorer.score(skill)
+                    skill.maturity_score = score_result["maturity_score"]
+                    skill.maturity_detail = score_result["maturity_detail"]
+
+                await db.commit()
+
+                return {
+                    "status": "success",
+                    "feedback_id": feedback_id,
+                    "skill_id": str(skill.id),
+                    "content_length": len(new_content),
+                }
+        except Exception as e:
+            logger.exception(f"Skill rewrite failed for feedback {feedback_id}: {e}")
+            return {"status": "failed", "error": str(e)}
+
+        return {"status": "skipped", "reason": "empty_content"}

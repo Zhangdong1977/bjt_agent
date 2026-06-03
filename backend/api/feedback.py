@@ -161,17 +161,16 @@ async def submit_feedback(
         rule_doc_name=finding.rule_doc_name,
     )
     db.add(feedback)
+    await db.flush()
+    await db.refresh(feedback)
 
     # If auto-accepted, trigger async processing
     if new_status == "accepted":
         try:
             from backend.tasks.feedback_tasks import process_feedback
-            process_feedback.delay(feedback.id)
+            process_feedback.delay(str(feedback.id))
         except Exception as e:
             logger.warning(f"Failed to dispatch feedback processing: {e}")
-
-    await db.flush()
-    await db.refresh(feedback)
 
     return FeedbackResponse.model_validate(feedback)
 
@@ -393,6 +392,66 @@ async def get_feedback_history(
     return [FeedbackResponse.model_validate(f) for f in feedbacks]
 
 
+@router.get("/feedback/pending", response_model=list[FeedbackResponse])
+async def get_pending_feedback(
+    project_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[FeedbackResponse]:
+    """Get pending feedback for a project (interior users only).
+
+    Returns feedback records with status='pending' that need admin review.
+    Interior users can review and accept/reject these feedbacks.
+    """
+    await _verify_project(project_id, current_user.id, db)
+
+    result = await db.execute(
+        select(ExperienceFeedback)
+        .where(
+            ExperienceFeedback.project_id == project_id,
+            ExperienceFeedback.status == "pending",
+        )
+        .order_by(ExperienceFeedback.created_at.asc())
+        .limit(limit)
+        .offset(offset)
+    )
+    feedbacks = result.scalars().all()
+    return [FeedbackResponse.model_validate(f) for f in feedbacks]
+
+
+@router.get("/feedback/all", response_model=list[FeedbackResponse])
+async def get_all_feedback(
+    project_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+    status: str | None = None,
+    feedback_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[FeedbackResponse]:
+    """Get all feedback for a project (interior users only).
+
+    Supports filtering by status and feedback_type.
+    """
+    await _verify_project(project_id, current_user.id, db)
+
+    query = select(ExperienceFeedback).where(
+        ExperienceFeedback.project_id == project_id,
+        ExperienceFeedback.status != "superseded",
+    )
+    if status:
+        query = query.where(ExperienceFeedback.status == status)
+    if feedback_type:
+        query = query.where(ExperienceFeedback.feedback_type == feedback_type)
+    query = query.order_by(ExperienceFeedback.created_at.desc()).offset(offset).limit(limit)
+
+    result = await db.execute(query)
+    feedbacks = result.scalars().all()
+    return [FeedbackResponse.model_validate(f) for f in feedbacks]
+
+
 # ---------------------------------------------------------------------------
 # Admin endpoints (internal users only)
 # ---------------------------------------------------------------------------
@@ -438,7 +497,7 @@ async def review_feedback(
 
         try:
             from backend.tasks.feedback_tasks import process_feedback
-            process_feedback.delay(feedback.id)
+            process_feedback.delay(str(feedback.id))
         except Exception as e:
             logger.warning(f"Failed to dispatch feedback processing: {e}")
 
