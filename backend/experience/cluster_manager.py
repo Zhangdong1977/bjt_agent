@@ -139,9 +139,7 @@ class ClusterManager:
             candidates_text += f"候选簇 {i} (ID: {c['cluster_id']}, 含 {c.get('case_count', 0)} 个案例):\n{intents}\n\n"
 
         prompt = CLUSTER_ASSIGN_PROMPT.format(
-            new_case_intent=case.task_intent,
-            new_case_approach=getattr(case, "approach", "")[:500],
-            group_id=case.group_id,
+            case_summary=f"意图: {case.task_intent}\n方法: {getattr(case, 'approach', '')[:500]}",
             candidate_clusters=candidates_text,
         )
 

@@ -6,16 +6,35 @@ Handles:
 - Skill content rewriting triggered by refine feedback
 """
 
+import asyncio
 import logging
 from datetime import datetime
 
-from celery import shared_task
-from sqlalchemy import select, and_
+from backend.celery_app import celery_app
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, max_retries=2, default_retry_delay=30)
+async def _run_with_session(coro_factory):
+    """Run an async function with a fresh engine/session, disposing afterwards.
+
+    Celery prefork workers call asyncio.run() which creates a new event loop
+    per invocation.  The module-level async_session_factory from base.py has a
+    connection pool bound to the *original* loop — reusing it causes
+    "Event loop is closed" errors.  Instead we create a task-scoped engine
+    and dispose it when done.
+    """
+    from backend.tasks.review_tasks import create_session_factory
+
+    session_factory, engine = create_session_factory()
+    try:
+        return await coro_factory(session_factory)
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
 def process_feedback(self, feedback_id: str) -> dict:
     """Process a single accepted feedback record.
 
@@ -26,16 +45,16 @@ def process_feedback(self, feedback_id: str) -> dict:
 
     Returns a summary dict for audit purposes.
     """
-    import asyncio
-    return asyncio.run(_process_feedback_async(feedback_id))
+    return asyncio.run(_run_with_session(
+        lambda sf: _process_feedback_async(sf, feedback_id)
+    ))
 
 
-async def _process_feedback_async(feedback_id: str) -> dict:
+async def _process_feedback_async(session_factory, feedback_id: str) -> dict:
     """Async implementation of feedback processing."""
-    from backend.models.base import async_session_factory
     from backend.experience.models import ExperienceFeedback
 
-    async with async_session_factory() as db:
+    async with session_factory() as db:
         result = await db.execute(
             select(ExperienceFeedback).where(
                 ExperienceFeedback.id == feedback_id,
@@ -142,26 +161,26 @@ async def _trigger_downstream(db, skill_id: str, feedback) -> str:
     return "none"
 
 
-@shared_task(bind=True, max_retries=1, default_retry_delay=60)
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=60)
 def process_batch_feedback(self, batch_id: str) -> dict:
     """Process all feedback records in a batch.
 
     Iterates through all feedback records with the given batch_id
     and runs the processing pipeline for each.
     """
-    import asyncio
-    return asyncio.run(_process_batch_async(batch_id))
+    return asyncio.run(_run_with_session(
+        lambda sf: _process_batch_async(sf, batch_id)
+    ))
 
 
-async def _process_batch_async(batch_id: str) -> dict:
+async def _process_batch_async(session_factory, batch_id: str) -> dict:
     """Async implementation of batch feedback processing."""
-    from backend.models.base import async_session_factory
     from backend.experience.models import ExperienceFeedback
 
     processed = 0
     skipped = 0
 
-    async with async_session_factory() as db:
+    async with session_factory() as db:
         result = await db.execute(
             select(ExperienceFeedback).where(
                 ExperienceFeedback.batch_id == batch_id,
@@ -189,28 +208,25 @@ async def _process_batch_async(batch_id: str) -> dict:
     return {"batch_id": batch_id, "processed": processed, "skipped": skipped}
 
 
-@shared_task(bind=True, max_retries=1, default_retry_delay=30)
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=30)
 def rewrite_skill_from_feedback(self, feedback_id: str) -> dict:
     """Rewrite a skill's content based on user refine feedback.
 
     Uses the LLM to incorporate the user's correction into the skill SOP.
     Triggered when a refine feedback is accepted.
-
-    NOTE: This task will be fully implemented in Phase 2 when
-    experience_skills table and SkillExtractor are available.
     """
-    import asyncio
-    return asyncio.run(_rewrite_skill_async(feedback_id))
+    return asyncio.run(_run_with_session(
+        lambda sf: _rewrite_skill_async(sf, feedback_id)
+    ))
 
 
-async def _rewrite_skill_async(feedback_id: str) -> dict:
-    from backend.models.base import async_session_factory
+async def _rewrite_skill_async(session_factory, feedback_id: str) -> dict:
     from backend.experience.models import ExperienceFeedback, ExperienceSkill
     from backend.experience.maturity_scorer import MaturityScorer
     from backend.services.llm_factory import create_llm_client
     from mini_agent.schema import Message
 
-    async with async_session_factory() as db:
+    async with session_factory() as db:
         result = await db.execute(
             select(ExperienceFeedback).where(
                 ExperienceFeedback.id == feedback_id,

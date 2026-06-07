@@ -11,6 +11,7 @@ const summary = ref<FeedbackSummary | null>(null)
 const recentFeedback = ref<FeedbackResponse[]>([])
 const pendingFeedback = ref<FeedbackResponse[]>([])
 const allFeedback = ref<FeedbackResponse[]>([])
+const batchReviewing = ref(false)
 const error = ref<string | null>(null)
 const activeTab = ref<'overview' | 'pending' | 'all'>('overview')
 const filterStatus = ref('')
@@ -193,6 +194,20 @@ async function handleReviewed(feedback: FeedbackResponse) {
     } catch {
       // Refresh silently
     }
+  }
+}
+
+async function handleBatchReview(action: 'accept' | 'reject') {
+  if (!projectId.value || batchReviewing.value) return
+  batchReviewing.value = true
+  try {
+    await feedbackApi.batchReviewFeedback(projectId.value, action)
+    pendingFeedback.value = []
+    summary.value = await feedbackApi.getSummary(projectId.value)
+  } catch {
+    // Error handled silently
+  } finally {
+    batchReviewing.value = false
   }
 }
 
@@ -472,15 +487,37 @@ function formatDate(dateStr: string): string {
             <div class="empty-text">所有反馈已审核完毕</div>
           </div>
 
-          <div v-else class="review-list">
-            <FeedbackReviewCard
-              v-for="fb in pendingFeedback"
-              :key="fb.id"
-              :feedback="fb"
-              :project-id="projectId"
-              @reviewed="handleReviewed"
-            />
-          </div>
+          <template v-else>
+            <div class="batch-action-bar">
+              <span class="batch-info">共 {{ pendingFeedback.length }} 条待审核</span>
+              <div class="batch-actions">
+                <button
+                  class="batch-btn batch-accept"
+                  :disabled="batchReviewing"
+                  @click="handleBatchReview('accept')"
+                >
+                  {{ batchReviewing ? '处理中...' : '全部接受' }}
+                </button>
+                <button
+                  class="batch-btn batch-reject"
+                  :disabled="batchReviewing"
+                  @click="handleBatchReview('reject')"
+                >
+                  全部拒绝
+                </button>
+              </div>
+            </div>
+
+            <div class="review-list">
+              <FeedbackReviewCard
+                v-for="fb in pendingFeedback"
+                :key="fb.id"
+                :feedback="fb"
+                :project-id="projectId"
+                @reviewed="handleReviewed"
+              />
+            </div>
+          </template>
         </div>
       </template>
 
@@ -524,18 +561,18 @@ function formatDate(dateStr: string): string {
 
 <style scoped>
 .experience-dashboard {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 24px 20px;
+  width: 100%;
+  padding: 24px 32px;
+  box-sizing: border-box;
 }
 
 .dashboard-header {
-  margin-bottom: 24px;
+  margin-bottom: 28px;
 }
 
 .dashboard-header h2 {
   color: var(--text);
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 600;
   margin: 0 0 4px;
 }
@@ -597,20 +634,20 @@ function formatDate(dateStr: string): string {
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  margin-bottom: 20px;
+  gap: 16px;
+  margin-bottom: 24px;
 }
 
 .kpi-card {
   background: var(--bg1);
   border: 1px solid var(--line);
   border-radius: var(--r);
-  padding: 16px;
+  padding: 20px 24px;
   text-align: center;
 }
 
 .kpi-value {
-  font-size: 28px;
+  font-size: 32px;
   font-weight: 700;
   color: var(--text);
   line-height: 1;
@@ -630,15 +667,15 @@ function formatDate(dateStr: string): string {
 .charts-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-bottom: 20px;
+  gap: 16px;
+  margin-bottom: 24px;
 }
 
 .chart-card {
   background: var(--bg1);
   border: 1px solid var(--line);
   border-radius: var(--r);
-  padding: 16px;
+  padding: 20px;
 }
 
 .chart-title {
@@ -723,11 +760,11 @@ function formatDate(dateStr: string): string {
 
 .fb-table-header {
   display: grid;
-  grid-template-columns: 100px 60px 60px 1fr;
-  gap: 8px;
-  padding: 6px 0;
+  grid-template-columns: 120px 72px 72px 1fr;
+  gap: 12px;
+  padding: 8px 0;
   border-bottom: 1px solid var(--line);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--muted);
   text-transform: uppercase;
@@ -735,11 +772,11 @@ function formatDate(dateStr: string): string {
 
 .fb-table-row {
   display: grid;
-  grid-template-columns: 100px 60px 60px 1fr;
-  gap: 8px;
-  padding: 6px 0;
+  grid-template-columns: 120px 72px 72px 1fr;
+  gap: 12px;
+  padding: 8px 0;
   border-bottom: 1px solid var(--line);
-  font-size: 12px;
+  font-size: 13px;
   align-items: center;
 }
 
@@ -795,7 +832,7 @@ function formatDate(dateStr: string): string {
   background: var(--bg1);
   border: 1px solid var(--line);
   border-radius: var(--r);
-  padding: 20px;
+  padding: 24px;
 }
 
 .section-header {
@@ -841,6 +878,63 @@ function formatDate(dateStr: string): string {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Batch action bar */
+.batch-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  margin-bottom: 14px;
+}
+
+.batch-info {
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.batch-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.batch-btn {
+  padding: 5px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.batch-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.batch-accept {
+  background: var(--green);
+  color: #fff;
+  border-color: var(--green);
+}
+
+.batch-accept:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.batch-reject {
+  background: transparent;
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.batch-reject:hover:not(:disabled) {
+  background: var(--red-bg);
 }
 
 /* Empty state */
@@ -899,21 +993,21 @@ function formatDate(dateStr: string): string {
 .project-filter-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 12px;
+  gap: 10px;
+  padding: 14px 16px;
   background: var(--bg2);
   border-bottom: 1px solid var(--line);
   align-items: center;
 }
 
 .filter-input {
-  padding: 5px 10px;
+  padding: 6px 12px;
   border: 1px solid var(--line);
   border-radius: var(--r);
   font-size: 13px;
   background: var(--bg1);
   color: var(--text);
-  width: 130px;
+  width: 160px;
   box-sizing: border-box;
 }
 
@@ -959,7 +1053,7 @@ function formatDate(dateStr: string): string {
 .project-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .project-table thead {
@@ -967,7 +1061,7 @@ function formatDate(dateStr: string): string {
 }
 
 .project-table th {
-  padding: 10px 12px;
+  padding: 12px 16px;
   text-align: left;
   font-size: 11px;
   font-weight: 600;
@@ -978,14 +1072,14 @@ function formatDate(dateStr: string): string {
 }
 
 .project-table td {
-  padding: 10px 12px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--line);
   color: var(--text);
 }
 
 .num-col {
   text-align: right;
-  width: 72px;
+  width: 100px;
 }
 
 .project-row {
@@ -1004,7 +1098,7 @@ function formatDate(dateStr: string): string {
 .username-cell {
   color: var(--sub);
   font-weight: 500;
-  max-width: 100px;
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1012,7 +1106,7 @@ function formatDate(dateStr: string): string {
 
 .project-name-cell {
   font-weight: 500;
-  max-width: 240px;
+  max-width: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1054,7 +1148,7 @@ function formatDate(dateStr: string): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  padding: 14px 16px;
   border-top: 1px solid var(--line);
   font-size: 13px;
   color: var(--sub);
@@ -1122,6 +1216,10 @@ function formatDate(dateStr: string): string {
 }
 
 @media (max-width: 767px) {
+  .experience-dashboard {
+    padding: 16px 12px;
+  }
+
   .kpi-grid {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -1174,6 +1272,32 @@ function formatDate(dateStr: string): string {
     flex-direction: column;
     gap: 8px;
     align-items: flex-start;
+  }
+}
+
+/* Large screens: extra breathing room */
+@media (min-width: 1400px) {
+  .kpi-card {
+    padding: 24px 32px;
+  }
+
+  .kpi-value {
+    font-size: 36px;
+  }
+
+  .fb-table-header,
+  .fb-table-row {
+    grid-template-columns: 140px 80px 80px 1fr;
+    gap: 16px;
+  }
+
+  .project-table th,
+  .project-table td {
+    padding: 14px 20px;
+  }
+
+  .username-cell {
+    max-width: 200px;
   }
 }
 </style>

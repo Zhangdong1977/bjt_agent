@@ -16,7 +16,7 @@ CASE_COMPRESS_PROMPT = """\
 ### 第二阶段：压缩为四元组
 将预压缩结果提炼为以下四个字段：
 
-1. **task_intent**：使用模板 "审查 {rule_doc_name}，发现 {finding_count} 项{severity_summary}"
+1. **task_intent**：使用模板 "审查 {{rule_doc_name}}，发现 {{finding_count}} 项{{severity_summary}}"
 2. **approach**：必须展示 "使用什么工具搜索什么关键词 → 得到什么 → 判断依据" 的链路
 3. **key_insight**：本次审查最核心的方法论洞察
 4. **quality_score_llm**：0-1 质量评分，对齐 QualityEvaluator 三个维度：

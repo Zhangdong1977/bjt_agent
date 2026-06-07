@@ -242,6 +242,11 @@ export interface BatchFeedbackResponse {
   superseded_count: number;
 }
 
+export interface BatchFeedbackReviewResponse {
+  reviewed_count: number;
+  action: string;
+}
+
 export interface FeedbackCreateRequest {
   feedback_type: "confirm" | "contradict" | "refine";
   contradict_reason?:

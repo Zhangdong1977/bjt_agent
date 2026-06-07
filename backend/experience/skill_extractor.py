@@ -36,12 +36,15 @@ class SkillExtractor:
             return await self._extract_failure(case, cluster_id, group_id, existing_skill, db)
 
     async def _extract_success(self, case, cluster_id: str, group_id: str, existing_skill, db) -> dict:
+        case_detail = (
+            f"审查意图: {case.task_intent}\n"
+            f"方法: {case.approach}\n"
+            f"关键洞察: {case.key_insight or '无'}\n"
+            f"质量评分: {case.quality_score}\n"
+            f"发现数量: {case.finding_count}"
+        )
         prompt = SKILL_SUCCESS_EXTRACT_PROMPT.format(
-            task_intent=case.task_intent,
-            approach=case.approach,
-            key_insight=case.key_insight or "无",
-            quality_score=case.quality_score,
-            finding_count=case.finding_count,
+            case_detail=case_detail,
             existing_skill_content=existing_skill.content if existing_skill else "无",
         )
 
@@ -62,12 +65,15 @@ class SkillExtractor:
         return await self._apply_success_result(extracted, case, cluster_id, group_id, existing_skill, db)
 
     async def _extract_failure(self, case, cluster_id: str, group_id: str, existing_skill, db) -> dict:
+        case_detail = (
+            f"审查意图: {case.task_intent}\n"
+            f"方法: {case.approach}\n"
+            f"关键洞察: {case.key_insight or '无'}\n"
+            f"质量评分: {case.quality_score}\n"
+            f"发现数量: {case.finding_count}"
+        )
         prompt = SKILL_FAILURE_EXTRACT_PROMPT.format(
-            task_intent=case.task_intent,
-            approach=case.approach,
-            key_insight=case.key_insight or "无",
-            quality_score=case.quality_score,
-            finding_count=case.finding_count,
+            case_detail=case_detail,
             existing_skill_content=existing_skill.content if existing_skill else "无",
         )
 

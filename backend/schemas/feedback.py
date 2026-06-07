@@ -52,6 +52,15 @@ class FeedbackReviewRequest(BaseModel):
     reason: str | None = None
 
 
+class BatchFeedbackReviewRequest(BaseModel):
+    """Request body for admin batch-reviewing pending feedback."""
+
+    action: Literal["accept", "reject"]
+    reason: str | None = None
+    task_id: str | None = None
+    batch_id: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Response schemas
 # ---------------------------------------------------------------------------
@@ -160,3 +169,10 @@ class PaginatedProjectSummary(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class BatchFeedbackReviewResponse(BaseModel):
+    """Response for batch feedback review operation."""
+
+    reviewed_count: int
+    action: str

@@ -797,9 +797,10 @@ async def _run_agent_review(
 
             try:
                 from backend.tasks.experience_tasks import extract_experience
-                extract_experience.delay(str(task_id))
+                result = extract_experience.delay(str(task_id))
+                logger.info(f"Dispatched experience extraction for task {task_id}, celery_id={result.id}")
             except Exception as e:
-                logger.warning(f"Failed to dispatch experience extraction: {e}")
+                logger.error(f"Failed to dispatch experience extraction for task {task_id}: {e}", exc_info=True)
 
             return non_compliant_count
 

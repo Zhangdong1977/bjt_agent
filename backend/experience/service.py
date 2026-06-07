@@ -17,7 +17,7 @@ class ExperienceService:
         self.skill_extractor = SkillExtractor()
         self.maturity_scorer = MaturityScorer()
 
-    async def extract_and_persist(self, task_id: str) -> dict:
+    async def extract_and_persist(self, task_id: str, session_factory=None) -> dict:
         summary = {
             "task_id": task_id,
             "case_extracted": False,
@@ -26,7 +26,9 @@ class ExperienceService:
             "maturity_scored": False,
         }
 
-        db, task_info, agent_steps, findings = await self._load_review_data(task_id)
+        db, task_info, agent_steps, findings = await self._load_review_data(
+            task_id, session_factory=session_factory
+        )
         if not db:
             return summary
 
@@ -68,13 +70,18 @@ class ExperienceService:
             except Exception:
                 pass
 
-    async def _load_review_data(self, task_id: str):
-        from backend.models.base import async_session_factory
-        from backend.models import ReviewTask, AgentStep, ReviewResult
+    async def _load_review_data(self, task_id: str, session_factory=None):
+        from backend.models import ReviewTask, AgentStep, ReviewResult, Project
         from sqlalchemy import select
 
+        # Use injected session_factory (Celery task-scoped) or fall back to
+        # the module-level one (API/fastapi context).
+        if session_factory is None:
+            from backend.models.base import async_session_factory
+            session_factory = async_session_factory
+
         try:
-            db = async_session_factory()
+            db = session_factory()
             task_result = await db.execute(
                 select(ReviewTask).where(ReviewTask.id == task_id)
             )
@@ -94,11 +101,17 @@ class ExperienceService:
             )
             findings = findings_result.scalars().all()
 
+            # Load project relation to get user_id
+            project_result = await db.execute(
+                select(Project).where(Project.id == review_task.project_id)
+            )
+            project = project_result.scalar_one_or_none()
+
             task_info = {
                 "task_id": task_id,
                 "project_id": str(review_task.project_id),
-                "user_id": str(review_task.user_id),
-                "rule_doc_name": getattr(review_task, "rule_doc_name", None),
+                "user_id": str(project.user_id) if project else "unknown",
+                "rule_doc_name": None,  # ReviewTask has no rule_doc_name; group_id derived later
             }
 
             return db, task_info, agent_steps, findings
@@ -108,7 +121,15 @@ class ExperienceService:
 
     async def _extract_case(self, task_id: str, task_info: dict, agent_steps, findings, db) -> dict | None:
         try:
-            rule_doc_name = task_info.get("rule_doc_name") or ""
+            # Derive rule_doc_name from findings (ReviewResult has rule_doc_name per finding).
+            # ReviewTask itself does not have a single rule_doc_name since a task covers multiple rules.
+            rule_doc_name = ""
+            for f in findings:
+                f_rule = getattr(f, "rule_doc_name", None)
+                if f_rule:
+                    rule_doc_name = f_rule
+                    break
+
             group_id = rule_doc_name.rsplit(".", 1)[0] if rule_doc_name else "unknown"
 
             findings_dicts = []

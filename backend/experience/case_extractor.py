@@ -81,9 +81,8 @@ class CaseExtractor:
         findings_summary = f"发现 {len(findings)} 项问题" if findings else "未发现问题"
 
         prompt = CASE_FILTER_PROMPT.format(
-            steps_summary=steps_summary[:2000],
-            findings_summary=findings_summary,
-            step_count=len(agent_steps),
+            step_summary=steps_summary[:2000],
+            quality_indicators=findings_summary,
             finding_count=len(findings),
         )
 
@@ -126,7 +125,9 @@ class CaseExtractor:
         try:
             from backend.agent.quality_evaluation import QualityEvaluator
             evaluator = QualityEvaluator()
-            eval_result = await evaluator.evaluate_findings_batch(findings)
+            # Sample up to 5 findings to limit LLM calls; representative enough for quality scoring
+            sample = findings[:5] if len(findings) > 5 else findings
+            eval_result = await evaluator.evaluate_findings_batch(sample)
             return eval_result.overall_quality_score / 100.0
         except Exception as e:
             logger.warning(f"Quality evaluation failed: {e}, using default")

@@ -3,13 +3,13 @@
 import logging
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.deps import CurrentUser, DBSession
 from backend.experience.models import ExperienceCase, ExperienceFeedback, ExperienceSkill, ExperienceClusterMembership
-from backend.models import Project, User
+from backend.models import Project, ReviewTask, User
 from backend.schemas.feedback import PaginatedProjectSummary, ProjectFeedbackSummary
 
 logger = logging.getLogger(__name__)
@@ -281,3 +281,58 @@ async def projects_feedback_summary(
         limit=limit,
         offset=offset,
     )
+
+
+@router.post("/extract/{task_id}")
+async def trigger_experience_extraction(
+    task_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+    force: bool = Query(default=False, description="强制重新提取，即使已有 ExperienceCase"),
+) -> dict:
+    """管理员手动触发经验提取。
+
+    用于补跑历史任务的提取，或在管道升级后重新提取。
+    默认跳过已有 ExperienceCase 的任务，设置 force=true 可覆盖。
+    """
+    # 1. 验证 ReviewTask 存在且已完成
+    result = await db.execute(
+        select(ReviewTask).where(ReviewTask.id == task_id)
+    )
+    review_task = result.scalar_one_or_none()
+    if not review_task:
+        raise HTTPException(status_code=404, detail=f"ReviewTask {task_id} 不存在")
+    if review_task.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"ReviewTask {task_id} 状态为 {review_task.status}，仅支持已完成的任务",
+        )
+
+    # 2. 检查是否已提取（除非 force=true）
+    if not force:
+        existing = await db.execute(
+            select(ExperienceCase.id).where(ExperienceCase.task_id == task_id).limit(1)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(
+                status_code=409,
+                detail=f"任务 {task_id} 已有提取记录，使用 force=true 可强制重新提取",
+            )
+
+    # 3. 派发 Celery 任务
+    try:
+        from backend.tasks.experience_tasks import extract_experience
+        celery_result = extract_experience.delay(task_id)
+        logger.info(
+            f"Manually triggered experience extraction for task {task_id}, "
+            f"celery_id={celery_result.id}, user={current_user.username}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to dispatch experience extraction: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"派发提取任务失败: {e}")
+
+    return {
+        "task_id": task_id,
+        "celery_task_id": celery_result.id,
+        "status": "dispatched",
+    }

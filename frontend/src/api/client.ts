@@ -18,6 +18,7 @@ import type {
   FeedbackResponse,
   FeedbackSummary,
   BatchFeedbackResponse,
+  BatchFeedbackReviewResponse,
   FeedbackCreateRequest,
   PaginatedProjectSummary,
 } from "@/types";
@@ -586,6 +587,19 @@ export const feedbackApi = {
     const response = await apiClient.patch(
       `/projects/${projectId}/feedback/${feedbackId}/review`,
       { action, reason: reason ?? null },
+    );
+    return response.data;
+  },
+
+  batchReviewFeedback: async (
+    projectId: string,
+    action: "accept" | "reject",
+    reason?: string,
+    filters?: { task_id?: string; batch_id?: string },
+  ): Promise<BatchFeedbackReviewResponse> => {
+    const response = await apiClient.post(
+      `/projects/${projectId}/feedback/batch-review`,
+      { action, reason: reason ?? null, ...filters },
     );
     return response.data;
   },

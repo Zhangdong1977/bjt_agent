@@ -3,6 +3,8 @@ SKILL_MATURITY_SCORE_PROMPT = """\
 
 ## 输入
 
+- 技能名称：{skill_name}
+- 技能描述：{skill_description}
 - 技能内容：{skill_content}
 
 ## 评分维度与标准

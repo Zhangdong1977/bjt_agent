@@ -23,6 +23,8 @@ from backend.experience.models import ExperienceFeedback
 from backend.schemas.feedback import (
     BatchFeedbackRequest,
     BatchFeedbackResponse,
+    BatchFeedbackReviewRequest,
+    BatchFeedbackReviewResponse,
     FeedbackCreateRequest,
     FeedbackResponse,
     FeedbackReviewRequest,
@@ -120,31 +122,8 @@ async def submit_feedback(
         existing.status = "superseded"
         existing.updated_at = datetime.utcnow()
 
-    # Determine auto-acceptance
-    new_status = "pending"
-    if body.feedback_type == "confirm":
-        new_status = "accepted"
-    elif body.feedback_type == "contradict":
-        # Auto-accept if internal user or >=2 contradictions exist
-        # For now, always auto-accept contradict from any authenticated user
-        new_status = "accepted"
-    elif body.feedback_type == "refine":
-        # Auto-accept unless changing is_compliant from false to true
-        if body.corrected_is_compliant is True:
-            new_status = "pending"  # Requires admin review
-        else:
-            new_status = "accepted"
-
-    # Compute confidence delta
-    confidence_delta = 0.0
-    if new_status == "accepted":
-        if body.feedback_type == "confirm":
-            confidence_delta = 0.05
-        elif body.feedback_type == "contradict":
-            confidence_delta = -0.2
-        elif body.feedback_type == "refine":
-            confidence_delta = -0.1
-
+    # All feedback requires admin review before taking effect.
+    # confidence_delta is computed at review time (see review_feedback endpoint).
     feedback = ExperienceFeedback(
         finding_id=finding_id,
         user_id=current_user.id,
@@ -156,21 +135,15 @@ async def submit_feedback(
         corrected_suggestion=body.corrected_suggestion,
         corrected_is_compliant=body.corrected_is_compliant,
         comment=body.comment,
-        status=new_status,
-        confidence_delta=confidence_delta,
+        status="pending",
+        confidence_delta=0.0,
         rule_doc_name=finding.rule_doc_name,
     )
     db.add(feedback)
     await db.flush()
     await db.refresh(feedback)
 
-    # If auto-accepted, trigger async processing
-    if new_status == "accepted":
-        try:
-            from backend.tasks.feedback_tasks import process_feedback
-            process_feedback.delay(str(feedback.id))
-        except Exception as e:
-            logger.warning(f"Failed to dispatch feedback processing: {e}")
+    # No downstream processing — admin must review first.
 
     return FeedbackResponse.model_validate(feedback)
 
@@ -255,6 +228,7 @@ async def batch_confirm_findings(
             existing.updated_at = datetime.utcnow()
             superseded_count += 1
 
+        # All feedback requires admin review; confidence computed at review time.
         feedback = ExperienceFeedback(
             finding_id=finding.id,
             user_id=current_user.id,
@@ -262,21 +236,15 @@ async def batch_confirm_findings(
             task_id=task_id,
             feedback_type="confirm",
             comment=body.comment,
-            status="accepted",
-            confidence_delta=0.05,
+            status="pending",
+            confidence_delta=0.0,
             batch_id=batch_id,
             rule_doc_name=finding.rule_doc_name,
         )
         db.add(feedback)
         created_count += 1
 
-    # Trigger async processing for the batch
-    if created_count > 0:
-        try:
-            from backend.tasks.feedback_tasks import process_batch_feedback
-            process_batch_feedback.delay(batch_id)
-        except Exception as e:
-            logger.warning(f"Failed to dispatch batch feedback processing: {e}")
+    # No downstream processing — admin must review first.
 
     await db.flush()
     return BatchFeedbackResponse(
@@ -504,6 +472,74 @@ async def review_feedback(
     await db.flush()
     await db.refresh(feedback)
     return FeedbackResponse.model_validate(feedback)
+
+
+@router.post(
+    "/feedback/batch-review",
+    response_model=BatchFeedbackReviewResponse,
+)
+async def batch_review_feedback(
+    project_id: str,
+    body: BatchFeedbackReviewRequest,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> BatchFeedbackReviewResponse:
+    """Admin endpoint to batch-accept or batch-reject all pending feedback.
+
+    Optionally filter by task_id or batch_id to narrow the scope.
+    """
+    await _verify_project(project_id, current_user.id, db)
+
+    # Build query for pending feedback
+    query = select(ExperienceFeedback).where(
+        ExperienceFeedback.project_id == project_id,
+        ExperienceFeedback.status == "pending",
+    )
+    if body.task_id:
+        query = query.where(ExperienceFeedback.task_id == body.task_id)
+    if body.batch_id:
+        query = query.where(ExperienceFeedback.batch_id == body.batch_id)
+
+    result = await db.execute(query)
+    pending_feedbacks = result.scalars().all()
+
+    if not pending_feedbacks:
+        return BatchFeedbackReviewResponse(reviewed_count=0, action=body.action)
+
+    new_status = "accepted" if body.action == "accept" else "rejected"
+    reviewed_count = 0
+
+    for feedback in pending_feedbacks:
+        feedback.status = new_status
+        feedback.reviewed_by = current_user.id
+        feedback.reviewed_at = datetime.utcnow()
+        feedback.updated_at = datetime.utcnow()
+
+        if new_status == "accepted":
+            # Compute confidence delta based on feedback type
+            if feedback.feedback_type == "confirm":
+                feedback.confidence_delta = 0.05
+            elif feedback.feedback_type == "contradict":
+                feedback.confidence_delta = -0.2
+            elif feedback.feedback_type == "refine":
+                feedback.confidence_delta = -0.1
+
+            # Trigger individual processing
+            try:
+                from backend.tasks.feedback_tasks import process_feedback
+                process_feedback.delay(str(feedback.id))
+            except Exception as e:
+                logger.warning(
+                    f"Failed to dispatch feedback {feedback.id} processing: {e}"
+                )
+
+        reviewed_count += 1
+
+    await db.flush()
+    return BatchFeedbackReviewResponse(
+        reviewed_count=reviewed_count,
+        action=body.action,
+    )
 
 
 # ---------------------------------------------------------------------------

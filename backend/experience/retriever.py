@@ -114,7 +114,9 @@ class ExperienceRetriever:
             meta_text = "- （未提供元信息）"
 
         prompt = SKILL_RELEVANCE_VERIFY_PROMPT.format(
-            doc_meta=meta_text,
+            industry=doc_meta.get("industry", "未知") if doc_meta else "未知",
+            bid_type=doc_meta.get("bid_type", "未知") if doc_meta else "未知",
+            package_count=doc_meta.get("package_count", "未知") if doc_meta else "未知",
             candidate_skills=candidates_text,
         )
 

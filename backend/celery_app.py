@@ -13,6 +13,10 @@ celery_app = Celery(
     include=["backend.tasks.review_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks"],
 )
 
+# Ensure celery.current_app points to our app, so @shared_task binds correctly
+# regardless of import order in the API process.
+celery_app.set_default()
+
 # Celery configuration
 celery_app.conf.update(
     task_serializer="json",
@@ -47,6 +51,10 @@ celery_app.conf.update(
         "backend.tasks.document_parser.parse_document": {
             "time_limit": None,
             "soft_time_limit": None,
+        },
+        "backend.tasks.experience_tasks.extract_experience": {
+            "time_limit": 600,
+            "soft_time_limit": 480,
         },
     },
 )
