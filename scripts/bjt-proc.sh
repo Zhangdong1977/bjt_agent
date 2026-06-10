@@ -326,7 +326,7 @@ cleanup_redis_celery() {
     python3 << 'EOF'
 import redis
 
-r = redis.Redis(host='183.66.37.186', port=7005, decode_responses=True)
+r = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
 patterns = [
     'celery*',

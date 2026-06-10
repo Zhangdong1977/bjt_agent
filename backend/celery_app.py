@@ -42,7 +42,7 @@ celery_app.conf.update(
     task_annotations={
         "backend.tasks.review_tasks.run_review": {
             "time_limit": 28800,
-            "soft_time_limit": None,
+            "soft_time_limit": 3600,
         },
         "backend.tasks.review_tasks.merge_review_results": {
             "time_limit": 600,
