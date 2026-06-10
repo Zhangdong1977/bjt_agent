@@ -1,15 +1,22 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { FileSearchOutlined, HistoryOutlined, ExperimentOutlined } from '@ant-design/icons-vue'
+import { useAuthStore } from '@/stores/auth'
 const router = useRouter()
 const route = useRoute()
+const authStore = useAuthStore()
 
-const menuItems = [
-  { key: '/home/check', label: '标书检查', icon: FileSearchOutlined },
-  { key: '/home/history', label: '历史标书', icon: HistoryOutlined },
-  { key: '/home/experience', label: '经验仪表盘', icon: ExperimentOutlined },
+const allMenuItems = [
+  { key: '/home/check', label: '标书检查', icon: FileSearchOutlined, internalOnly: false },
+  { key: '/home/history', label: '历史标书', icon: HistoryOutlined, internalOnly: false },
+  { key: '/home/experience', label: '标书复盘', icon: ExperimentOutlined, internalOnly: true },
 ]
+
+// 标书复盘仅内部用户可见
+const menuItems = computed(() =>
+  allMenuItems.filter((item) => !item.internalOnly || authStore.isInteriorUser)
+)
 
 const selectedKeys = ref<string[]>([route.path])
 

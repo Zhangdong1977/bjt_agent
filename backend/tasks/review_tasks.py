@@ -216,7 +216,7 @@ def _persist_step(task_id: str, event_type: str, data: dict, session_factory=Non
         # No running loop — use fallback
         _persist_step_fallback(task_id, data)
     except Exception as e:
-        logger.warning(f"[_persist_step] Failed to persist step: {e}")
+        logger.warning(f"[_persist_step] Failed to persist step: {e}", exc_info=True)
 
 
 async def _persist_step_async(session_factory, task_id: str, data: dict) -> None:
@@ -259,7 +259,7 @@ async def _persist_step_async(session_factory, task_id: str, data: dict) -> None
                 db.add(step)
             await db.commit()
     except Exception as e:
-        logger.warning(f"[_persist_step_async] Failed: {e}")
+        logger.warning(f"[_persist_step_async] Failed: {e}", exc_info=True)
 
 
 def _persist_step_fallback(task_id: str, data: dict) -> None:
@@ -764,8 +764,28 @@ async def _run_agent_review(
     )
 
     try:
-        # Pass session_factory so sub-agents can create their own sessions
-        result = await master.run(todo_service, session_id=task_id, session_factory=session_factory)
+        # Pass session_factory so sub-agents can create their own sessions.
+        # Wrap with an absolute total timeout — the final backstop that terminates
+        # a stuck task no matter why progress stalled (stale DB pool, hung LLM/tool,
+        # etc.). Normal tasks finish in 22-35 min; this is independent of the
+        # progress watchdog (which keys off SSE event flow).
+        total_timeout = get_settings().agent_total_timeout
+        try:
+            result = await asyncio.wait_for(
+                master.run(todo_service, session_id=task_id, session_factory=session_factory),
+                timeout=total_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                f"[ABSOLUTE TIMEOUT] Task {task_id} exceeded total timeout "
+                f"{total_timeout}s, terminating",
+                exc_info=True,
+            )
+            cancel_event.set()  # signal sub-agents / LLM wrapper to bail at next checkpoint
+            await asyncio.sleep(5)  # let in-flight sub-agents finish their finally blocks
+            raise TimeoutError(
+                f"任务执行超时（超过 {total_timeout // 60} 分钟），已强制终止"
+            )
 
         if result.get("success"):
             # Count non-compliant findings and update task status

@@ -8,6 +8,7 @@ import { message } from 'ant-design-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
+import { isLegacyDocFile, legacyDocWarning } from '@/utils/uploadValidation'
 
 // Configure DOMPurify to allow base64 images and table tags
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -63,6 +64,11 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
   if (!files?.length) return
 
   for (const file of files) {
+    // .doc 旧版格式后端无法解析，提前拦截并给出友好提示
+    if (isLegacyDocFile(file)) {
+      message.warning(legacyDocWarning(file.name))
+      continue
+    }
     try {
       await projectStore.uploadDocument(docType, file)
       message.success(`${file.name} 上传成功`)
@@ -208,7 +214,7 @@ function getStatusClass(status: string) {
                 @change="handleUpload($event, 'tender')"
               />
               <label v-if="!getUploadProgress('tender')" for="tender-upload" class="upload-label">
-                点击上传 PDF 或 Word 文件
+                点击上传 PDF 或 Word（.docx）文件
               </label>
             </div>
           </div>
@@ -283,7 +289,7 @@ function getStatusClass(status: string) {
                 @change="handleUpload($event, 'bid')"
               />
               <label v-if="!getUploadProgress('bid')" for="bid-upload" class="upload-label">
-                点击上传 PDF 或 Word 文件
+                点击上传 PDF 或 Word（.docx）文件
               </label>
             </div>
           </div>

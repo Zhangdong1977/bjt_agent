@@ -41,8 +41,11 @@ celery_app.conf.update(
     },
     task_annotations={
         "backend.tasks.review_tasks.run_review": {
-            "time_limit": 28800,
-            "soft_time_limit": 3600,
+            # Coordinate with agent_total_timeout (5400s, asyncio.wait_for in
+            # _run_agent_review): asyncio terminates first; soft_time_limit gives
+            # Celery a worker-level graceful window; time_limit is the hard backstop.
+            "time_limit": 6000,
+            "soft_time_limit": 5700,
         },
         "backend.tasks.review_tasks.merge_review_results": {
             "time_limit": 600,

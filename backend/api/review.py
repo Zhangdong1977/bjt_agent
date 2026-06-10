@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
-from backend.api.deps import DBSession, CurrentUser, get_token_claims, oauth2_scheme
+from backend.api.deps import DBSession, CurrentUser, get_token_claims, oauth2_scheme, is_interior_user
 from backend.config import get_settings
 from backend.models import Project, ReviewTask, ReviewResult, AgentStep, TodoItem
 from backend.schemas.review import (
@@ -28,14 +28,29 @@ router = APIRouter(prefix="/projects/{project_id}/review", tags=["Review"])
 settings = get_settings()
 
 
-async def verify_project_ownership(project_id: str, user_id: str, db: DBSession) -> Project:
-    """Verify that the project exists and belongs to the user."""
+async def verify_project_ownership(
+    project_id: str, current_user, db: DBSession, *, allow_interior: bool = False,
+) -> Project:
+    """Verify that the project exists and the caller may access it.
+
+    Regular users may only access their own projects. When ``allow_interior``
+    is set, internal users (see :func:`is_interior_user`) may access any
+    project — used by read-only / review endpoints surfaced on the experience
+    dashboard. Write operations (start / cancel / heartbeat / live SSE) must
+    keep ``allow_interior=False`` so internal users cannot mutate others' data.
+    """
     result = await db.execute(
-        select(Project)
-        .where(Project.id == project_id, Project.user_id == user_id)
+        select(Project).where(Project.id == project_id)
     )
     project = result.scalar_one_or_none()
     if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+    if allow_interior and is_interior_user(current_user):
+        return project
+    if project.user_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
@@ -50,7 +65,7 @@ async def list_review_tasks(
     current_user: CurrentUser,
 ) -> list[ReviewTaskListItem]:
     """List all review tasks for the project (newest first)."""
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(ReviewTask)
@@ -69,7 +84,7 @@ async def start_review(
     current_user: CurrentUser,
 ) -> ReviewTask:
     """Start a new review task for the project."""
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db)
 
     # Extract concurrency from JWT claims
     from backend.api.deps import oauth2_scheme, get_token_claims
@@ -102,9 +117,30 @@ async def start_review(
     await db.flush()
     await db.refresh(task)
 
-    # Trigger the review task via Celery
+    # Trigger the review task via Celery. If broker dispatch fails after the
+    # task row is created, persist a terminal failed state so the UI never sees
+    # a non-executable pending task.
     from backend.tasks.review_tasks import run_review
-    celery_result = run_review.delay(task.id)
+    try:
+        celery_result = run_review.delay(task.id)
+    except Exception as exc:
+        logger.exception(
+            "[start_review] Failed to dispatch review task to Celery: task_id=%s",
+            task.id,
+        )
+        task.status = "failed"
+        task.error_message = "任务队列暂不可用，请稍后重试"
+        task.completed_at = datetime.utcnow()
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "REVIEW_QUEUE_UNAVAILABLE",
+                "message": task.error_message,
+                "task_id": task.id,
+            },
+        ) from exc
+
     task.celery_task_id = celery_result.id
     await db.flush()
 
@@ -121,7 +157,7 @@ async def get_review_results(
 
     Returns findings from the latest review task, grouped by sub-agent.
     """
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
 
     # Get the latest completed review task for this project
     latest_task_result = await db.execute(
@@ -180,7 +216,7 @@ async def get_review_task_status(
     current_user: CurrentUser,
 ) -> ReviewTask:
     """Get the status of a specific review task."""
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(ReviewTask)
@@ -203,7 +239,7 @@ async def cancel_review_task(
     current_user: CurrentUser,
 ) -> ReviewTaskResponse:
     """Cancel a running review task."""
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db)
 
     result = await db.execute(
         select(ReviewTask)
@@ -255,7 +291,7 @@ async def heartbeat_review_task(
     the user is viewing the task progress page. If no heartbeat is received
     for 20+ seconds, the task will be automatically cancelled.
     """
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db)
 
     result = await db.execute(
         select(ReviewTask)
@@ -294,7 +330,7 @@ async def get_review_task_steps(
             detail="外部用户无权查看时间线",
         )
 
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(ReviewTask)
@@ -324,7 +360,7 @@ async def get_review_task_results(
     current_user: CurrentUser,
 ) -> list[ReviewResult]:
     """Get all findings for a review task."""
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(ReviewTask)
@@ -363,7 +399,7 @@ async def get_review_task_todos(
     Detailed findings within todos are shown in block-body which is hidden via
     allowExpand=false for external users.
     """
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(ReviewTask)
@@ -400,7 +436,9 @@ async def get_todo_report(
     from pathlib import Path as FilePath
     from fastapi.responses import PlainTextResponse
 
-    await verify_project_ownership(project_id, current_user.id, db)
+    # allow_interior: internal users review others' projects; resolve the
+    # report under the project OWNER's workspace, not the viewer's.
+    project = await verify_project_ownership(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(TodoItem).where(
@@ -420,7 +458,7 @@ async def get_todo_report(
 
     # Fallback: scan workspace for review_*.md files if report_path not stored
     if not report_path:
-        workspace_dir = settings.workspace_path / str(current_user.id) / project_id
+        workspace_dir = settings.workspace_path / str(project.user_id) / project_id
         if workspace_dir.exists():
             review_files = sorted(workspace_dir.glob("review_*.md"))
             if review_files:
@@ -465,7 +503,7 @@ async def stream_review_events(
     is_internal = claims["interior_user"]
 
     # Verify user has access to the project
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db)
 
     # Verify task exists and belongs to this project
     result = await db.execute(

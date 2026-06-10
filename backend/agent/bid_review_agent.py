@@ -78,6 +78,7 @@ class BidReviewAgent(BaseAgent):
         max_steps: int = 100,
         cancel_event: Optional[asyncio.Event] = None,
         heartbeat_timeout: int = 60,
+        heartbeat_session_factory=None,
     ):
         """Initialize the bid review agent (synchronous part).
 
@@ -103,6 +104,14 @@ class BidReviewAgent(BaseAgent):
         self.event_callback = event_callback
         self._logger = logger
         self.heartbeat_timeout = heartbeat_timeout
+        # Heartbeat DB session: prefer the per-task factory injected by SubAgentExecutor
+        # (lifecycle-matched to the running task) over the module-level engine, which can
+        # suffer connection-pool staleness in long-running Celery workers.
+        self._heartbeat_session_factory = heartbeat_session_factory
+        # Fail-closed counter: tolerate transient DB hiccups (default 3 x 5s poll ≈ 15s)
+        # before declaring the task dead. Resets to 0 on every successful check.
+        self._heartbeat_fail_count: int = 0
+        self._heartbeat_fail_threshold: int = settings.heartbeat_fail_threshold
         self._task_id: Optional[str] = None
         self._findings: list[dict] = []
         self._owns_mcp_cleanup: bool = True  # Sub-agents set this to False
@@ -673,8 +682,10 @@ class BidReviewAgent(BaseAgent):
         try:
             from sqlalchemy import update as sql_update
             from backend.models import ReviewTask
-            from backend.models.base import async_session_factory
-            async with async_session_factory() as db:
+            session_factory = self._heartbeat_session_factory
+            if session_factory is None:
+                from backend.models.base import async_session_factory as session_factory
+            async with session_factory() as db:
                 await db.execute(
                     sql_update(ReviewTask)
                     .where(ReviewTask.id == self._task_id)
@@ -683,7 +694,10 @@ class BidReviewAgent(BaseAgent):
                 await db.commit()
         except Exception as e:
             import logging
-            (self._logger or logging.getLogger(__name__)).debug(f"[BidReviewAgent._update_heartbeat] Failed: {e}")
+            (self._logger or logging.getLogger(__name__)).warning(
+                f"[BidReviewAgent._update_heartbeat] Failed for task_id={self._task_id}: {e}",
+                exc_info=True,
+            )
 
     async def _check_heartbeat_async(self) -> bool:
         """Check if heartbeat has exceeded timeout or cancellation was requested.
@@ -708,15 +722,18 @@ class BidReviewAgent(BaseAgent):
 
         from sqlalchemy import select
         from backend.models import ReviewTask
-        from backend.models.base import async_session_factory
+        session_factory = self._heartbeat_session_factory
+        if session_factory is None:
+            from backend.models.base import async_session_factory as session_factory
 
         try:
-            async with async_session_factory() as db:
+            async with session_factory() as db:
                 result = await db.execute(
                     select(ReviewTask).where(ReviewTask.id == self._task_id)
                 )
                 task = result.scalar_one_or_none()
                 if not task or not task.last_heartbeat:
+                    self._heartbeat_fail_count = 0
                     return True  # No heartbeat yet, assume OK
 
                 elapsed = (datetime.utcnow() - task.last_heartbeat).total_seconds()
@@ -727,10 +744,27 @@ class BidReviewAgent(BaseAgent):
                     )
                     self._cancel_reason = "heartbeat_timeout"
                     return False
+                self._heartbeat_fail_count = 0  # healthy check → reset fail counter
                 return True
         except Exception as e:
-            logger.warning(f"[BidReviewAgent] Heartbeat check failed: {e}")
-            return True  # Fail open
+            # Fail-closed with tolerance: a single DB hiccup must NOT kill a healthy task,
+            # but sustained failures (>= threshold x 5s poll ≈ 15s) mean heartbeat tracking
+            # itself is broken and the task cannot self-heal — terminate rather than run forever.
+            self._heartbeat_fail_count += 1
+            logger.warning(
+                f"[BidReviewAgent] Heartbeat check failed "
+                f"({self._heartbeat_fail_count}/{self._heartbeat_fail_threshold}) "
+                f"for task_id={self._task_id}: {e}",
+                exc_info=True,
+            )
+            if self._heartbeat_fail_count >= self._heartbeat_fail_threshold:
+                logger.error(
+                    f"[BidReviewAgent] Heartbeat check failing CLOSED after "
+                    f"{self._heartbeat_fail_count} consecutive failures, task_id={self._task_id}"
+                )
+                self._cancel_reason = "heartbeat_check_failed"
+                return False
+            return True  # transient failure — tolerate and retry on the next poll
 
     async def _heartbeat_monitor_loop(self) -> None:
         """Background loop that monitors heartbeat and sets cancel_event on timeout."""
@@ -962,8 +996,13 @@ class BidReviewAgent(BaseAgent):
                 try:
                     hb_task = asyncio.ensure_future(self._update_heartbeat())
                     hb_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
-                except Exception:
-                    pass
+                except Exception as e:
+                    import logging
+                    (self._logger or logging.getLogger(__name__)).warning(
+                        f"[BidReviewAgent._emit_event] Failed to schedule heartbeat update "
+                        f"for task_id={self._task_id}: {e}",
+                        exc_info=True,
+                    )
 
             logger.info(f"[BidReviewAgent._emit_event] step_complete for step {step}")
 

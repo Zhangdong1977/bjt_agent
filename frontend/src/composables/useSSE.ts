@@ -34,6 +34,8 @@ export interface SSEOptions {
   onOpen?: () => void;
   /** 连接断开时的回调（不包括主动 disconnect） */
   onError?: (error: Event) => void;
+  /** 重连耗尽后的回调，用于启动轮询等降级路径 */
+  onPermanentFailure?: (id: string) => void;
   /** 任务完成/失败时调用，返回 true 表示不应重连 */
   shouldStop?: () => boolean;
   /** 是否启用 requestAnimationFrame 批量处理（默认 false） */
@@ -47,6 +49,7 @@ export function useSSE(options: SSEOptions) {
     onEvent,
     onOpen,
     onError,
+    onPermanentFailure,
     shouldStop,
     enableBatching = false,
     endpointType = "tasks",
@@ -120,21 +123,7 @@ export function useSSE(options: SSEOptions) {
     currentId = null;
   }
 
-  /**
-   * 建立 SSE 连接
-   *
-   * 注意：浏览器原生 EventSource 会在服务器发送 `id:` 字段时
-   * 自动在重连时附加 `Last-Event-ID` 请求头。后端已支持此头部
-   * 用于断线后的事件回放。因此我们不在 onerror 中调用 close()，
-   * 让浏览器自动重连（除非 shouldStop() 返回 true）。
-   */
-  function connect(id: string) {
-    // 先断开已有连接
-    disconnect();
-
-    currentId = id;
-    reconnectAttempts.value = 0;
-
+  function openEventSource(id: string) {
     const url = buildUrl(id);
     eventSource = new EventSource(url);
 
@@ -176,6 +165,7 @@ export function useSSE(options: SSEOptions) {
           `[useSSE] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached for ${id}`,
         );
         disconnect();
+        onPermanentFailure?.(id);
         return;
       }
 
@@ -200,10 +190,23 @@ export function useSSE(options: SSEOptions) {
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         if (currentId === id) {
-          connect(id);
+          openEventSource(id);
         }
       }, delay);
     };
+  }
+
+  /**
+   * 建立 SSE 连接。
+   *
+   * 重连时只重建 EventSource，不重置 reconnectAttempts；只有首次连接
+   * 和真正 onopen 成功后才重置计数。
+   */
+  function connect(id: string) {
+    disconnect();
+    currentId = id;
+    reconnectAttempts.value = 0;
+    openEventSource(id);
   }
 
   // 组件卸载时自动断开

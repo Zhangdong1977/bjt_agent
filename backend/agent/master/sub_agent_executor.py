@@ -129,6 +129,7 @@ class SubAgentExecutor:
             max_steps=max_steps,
             cancel_event=self.cancel_event,
             heartbeat_timeout=get_settings().sub_agent_heartbeat_timeout,
+            heartbeat_session_factory=self.session_factory,
         )
         # Set task_id for heartbeat tracking (ReviewTask.id, not TodoItem.id)
         agent._task_id = self.session_id

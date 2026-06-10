@@ -106,6 +106,14 @@ class Settings(BaseSettings):
     # Agent Progress Watchdog
     agent_progress_timeout: int = 600  # Max seconds without SSE events before task is considered hung (env: AGENT_PROGRESS_TIMEOUT)
 
+    # Agent Total Timeout (absolute hard ceiling, independent of event stream).
+    # Normal tasks take 22-35 min; this is the final backstop that terminates a
+    # stuck task no matter what. Coordinates with Celery soft_time_limit/time_limit.
+    agent_total_timeout: int = 5400  # Absolute max seconds for a review task, 90min (env: AGENT_TOTAL_TIMEOUT)
+
+    # Heartbeat Fail-Closed
+    heartbeat_fail_threshold: int = 3  # Consecutive heartbeat check failures before fail-closed (x5s poll ≈ 15s tolerance) (env: HEARTBEAT_FAIL_THRESHOLD)
+
     # Experience Self-Learning
     experience_injection_enabled: bool = False
     experience_max_inject: int = 3

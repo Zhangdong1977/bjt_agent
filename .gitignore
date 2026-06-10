@@ -55,3 +55,4 @@ pnpm-debug.log*
 .planning
 docs/rules/
 temp/
+third_party/EverOS/

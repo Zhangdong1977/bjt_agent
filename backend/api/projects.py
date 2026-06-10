@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select, delete
 
-from backend.api.deps import DBSession, CurrentUser
+from backend.api.deps import DBSession, CurrentUser, is_interior_user
 from backend.models import Project
 from backend.schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse, ProjectListResponse
 
@@ -46,13 +46,20 @@ async def get_project(
     db: DBSession,
     current_user: CurrentUser,
 ) -> Project:
-    """Get a project by ID."""
+    """Get a project by ID.
+
+    Internal users may view any project; regular users only their own.
+    """
     result = await db.execute(
-        select(Project)
-        .where(Project.id == project_id, Project.user_id == current_user.id)
+        select(Project).where(Project.id == project_id)
     )
     project = result.scalar_one_or_none()
     if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+    if not is_interior_user(current_user) and project.user_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",

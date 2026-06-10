@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { reviewApi } from '@/api/client'
@@ -19,6 +19,7 @@ const phase = ref<'pending' | 'running' | 'completed' | 'failed'>('pending')
 const steps = ref<any[]>([])
 const subAgentSteps = ref<Map<string, any[]>>(new Map())
 const errorMessage = ref<string | null>(null)
+const realtimeNotice = ref<string | null>(null)
 
 // Todo items state (mirrors ReviewTimeline.vue)
 interface CheckItemState {
@@ -61,6 +62,13 @@ const completedCount = computed(() =>
   Array.from(todos.value.values()).filter(t => t.status === 'completed' || t.status === 'failed').length
 )
 
+// 整体进度百分比：分子含 failed（失败的子代理也算"结束"），否则一个 failed 会卡住进度永远 <100%
+const progressPercent = computed(() => {
+  const total = totalSteps.value
+  if (!total) return 0
+  return Math.min(Math.round((completedCount.value / total) * 100), 100)
+})
+
 // findingsCount 从 todos 计算
 const findingsCount = computed(() => {
   let count = 0
@@ -86,10 +94,19 @@ async function handleSSEEvent(event: any) {
         }
       } else if (event.status === 'completed') {
         phase.value = 'completed'
+        stopStatusPolling()
+        projectStore.stopHeartbeat()
         disconnect()
         if (!isHistorical.value) goToResults()
       } else if (event.status === 'failed') {
         phase.value = 'failed'
+        stopStatusPolling()
+        projectStore.stopHeartbeat()
+      } else if (event.status === 'cancelled') {
+        phase.value = 'failed'
+        errorMessage.value = event.message || '任务已被取消'
+        stopStatusPolling()
+        projectStore.stopHeartbeat()
       }
       break
 
@@ -154,6 +171,8 @@ async function handleSSEEvent(event: any) {
 
     case 'merging_completed':
       phase.value = 'completed'
+      stopStatusPolling()
+      projectStore.stopHeartbeat()
       disconnect()
       if (!isHistorical.value) goToResults()
       break
@@ -368,6 +387,8 @@ async function handleSSEEvent(event: any) {
     case 'complete':
       // 审查完成事件
       phase.value = 'completed'
+      stopStatusPolling()
+      projectStore.stopHeartbeat()
       disconnect()
       if (!isHistorical.value) goToResults()
       break
@@ -376,6 +397,13 @@ async function handleSSEEvent(event: any) {
       // 错误事件
       phase.value = 'failed'
       errorMessage.value = event.message || 'Unknown error'
+      stopStatusPolling()
+      projectStore.stopHeartbeat()
+      disconnect()
+      break
+
+    case 'warning':
+      realtimeNotice.value = event.message || '部分规则审查失败，结果可能不完整'
       break
 
     default:
@@ -469,9 +497,81 @@ async function loadHistoricalTodos(projectId: string, taskId: string) {
   }
 }
 
+let statusPollTimer: ReturnType<typeof setInterval> | null = null
+
+async function refreshTaskSnapshot(taskId: string) {
+  const task = await reviewApi.getTaskStatus(projectId.value, taskId)
+  projectStore.currentTask = task
+
+  if (task.status === 'running' || task.status === 'pending') {
+    phase.value = task.status
+    await loadHistoricalTodos(projectId.value, taskId)
+    return
+  }
+
+  if (task.status === 'completed') {
+    phase.value = 'completed'
+    await loadHistoricalTodos(projectId.value, taskId)
+    stopStatusPolling()
+    projectStore.stopHeartbeat()
+    disconnect()
+    if (!isHistorical.value) goToResults()
+    return
+  }
+
+  if (task.status === 'failed') {
+    phase.value = 'failed'
+    errorMessage.value = task.error_message || '审查失败'
+    await loadHistoricalTodos(projectId.value, taskId)
+    stopStatusPolling()
+    projectStore.stopHeartbeat()
+    disconnect()
+    return
+  }
+
+  if (task.status === 'cancelled') {
+    phase.value = 'failed'
+    errorMessage.value = task.error_message || '任务已被取消'
+    await loadHistoricalTodos(projectId.value, taskId)
+    stopStatusPolling()
+    projectStore.stopHeartbeat()
+    disconnect()
+  }
+}
+
+function startStatusPolling(taskId: string) {
+  if (statusPollTimer) return
+  realtimeNotice.value = '实时连接已断开，正在轮询任务状态'
+  refreshTaskSnapshot(taskId).catch(err => {
+    console.error('[ReviewExecutionView] Initial polling refresh failed:', err)
+  })
+  statusPollTimer = setInterval(() => {
+    refreshTaskSnapshot(taskId).catch(err => {
+      console.error('[ReviewExecutionView] Polling task status failed:', err)
+    })
+  }, 5000)
+}
+
+function stopStatusPolling() {
+  if (statusPollTimer) {
+    clearInterval(statusPollTimer)
+    statusPollTimer = null
+  }
+  if (realtimeNotice.value === '实时连接已断开，正在轮询任务状态') {
+    realtimeNotice.value = null
+  }
+}
+
 // 使用统一的 SSE composable（支持指数退避重连 + Last-Event-ID + RAF 批量处理）
 const { connect: sseConnect, disconnect: sseDisconnect } = useSSE({
   onEvent: handleSSEEvent,
+  onOpen: () => {
+    stopStatusPolling()
+    realtimeNotice.value = null
+  },
+  onPermanentFailure: (taskId) => {
+    startStatusPolling(taskId)
+  },
   enableBatching: true,  // 保持 RAF 批量处理
   shouldStop: () => {
     return phase.value === 'completed' || phase.value === 'failed'
@@ -483,6 +583,7 @@ function connect() {
     console.log('[ReviewExecutionView] No currentTask.id, skipping SSE connection')
     return
   }
+  projectStore.startHeartbeat(projectId.value, projectStore.currentTask.id)
   sseConnect(projectStore.currentTask.id)
 }
 
@@ -491,6 +592,8 @@ function disconnect() {
 }
 
 function handleCancelled() {
+  stopStatusPolling()
+  projectStore.stopHeartbeat()
   disconnect()
   phase.value = 'failed'
   errorMessage.value = '用户主动放弃检查'
@@ -602,9 +705,19 @@ onMounted(async () => {
   }
 
   // 建立 SSE 连接以接收实时更新（仅运行中任务，已完成任务通过 API 拉取）
-  if (projectStore.currentTask?.id && projectStore.currentTask?.status !== 'completed' && projectStore.currentTask?.status !== 'failed') {
+  if (
+    projectStore.currentTask?.id &&
+    (projectStore.currentTask.status === 'pending' || projectStore.currentTask.status === 'running')
+  ) {
     connect()
-  } else if (projectStore.currentTask?.id && (projectStore.currentTask?.status === 'completed' || projectStore.currentTask?.status === 'failed')) {
+  } else if (
+    projectStore.currentTask?.id &&
+    (
+      projectStore.currentTask.status === 'completed' ||
+      projectStore.currentTask.status === 'failed' ||
+      projectStore.currentTask.status === 'cancelled'
+    )
+  ) {
     // 已完成/失败任务：通过 API 拉取数据
     await loadHistoricalTodos(projectId.value, projectStore.currentTask.id)
 
@@ -644,6 +757,12 @@ onMounted(async () => {
     console.log('[ReviewExecutionView] No currentTask, SSE will not connect')
   }
 })
+
+onUnmounted(() => {
+  stopStatusPolling()
+  projectStore.stopHeartbeat()
+  disconnect()
+})
 </script>
 
 <template>
@@ -652,6 +771,9 @@ onMounted(async () => {
       <ExecutionStepper :phase="phase" />
 
       <div class="content-area">
+        <div v-if="realtimeNotice" class="realtime-notice">
+          {{ realtimeNotice }}
+        </div>
         <LeftPane
           :phase="phase"
           :steps="timelineSteps"
@@ -667,6 +789,7 @@ onMounted(async () => {
           :task-id="projectStore.currentTask?.id"
           :total-steps="totalSteps"
           :completed-count="completedCount"
+          :progress-percent="progressPercent"
           :findings-count="findingsCount"
           :phase="phase"
           :task-start-time="taskStartTime"
@@ -704,5 +827,19 @@ onMounted(async () => {
   overflow: hidden;
   border: 1px solid var(--line);
   box-shadow: var(--shadow-sm);
+  position: relative;
+}
+
+.realtime-notice {
+  position: absolute;
+  top: 10px;
+  left: 24px;
+  z-index: 2;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg2);
+  color: var(--muted);
+  font-size: 12px;
 }
 </style>

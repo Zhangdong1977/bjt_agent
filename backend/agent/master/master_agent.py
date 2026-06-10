@@ -114,26 +114,50 @@ class MasterAgent:
         })
 
         # Phase 3: 并行执行子代理（受信号量控制）
-        await self._run_sub_agents(todo_service, cancel_event)
+        sub_agent_stats = await self._run_sub_agents(todo_service, cancel_event)
 
         # Skip merge phase if cancelled
         if cancel_event and cancel_event.is_set():
             logger.warning("[MasterAgent.run] Cancelled, skipping merge phase")
             return {"success": False, "error": "Task cancelled"}
 
+        if sub_agent_stats["total"] == 0:
+            logger.error("[MasterAgent.run] No review todos were created")
+            return {"success": False, "error": "No review rules were available"}
+
+        if sub_agent_stats["completed"] == 0:
+            error = "所有子代理审查均失败，未生成有效结果"
+            logger.error("[MasterAgent.run] %s: stats=%s", error, sub_agent_stats)
+            self._send_event("error", {"message": error, "sub_agent_stats": sub_agent_stats})
+            return {
+                "success": False,
+                "error": error,
+                "sub_agent_stats": sub_agent_stats,
+            }
+
         # Phase 4: 简单汇总统计
         self._send_event("merging_started", {"message": "汇总审查结果"})
         merged_result = await self._simple_aggregate(todo_service)
         self._send_event("merging_completed", {"result": merged_result})
 
-        return {
+        response = {
             "success": True,
             "session_id": session_id,
             "total_todos": len(self._todo_items),
+            "sub_agent_stats": sub_agent_stats,
             "merged_result": merged_result,
         }
+        if sub_agent_stats["failed"] > 0:
+            response["warning"] = (
+                f"{sub_agent_stats['failed']} 个子代理审查失败，结果可能不完整"
+            )
+            self._send_event("warning", {
+                "message": response["warning"],
+                "sub_agent_stats": sub_agent_stats,
+            })
+        return response
 
-    async def _run_sub_agents(self, todo_service, cancel_event: Optional[asyncio.Event] = None) -> None:
+    async def _run_sub_agents(self, todo_service, cancel_event: Optional[asyncio.Event] = None) -> dict:
         """并行执行所有子代理（受信号量控制并发数）."""
         max_concurrency = self._max_concurrency
         total = len(self._todo_items)
@@ -156,12 +180,33 @@ class MasterAgent:
         tasks = [_run_with_semaphore(todo) for todo in self._todo_items]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
+        stats = {
+            "total": total,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "max_retries_exceeded": 0,
+            "exceptions": 0,
+        }
+
         for i, r in enumerate(results):
             if isinstance(r, BaseException):
                 logger.error(f"[_run_sub_agents] Task {i+1}/{total} raised {type(r).__name__}: {r}")
+                stats["failed"] += 1
+                stats["exceptions"] += 1
             else:
                 logger.info(f"[_run_sub_agents] Task {i+1}/{total} completed, success={r.get('success')}")
-        logger.info(f"[_run_sub_agents] All {total} tasks completed")
+                if r.get("success"):
+                    stats["completed"] += 1
+                else:
+                    stats["failed"] += 1
+                    error_text = str(r.get("error") or "")
+                    if "cancelled" in error_text.lower():
+                        stats["cancelled"] += 1
+                    if "max retries exceeded" in error_text.lower():
+                        stats["max_retries_exceeded"] += 1
+        logger.info(f"[_run_sub_agents] All {total} tasks completed, stats={stats}")
+        return stats
 
     @staticmethod
     def _cancel_error_message(result: dict | None = None) -> str:
@@ -190,7 +235,10 @@ class MasterAgent:
             if cancel_event and cancel_event.is_set():
                 logger.warning(f"[_run_single_sub_agent] Parent cancel_event set, stopping for todo_id={todo.id}")
                 err_msg = self._cancel_error_message()
-                await task_todo_service.update_todo_status(todo.id, "failed", error_message=err_msg)
+                # Use the function param `todo_service` here: `task_todo_service` is only
+                # assigned at line 201 inside the try, so on the first loop iteration (or
+                # when cancelled before any attempt) referencing it raises NameError.
+                await todo_service.update_todo_status(todo.id, "failed", error_message=err_msg)
                 self._send_event("sub_agent_failed", {
                     "todo_id": todo.id,
                     "error": err_msg,
@@ -287,7 +335,12 @@ class MasterAgent:
                             "error": "Max retries exceeded",
                             "brain_capacity": brain_cap,
                         })
-                        return result
+                        return {
+                            "success": False,
+                            "error": "Max retries exceeded",
+                            "brain_capacity": brain_cap,
+                            "original_result": result,
+                        }
 
                 # 成功
                 findings = result.get("findings", [])

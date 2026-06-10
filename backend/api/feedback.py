@@ -16,9 +16,9 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select, and_, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.deps import CurrentUser, DBSession, get_token_claims, oauth2_scheme
+from backend.api.deps import CurrentUser, DBSession, InteriorUser, get_token_claims, oauth2_scheme, is_interior_user
 from backend.config import get_settings
-from backend.models import Project, ReviewTask, ReviewResult
+from backend.models import Project, ReviewTask, ReviewResult, User
 from backend.experience.models import ExperienceFeedback
 from backend.schemas.feedback import (
     BatchFeedbackRequest,
@@ -44,13 +44,25 @@ settings = get_settings()
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _verify_project(project_id: str, user_id: str, db: AsyncSession) -> Project:
-    """Verify project exists and belongs to the user."""
+async def _verify_project(
+    project_id: str, current_user: User, db: AsyncSession, *, allow_interior: bool = False,
+) -> Project:
+    """Verify project exists and the caller may access it.
+
+    Regular users may only access their own projects. When ``allow_interior``
+    is set, internal users (see :func:`is_interior_user`) may access any
+    project — used by review / dashboard endpoints surfaced on the experience
+    dashboard. User-side submission endpoints keep ``allow_interior=False``.
+    """
     result = await db.execute(
-        select(Project).where(Project.id == project_id, Project.user_id == user_id)
+        select(Project).where(Project.id == project_id)
     )
     project = result.scalar_one_or_none()
     if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if allow_interior and is_interior_user(current_user):
+        return project
+    if project.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
 
@@ -73,15 +85,6 @@ async def _verify_finding(
     return finding
 
 
-def _is_interior_user(current_user) -> bool:
-    """Check if the user has internal status via JWT claims."""
-    try:
-        token = current_user.password_hash  # Not ideal but we don't store raw token
-        return getattr(current_user, "_interior_user", False)
-    except Exception:
-        return False
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -99,7 +102,7 @@ async def submit_feedback(
     current_user: CurrentUser,
 ) -> FeedbackResponse:
     """Submit feedback for a single finding."""
-    await _verify_project(project_id, current_user.id, db)
+    await _verify_project(project_id, current_user, db)
     finding = await _verify_finding(finding_id, project_id, db)
 
     # Only allow feedback on non-compliant findings
@@ -159,7 +162,7 @@ async def get_finding_feedback(
     current_user: CurrentUser,
 ) -> list[FeedbackResponse]:
     """Get feedback history for a specific finding."""
-    await _verify_project(project_id, current_user.id, db)
+    await _verify_project(project_id, current_user, db)
 
     result = await db.execute(
         select(ExperienceFeedback)
@@ -185,7 +188,7 @@ async def batch_confirm_findings(
     current_user: CurrentUser,
 ) -> BatchFeedbackResponse:
     """Batch-confirm all non-compliant findings for a task or sub-agent."""
-    await _verify_project(project_id, current_user.id, db)
+    await _verify_project(project_id, current_user, db)
 
     # Verify task belongs to project
     task_result = await db.execute(
@@ -260,7 +263,7 @@ async def get_feedback_summary(
     current_user: CurrentUser,
 ) -> FeedbackSummaryResponse:
     """Get aggregated feedback statistics for a project."""
-    await _verify_project(project_id, current_user.id, db)
+    await _verify_project(project_id, current_user, db, allow_interior=True)
 
     # Total feedback count
     total_result = await db.execute(
@@ -343,7 +346,7 @@ async def get_feedback_history(
     offset: int = 0,
 ) -> list[FeedbackResponse]:
     """Get paginated feedback history for a project (current user only)."""
-    await _verify_project(project_id, current_user.id, db)
+    await _verify_project(project_id, current_user, db)
 
     result = await db.execute(
         select(ExperienceFeedback)
@@ -373,7 +376,7 @@ async def get_pending_feedback(
     Returns feedback records with status='pending' that need admin review.
     Interior users can review and accept/reject these feedbacks.
     """
-    await _verify_project(project_id, current_user.id, db)
+    await _verify_project(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(ExperienceFeedback)
@@ -403,7 +406,7 @@ async def get_all_feedback(
 
     Supports filtering by status and feedback_type.
     """
-    await _verify_project(project_id, current_user.id, db)
+    await _verify_project(project_id, current_user, db, allow_interior=True)
 
     query = select(ExperienceFeedback).where(
         ExperienceFeedback.project_id == project_id,
@@ -436,7 +439,7 @@ async def review_feedback(
     current_user: CurrentUser,
 ) -> FeedbackResponse:
     """Admin endpoint to accept or reject pending feedback."""
-    await _verify_project(project_id, current_user.id, db)
+    await _verify_project(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(ExperienceFeedback).where(
@@ -488,7 +491,7 @@ async def batch_review_feedback(
 
     Optionally filter by task_id or batch_id to narrow the scope.
     """
-    await _verify_project(project_id, current_user.id, db)
+    await _verify_project(project_id, current_user, db, allow_interior=True)
 
     # Build query for pending feedback
     query = select(ExperienceFeedback).where(
@@ -550,10 +553,10 @@ async def batch_review_feedback(
 async def get_experience_dashboard(
     project_id: str,
     db: DBSession,
-    current_user: CurrentUser,
+    current_user: InteriorUser,
 ) -> DashboardResponse:
     """Get experience dashboard data for a project."""
-    await _verify_project(project_id, current_user.id, db)
+    await _verify_project(project_id, current_user, db, allow_interior=True)
 
     # Feedback stats
     total_result = await db.execute(

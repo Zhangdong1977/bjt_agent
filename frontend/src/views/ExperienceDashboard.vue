@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { feedbackApi } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import type { FeedbackResponse, FeedbackSummary, ProjectFeedbackSummary } from '@/types'
 import FeedbackReviewCard from '@/components/feedback/FeedbackReviewCard.vue'
 
 const authStore = useAuthStore()
+const router = useRouter()
 const loading = ref(true)
 const summary = ref<FeedbackSummary | null>(null)
 const recentFeedback = ref<FeedbackResponse[]>([])
@@ -163,6 +165,14 @@ async function loadDashboard(pid: string) {
   }
 }
 
+function goToProjectDetail(proj: ProjectFeedbackSummary) {
+  router.push({
+    name: 'review-results',
+    params: { id: proj.project_id },
+    query: { from: 'experience' },
+  })
+}
+
 function clearProject() {
   projectId.value = ''
   summary.value = null
@@ -231,7 +241,7 @@ function formatDate(dateStr: string): string {
 <template>
   <div class="experience-dashboard">
     <div class="dashboard-header">
-      <h2>经验仪表盘</h2>
+      <h2>标书复盘</h2>
       <p class="dashboard-desc">审查经验自学习系统的运行状态与反馈审核</p>
     </div>
 
@@ -300,6 +310,7 @@ function formatDate(dateStr: string): string {
                   <th class="num-col">已审核</th>
                   <th class="num-col">待审核</th>
                   <th>创建时间</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -307,7 +318,6 @@ function formatDate(dateStr: string): string {
                   v-for="proj in projectList"
                   :key="proj.project_id"
                   class="project-row"
-                  @click="loadDashboard(proj.project_id)"
                 >
                   <td class="username-cell">{{ proj.username }}</td>
                   <td class="project-name-cell">{{ proj.project_name }}</td>
@@ -321,6 +331,16 @@ function formatDate(dateStr: string): string {
                     <span v-else class="num-zero">0</span>
                   </td>
                   <td class="time-cell">{{ formatDate(proj.created_at) }}</td>
+                  <td class="action-cell">
+                    <button
+                      class="row-action-btn detail-btn"
+                      @click.stop="goToProjectDetail(proj)"
+                    >查看详情</button>
+                    <button
+                      class="row-action-btn feedback-btn"
+                      @click.stop="loadDashboard(proj.project_id)"
+                    >反馈处理</button>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -358,7 +378,7 @@ function formatDate(dateStr: string): string {
 
     <!-- No project selected state (non-interior fallback) -->
     <div v-if="!projectId && !loading && !isInteriorUser" class="dashboard-empty">
-      <p>请联系管理员查看经验仪表盘数据</p>
+      <p>请联系管理员查看标书复盘数据</p>
     </div>
 
     <!-- Back to project list -->
@@ -1117,6 +1137,39 @@ function formatDate(dateStr: string): string {
   font-size: 11px;
   color: var(--muted);
   width: 90px;
+}
+
+.action-cell {
+  white-space: nowrap;
+}
+
+.row-action-btn {
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.row-action-btn:hover {
+  opacity: 0.85;
+}
+
+.row-action-btn + .row-action-btn {
+  margin-left: 8px;
+}
+
+.detail-btn {
+  background: transparent;
+  color: var(--blue);
+  border-color: var(--blue);
+}
+
+.feedback-btn {
+  background: var(--blue);
+  color: #fff;
 }
 
 .pending-badge {

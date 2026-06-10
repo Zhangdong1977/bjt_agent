@@ -79,6 +79,7 @@ export interface ReviewTaskListItem {
   started_at: string | null;
   completed_at: string | null;
   duration_seconds: number | null;
+  error_message: string | null;
   created_at: string;
 }
 

@@ -357,7 +357,6 @@ export const useProjectStore = defineStore("project", () => {
     resetAgentSteps();
     try {
       currentTask.value = await reviewApi.start(currentProject.value.id);
-      connectSSE(currentTask.value.id);
     } finally {
       reviewLoading.value = false;
     }
@@ -584,7 +583,7 @@ export const useProjectStore = defineStore("project", () => {
         started_at: task.started_at,
         completed_at: task.completed_at,
         duration_seconds: task.duration_seconds ?? null,
-        error_message: null,
+        error_message: task.error_message ?? null,
         created_at: task.created_at,
       };
     }

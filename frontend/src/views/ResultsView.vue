@@ -12,6 +12,7 @@ const router = useRouter()
 const projectStore = useProjectStore()
 
 const projectId = computed(() => route.params.id as string)
+const fromExperience = computed(() => route.query.from === 'experience')
 const selectedTaskId = ref<string>('')
 const todos = ref<any[]>([])
 const taskResults = ref<ReviewResponse | null>(null)
@@ -77,7 +78,7 @@ function goToTaskExecution() {
 }
 
 function goBack() {
-  router.push({ name: 'history' })
+  router.push({ name: fromExperience.value ? 'experience-dashboard' : 'history' })
 }
 
 async function startNewReview() {
@@ -106,7 +107,9 @@ async function startNewReview() {
   <div class="results-view">
     <main class="content">
       <a-breadcrumb class="breadcrumb">
-        <a-breadcrumb-item><a @click="goBack">历史标书</a></a-breadcrumb-item>
+        <a-breadcrumb-item>
+          <a @click="goBack">{{ fromExperience ? '标书复盘' : '历史标书' }}</a>
+        </a-breadcrumb-item>
         <a-breadcrumb-item>审查结果</a-breadcrumb-item>
       </a-breadcrumb>
 
@@ -121,7 +124,11 @@ async function startNewReview() {
         <button class="view-task-btn" :disabled="!selectedTaskId" @click="goToTaskExecution">
           查看时间线
         </button>
-        <button class="view-task-btn restart-btn" @click="startNewReview">
+        <button
+          v-if="!fromExperience"
+          class="view-task-btn restart-btn"
+          @click="startNewReview"
+        >
           重新审查
         </button>
       </div>

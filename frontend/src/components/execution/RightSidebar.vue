@@ -5,6 +5,7 @@ import { reviewApi } from '@/api/client'
 const props = defineProps<{
   totalSteps: number
   completedCount: number
+  progressPercent?: number
   findingsCount: number
   phase: 'pending' | 'running' | 'completed' | 'failed'
   taskStartTime?: number
@@ -19,6 +20,7 @@ const emit = defineEmits<{
 }>()
 
 const isAbandoning = ref(false)
+const cancelError = ref<string | null>(null)
 
 // 任务总运行时间
 const totalRuntime = ref(0)
@@ -79,11 +81,13 @@ async function abandonReview() {
   if (isAbandoning.value) return
   if (!props.projectId || !props.taskId) return
   isAbandoning.value = true
+  cancelError.value = null
   try {
     await reviewApi.cancel(props.projectId, props.taskId)
     emit('cancelled')
   } catch (error) {
     console.error('放弃审查失败:', error)
+    cancelError.value = '放弃检查失败，请稍后重试'
   } finally {
     isAbandoning.value = false
   }
@@ -112,6 +116,21 @@ function viewResults() {
     <!-- 执行统计 -->
     <div class="sidebar-section">
       <div class="section-title">执行统计</div>
+      <!-- 整体进度条：基于子代理完成情况 -->
+      <div class="progress-block">
+        <div class="progress-header">
+          <span class="progress-label">整体进度</span>
+          <span class="progress-pct">{{ progressPercent ?? 0 }}%</span>
+        </div>
+        <div class="progress-bar">
+          <div
+            class="progress-fill"
+            :class="{ 'fill-done': phase === 'completed', 'fill-fail': phase === 'failed' }"
+            :style="{ width: `${progressPercent ?? 0}%` }"
+          ></div>
+        </div>
+        <div class="progress-meta">{{ completedCount }} / {{ totalSteps }} 子代理</div>
+      </div>
       <div class="stats-grid">
         <div class="stat-box">
           <div class="stat-val sv-cyan">{{ totalSteps }}</div>
@@ -151,6 +170,7 @@ function viewResults() {
         >
           {{ isAbandoning ? '放弃中...' : '放弃检查' }}
         </button>
+        <div v-if="cancelError" class="cancel-error">{{ cancelError }}</div>
       </div>
     </div>
   </div>
@@ -225,6 +245,62 @@ function viewResults() {
   50% { opacity: 0.5; transform: scale(0.8); }
 }
 
+/* 整体进度条 */
+.progress-block {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.progress-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.progress-pct {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--blue);
+}
+
+.progress-bar {
+  height: 6px;
+  background: var(--bg);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--blue);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.progress-fill.fill-done {
+  background: var(--green);
+}
+
+.progress-fill.fill-fail {
+  background: var(--red);
+}
+
+.progress-meta {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
 /* 统计网格 */
 .stats-grid {
   display: grid;
@@ -266,7 +342,14 @@ function viewResults() {
 /* 操作按钮 */
 .actions {
   display: flex;
+  flex-direction: column;
   gap: 8px;
+}
+
+.cancel-error {
+  color: var(--red);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .btn {

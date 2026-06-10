@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.deps import CurrentUser, DBSession
+from backend.api.deps import DBSession, InteriorUser
 from backend.experience.models import ExperienceCase, ExperienceFeedback, ExperienceSkill, ExperienceClusterMembership
 from backend.models import Project, ReviewTask, User
 from backend.schemas.feedback import PaginatedProjectSummary, ProjectFeedbackSummary
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/experience", tags=["Experience"])
 @router.get("/skills")
 async def list_skills(
     db: DBSession,
-    current_user: CurrentUser,
+    current_user: InteriorUser,
     group_id: str | None = None,
     skill_form: str | None = None,
     include_retired: bool = False,
@@ -61,7 +61,7 @@ async def list_skills(
 @router.get("/cases")
 async def list_cases(
     db: DBSession,
-    current_user: CurrentUser,
+    current_user: InteriorUser,
     project_id: str | None = None,
     group_id: str | None = None,
     limit: int = 50,
@@ -102,7 +102,7 @@ async def list_cases(
 @router.get("/clusters")
 async def list_clusters(
     db: DBSession,
-    current_user: CurrentUser,
+    current_user: InteriorUser,
     group_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
@@ -133,7 +133,7 @@ async def list_clusters(
 @router.get("/quality-trend")
 async def quality_trend(
     db: DBSession,
-    current_user: CurrentUser,
+    current_user: InteriorUser,
     group_id: str | None = None,
     days: int = 30,
 ) -> dict:
@@ -184,7 +184,7 @@ async def quality_trend(
 @router.get("/projects-summary", response_model=PaginatedProjectSummary)
 async def projects_feedback_summary(
     db: DBSession,
-    current_user: CurrentUser,
+    current_user: InteriorUser,
     limit: int = 20,
     offset: int = 0,
     time_range: str | None = None,
@@ -287,7 +287,7 @@ async def projects_feedback_summary(
 async def trigger_experience_extraction(
     task_id: str,
     db: DBSession,
-    current_user: CurrentUser,
+    current_user: InteriorUser,
     force: bool = Query(default=False, description="强制重新提取，即使已有 ExperienceCase"),
 ) -> dict:
     """管理员手动触发经验提取。

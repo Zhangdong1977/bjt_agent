@@ -5,6 +5,7 @@ import { message } from 'ant-design-vue'
 import type { UploadFile } from 'ant-design-vue'
 import { UploadOutlined, FileTextOutlined, PlusOutlined, SyncOutlined, CheckCircleOutlined, ExclamationCircleOutlined } from '@ant-design/icons-vue'
 import KnowledgeDocDetail from '@/components/KnowledgeDocDetail.vue'
+import { isLegacyDocFile, legacyDocWarning } from '@/utils/uploadValidation'
 
 interface KnowledgeDoc {
   id: string
@@ -90,6 +91,12 @@ async function fetchIndexStatus() {
 async function handleUpload(info: { file: UploadFile }) {
   const file = info.file.originFileObj as File
   if (!file) return
+
+  // .doc 旧版格式后端无法解析，提前拦截并给出友好提示
+  if (isLegacyDocFile(file)) {
+    message.warning(legacyDocWarning(file.name))
+    return
+  }
 
   uploading.value = true
   uploadProgress.value = 0
@@ -325,7 +332,7 @@ function getScoreColor(score: number): string {
           <upload-outlined />
         </p>
         <p class="ant-upload-text">点击或拖拽上传企业产品或资质文档</p>
-        <p class="ant-upload-hint">支持 PDF、Word 格式</p>
+        <p class="ant-upload-hint">支持 PDF、Word（.docx）格式</p>
       </a-upload-dragger>
     </a-drawer>
 

@@ -89,8 +89,8 @@ class TestSubAgentExecutor:
         """Create a SubAgentExecutor instance."""
         return SubAgentExecutor(
             todo_item=mock_todo_item,
-            tender_doc_path="/path/to/tender.md",
-            bid_doc_path="/path/to/bid.md",
+            tender_docs=[("tender.md", "/path/to/tender.md")],
+            bid_docs=[("bid.md", "/path/to/bid.md")],
             user_id="user_789",
             session_factory=None,
             event_callback=MagicMock(),
@@ -126,15 +126,16 @@ class TestSubAgentExecutor:
 
             MockAgent.assert_called_once_with(
                 project_id="project_456",
-                tender_doc_path="/path/to/tender.md",
-                bid_doc_path="/path/to/bid.md",
+                tender_docs=[("tender.md", "/path/to/tender.md")],
+                bid_docs=[("bid.md", "/path/to/bid.md")],
                 user_id="user_789",
                 rule_doc_path="/path/to/rules.md",
                 event_callback=executor.event_callback,
                 logger=None,
                 max_steps=75,
                 cancel_event=None,
-                heartbeat_timeout=60,
+                heartbeat_timeout=300,
+                heartbeat_session_factory=None,
             )
             mock_agent.initialize.assert_called_once()
             assert executor._agent == mock_agent
@@ -182,6 +183,10 @@ class TestSubAgentExecutor:
             mock_agent.close = AsyncMock()
             mock_agent.add_user_message = MagicMock()
             mock_agent.messages = []  # No write_file calls in this test
+            mock_agent._max_steps_exceeded = False
+            mock_agent._total_steps = 3
+            mock_agent._parsed_check_items = []
+            mock_agent._output_md_path = None
 
             async def _create_side_effect(*args, **kwargs):
                 executor._agent = mock_agent
