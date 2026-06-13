@@ -189,6 +189,26 @@ class BidReviewAgent(BaseAgent):
         import subprocess as _subprocess
         logger = self._logger or logging.getLogger(__name__)
 
+        # 图像理解后端：按 settings.image_understanding_provider 独立注册 understand_image。
+        # baidu / volcengine 由本地实现提供该工具，注册后提前 return，无需启动 MiniMax MCP 子进程——
+        # MiniMax MCP 的唯一用途是 understand_image（system prompt 不依赖其 web_search）。
+        # 这避免了生产环境 uvx 子进程连接失败/超时（曾导致 understand_image 既无 MCP 版、
+        # 百度覆盖又因嵌套在 MCP try 块内被一起跳过 → "Unknown tool: understand_image"）。
+        iu_provider = settings.image_understanding_provider
+        if iu_provider == "baidu":
+            from backend.agent.tools.baidu_ocr import BaiduOcrTool
+            vision_tool = BaiduOcrTool()
+            self.tools[vision_tool.name] = vision_tool
+            logger.info("[BidReviewAgent.initialize] Registered understand_image = Baidu OCR (provider=baidu); skipping MiniMax MCP")
+            return  # 本地已提供 understand_image，跳过 MiniMax MCP 加载
+        elif iu_provider == "volcengine" or settings.llm_provider == "volcengine":
+            from backend.agent.tools.volcengine_vision import VolcengineVisionTool
+            vision_tool = VolcengineVisionTool()
+            self.tools[vision_tool.name] = vision_tool
+            logger.info("[BidReviewAgent.initialize] Registered understand_image = Volcengine vision (provider=volcengine); skipping MiniMax MCP")
+            return  # 同上，跳过 MiniMax MCP 加载
+
+        # 以下仅 provider=minimax（默认）执行：understand_image 由 MiniMax MCP 提供。
         # Ensure MINIMAX_API_KEY and MINIMAX_API_HOST are set in os.environ
         # before loading MCP tools. This is required because:
         # 1. Celery workers don't inherit .env file automatically
