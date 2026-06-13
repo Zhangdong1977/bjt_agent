@@ -20,6 +20,7 @@ docs/superpowers
 docs/questiontobefixed.md
 .superpowers/
 doc_viewer_test.png
+CLAUDE.md
 
 # Python
 .pytest_cache/
