@@ -95,7 +95,7 @@ build_frontend_only() {
 start_celery_review() {
     log "Starting Celery Worker (review queue)..."
     cd "$BACKEND_DIR"
-    nohup celery -A celery_app worker --loglevel=info --concurrency=4 -Q review > "$SCRIPT_DIR/logs/celery_review.log" 2>&1 &
+    nohup celery -A celery_app worker --loglevel=info --concurrency=4 -Q review --logfile="$SCRIPT_DIR/logs/celery_review.log" > /dev/null 2>&1 &
     save_pid "celery_review" "$!"
     log "Celery Review started (PID: $(get_pid celery_review))"
 }
@@ -103,7 +103,7 @@ start_celery_review() {
 start_celery_parser() {
     log "Starting Celery Worker (parser queue)..."
     cd "$BACKEND_DIR"
-    nohup celery -A celery_app worker --loglevel=info --concurrency=4 -Q parser --max-memory-per-child=2000000 > "$SCRIPT_DIR/logs/celery_parser.log" 2>&1 &
+    nohup celery -A celery_app worker --loglevel=info --concurrency=4 -Q parser --max-memory-per-child=2000000 --logfile="$SCRIPT_DIR/logs/celery_parser.log" > /dev/null 2>&1 &
     save_pid "celery_parser" "$!"
     log "Celery Parser started (PID: $(get_pid celery_parser))"
 }
@@ -111,7 +111,7 @@ start_celery_parser() {
 start_celery_beat() {
     log "Starting Celery Beat (task scheduler)..."
     cd "$BACKEND_DIR"
-    nohup celery -A celery_app beat --loglevel=info > "$SCRIPT_DIR/logs/celery_beat.log" 2>&1 &
+    nohup celery -A celery_app beat --loglevel=info --logfile="$SCRIPT_DIR/logs/celery_beat.log" > /dev/null 2>&1 &
     save_pid "celery_beat" "$!"
     log "Celery Beat started (PID: $(get_pid celery_beat))"
 }
@@ -143,7 +143,7 @@ start_backend() {
             --access-logfile "$SCRIPT_DIR/logs/backend_access.log" \
             --error-logfile "$SCRIPT_DIR/logs/backend_error.log" \
             --pid "$SCRIPT_DIR/pids/backend.pid"
-    ) > "$SCRIPT_DIR/logs/backend.log" 2>&1 &
+    ) > /dev/null 2>&1 &
 
     save_pid "backend" "$!"
     log "Backend API started (PID: $(get_pid backend))"
@@ -455,11 +455,11 @@ do_logs() {
         echo "=== Celery Parser Log ===" && tail -50 "$SCRIPT_DIR/logs/celery_parser.log" 2>/dev/null || echo "No log file"
     else
         case "$service" in
-            backend) tail -f "$SCRIPT_DIR/logs/backend.log" ;;
+            backend) tail -F "$SCRIPT_DIR/logs/backend.log" ;;
             frontend) tail -f "$SCRIPT_DIR/logs/frontend.log" ;;
-            celery_review) tail -f "$SCRIPT_DIR/logs/celery_review.log" ;;
-            celery_parser) tail -f "$SCRIPT_DIR/logs/celery_parser.log" ;;
-            celery_beat) tail -f "$SCRIPT_DIR/logs/celery_beat.log" ;;
+            celery_review) tail -F "$SCRIPT_DIR/logs/celery_review.log" ;;
+            celery_parser) tail -F "$SCRIPT_DIR/logs/celery_parser.log" ;;
+            celery_beat) tail -F "$SCRIPT_DIR/logs/celery_beat.log" ;;
             rag_memory) tail -f "$SCRIPT_DIR/logs/rag_memory.log" ;;
             *) echo "Unknown service: $service" ;;
         esac

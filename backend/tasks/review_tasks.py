@@ -154,7 +154,7 @@ def _publish_event(task_id: str, event_type: str, data: dict, session_factory=No
             instead of creating new engines/threads.
     """
     import traceback
-    logger.info(f"[_publish_event] ENTRY: task_id={task_id}, event_type={event_type}")
+    logger.debug(f"[_publish_event] ENTRY: task_id={task_id}, event_type={event_type}")
     _task_last_event_times[task_id] = _time.time()
     try:
         import redis
@@ -166,8 +166,8 @@ def _publish_event(task_id: str, event_type: str, data: dict, session_factory=No
         # Debug: log tool_results if present
         if event_type == "sub_agent_step" and "tool_results" in data:
             tr_preview = str(data.get("tool_results"))[:500]
-            logger.info(f"[_publish_event] tool_results preview: {tr_preview}")
-        logger.info(f"[_publish_event] Publishing to stream: {stream_key}, event_type={event_type}, data_keys={list(data.keys())}")
+            logger.debug(f"[_publish_event] tool_results preview: {tr_preview}")
+        logger.debug(f"[_publish_event] Publishing to stream: {stream_key}, event_type={event_type}, data_keys={list(data.keys())}")
 
         r = _get_review_redis()
         try:

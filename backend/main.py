@@ -2,9 +2,11 @@
 
 import asyncio
 import logging
+import logging.config
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,15 +22,64 @@ from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-# Configure logging to output to stdout (captured by uvicorn)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    stream=sys.stdout,
-)
-# Set specific loggers to DEBUG level for SSE service
-logging.getLogger("backend.services.sse_service").setLevel(logging.DEBUG)
-logging.getLogger("backend.api.events").setLevel(logging.DEBUG)
+# 应用日志配置：写入滚动文件 scripts/logs/backend.log（50MB × 5 份）。
+# ConcurrentRotatingFileHandler 保证多 worker 进程下轮转安全（与 Celery 一致）。
+# uvicorn/gunicorn 自身的控制台输出由启动脚本重定向，不经过此 handler。
+_BACKEND_LOG_DIR = Path(__file__).resolve().parent.parent / "scripts" / "logs"
+
+
+def _setup_app_logging() -> None:
+    """应用日志配置（dictConfig）。
+
+    在模块导入时调用一次；并在 lifespan 启动时再调用一次。
+    之所以在 lifespan 重申：uvicorn/gunicorn 在 worker 启动阶段会自行配置
+    logging，可能覆盖模块级的 root handler。lifespan 启动是 ASGI 生命周期里
+    最后执行的一步，此时重新应用 dictConfig 可确保滚动文件 handler 生效。
+    """
+    _BACKEND_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    logging.config.dictConfig({
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "standard": {
+                "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            },
+        },
+        "handlers": {
+            "backend_file": {
+                "class": "concurrent_log_handler.ConcurrentRotatingFileHandler",
+                "filename": str(_BACKEND_LOG_DIR / "backend.log"),
+                "maxBytes": 50 * 1024 * 1024,
+                "backupCount": 5,
+                "formatter": "standard",
+                "encoding": "utf-8",
+            },
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "standard",
+                "stream": "ext://sys.stdout",
+            },
+        },
+        "root": {
+            "handlers": ["backend_file", "console"],
+            "level": "INFO",
+        },
+        "loggers": {
+            # SSE 事件高频，降为 INFO（曾是 DEBUG，是 backend.log 膨胀主因）
+            "backend.services.sse_service": {"level": "INFO"},
+            "backend.api.events": {"level": "INFO"},
+            # 高频 HTTP 请求日志
+            "httpx": {"level": "WARNING"},
+            "httpcore": {"level": "WARNING"},
+            "uvicorn": {"level": "INFO"},
+            "uvicorn.access": {"level": "INFO"},
+            "uvicorn.error": {"level": "INFO"},
+        },
+    })
+
+
+# 模块级首次配置（直接运行 / 普通导入时生效）
+_setup_app_logging()
 
 settings = get_settings()
 
@@ -37,6 +88,9 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown events."""
     logger = logging.getLogger(__name__)
+    # 重申日志配置：确保 uvicorn/gunicorn worker 启动后滚动文件 handler 仍在
+    _setup_app_logging()
+    logger.info("[backend.main] lifespan startup: logging reconfigured (rotating file handler active)")
     # Startup
     await init_db()
 

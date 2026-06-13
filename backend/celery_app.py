@@ -3,6 +3,7 @@
 from celery import Celery
 
 from backend.config import get_settings
+import backend.logging_config  # noqa: F401  # 注册 setup_logging 信号，接管 worker 日志（滚动文件）
 
 settings = get_settings()
 
@@ -26,6 +27,11 @@ celery_app.conf.update(
     enable_utc=True,
     task_track_started=True,
     worker_prefetch_multiplier=1,
+    # 不把 stdout/stderr 包成 LoggingProxy —— 避免 Mini-Agent 的 print() 噪声
+    # （完整 LLM thinking/响应）被写入日志。这些内容已在 sub_agent_*.log、
+    # ~/.mini-agent/log、interaction JSON 中保留。worker 自身的 print 走进程
+    # stdout，由启动脚本重定向到 /dev/null 丢弃。
+    worker_redirect_stdouts=False,
     # Safety nets to prevent worker hangs
     task_time_limit=28800,           # 8h hard limit — large tender docs need long parse time
     worker_max_tasks_per_child=10,   # Recycle worker process every 10 tasks

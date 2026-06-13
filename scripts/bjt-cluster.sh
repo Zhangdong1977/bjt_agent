@@ -187,7 +187,8 @@ start_review_workers() {
             --hostname="$hostname" \
             --max-tasks-per-child="$max_tasks" \
             --max-memory-per-child="$max_mem" \
-            > "$SCRIPT_DIR/logs/${NODE_NAME}_${worker_name}.log" 2>&1 &
+            --logfile="$SCRIPT_DIR/logs/${NODE_NAME}_${worker_name}.log" \
+            > /dev/null 2>&1 &
 
         save_pid "$worker_name" "$!"
         log "Review Worker $i started (PID: $(get_pid "$worker_name"))"
@@ -219,7 +220,8 @@ start_parser_workers() {
             -Q parser \
             --hostname="$hostname" \
             --max-memory-per-child="$max_mem" \
-            > "$SCRIPT_DIR/logs/${NODE_NAME}_${worker_name}.log" 2>&1 &
+            --logfile="$SCRIPT_DIR/logs/${NODE_NAME}_${worker_name}.log" \
+            > /dev/null 2>&1 &
 
         save_pid "$worker_name" "$!"
         log "Parser Worker $i started (PID: $(get_pid "$worker_name"))"

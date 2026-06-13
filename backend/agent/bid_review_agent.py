@@ -672,11 +672,11 @@ class BidReviewAgent(BaseAgent):
         """Send an event via callback if available."""
         import logging
         logger = self._logger or logging.getLogger(__name__)
-        logger.info(f"[BidReviewAgent._send_event] type={event_type}, data_keys={list(data.keys())}, callback_exists={self.event_callback is not None}")
+        logger.debug(f"[BidReviewAgent._send_event] type={event_type}, data_keys={list(data.keys())}, callback_exists={self.event_callback is not None}")
         if self.event_callback:
             try:
                 self.event_callback(event_type, data)
-                logger.info(f"[BidReviewAgent._send_event] Successfully sent event type={event_type}")
+                logger.debug(f"[BidReviewAgent._send_event] Successfully sent event type={event_type}")
             except Exception as e:
                 logger.error(f"[BidReviewAgent._send_event] Failed to send event: {e}")
 
@@ -905,7 +905,7 @@ class BidReviewAgent(BaseAgent):
                 "tool_results": [],
                 "timestamp": datetime.now(),
             }
-            logger.info(f"[BidReviewAgent._emit_event] step_start for step {step}")
+            logger.debug(f"[BidReviewAgent._emit_event] step_start for step {step}")
 
         elif event_type == "llm_output":
             # Accumulate LLM output as content/thinking
@@ -933,13 +933,13 @@ class BidReviewAgent(BaseAgent):
                     if tc.get("name") == "write_file":
                         self._write_file_called = True
                         break
-                logger.info(f"[BidReviewAgent._emit_event] llm_output for step {step}, tool_calls_count={len(data.get('tool_calls', []))}")
+                logger.debug(f"[BidReviewAgent._emit_event] llm_output for step {step}, tool_calls_count={len(data.get('tool_calls', []))}")
 
         elif event_type == "tool_call_start":
             # Tool call started - tool_calls already accumulated from llm_output
             step = data.get("step", 0)
             if step in self._step_data:
-                logger.info(f"[BidReviewAgent._emit_event] tool_call_start for step {step}, tool={data.get('tool')}")
+                logger.debug(f"[BidReviewAgent._emit_event] tool_call_start for step {step}, tool={data.get('tool')}")
 
         elif event_type == "tool_call_end":
             # Accumulate tool result
@@ -954,7 +954,7 @@ class BidReviewAgent(BaseAgent):
                 }
                 self._step_data[step]["tool_results"].append(tool_result)
                 result_preview = str(data.get("result"))[:200] if data.get("result") else "None"
-                logger.info(f"[BidReviewAgent._emit_event] tool_call_end for step {step}, tool={data.get('tool')}, success={data.get('success')}, result={result_preview}")
+                logger.debug(f"[BidReviewAgent._emit_event] tool_call_end for step {step}, tool={data.get('tool')}, success={data.get('success')}, result={result_preview}")
 
         elif event_type == "step_complete":
             # Emit consolidated sub_agent_step event
@@ -987,13 +987,13 @@ class BidReviewAgent(BaseAgent):
                 }
                 # Debug: log what we're actually sending
                 for i, tr in enumerate(frontend_tool_results):
-                    logger.info(f"[BidReviewAgent._emit_event] step_complete step={step}, tool_result[{i}]: name={tr['name']}, result_keys={list(tr['result'].keys())}, content_len={len(str(tr['result'].get('content', '')))}")
+                    logger.debug(f"[BidReviewAgent._emit_event] step_complete step={step}, tool_result[{i}]: name={tr['name']}, result_keys={list(tr['result'].keys())}, content_len={len(str(tr['result'].get('content', '')))}")
 
                 # Send consolidated event via callback
                 if self.event_callback:
                     try:
                         self.event_callback("sub_agent_step", consolidated_event)
-                        logger.info(f"[BidReviewAgent._emit_event] Emitted sub_agent_step for step {step}")
+                        logger.debug(f"[BidReviewAgent._emit_event] Emitted sub_agent_step for step {step}")
                     except Exception as e:
                         logger.error(f"[BidReviewAgent._emit_event] Failed to emit sub_agent_step: {e}")
 
@@ -1013,7 +1013,7 @@ class BidReviewAgent(BaseAgent):
                         exc_info=True,
                     )
 
-            logger.info(f"[BidReviewAgent._emit_event] step_complete for step {step}")
+            logger.debug(f"[BidReviewAgent._emit_event] step_complete for step {step}")
 
             # Duplicate action detection: check and inject warning if needed
             if captured_step_tool_calls:
@@ -1032,7 +1032,7 @@ class BidReviewAgent(BaseAgent):
             if self.event_callback:
                 try:
                     self.event_callback("completed", data)
-                    logger.info(f"[BidReviewAgent._emit_event] Forwarded completed event")
+                    logger.debug(f"[BidReviewAgent._emit_event] Forwarded completed event")
                 except Exception as e:
                     logger.error(f"[BidReviewAgent._emit_event] Failed to emit completed: {e}")
 
@@ -1206,10 +1206,10 @@ class BidReviewAgent(BaseAgent):
             self.messages[0] = Message(role="system", content=system_prompt)
             logger.info(f"[BidReviewAgent.run_review] System prompt built, size={len(system_prompt)} chars")
 
-            # Log full system prompt
-            logger.info(f"[BidReviewAgent.run_review] === SYSTEM PROMPT START ===")
-            logger.info(f"\n{system_prompt}")
-            logger.info(f"[BidReviewAgent.run_review] === SYSTEM PROMPT END ===")
+            # Log full system prompt (DEBUG: large content, needed only for deep debugging)
+            logger.debug(f"[BidReviewAgent.run_review] === SYSTEM PROMPT START ===")
+            logger.debug(f"\n{system_prompt}")
+            logger.debug(f"[BidReviewAgent.run_review] === SYSTEM PROMPT END ===")
 
             # 3. Build task prompt with output md path
             # Include task_id + rule_stem to avoid collision:
@@ -1280,10 +1280,10 @@ class BidReviewAgent(BaseAgent):
             self.add_user_message(task)
             logger.info(f"[BidReviewAgent.run_review] Task prompt added, output_md_path={output_md_path}")
 
-            # Log full task prompt
-            logger.info(f"[BidReviewAgent.run_review] === TASK PROMPT START ===")
-            logger.info(f"\n{task}")
-            logger.info(f"[BidReviewAgent.run_review] === TASK PROMPT END ===")
+            # Log full task prompt (DEBUG: large content, needed only for deep debugging)
+            logger.debug(f"[BidReviewAgent.run_review] === TASK PROMPT START ===")
+            logger.debug(f"\n{task}")
+            logger.debug(f"[BidReviewAgent.run_review] === TASK PROMPT END ===")
 
             # Create cancel event if not provided
             if self.cancel_event is None:
@@ -1329,8 +1329,11 @@ class BidReviewAgent(BaseAgent):
                 # Write interaction log even if heartbeat monitor was cancelled
                 self._write_interaction_log()
 
-            # Log full message history
-            logger.info(f"[BidReviewAgent.run_review] === FULL MESSAGE HISTORY START ===")
+            # Log full message history (DEBUG: largest per-run volume source —
+            # 5KB content + 2KB thinking preview per message. Needed only for
+            # deep debugging; full content also preserved in sub_agent_*.log
+            # and the interaction JSON log.)
+            logger.debug(f"[BidReviewAgent.run_review] === FULL MESSAGE HISTORY START ===")
             for i, msg in enumerate(self.messages):
                 msg_header = f"[Message {i}] role={msg.role}"
                 if msg.thinking:
@@ -1339,14 +1342,14 @@ class BidReviewAgent(BaseAgent):
                     msg_header += f", tool_calls={[tc.function.name for tc in msg.tool_calls]}"
                 if msg.tool_call_id:
                     msg_header += f", tool_call_id={msg.tool_call_id}"
-                logger.info(f"[BidReviewAgent.run_review] {msg_header}")
+                logger.debug(f"[BidReviewAgent.run_review] {msg_header}")
                 if msg.content:
                     content_preview = msg.content[:5000] + "..." if len(msg.content) > 5000 else msg.content
-                    logger.info(f"[BidReviewAgent.run_review] [Message {i}] content:\n{content_preview}")
+                    logger.debug(f"[BidReviewAgent.run_review] [Message {i}] content:\n{content_preview}")
                 if msg.thinking:
                     thinking_preview = msg.thinking[:2000] + "..." if len(msg.thinking) > 2000 else msg.thinking
-                    logger.info(f"[BidReviewAgent.run_review] [Message {i}] thinking:\n{thinking_preview}")
-            logger.info(f"[BidReviewAgent.run_review] === FULL MESSAGE HISTORY END ===")
+                    logger.debug(f"[BidReviewAgent.run_review] [Message {i}] thinking:\n{thinking_preview}")
+            logger.debug(f"[BidReviewAgent.run_review] === FULL MESSAGE HISTORY END ===")
 
             # 5. Post-process: extract findings from md file
             # Log whether WriteTool was ever called (diagnostic)

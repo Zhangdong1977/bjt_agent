@@ -33,6 +33,9 @@ def setup_sub_agent_logger(todo_id: str, log_dir: Path) -> logging.Logger:
     )
     fh.setFormatter(formatter)
     logger.addHandler(fh)
+    # 子代理 logger 自有 per-todo 文件 handler，关闭向 root 传播，避免 DEBUG 行
+    # 重复写入 celery_review.log（主 worker 日志）。调试信息仍保留在本文件中。
+    logger.propagate = False
     return logger
 
 

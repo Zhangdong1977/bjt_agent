@@ -94,7 +94,7 @@ is_running() {
 start_celery_review() {
     log "Starting Celery Worker (review queue)..."
     cd "$BACKEND_DIR"
-    celery -A celery_app worker --loglevel=info --concurrency=3 -Q review --max-tasks-per-child=5 --max-memory-per-child=6000000 > "$SCRIPT_DIR/logs/celery_review.log" 2>&1 &
+    celery -A celery_app worker --loglevel=info --concurrency=3 -Q review --max-tasks-per-child=5 --max-memory-per-child=6000000 --logfile="$SCRIPT_DIR/logs/celery_review.log" > /dev/null 2>&1 &
     save_pid "celery_review" "$!"
     log "Celery Review started (PID: $(get_pid celery_review))"
 }
@@ -102,7 +102,7 @@ start_celery_review() {
 start_celery_parser() {
     log "Starting Celery Worker (parser queue)..."
     cd "$BACKEND_DIR"
-    celery -A celery_app worker --loglevel=info --concurrency=2 -Q parser --max-memory-per-child=2000000 > "$SCRIPT_DIR/logs/celery_parser.log" 2>&1 &
+    celery -A celery_app worker --loglevel=info --concurrency=2 -Q parser --max-memory-per-child=2000000 --logfile="$SCRIPT_DIR/logs/celery_parser.log" > /dev/null 2>&1 &
     save_pid "celery_parser" "$!"
     log "Celery Parser started (PID: $(get_pid celery_parser))"
 }
@@ -111,7 +111,7 @@ start_backend() {
     log "Starting Backend API Server..."
     cd "$BACKEND_DIR"
     # 生产模式: 使用 uvicorn --workers
-    python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4 > "$SCRIPT_DIR/logs/backend.log" 2>&1 &
+    python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4 > /dev/null 2>&1 &
     save_pid "backend" "$!"
     log "Backend API started (PID: $(get_pid backend))"
 }
