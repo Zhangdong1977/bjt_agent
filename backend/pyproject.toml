@@ -36,3 +36,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["/home/openclaw/bjt_agent"]
+markers = [
+    "unit: isolated unit tests (no network, mocked IO)",
+    "integration: integration tests requiring real credentials/network (gated)",
+]

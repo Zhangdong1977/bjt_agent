@@ -5,6 +5,7 @@ from .rag_search import RAGSearchTool
 from .comparator import ComparatorTool
 from .merge_decider import MergeDeciderTool
 from .volcengine_vision import VolcengineVisionTool
+from .baidu_ocr import BaiduOcrTool
 from .structure_tools import DocumentTocTool, SectionContentTool, SectionImagesTool, ImageOcrTool
 
 __all__ = [
@@ -14,6 +15,7 @@ __all__ = [
     "ComparatorTool",
     "MergeDeciderTool",
     "VolcengineVisionTool",
+    "BaiduOcrTool",
     "DocumentTocTool",
     "SectionContentTool",
     "SectionImagesTool",

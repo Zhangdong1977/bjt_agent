@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     ocr_service_url: str = ""
     ocr_model_dir: Path = Path(__file__).parent.parent / "models" / "RapidOcr"
 
+    # 图像理解引擎切换：minimax（默认，MiniMax MCP VLM）/ baidu（百度云 OCR）/ volcengine（火山视觉）
+    # env: IMAGE_UNDERSTANDING_PROVIDER。决定哪个后端实现 understand_image 工具。
+    image_understanding_provider: str = "minimax"
+
+    # 百度云 OCR（通用文字识别-高精度版 accurate_basic）
+    baidu_ocr_app_id: str = ""  # env: BAIDU_OCR_APP_ID
+    baidu_ocr_api_key: str = ""  # env: BAIDU_OCR_API_KEY
+    baidu_ocr_secret_key: str = ""  # env: BAIDU_OCR_SECRET_KEY
+    baidu_ocr_endpoint: str = "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic"
+
     # LLM Provider: "minimax", "volcengine", or "deepseek"
     llm_provider: str = "minimax"
 

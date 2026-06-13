@@ -285,8 +285,17 @@ class BidReviewAgent(BaseAgent):
                 if "web_search" in loaded_tool_names:
                     logger.info("[BidReviewAgent.initialize] Web search tool (web_search) is available")
 
-                # Override understand_image with Volcengine vision tool when using volcengine provider
-                if settings.llm_provider == "volcengine":
+                # Override understand_image with the configured image-understanding provider.
+                # - image_understanding_provider == "baidu": 百度云 OCR（纯文字识别）
+                # - "volcengine"（或旧 LLM_PROVIDER=volcengine）：火山豆包视觉（VLM）
+                # - 其他（默认 minimax）：保留 MiniMax MCP 的 understand_image（VLM）
+                iu_provider = settings.image_understanding_provider
+                if iu_provider == "baidu":
+                    from backend.agent.tools.baidu_ocr import BaiduOcrTool
+                    vision_tool = BaiduOcrTool()
+                    self.tools[vision_tool.name] = vision_tool
+                    logger.info("[BidReviewAgent.initialize] Overrode understand_image with Baidu OCR tool")
+                elif iu_provider == "volcengine" or settings.llm_provider == "volcengine":
                     from backend.agent.tools.volcengine_vision import VolcengineVisionTool
                     vision_tool = VolcengineVisionTool()
                     self.tools[vision_tool.name] = vision_tool
