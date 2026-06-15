@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, File, status, Query
 from sqlalchemy import select
 
-from backend.api.deps import DBSession, CurrentUser
+from backend.api.deps import DBSession, CurrentUser, is_interior_user
 from backend.config import get_settings
 from backend.models import Document, Project
 from backend.schemas.document import DocumentResponse, DocumentListResponse, DocumentContentResponse
@@ -18,14 +18,33 @@ router = APIRouter(prefix="/projects/{project_id}/documents", tags=["Documents"]
 DOCUMENT_NOT_FOUND = "Document not found"
 
 
-async def verify_project_ownership(project_id: str, user_id: str, db: DBSession) -> Project:
-    """Verify that the project exists and belongs to the user."""
+async def verify_project_ownership(
+    project_id: str,
+    current_user,
+    db: DBSession,
+    *,
+    allow_interior: bool = False,
+) -> Project:
+    """Verify that the project exists and the caller may access it.
+
+    Regular users may only access their own projects. When ``allow_interior``
+    is set, internal users (see :func:`is_interior_user`) may access any
+    project — used by read endpoints surfaced on the experience dashboard.
+    Write operations (upload/delete) must keep ``allow_interior=False`` so
+    internal users cannot mutate others' data.
+    """
     result = await db.execute(
-        select(Project)
-        .where(Project.id == project_id, Project.user_id == user_id)
+        select(Project).where(Project.id == project_id)
     )
     project = result.scalar_one_or_none()
     if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+    if allow_interior and is_interior_user(current_user):
+        return project
+    if project.user_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
@@ -40,7 +59,7 @@ async def list_documents(
     current_user: CurrentUser,
 ) -> DocumentListResponse:
     """List all documents in a project."""
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(Document)
@@ -64,7 +83,7 @@ async def upload_document(
     After uploading, the document will be automatically parsed
     to extract text content and images.
     """
-    project = await verify_project_ownership(project_id, current_user.id, db)
+    project = await verify_project_ownership(project_id, current_user, db)
 
     if doc_type not in ("tender", "bid"):
         raise HTTPException(
@@ -158,7 +177,7 @@ async def get_document_content(
     current_user: CurrentUser,
 ) -> DocumentContentResponse:
     """Get the parsed content of a document."""
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(Document)
@@ -265,7 +284,7 @@ async def get_document(
     current_user: CurrentUser,
 ) -> Document:
     """Get a document by ID."""
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(Document)
@@ -288,7 +307,7 @@ async def delete_document(
     current_user: CurrentUser,
 ) -> None:
     """Delete a document."""
-    await verify_project_ownership(project_id, current_user.id, db)
+    await verify_project_ownership(project_id, current_user, db)
 
     result = await db.execute(
         select(Document)

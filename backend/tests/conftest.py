@@ -11,7 +11,12 @@ if str(project_root) not in sys.path:
 
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+
+from backend.api.deps import create_access_token, get_password_hash
+from backend.main import app
+from backend.models import User, async_session_factory, engine
 
 BASE_URL = "http://localhost:8000"
 
@@ -29,25 +34,55 @@ def unique_user():
 
 @pytest_asyncio.fixture(scope="function")
 async def client():
-    """Create test client that connects to running server."""
-    async with AsyncClient(base_url=BASE_URL, timeout=30.0) as ac:
+    """Create an in-process test client for the FastAPI app."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        timeout=30.0,
+    ) as ac:
         yield ac
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture(scope="function")
-async def auth_headers(client: AsyncClient, unique_user: dict) -> dict:
-    """Create authenticated headers with a new test user."""
-    # Register user
-    await client.post(
-        "/api/auth/register",
-        json=unique_user,
-    )
-
-    # Login
-    response = await client.post(
-        "/api/auth/login",
-        data={"username": unique_user["username"], "password": unique_user["password"]},
-    )
-    token = response.json()["access_token"]
+async def auth_headers(unique_user: dict) -> dict:
+    """Create authenticated headers with a new local test user."""
+    token = await _create_test_token(unique_user["username"], interior_user=False)
 
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest_asyncio.fixture(scope="function")
+async def interior_auth_headers() -> dict:
+    """Create headers for a distinct interior (admin) user.
+
+    Document tests are scoped to authorization behavior, not the external auth
+    service. Create a separate local user and sign a server-valid token with
+    ``interior_user=True`` so the API under test can load the user normally.
+    """
+    unique_id = uuid.uuid4().hex[:8]
+    username = f"interior_user_{unique_id}"
+    interior_token = await _create_test_token(username, interior_user=True)
+    return {"Authorization": f"Bearer {interior_token}"}
+
+
+async def _create_test_token(username: str, *, interior_user: bool) -> str:
+    async with async_session_factory() as session:
+        result = await session.execute(select(User).where(User.username == username))
+        user = result.scalar_one_or_none()
+        if user is None:
+            user = User(
+                username=username,
+                email=f"{username}@example.com",
+                password_hash=get_password_hash("Test123!"),
+            )
+            session.add(user)
+            await session.flush()
+            await session.refresh(user)
+        await session.commit()
+    await engine.dispose()
+
+    return create_access_token(
+        data={"sub": user.id, "interior_user": interior_user, "concurrency": 2}
+    )

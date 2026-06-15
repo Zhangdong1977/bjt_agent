@@ -89,7 +89,17 @@ export const useProjectStore = defineStore("project", () => {
     loading.value = true;
     try {
       currentProject.value = await projectsApi.get(id);
-      documents.value = await documentsApi.list(id);
+      // 隔离 documents.list 失败：内部用户在复盘页查看他人项目时，若文档端点异常
+      // 不应阻断 fetchReviewTasks 等后续加载。降级为空文档列表。
+      try {
+        documents.value = await documentsApi.list(id);
+      } catch (err) {
+        console.warn(
+          "[selectProject] Failed to load documents, falling back to empty list:",
+          err,
+        );
+        documents.value = [];
+      }
       // Connect SSE for any documents that are still parsing
       for (const doc of documents.value) {
         if (doc.status === "parsing" || doc.status === "pending") {

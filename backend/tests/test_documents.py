@@ -293,3 +293,111 @@ class TestDocumentDelete:
         )
 
         assert response.status_code == 404
+
+
+class TestDocumentInteriorAccess:
+    """Cross-user document access for interior (admin) users.
+
+    Interior users viewing another user's project from the experience dashboard
+    must be able to *read* documents (list / get / content), but must NOT be
+    able to *write* (upload / delete) to another user's project. Regular users
+    are still fully isolated.
+    """
+
+    @pytest.mark.asyncio
+    async def test_interior_user_lists_others_documents(
+        self, client: AsyncClient, auth_headers: dict, interior_auth_headers: dict
+    ):
+        """Interior user can list documents of another user's project."""
+        # owner (regular user) creates project + uploads a doc
+        project = await create_test_project(client, auth_headers, "Owner Project")
+        files = {"file": ("tender.pdf", create_test_pdf(), "application/pdf")}
+        upload_resp = await client.post(
+            f"/api/projects/{project['id']}/documents?doc_type=tender",
+            files=files,
+            headers=auth_headers,
+        )
+        assert upload_resp.status_code == 201
+
+        # interior user lists the owner's documents
+        resp = await client.get(
+            f"/api/projects/{project['id']}/documents",
+            headers=interior_auth_headers,
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()["documents"]) >= 1
+
+    @pytest.mark.asyncio
+    async def test_interior_user_gets_others_document(
+        self, client: AsyncClient, auth_headers: dict, interior_auth_headers: dict
+    ):
+        """Interior user can fetch a single document of another user's project."""
+        project = await create_test_project(client, auth_headers, "Owner Project")
+        files = {"file": ("tender.pdf", create_test_pdf(), "application/pdf")}
+        doc_id = (
+            await client.post(
+                f"/api/projects/{project['id']}/documents?doc_type=tender",
+                files=files,
+                headers=auth_headers,
+            )
+        ).json()["id"]
+
+        resp = await client.get(
+            f"/api/projects/{project['id']}/documents/{doc_id}",
+            headers=interior_auth_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["id"] == doc_id
+
+    @pytest.mark.asyncio
+    async def test_regular_user_cannot_list_others_documents(
+        self, client: AsyncClient, auth_headers: dict, interior_auth_headers: dict
+    ):
+        """Regular user is isolated: listing another user's documents -> 404."""
+        # interior user creates the project (owner)
+        project = await create_test_project(
+            client, interior_auth_headers, "Interior Owner Project"
+        )
+
+        # regular user tries to list -> 404 (ownership check, not 403)
+        resp = await client.get(
+            f"/api/projects/{project['id']}/documents",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_interior_user_cannot_upload_to_others_project(
+        self, client: AsyncClient, auth_headers: dict, interior_auth_headers: dict
+    ):
+        """Write endpoints stay owner-only: interior upload -> 404."""
+        project = await create_test_project(client, auth_headers, "Owner Project")
+        files = {"file": ("tender.pdf", create_test_pdf(), "application/pdf")}
+
+        resp = await client.post(
+            f"/api/projects/{project['id']}/documents?doc_type=tender",
+            files=files,
+            headers=interior_auth_headers,
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_interior_user_cannot_delete_others_document(
+        self, client: AsyncClient, auth_headers: dict, interior_auth_headers: dict
+    ):
+        """Write endpoints stay owner-only: interior delete -> 404."""
+        project = await create_test_project(client, auth_headers, "Owner Project")
+        files = {"file": ("tender.pdf", create_test_pdf(), "application/pdf")}
+        doc_id = (
+            await client.post(
+                f"/api/projects/{project['id']}/documents?doc_type=tender",
+                files=files,
+                headers=auth_headers,
+            )
+        ).json()["id"]
+
+        resp = await client.delete(
+            f"/api/projects/{project['id']}/documents/{doc_id}",
+            headers=interior_auth_headers,
+        )
+        assert resp.status_code == 404
