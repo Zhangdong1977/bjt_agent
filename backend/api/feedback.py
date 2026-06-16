@@ -162,7 +162,7 @@ async def get_finding_feedback(
     current_user: CurrentUser,
 ) -> list[FeedbackResponse]:
     """Get feedback history for a specific finding."""
-    await _verify_project(project_id, current_user, db)
+    await _verify_project(project_id, current_user, db, allow_interior=True)
 
     result = await db.execute(
         select(ExperienceFeedback)
@@ -345,20 +345,26 @@ async def get_feedback_history(
     limit: int = 50,
     offset: int = 0,
 ) -> list[FeedbackResponse]:
-    """Get paginated feedback history for a project (current user only)."""
-    await _verify_project(project_id, current_user, db)
+    """Get paginated feedback history for a project.
 
-    result = await db.execute(
+    Interior users see feedback from all users on the project (used by the
+    experience dashboard when reviewing another user's project); regular users
+    only see their own feedback.
+    """
+    await _verify_project(project_id, current_user, db, allow_interior=True)
+
+    query = (
         select(ExperienceFeedback)
         .where(
             ExperienceFeedback.project_id == project_id,
-            ExperienceFeedback.user_id == current_user.id,
             ExperienceFeedback.status != "superseded",
         )
-        .order_by(ExperienceFeedback.created_at.desc())
-        .limit(limit)
-        .offset(offset)
     )
+    if not is_interior_user(current_user):
+        query = query.where(ExperienceFeedback.user_id == current_user.id)
+    query = query.order_by(ExperienceFeedback.created_at.desc()).limit(limit).offset(offset)
+
+    result = await db.execute(query)
     feedbacks = result.scalars().all()
     return [FeedbackResponse.model_validate(f) for f in feedbacks]
 
