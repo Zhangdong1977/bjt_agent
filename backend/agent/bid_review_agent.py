@@ -374,6 +374,13 @@ class BidReviewAgent(BaseAgent):
                     f"[LLM Interaction #{call_index}] TIMEOUT after {latency_ms}ms "
                     f"(asyncio.timeout exceeded 180s)"
                 )
+                # 用量记录：timeout（失败可见但不计费）
+                try:
+                    from backend.services.usage_recorder import record_llm_usage
+                    record_llm_usage(latency_ms=latency_ms, status="timeout",
+                                     error_message="asyncio.timeout exceeded 180s")
+                except Exception:
+                    pass
                 agent_ref._interactions_log.append({
                     "call_index": call_index,
                     "timestamp": call_timestamp,
@@ -400,6 +407,14 @@ class BidReviewAgent(BaseAgent):
                 logger.error(
                     f"[LLM Interaction #{call_index}] FAILED after {latency_ms}ms: {e}"
                 )
+                # 用量记录：error（失败可见但不计费；error_code 用 HTTP 状态码，便于排查 429 等）
+                try:
+                    from backend.services.usage_recorder import record_llm_usage
+                    record_llm_usage(latency_ms=latency_ms, status="error",
+                                     error_code=str(status_code) if status_code else None,
+                                     error_message=str(e))
+                except Exception:
+                    pass
                 agent_ref._interactions_log.append({
                     "call_index": call_index,
                     "timestamp": call_timestamp,
@@ -439,6 +454,13 @@ class BidReviewAgent(BaseAgent):
 
             # Write metrics to Redis for perf_monitor.py to read
             agent_ref._write_llm_metrics(call_index, latency_ms, response)
+
+            # 用量记录：success（含 token + 预估费用）
+            try:
+                from backend.services.usage_recorder import record_llm_usage
+                record_llm_usage(response=response, latency_ms=latency_ms, status="success")
+            except Exception:
+                pass
 
             return response
 

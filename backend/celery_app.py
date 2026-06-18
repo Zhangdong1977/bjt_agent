@@ -35,6 +35,21 @@ celery_app.conf.update(
     # Safety nets to prevent worker hangs
     task_time_limit=28800,           # 8h hard limit — large tender docs need long parse time
     worker_max_tasks_per_child=10,   # Recycle worker process every 10 tasks
+    # ---- 第三方 Redis 不稳定，频繁断连(10054)。下面的参数让 broker：
+    #   * broker_connection_retry_on_startup=True : 启动时连不上也持续重试
+    #   * broker_connection_max_retries=None      : 无限重试，不放弃
+    #   * broker_transport_options.socket_keepalive=True / health_check_interval:
+    #       维持长连接心跳、定期探测，避免对端 RST 后 worker 卡死
+    #   * visibility_timeout : 任务确认超时回到队列的时间（秒），断连丢失任务后
+    #       也能在超时后被重新投递。设大一点避免长任务被误判重投。
+    broker_connection_retry_on_startup=True,
+    broker_connection_max_retries=None,
+    broker_transport_options={
+        "socket_keepalive": True,
+        "health_check_interval": 30,
+        "visibility_timeout": 3600,
+        "retry_on_timeout": True,
+    },
     task_routes={
         "backend.tasks.review_tasks.run_review": {"queue": "review"},
         "backend.tasks.review_tasks.merge_review_results": {"queue": "review"},

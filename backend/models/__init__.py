@@ -9,6 +9,7 @@ from .project_review_result import ProjectReviewResult
 from .agent_step import AgentStep
 from .todo_item import TodoItem
 from .review_session import ReviewSession
+from .ai_usage_record import AiUsageRecord
 from backend.experience.models import ExperienceFeedback, ExperienceCase, ExperienceSkill, ExperienceClusterMembership
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "AgentStep",
     "TodoItem",
     "ReviewSession",
+    "AiUsageRecord",
     "ExperienceFeedback",
     "ExperienceCase",
     "ExperienceSkill",

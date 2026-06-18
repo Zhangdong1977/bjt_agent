@@ -50,6 +50,9 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
         use_check = ext_result["useCheck"]
         interior_user = ext_result["interiorUser"] == 1
         concurrency = ext_result["concurrency"]
+        external_user_id = None
+        external_user_name = body.username
+        enterprise_name = None
     else:
         # Call external auth API
         try:
@@ -78,6 +81,11 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
         use_check = ext_result.get("useCheck", 0)
         interior_user = ext_result.get("interiorUser", 0) == 1
         concurrency = ext_result.get("concurrency") or settings.max_sub_agent_concurrency
+        # 运营台 aiCheckLogin 扩展返回的归属维度（userId/userName/enterpriseName），
+        # 落库到本地 users + JWT claims，供 ai_usage_records 归属使用
+        external_user_id = ext_result.get("userId")  # sys_user.user_id (bigint)
+        external_user_name = ext_result.get("userName")
+        enterprise_name = ext_result.get("enterpriseName")
 
     # Check permission
     if use_check != 1:
@@ -100,11 +108,21 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
         await db.flush()
         await db.refresh(user)
 
+    # 同步运营台返回的归属维度（每次登录刷新，企业名/userId 可能变动）
+    user.external_user_id = external_user_id
+    user.enterprise_name = enterprise_name
+    user.interior_user = interior_user
+    await db.flush()
+
     # Create tokens with claims
     token_data = {
         "sub": user.id,
         "interior_user": interior_user,
         "concurrency": concurrency,
+        # 用量归属透传（可选，主要是落库后由 SubAgentExecutor 反查本地 User）
+        "external_user_id": external_user_id,
+        "enterprise_name": enterprise_name,
+        "user_name": external_user_name or body.username,
     }
 
     access_token = create_access_token(

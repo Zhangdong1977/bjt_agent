@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24  # 1 day
     refresh_token_expire_days: int = 7  # 7 days
 
+    # 运营台用量同步：机器对机器鉴权（静态 API Key + 可选 IP 白名单）
+    # 运营台与本端共享 usage_sync_api_key；运营台不使用用户 JWT。
+    usage_sync_api_key: str = ""          # env: USAGE_SYNC_API_KEY，必填（运营台与本端共享）
+    usage_sync_ip_allowlist: str = ""     # env: USAGE_SYNC_IP_ALLOWLIST，逗号分隔，可选
+
     # Database
     database_url: str = ""  # Must be set via environment variable
 

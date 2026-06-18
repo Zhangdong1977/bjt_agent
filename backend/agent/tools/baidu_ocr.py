@@ -79,6 +79,7 @@ class BaiduOcrTool(BaseTool):
         }
 
     async def execute(self, prompt: str = None, image_source: str = None, **kwargs) -> ToolResult:
+        call_start = time.perf_counter()  # 用量记录：OCR 调用耗时
         if not prompt:
             return ToolResult(success=False, error="Missing required parameter: prompt")
         if not image_source:
@@ -149,6 +150,16 @@ class BaiduOcrTool(BaseTool):
             if result.get("error_code"):
                 err = f"百度OCR错误[{result.get('error_code')}]: {result.get('error_msg', '未知错误')}"
                 logger.error(f"[BaiduOcrTool] {err}")
+                # 用量记录：百度业务错误（失败可见但不计费）
+                try:
+                    from backend.services.usage_recorder import record_ocr_usage
+                    record_ocr_usage(provider="baidu_ocr", endpoint=self._endpoint, status="error",
+                                     latency_ms=int((time.perf_counter() - call_start) * 1000),
+                                     image_size_bytes=file_size,
+                                     error_code=str(result.get("error_code")),
+                                     error_message=str(result.get("error_msg")))
+                except Exception:
+                    pass
                 return ToolResult(success=False, error=err)
 
             words_result = result.get("words_result") or []
@@ -159,6 +170,14 @@ class BaiduOcrTool(BaseTool):
                 f"[BaiduOcrTool] 识别完成: {image_path.name} ({file_size / 1024:.1f}KB), "
                 f"{words_num} 行文字"
             )
+            # 用量记录：success（含识别行数 + 图片大小 + 预估费用）
+            try:
+                from backend.services.usage_recorder import record_ocr_usage
+                record_ocr_usage(provider="baidu_ocr", endpoint=self._endpoint, status="success",
+                                 latency_ms=int((time.perf_counter() - call_start) * 1000),
+                                 words_result_num=words_num, image_size_bytes=file_size)
+            except Exception:
+                pass
             return ToolResult(
                 success=True,
                 content=ocr_text,
@@ -172,14 +191,35 @@ class BaiduOcrTool(BaseTool):
 
         except TimeoutException:
             logger.error("[BaiduOcrTool] 百度OCR请求超时(60s)")
+            try:
+                from backend.services.usage_recorder import record_ocr_usage
+                record_ocr_usage(provider="baidu_ocr", endpoint=self._endpoint, status="timeout",
+                                 latency_ms=int((time.perf_counter() - call_start) * 1000),
+                                 image_size_bytes=file_size, error_message="百度OCR请求超时(60s)")
+            except Exception:
+                pass
             return ToolResult(success=False, error="百度OCR请求超时(60s)")
         except ConnectError as e:
             err = f"无法连接百度OCR服务: {e}"
             logger.error(f"[BaiduOcrTool] {err}")
+            try:
+                from backend.services.usage_recorder import record_ocr_usage
+                record_ocr_usage(provider="baidu_ocr", endpoint=self._endpoint, status="error",
+                                 latency_ms=int((time.perf_counter() - call_start) * 1000),
+                                 image_size_bytes=file_size, error_message=err)
+            except Exception:
+                pass
             return ToolResult(success=False, error=err)
         except Exception as e:
             err = f"百度OCR调用异常: {e}"
             logger.error(f"[BaiduOcrTool] {err}")
+            try:
+                from backend.services.usage_recorder import record_ocr_usage
+                record_ocr_usage(provider="baidu_ocr", endpoint=self._endpoint, status="error",
+                                 latency_ms=int((time.perf_counter() - call_start) * 1000),
+                                 image_size_bytes=file_size, error_message=err)
+            except Exception:
+                pass
             return ToolResult(success=False, error=err)
 
     async def _get_access_token(self) -> str:

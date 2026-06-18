@@ -7,6 +7,7 @@ from .review_sessions import router as review_sessions_router
 from .knowledge import router as knowledge_router
 from .feedback import router as feedback_router
 from .experience import router as experience_router
+from .admin import router as admin_router
 
 __all__ = [
     "auth_router",
@@ -17,4 +18,5 @@ __all__ = [
     "knowledge_router",
     "feedback_router",
     "experience_router",
+    "admin_router",
 ]

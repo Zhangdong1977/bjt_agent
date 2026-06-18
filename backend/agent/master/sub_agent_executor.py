@@ -148,6 +148,9 @@ class SubAgentExecutor:
         """执行子代理检查任务."""
         import logging
         from backend.config import get_settings
+        from backend.services.usage_context import UsageContext, set_usage_context, reset_usage_context
+        from sqlalchemy import select
+        from backend.models import User
         settings = get_settings()
 
         # 设置日志目录和 logger
@@ -155,6 +158,26 @@ class SubAgentExecutor:
         log_dir.mkdir(parents=True, exist_ok=True)
         logger = setup_sub_agent_logger(self.todo_item.id, log_dir)
         logger.info(f"[SubAgentExecutor] Starting execution for todo_id={self.todo_item.id}, rule_doc={self.todo_item.rule_doc_path}")
+
+        # 设置用量归属上下文：反查本地 User 拿 sys_user 维度（external_user_id/enterprise_name），
+        # 供 wrapped_generate / BaiduOcrTool 写入 ai_usage_records。无 User 时仍记（user_name 兜底）。
+        usage_token = None
+        try:
+            async with self.session_factory() as db:
+                u = (await db.execute(select(User).where(User.id == self.user_id))).scalar_one_or_none()
+            ctx = UsageContext(
+                external_user_id=u.external_user_id if u else None,
+                local_user_id=self.user_id,
+                user_name=(u.username if u else self.user_id) or str(self.user_id),
+                enterprise_name=u.enterprise_name if u else None,
+                interior_user=bool(u.interior_user) if u and u.interior_user is not None else False,
+                project_id=self.todo_item.project_id,
+                task_id=self.session_id,
+                todo_id=self.todo_item.id,
+            )
+            usage_token = set_usage_context(ctx)
+        except Exception as e:
+            logger.warning(f"[SubAgentExecutor.execute] set_usage_context failed (usage recording degraded): {e}")
 
         try:
             # 发送开始事件
@@ -255,6 +278,12 @@ class SubAgentExecutor:
         finally:
             if self._agent:
                 await self._agent.close()
+            # 重置用量归属上下文（finally 兜底，无论成功/异常/取消都重置）
+            if usage_token is not None:
+                try:
+                    reset_usage_context(usage_token)
+                except Exception:
+                    pass
 
     async def close(self):
         """关闭子代理."""
