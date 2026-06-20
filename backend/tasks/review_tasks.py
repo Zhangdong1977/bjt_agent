@@ -506,6 +506,9 @@ def run_review(self, task_id: str) -> dict:
                                 (task.completed_at - task.started_at).total_seconds()
                             )
                         await status_db.commit()
+                # 任务终态（failed/cancelled）落库后刷新用量汇总行，确保运营台拿到终态。
+                from backend.services.usage_summary import refresh_task_summary
+                await refresh_task_summary(task_id)
             except Exception as db_err:
                 logger.error(f"[run_review] Failed to update task status for {task_id}: {db_err}")
 
@@ -812,6 +815,11 @@ async def _run_agent_review(
                             (review_task.completed_at - review_task.started_at).total_seconds()
                         )
                     await update_db.commit()
+
+                # 任务终态落库后刷新用量汇总行（确保运营台能拿到 completed 状态 + 时长）。
+                # await 而非 fire-and-forget：保证终态一定写入汇总表。
+                from backend.services.usage_summary import refresh_task_summary
+                await refresh_task_summary(task_id)
 
             logger.info(f"[_run_agent_review] Completed: {non_compliant_count} non-compliant findings")
 

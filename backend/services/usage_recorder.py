@@ -19,6 +19,7 @@ from backend.models import async_session_factory
 from backend.models.ai_usage_record import AiUsageRecord
 from backend.services.usage_context import get_usage_context
 from backend.services.cost_calculator import estimate_cost
+from backend.services.usage_summary import refresh_task_summary
 
 logger = logging.getLogger(__name__)
 
@@ -136,5 +137,9 @@ async def _write_one(record: AiUsageRecord) -> None:
         async with async_session_factory() as db:
             db.add(record)
             await db.commit()
+        # 流水落库成功后，刷新该 task 的用量汇总行（fire-and-forget，非任务场景跳过）。
+        # 幂等：refresh 内部用 ON CONFLICT DO UPDATE 绝对值覆盖，重复刷新无副作用。
+        if record.task_id:
+            _spawn(refresh_task_summary(record.task_id))
     except Exception as e:
         logger.warning(f"[usage] write failed (ignored): {e}")

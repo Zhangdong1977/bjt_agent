@@ -14,6 +14,7 @@ from sqlalchemy import or_, select
 from backend.config import get_settings
 from backend.models import async_session_factory
 from backend.models.ai_usage_record import AiUsageRecord
+from backend.models.ai_usage_task_summary import AiUsageTaskSummary
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -113,3 +114,85 @@ async def list_usage_records(
         last = rows[-1]
         next_cursor = f"{last.created_at.isoformat()}|{last.id}"
     return {"records": items, "next_cursor": next_cursor}
+
+
+def _serialize_task(t: AiUsageTaskSummary) -> dict:
+    """序列化任务汇总行为运营台可消费的 dict。
+
+    字段名对齐运营台 ai_usage_task 镜像表：主键 id 输出为 task_id（业务语义），
+    与 ai_usage_records.task_id 同值（= ReviewTask.id），便于运营台统一以 task_id 关联。
+    """
+    return {
+        "task_id": t.id,
+        "task_status": t.task_status,
+        "started_at": t.started_at.isoformat() if t.started_at else None,
+        "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+        "duration_seconds": t.duration_seconds,
+        "error_message": t.error_message,
+        # 归属维度（= ai_usage_records 聚合）
+        "external_user_id": t.external_user_id,  # → sys_user_id
+        "local_user_id": t.local_user_id,
+        "user_name": t.user_name,
+        "enterprise_name": t.enterprise_name,
+        "interior_user": t.interior_user,
+        "project_id": t.project_id,
+        # 调用次数
+        "llm_calls": t.llm_calls,
+        "ocr_calls": t.ocr_calls,
+        "failed_calls": t.failed_calls,
+        # LLM token（含 DeepSeek 缓存拆分）
+        "prompt_tokens": t.prompt_tokens,
+        "completion_tokens": t.completion_tokens,
+        "total_tokens": t.total_tokens,
+        "prompt_cache_hit_tokens": t.prompt_cache_hit_tokens,
+        "prompt_cache_miss_tokens": t.prompt_cache_miss_tokens,
+        # OCR 指标
+        "ocr_images": t.ocr_images,
+        "ocr_words_result_num": t.ocr_words_result_num,
+        # 费用
+        "cost_cny": float(t.cost_cny) if t.cost_cny is not None else None,
+        # 任务用量首末时间（= ai_usage_records.created_at 的 MIN/MAX）
+        "first_usage_at": t.first_usage_at.isoformat() if t.first_usage_at else None,
+        "last_usage_at": t.last_usage_at.isoformat() if t.last_usage_at else None,
+        # 同步游标依据（updated_at 是 onupdate 自动刷新的）
+        "summary_updated_at": t.updated_at.isoformat() if t.updated_at else None,
+    }
+
+
+@router.get("/usage/tasks", dependencies=[Depends(verify_internal_key)])
+async def list_usage_tasks(
+    cursor: Optional[str] = Query(None, description='格式 "{updated_at_iso}|{task_id}"'),
+    limit: int = Query(500, le=1000),
+):
+    """增量拉取任务级用量汇总。游标 = updated_at + task_id 复合。
+
+    与 /usage/records（completion 流水）互补：本接口一行一个审查任务，
+    运营台按任务维度展示。汇总行在用量写入/任务终态时刷新，updated_at 自动推进。
+    """
+    stmt = (
+        select(AiUsageTaskSummary)
+        .order_by(AiUsageTaskSummary.updated_at, AiUsageTaskSummary.id)
+        .limit(limit)
+    )
+    if cursor:
+        try:
+            since_ts_str, since_id = cursor.split("|")
+            since_ts = datetime.fromisoformat(since_ts_str)
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=400, detail="invalid cursor format")
+        stmt = stmt.where(
+            or_(
+                AiUsageTaskSummary.updated_at > since_ts,
+                (AiUsageTaskSummary.updated_at == since_ts) & (AiUsageTaskSummary.id > since_id),
+            )
+        )
+
+    async with async_session_factory() as db:
+        rows = (await db.execute(stmt)).scalars().all()
+
+    items = [_serialize_task(t) for t in rows]
+    next_cursor = None
+    if len(items) == limit:
+        last = rows[-1]
+        next_cursor = f"{last.updated_at.isoformat()}|{last.id}"
+    return {"tasks": items, "next_cursor": next_cursor}
