@@ -70,6 +70,8 @@ SELECT __mig013_to_timestamptz('experience_skills',                'created_at')
 SELECT __mig013_to_timestamptz('experience_skills',                'updated_at');
 SELECT __mig013_to_timestamptz('experience_skills',                'last_promoted_at');  -- 已是 timestamptz，函数会自动跳过
 SELECT __mig013_to_timestamptz('experience_skills',                'retired_at');
+SELECT __mig013_to_timestamptz('experience_cluster_memberships',   'created_at');
+SELECT __mig013_to_timestamptz('experience_cluster_memberships',   'updated_at');
 SELECT __mig013_to_timestamptz('experience_cluster_memberships',   'assigned_at');
 
 -- 3) ai_usage_records 只有 usage_date(Date 类型，无时区问题) + created_at/updated_at(继承 Base)
