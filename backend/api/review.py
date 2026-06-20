@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -103,7 +103,7 @@ async def start_review(
         # Auto-cancel stale tasks from crashed workers - they can't complete
         existing_task.status = "failed"
         existing_task.error_message = "Task cancelled - stale task from previous crashed worker"
-        existing_task.completed_at = datetime.utcnow()
+        existing_task.completed_at = datetime.now(timezone.utc)
     if existing_tasks:
         await db.flush()
 
@@ -130,7 +130,7 @@ async def start_review(
         )
         task.status = "failed"
         task.error_message = "任务队列暂不可用，请稍后重试"
-        task.completed_at = datetime.utcnow()
+        task.completed_at = datetime.now(timezone.utc)
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -272,7 +272,7 @@ async def cancel_review_task(
     set_task_cancelled(task_id)
 
     task.status = "cancelled"
-    task.completed_at = datetime.utcnow()
+    task.completed_at = datetime.now(timezone.utc)
     await db.flush()
     await db.refresh(task)
     return task
@@ -308,7 +308,7 @@ async def heartbeat_review_task(
         # Still return 200 for non-running tasks to avoid frontend errors
         return {"status": task.status, "message": "Task not running"}
 
-    task.last_heartbeat = datetime.utcnow()
+    task.last_heartbeat = datetime.now(timezone.utc)
     await db.flush()
     return {"status": "ok", "last_heartbeat": task.last_heartbeat}
 

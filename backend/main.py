@@ -5,7 +5,7 @@ import logging
 import logging.config
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI):
         from sqlalchemy import select, and_
         from backend.models import async_session_factory, ReviewTask
 
-        stale_threshold = datetime.utcnow() - timedelta(minutes=45)
+        stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=45)
         async with async_session_factory() as db:
             result = await db.execute(
                 select(ReviewTask).where(
@@ -115,7 +115,7 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"[startup] Failing stale task {t.id}, started_at={t.started_at}")
                 t.status = "failed"
                 t.error_message = "Stale task cleaned up on startup"
-                t.completed_at = datetime.utcnow()
+                t.completed_at = datetime.now(timezone.utc)
             await db.commit()
             if stale:
                 logger.warning(f"[startup] Cleaned up {len(stale)} stale tasks")
@@ -283,7 +283,7 @@ async def cleanup_tasks_on_restart():
 
             task.status = "failed"
             task.error_message = "Service restarting"
-            task.completed_at = datetime.utcnow()
+            task.completed_at = datetime.now(timezone.utc)
             cleaned_count += 1
 
         await db.commit()

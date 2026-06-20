@@ -72,7 +72,7 @@ class ExperienceFeedback(Base):
     reviewed_by: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id"), nullable=True,
     )
-    reviewed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # --- Experience linkage (filled by processing pipeline) ---
     affected_skill_id: Mapped[str | None] = mapped_column(
@@ -162,7 +162,7 @@ class ExperienceSkill(Base):
     last_promoted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
-    retired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -201,7 +201,7 @@ class ExperienceClusterMembership(Base):
         comment="embedding | llm",
     )
     similarity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    assigned_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
         PrimaryKeyConstraint("case_id", "cluster_id", name="pk_experience_cluster_memberships"),

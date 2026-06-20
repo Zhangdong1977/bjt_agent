@@ -22,8 +22,8 @@ class ReviewSession(Base):
     merged_result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     total_todos: Mapped[int] = mapped_column(Integer, default=0)
     completed_todos: Mapped[int] = mapped_column(Integer, default=0)
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:
         return f"<ReviewSession(id={self.id}, status={self.status})>"

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, Integer, ForeignKey, Boolean, Text
+from sqlalchemy import DateTime, String, Integer, ForeignKey, Boolean, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -38,8 +38,8 @@ class ProjectReviewResult(Base):
     check_item_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_task_id: Mapped[str] = mapped_column(String(36), ForeignKey("review_tasks.id"), nullable=False)
     merged_from_count: Mapped[int] = mapped_column(Integer, default=1)
-    created_at: Mapped[datetime] = mapped_column(nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     # Relationships
     project: Mapped["Project"] = relationship("Project", back_populates="project_review_results")

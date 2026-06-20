@@ -3,7 +3,7 @@
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -334,7 +334,7 @@ class MergeService:
             if event_callback:
                 event_callback("merging", {"message": "首次入库，无需合并..."})
 
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             for record in filtered_results:
                 prr = ProjectReviewResult(
                     id=str(uuid.uuid4()),
@@ -547,7 +547,7 @@ class MergeService:
 
         # Insert merged records
         logger.info(f"[merge] INSERTING {len(new_merged_records)} records into ProjectReviewResult")
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for idx, record in enumerate(new_merged_records):
             prr = ProjectReviewResult(
                 id=record.get("id") or str(uuid.uuid4()),

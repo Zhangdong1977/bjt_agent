@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Callable
 
 from sqlalchemy import update
@@ -438,7 +438,7 @@ class MasterAgent:
                 await db.execute(
                     update(ReviewTask)
                     .where(ReviewTask.id == self._session_id)
-                    .values(last_heartbeat=datetime.utcnow())
+                    .values(last_heartbeat=datetime.now(timezone.utc))
                 )
                 await db.commit()
             logger.info(f"[_refresh_heartbeat] Refreshed heartbeat for session {self._session_id}")

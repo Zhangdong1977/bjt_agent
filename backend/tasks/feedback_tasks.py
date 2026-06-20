@@ -8,7 +8,7 @@ Handles:
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from backend.celery_app import celery_app
 from sqlalchemy import select
@@ -94,7 +94,7 @@ async def _process_feedback_async(session_factory, feedback_id: str) -> dict:
                 f"Feedback stored but has no immediate effect."
             )
 
-        feedback.updated_at = datetime.utcnow()
+        feedback.updated_at = datetime.now(timezone.utc)
         await db.commit()
 
     return summary
@@ -132,10 +132,10 @@ async def _apply_confidence_delta(db, skill_id: str, delta: float) -> None:
 
     old_confidence = skill.confidence
     skill.confidence = max(0.0, min(0.95, skill.confidence + delta))
-    skill.updated_at = datetime.utcnow()
+    skill.updated_at = datetime.now(timezone.utc)
 
     if skill.confidence < get_settings().experience_confidence_retire:
-        skill.retired_at = datetime.utcnow()
+        skill.retired_at = datetime.now(timezone.utc)
         logger.info(
             f"Skill {skill_id} retired: confidence {old_confidence:.2f} "
             f"→ {skill.confidence:.2f} (below retire threshold)"
@@ -198,7 +198,7 @@ async def _process_batch_async(session_factory, batch_id: str) -> dict:
             else:
                 skipped += 1
 
-            feedback.updated_at = datetime.utcnow()
+            feedback.updated_at = datetime.now(timezone.utc)
 
         await db.commit()
 
@@ -283,7 +283,7 @@ async def _rewrite_skill_async(session_factory, feedback_id: str) -> dict:
 
             if new_content:
                 skill.content = new_content
-                skill.updated_at = datetime.utcnow()
+                skill.updated_at = datetime.now(timezone.utc)
 
                 scorer = MaturityScorer()
                 if scorer.should_rescore(

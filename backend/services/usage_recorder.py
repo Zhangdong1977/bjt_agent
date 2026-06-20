@@ -11,7 +11,7 @@
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from backend.config import get_settings
@@ -84,7 +84,7 @@ def record_llm_usage(
         user_name=ctx.user_name, enterprise_name=ctx.enterprise_name,
         interior_user=ctx.interior_user, project_id=ctx.project_id,
         task_id=ctx.task_id, todo_id=ctx.todo_id,
-        usage_date=datetime.utcnow().date(),
+        usage_date=datetime.now(timezone.utc).date(),
     )
     _spawn(_write_one(record))
 
@@ -116,7 +116,7 @@ def record_ocr_usage(
         user_name=ctx.user_name, enterprise_name=ctx.enterprise_name,
         interior_user=ctx.interior_user, project_id=ctx.project_id,
         task_id=ctx.task_id, todo_id=ctx.todo_id,
-        usage_date=datetime.utcnow().date(),
+        usage_date=datetime.now(timezone.utc).date(),
     )
     _spawn(_write_one(record))
 

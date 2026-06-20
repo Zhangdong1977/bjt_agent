@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from mini_agent.schema import Message
 
@@ -167,7 +167,7 @@ class ClusterManager:
             group_id=group_id,
             assigned_by=assigned_by,
             similarity_score=similarity,
-            assigned_at=datetime.utcnow(),
+            assigned_at=datetime.now(timezone.utc),
         )
         db.add(membership)
         await db.flush()

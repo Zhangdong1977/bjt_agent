@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Integer, String, ForeignKey
+from sqlalchemy import DateTime, Integer, String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -22,11 +22,11 @@ class ReviewTask(Base):
     project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(50), default="pending", index=True)  # pending, running, completed, failed, cancelled
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(nullable=True)
-    last_heartbeat: Mapped[datetime | None] = mapped_column(nullable=True, index=True)  # Track frontend heartbeat - if no heartbeat for 20+ seconds, agent will cancel
+    last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)  # Track frontend heartbeat - if no heartbeat for 20+ seconds, agent will cancel
     max_concurrency: Mapped[int] = mapped_column(Integer, default=2, server_default="2", nullable=False)
 
     # Relationships

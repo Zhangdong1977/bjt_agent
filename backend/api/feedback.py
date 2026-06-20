@@ -10,7 +10,7 @@ Provides endpoints for:
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select, and_, distinct
@@ -123,7 +123,7 @@ async def submit_feedback(
     existing = existing_result.scalar_one_or_none()
     if existing:
         existing.status = "superseded"
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = datetime.now(timezone.utc)
 
     # All feedback requires admin review before taking effect.
     # confidence_delta is computed at review time (see review_feedback endpoint).
@@ -228,7 +228,7 @@ async def batch_confirm_findings(
         existing = existing_result.scalar_one_or_none()
         if existing:
             existing.status = "superseded"
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
             superseded_count += 1
 
         # All feedback requires admin review; confidence computed at review time.
@@ -460,8 +460,8 @@ async def review_feedback(
 
     feedback.status = "accepted" if body.action == "accept" else "rejected"
     feedback.reviewed_by = current_user.id
-    feedback.reviewed_at = datetime.utcnow()
-    feedback.updated_at = datetime.utcnow()
+    feedback.reviewed_at = datetime.now(timezone.utc)
+    feedback.updated_at = datetime.now(timezone.utc)
 
     # Compute confidence delta on acceptance
     if feedback.status == "accepted":
@@ -521,8 +521,8 @@ async def batch_review_feedback(
     for feedback in pending_feedbacks:
         feedback.status = new_status
         feedback.reviewed_by = current_user.id
-        feedback.reviewed_at = datetime.utcnow()
-        feedback.updated_at = datetime.utcnow()
+        feedback.reviewed_at = datetime.now(timezone.utc)
+        feedback.updated_at = datetime.now(timezone.utc)
 
         if new_status == "accepted":
             # Compute confidence delta based on feedback type

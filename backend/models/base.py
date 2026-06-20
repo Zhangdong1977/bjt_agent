@@ -3,11 +3,12 @@
 from datetime import datetime
 from typing import AsyncGenerator
 
-from sqlalchemy import event
+from sqlalchemy import DateTime, event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from backend.config import get_settings
+from backend.utils.time_utils import utc_now
 
 
 settings = get_settings()
@@ -51,8 +52,9 @@ class Base(DeclarativeBase):
     """Base class for all database models."""
 
     id: Mapped[str] = mapped_column(primary_key=True, default=lambda: str(__import__("uuid").uuid4()))
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
+    # timezone-aware UTC (timestamptz) — see utils/time_utils.py for the rationale
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:

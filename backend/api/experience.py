@@ -1,7 +1,7 @@
 """Experience query API routes."""
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import and_, case, func, select
@@ -137,7 +137,7 @@ async def quality_trend(
     group_id: str | None = None,
     days: int = 30,
 ) -> dict:
-    since = datetime.utcnow() - __import__("datetime").timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
 
     query = select(
         func.date_trunc("day", ExperienceCase.created_at).label("date"),
@@ -233,10 +233,10 @@ async def projects_feedback_summary(
         today_start = datetime.combine(date.today(), datetime.min.time())
         query = query.where(Project.created_at >= today_start)
     elif time_range == "7d":
-        since = datetime.utcnow() - timedelta(days=7)
+        since = datetime.now(timezone.utc) - timedelta(days=7)
         query = query.where(Project.created_at >= since)
     elif time_range == "30d":
-        since = datetime.utcnow() - timedelta(days=30)
+        since = datetime.now(timezone.utc) - timedelta(days=30)
         query = query.where(Project.created_at >= since)
     elif time_range == "custom" and start_date and end_date:
         sd = datetime.combine(date.fromisoformat(start_date), datetime.min.time())

@@ -8,7 +8,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 # Ensure Mini-Agent path is in sys.path before importing mini_agent modules
@@ -743,7 +743,7 @@ class BidReviewAgent(BaseAgent):
                 await db.execute(
                     sql_update(ReviewTask)
                     .where(ReviewTask.id == self._task_id)
-                    .values(last_heartbeat=datetime.utcnow())
+                    .values(last_heartbeat=datetime.now(timezone.utc))
                 )
                 await db.commit()
         except Exception as e:
@@ -790,7 +790,7 @@ class BidReviewAgent(BaseAgent):
                     self._heartbeat_fail_count = 0
                     return True  # No heartbeat yet, assume OK
 
-                elapsed = (datetime.utcnow() - task.last_heartbeat).total_seconds()
+                elapsed = (datetime.now(timezone.utc) - task.last_heartbeat).total_seconds()
                 if elapsed > self.heartbeat_timeout:
                     logger.warning(
                         f"[BidReviewAgent] Heartbeat timeout: {elapsed:.1f}s > {self.heartbeat_timeout}s, "
@@ -948,7 +948,7 @@ class BidReviewAgent(BaseAgent):
                 "content": "",
                 "tool_calls": [],
                 "tool_results": [],
-                "timestamp": datetime.now(),
+                "timestamp": datetime.now(timezone.utc),
             }
             logger.debug(f"[BidReviewAgent._emit_event] step_start for step {step}")
 

@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.celery_app import celery_app
@@ -385,7 +385,7 @@ def run_review(self, task_id: str) -> dict:
                     return {"status": "error", "message": ERROR_TASK_NOT_FOUND}
 
                 task.status = "running"
-                task.started_at = datetime.utcnow()
+                task.started_at = datetime.now(timezone.utc)
                 await db.commit()
 
                 _publish_event(task_id, "status", {"status": "running"})
@@ -500,7 +500,7 @@ def run_review(self, task_id: str) -> dict:
                         else:
                             task.status = "failed"
                         task.error_message = error_msg
-                        task.completed_at = datetime.utcnow()
+                        task.completed_at = datetime.now(timezone.utc)
                         if task.started_at and task.completed_at:
                             task.duration_seconds = int(
                                 (task.completed_at - task.started_at).total_seconds()
@@ -806,7 +806,7 @@ async def _run_agent_review(
                 review_task = task_result.scalar_one_or_none()
                 if review_task:
                     review_task.status = "completed"
-                    review_task.completed_at = datetime.utcnow()
+                    review_task.completed_at = datetime.now(timezone.utc)
                     if review_task.started_at and review_task.completed_at:
                         review_task.duration_seconds = int(
                             (review_task.completed_at - review_task.started_at).total_seconds()

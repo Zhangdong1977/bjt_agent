@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from backend.celery_app import celery_app
 from backend.utils.mini_agent_utils import setup_mini_agent_path
@@ -74,7 +75,7 @@ async def _process_skill_extraction_async(session_factory, skill_id: str) -> dic
         score_result = await scorer.score(skill)
         skill.maturity_score = score_result["maturity_score"]
         skill.maturity_detail = score_result["maturity_detail"]
-        skill.updated_at = __import__("datetime").datetime.utcnow()
+        skill.updated_at = datetime.now(timezone.utc)
         await db.commit()
 
         return {"status": "success", "skill_id": skill_id, **score_result}

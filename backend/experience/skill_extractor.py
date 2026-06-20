@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from mini_agent.schema import Message
 
@@ -137,8 +137,8 @@ class SkillExtractor:
                 source_ids.append(str(case.id))
             existing_skill.source_case_ids = source_ids[-9:]
             if is_promotion:
-                existing_skill.last_promoted_at = datetime.utcnow()
-            existing_skill.updated_at = datetime.utcnow()
+                existing_skill.last_promoted_at = datetime.now(timezone.utc)
+            existing_skill.updated_at = datetime.now(timezone.utc)
             await db.flush()
 
             return {
@@ -178,7 +178,7 @@ class SkillExtractor:
                 if str(case.id) not in source_ids:
                     source_ids.append(str(case.id))
                 existing_skill.source_case_ids = source_ids[-9:]
-                existing_skill.updated_at = datetime.utcnow()
+                existing_skill.updated_at = datetime.now(timezone.utc)
                 await db.flush()
                 return {
                     "action": "update",
@@ -193,7 +193,7 @@ class SkillExtractor:
                 if str(case.id) not in source_ids:
                     source_ids.append(str(case.id))
                 existing_skill.source_case_ids = source_ids[-9:]
-                existing_skill.updated_at = datetime.utcnow()
+                existing_skill.updated_at = datetime.now(timezone.utc)
                 await db.flush()
                 return {
                     "action": "update",

@@ -26,8 +26,8 @@ class TodoItem(Base):
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
     max_steps: Mapped[int] = mapped_column(Integer, default=100)
     brain_capacity: Mapped[float] = mapped_column(Float, default=0.0)
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:
         return f"<TodoItem(id={self.id}, status={self.status})>"
