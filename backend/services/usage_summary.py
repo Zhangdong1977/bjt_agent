@@ -51,8 +51,8 @@ SELECT
     MAX(local_user_id),
     MAX(user_name),
     MAX(enterprise_name),
-    -- interior_user 是 bool，MAX 在 PG 里对 bool 成立（true>false）
-    MAX(interior_user),
+    -- PG 无 max(boolean) 聚合，用 bool_or（任一为 true 则 true）
+    bool_or(interior_user),
     MAX(project_id),
     MIN(created_at),
     MAX(created_at),
