@@ -63,6 +63,9 @@ def _serialize(r: AiUsageRecord) -> dict:
         "prompt_tokens": r.prompt_tokens,
         "completion_tokens": r.completion_tokens,
         "total_tokens": r.total_tokens,
+        # DeepSeek 上下文缓存拆分（命中/未命中输入 token）
+        "prompt_cache_hit_tokens": r.prompt_cache_hit_tokens,
+        "prompt_cache_miss_tokens": r.prompt_cache_miss_tokens,
         "ocr_calls": r.ocr_calls,
         "ocr_images": r.ocr_images,
         "ocr_words_result_num": r.ocr_words_result_num,

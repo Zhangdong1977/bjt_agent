@@ -70,7 +70,33 @@ estimate_cost = cost_mod.estimate_cost
 
 c_ds = estimate_cost(provider="deepseek", model="deepseek-chat",
                      prompt_tokens=1_000_000, completion_tokens=1_000_000, status="success")
-check("deepseek success 估算 = 输入2+输出8", c_ds is not None and abs(c_ds - 10.0) < 1e-6, f"got {c_ds}")
+# deepseek-chat 未显式列入价目表，走 __default__（= v4-flash 价：miss 1 + output 2）
+check("deepseek success 估算 = miss1+output2", c_ds is not None and abs(c_ds - 3.0) < 1e-6, f"got {c_ds}")
+
+# —— deepseek-v4-flash 三档费率（中国官方人民币价目表，每百万 token）——
+# 缓存命中 0.02 / 缓存未命中 1.0 / 输出 2.0
+c_hit = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
+                      prompt_cache_hit_tokens=1_000_000, prompt_cache_miss_tokens=0,
+                      completion_tokens=0, status="success")
+check("v4-flash 全命中1M = 0.02元", c_hit is not None and abs(c_hit - 0.02) < 1e-9, f"got {c_hit}")
+c_miss = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
+                      prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=1_000_000,
+                      completion_tokens=0, status="success")
+check("v4-flash 全未命中1M = 1.0元", c_miss is not None and abs(c_miss - 1.0) < 1e-9, f"got {c_miss}")
+c_out = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
+                     prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=0,
+                     completion_tokens=1_000_000, status="success")
+check("v4-flash 输出1M = 2.0元", c_out is not None and abs(c_out - 2.0) < 1e-9, f"got {c_out}")
+# 混合：命中 0.5M + 未命中 0.5M + 输出 0.2M = 0.5*0.02 + 0.5*1 + 0.2*2 = 0.91
+c_mix = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
+                     prompt_cache_hit_tokens=500_000, prompt_cache_miss_tokens=500_000,
+                     completion_tokens=200_000, status="success")
+check("v4-flash 混合计价 = 0.91元", c_mix is not None and abs(c_mix - 0.91) < 1e-9, f"got {c_mix}")
+# 无 cache 拆分信息时兜底（miss=prompt_tokens）
+c_fallback = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
+                          prompt_tokens=1_000_000, completion_tokens=0, status="success")
+check("v4-flash 无cache拆分兜底 miss=prompt = 1.0元", c_fallback is not None and abs(c_fallback - 1.0) < 1e-9, f"got {c_fallback}")
+
 check("error 不计费", estimate_cost(provider="deepseek", status="error") is None)
 check("timeout 不计费", estimate_cost(provider="deepseek", status="timeout") is None)
 c_ocr = estimate_cost(provider="baidu_ocr", status="success")
@@ -129,6 +155,7 @@ expected_fields = {
     "external_user_id", "local_user_id", "user_name", "enterprise_name", "interior_user",
     "project_id", "task_id", "todo_id", "usage_type", "provider", "model", "status",
     "prompt_tokens", "completion_tokens", "total_tokens",
+    "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
     "ocr_calls", "ocr_images", "ocr_words_result_num", "image_size_bytes",
     "latency_ms", "endpoint", "error_code", "error_message", "raw_usage",
     "cost_cny", "usage_date",

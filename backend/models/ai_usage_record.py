@@ -39,6 +39,10 @@ class AiUsageRecord(Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    # DeepSeek 上下文缓存拆分（命中部分按官方价 1/50 计费）。
+    # 非 deepseek provider（minimax/volcengine）不返回，默认 0。
+    prompt_cache_hit_tokens: Mapped[int] = mapped_column(Integer, default=0)   # 缓存命中输入
+    prompt_cache_miss_tokens: Mapped[int] = mapped_column(Integer, default=0)  # 缓存未命中输入
 
     # —— OCR 指标 ——
     ocr_calls: Mapped[int] = mapped_column(Integer, default=0)

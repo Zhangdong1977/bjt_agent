@@ -1,5 +1,16 @@
 """Celery application configuration."""
 
+# Windows 控制台默认 GBK 代码页，Mini-Agent 的 emoji print（📝🔄🤖 等）会触发
+# UnicodeEncodeError，导致 worker 里 agent.run() 第一句 print 就崩，整个审查失败。
+# 在任何 print 之前把 stdout/stderr 重配为 UTF-8（即便启动脚本已设 PYTHONIOENCODING 也兜底）。
+import sys
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 from celery import Celery
 
 from backend.config import get_settings

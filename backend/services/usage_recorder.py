@@ -56,6 +56,9 @@ def record_llm_usage(
     prompt_t = getattr(usage, "prompt_tokens", 0) or 0
     comp_t = getattr(usage, "completion_tokens", 0) or 0
     total_t = getattr(usage, "total_tokens", 0) or 0
+    # DeepSeek 上下文缓存拆分（命中/未命中输入），非 deepseek provider 无此字段，getattr 兜底 0
+    hit_t = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
+    miss_t = getattr(usage, "prompt_cache_miss_tokens", 0) or 0
     raw = None
     if usage is not None:
         try:
@@ -66,12 +69,14 @@ def record_llm_usage(
     cost = estimate_cost(
         provider=provider, model=model,
         prompt_tokens=prompt_t, completion_tokens=comp_t,
+        prompt_cache_hit_tokens=hit_t, prompt_cache_miss_tokens=miss_t,
         status=status,
     ) if status == "success" else None
 
     record = AiUsageRecord(
         usage_type="llm", provider=provider, model=model,
         prompt_tokens=prompt_t, completion_tokens=comp_t, total_tokens=total_t,
+        prompt_cache_hit_tokens=hit_t, prompt_cache_miss_tokens=miss_t,
         latency_ms=latency_ms, status=status, error_code=error_code,
         error_message=error_message, raw_usage=raw, cost_cny=cost,
         # 归属来自 ctx：
