@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 # 聚合 ai_usage_records 的 upsert：一行 SQL 重算该 task 的全部用量指标。
 # 用 PG 的 COUNT(*) FILTER / SUM(...) FILTER 按 usage_type 拆分，COALESCE 防 NULL。
 # ON CONFLICT (id) DO UPDATE —— 主键 id = task_id，冲突即覆盖（绝对值，幂等）。
-# 注意：created_at 在 ON CONFLICT 时保留原值（首次创建时间），不覆盖。
+# 注意：
+#   - id 列值用 MIN(task_id) 而非 :task_id：:task_id 只在 WHERE 出现一次，
+#     否则 asyncpg 对同一参数在 INSERT 值与 WHERE 两种上下文推断类型冲突
+#     （AmbiguousParameterError: inconsistent types deduced）。
+#   - created_at 在 ON CONFLICT 时保留原值（首次创建时间），不覆盖。
 _UPSERT_SQL = text("""
 INSERT INTO ai_usage_task_summary (
     id, llm_calls, ocr_calls, failed_calls,
@@ -34,7 +38,7 @@ INSERT INTO ai_usage_task_summary (
     created_at, updated_at
 )
 SELECT
-    :task_id,
+    MIN(task_id),
     COUNT(*) FILTER (WHERE usage_type = 'llm'),
     COUNT(*) FILTER (WHERE usage_type = 'ocr'),
     COUNT(*) FILTER (WHERE status <> 'success'),
