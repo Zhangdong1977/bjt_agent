@@ -116,6 +116,7 @@ async def start_review(
     db.add(task)
     await db.flush()
     await db.refresh(task)
+    await db.commit()
 
     # Trigger the review task via Celery. If broker dispatch fails after the
     # task row is created, persist a terminal failed state so the UI never sees
