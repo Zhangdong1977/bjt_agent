@@ -57,3 +57,11 @@ pnpm-debug.log*
 docs/rules/
 temp/
 third_party/EverOS/
+
+# 本地启动脚本 / Redis 二进制 / 部署文档（本地生成，不入库）
+scripts/bjt.bat
+scripts/check_env.py
+scripts/redis-7/
+docs/集群部署方案.html
+docs/集群部署方案.pdf
+nul
