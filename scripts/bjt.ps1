@@ -107,7 +107,10 @@ function Assert-Environment {
         Write-Err2 "Frontend deps missing - run: npm install in $FrontendDir"
         $ok = $false
     }
-    if (-not (Test-Path $RedisExe))  { Write-Err2 "Missing $RedisExe (local Redis?)"; $ok = $false }
+    # Local bundled Redis is optional: the backend/celery broker URL is taken
+    # from .env (CELERY_BROKER_URL / REDIS_URL), which may point at a remote
+    # Redis. Only warn here; Start-Redis will no-op if the binary is absent.
+    if (-not (Test-Path $RedisExe))  { Write-Warn2 "Missing $RedisExe (local Redis) - relying on .env REDIS_URL instead" }
     return $ok
 }
 
@@ -193,7 +196,11 @@ function Start-Redis {
         Save-Pid "redis" 0   # marker: external/pre-existing
         return $true
     }
-    if (-not (Test-Path $RedisExe)) { Write-Err2 "Missing $RedisExe"; return $false }
+    if (-not (Test-Path $RedisExe)) {
+        Write-Warn2 "No local redis-server; assuming .env REDIS_URL/CELERY_BROKER_URL points at a remote Redis."
+        Save-Pid "redis" 0   # marker: external/remote
+        return $true
+    }
     Write-Log "Starting local Redis 7 on :$RedisPort ..."
     # msys2 redis-server needs relative paths; Start-One already supports -WorkingDirectory.
     # We pass the bare conf filename (resolved against $RedisDir).
