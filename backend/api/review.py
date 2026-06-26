@@ -50,7 +50,7 @@ async def verify_project_ownership(
         )
     if allow_interior and is_interior_user(current_user):
         return project
-    if project.user_id != current_user.id:
+    if project.user_id != current_user.id or project.is_deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",

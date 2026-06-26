@@ -20,6 +20,10 @@ export interface Project {
   name: string;
   description: string | null;
   user_id: string;
+  status: string;
+  is_deleted: boolean;
+  deleted_at: string | null;
+  deleted_by_user_id: string | null;
   created_at: string;
   updated_at: string;
 }

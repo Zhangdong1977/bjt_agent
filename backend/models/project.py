@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, ForeignKey, func
+from sqlalchemy import Boolean, DateTime, String, ForeignKey, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -24,6 +24,9 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="draft", index=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="projects")

@@ -62,7 +62,7 @@ async def _verify_project(
         raise HTTPException(status_code=404, detail="Project not found")
     if allow_interior and is_interior_user(current_user):
         return project
-    if project.user_id != current_user.id:
+    if project.user_id != current_user.id or project.is_deleted:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
 

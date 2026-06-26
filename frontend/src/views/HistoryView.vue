@@ -30,12 +30,9 @@ function goToResults(projectId: string) {
   router.push({ name: 'review-results', params: { id: projectId } })
 }
 
-async function deleteProject(projectId: string, event: Event) {
-  event.stopPropagation()
-  if (confirm('确定要删除此项目吗？')) {
-    await projectStore.deleteProject(projectId)
-    message.success('项目已删除')
-  }
+async function deleteProject(projectId: string) {
+  await projectStore.deleteProject(projectId)
+  message.success('项目已删除')
 }
 </script>
 
@@ -87,7 +84,7 @@ async function deleteProject(projectId: string, event: Event) {
               <a-divider type="vertical" />
               <a-popconfirm
                 title="确定要删除此项目吗？"
-                @confirm="deleteProject(record.id, $event)"
+                @confirm="deleteProject(record.id)"
               >
                 <a class="delete-link">删除</a>
               </a-popconfirm>

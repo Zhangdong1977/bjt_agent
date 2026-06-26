@@ -12,6 +12,9 @@ Test cases:
 import uuid
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+
+from backend.models import Project, async_session_factory, engine
 
 
 async def create_test_project(
@@ -165,7 +168,7 @@ class TestProjectDelete:
 
     @pytest.mark.asyncio
     async def test_delete_project_success(self, client: AsyncClient, auth_headers: dict):
-        """PROJ-005: Delete project successfully."""
+        """PROJ-005: Soft-delete project successfully."""
         project = await create_test_project(client, auth_headers, "To Delete")
 
         response = await client.delete(
@@ -175,12 +178,81 @@ class TestProjectDelete:
 
         assert response.status_code == 204
 
-        # Verify deletion
+        # Owner can no longer see deleted project.
         get_response = await client.get(
             f"/api/projects/{project['id']}",
             headers=auth_headers,
         )
         assert get_response.status_code == 404
+
+        list_response = await client.get("/api/projects", headers=auth_headers)
+        assert list_response.status_code == 200
+        ids = {p["id"] for p in list_response.json()["projects"]}
+        assert project["id"] not in ids
+
+        # The row is retained so internal users can still inspect related data.
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(Project).where(Project.id == project["id"])
+            )
+            db_project = result.scalar_one()
+            assert db_project.is_deleted is True
+            assert db_project.deleted_at is not None
+            assert db_project.deleted_by_user_id is not None
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_deleted_project_remains_visible_to_interior_user(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        interior_auth_headers: dict,
+    ):
+        """PROJ-005: Internal users can still read soft-deleted projects."""
+        project = await create_test_project(client, auth_headers, "Interior Visible")
+
+        response = await client.delete(
+            f"/api/projects/{project['id']}",
+            headers=auth_headers,
+        )
+        assert response.status_code == 204
+
+        owner_response = await client.get(
+            f"/api/projects/{project['id']}",
+            headers=auth_headers,
+        )
+        assert owner_response.status_code == 404
+
+        interior_response = await client.get(
+            f"/api/projects/{project['id']}",
+            headers=interior_auth_headers,
+        )
+        assert interior_response.status_code == 200
+        data = interior_response.json()
+        assert data["id"] == project["id"]
+        assert data["is_deleted"] is True
+
+    @pytest.mark.asyncio
+    async def test_interior_user_can_soft_delete_any_project(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        interior_auth_headers: dict,
+    ):
+        """PROJ-005: Interior users may soft-delete projects they do not own."""
+        project = await create_test_project(client, auth_headers, "Interior Delete")
+
+        response = await client.delete(
+            f"/api/projects/{project['id']}",
+            headers=interior_auth_headers,
+        )
+        assert response.status_code == 204
+
+        owner_response = await client.get(
+            f"/api/projects/{project['id']}",
+            headers=auth_headers,
+        )
+        assert owner_response.status_code == 404
 
     @pytest.mark.asyncio
     async def test_delete_project_not_found(self, client: AsyncClient, auth_headers: dict):

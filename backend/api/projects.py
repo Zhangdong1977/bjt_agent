@@ -1,21 +1,22 @@
 """Projects API routes."""
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select, delete
+from sqlalchemy import select
 
 from backend.api.deps import DBSession, CurrentUser, is_interior_user
 from backend.models import Project
 from backend.schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse, ProjectListResponse
+from backend.utils.time_utils import utc_now
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
 
 @router.get("", response_model=ProjectListResponse)
 async def list_projects(db: DBSession, current_user: CurrentUser) -> ProjectListResponse:
-    """List all projects for the current user."""
+    """List non-deleted projects for the current user's history page."""
     result = await db.execute(
         select(Project)
-        .where(Project.user_id == current_user.id)
+        .where(Project.user_id == current_user.id, Project.is_deleted.is_(False))
         .order_by(Project.created_at.desc())
     )
     projects = result.scalars().all()
@@ -59,7 +60,9 @@ async def get_project(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
-    if not is_interior_user(current_user) and project.user_id != current_user.id:
+    if not is_interior_user(current_user) and (
+        project.user_id != current_user.id or project.is_deleted
+    ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
@@ -77,7 +80,11 @@ async def update_project(
     """Update a project."""
     result = await db.execute(
         select(Project)
-        .where(Project.id == project_id, Project.user_id == current_user.id)
+        .where(
+            Project.id == project_id,
+            Project.user_id == current_user.id,
+            Project.is_deleted.is_(False),
+        )
     )
     project = result.scalar_one_or_none()
     if not project:
@@ -102,16 +109,31 @@ async def delete_project(
     db: DBSession,
     current_user: CurrentUser,
 ) -> None:
-    """Delete a project."""
-    result = await db.execute(
-        select(Project)
-        .where(Project.id == project_id, Project.user_id == current_user.id)
-    )
+    """Soft-delete a project.
+
+    Regular users may hide their own projects from their history page. Internal
+    users may soft-delete any project, while the documents and review results
+    remain available to internal read paths.
+    """
+    query = select(Project).where(Project.id == project_id)
+    if not is_interior_user(current_user):
+        query = query.where(
+            Project.user_id == current_user.id,
+            Project.is_deleted.is_(False),
+        )
+
+    result = await db.execute(query)
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
-    await db.delete(project)
+
+    if not project.is_deleted:
+        project.is_deleted = True
+        project.deleted_at = utc_now()
+        project.deleted_by_user_id = current_user.id
+        project.status = "deleted"
+
     await db.flush()

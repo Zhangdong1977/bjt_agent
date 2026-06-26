@@ -26,6 +26,9 @@ class ProjectResponse(BaseModel):
     name: str
     description: str | None
     status: str
+    is_deleted: bool = False
+    deleted_at: datetime | None = None
+    deleted_by_user_id: str | None = None
     created_at: datetime
     updated_at: datetime
 
