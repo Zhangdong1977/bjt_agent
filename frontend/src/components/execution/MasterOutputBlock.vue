@@ -42,7 +42,7 @@ function formatToolResult(result: any): string {
   if (result.status === 'success' && result.content) {
     return result.content.slice(0, MAX_CONTENT_LENGTH) + (result.content.length > MAX_CONTENT_LENGTH ? '...' : '')
   }
-  if (result.status === 'error') return `失败: ${result.error || 'unknown'}`
+  if (result.status === 'error') return `失败: ${result.error || '暂无详细原因'}`
   try {
     return JSON.stringify(result).slice(0, MAX_CONTENT_LENGTH)
   } catch {
@@ -70,7 +70,7 @@ function formatArgs(args: Record<string, any>): string {
       </div>
       <span class="output-header-title">主代理 — 规则解析</span>
       <div class="output-header-meta">
-        <span class="chip chip-master">MASTER</span>
+        <span class="chip chip-master">主代理</span>
         <span class="ts" v-if="steps.length > 0">{{ formatTime(new Date(steps[steps.length - 1].timestamp)) }}</span>
       </div>
     </div>

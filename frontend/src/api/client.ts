@@ -283,26 +283,26 @@ export const documentsApi = {
           try {
             resolve(JSON.parse(xhr.responseText));
           } catch {
-            reject(new Error("Invalid response"));
+            reject(new Error("服务器返回的数据格式不正确，请稍后重试"));
           }
         } else if (xhr.status === 401) {
           // Handle 401 for XHR upload - will trigger token refresh via interceptor
-          reject(new Error("Unauthorized - please login again"));
+          reject(new Error("登录状态已失效，请重新登录"));
         } else {
           try {
             const errorData = JSON.parse(xhr.responseText);
             reject(
               new Error(
-                errorData.detail || `Upload failed with status ${xhr.status}`,
+                errorData.detail || `上传失败（HTTP ${xhr.status}），请稍后重试`,
               ),
             );
           } catch {
-            reject(new Error(`Upload failed with status ${xhr.status}`));
+            reject(new Error(`上传失败（HTTP ${xhr.status}），请稍后重试`));
           }
         }
       };
 
-      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.onerror = () => reject(new Error("网络连接异常，请检查网络后重试"));
       xhr.send(formData);
     });
   },
@@ -452,16 +452,16 @@ export const knowledgeApi = {
           try {
             resolve(JSON.parse(xhr.responseText));
           } catch {
-            reject(new Error("Invalid response"));
+            reject(new Error("服务器返回的数据格式不正确，请稍后重试"));
           }
         } else if (xhr.status === 401) {
-          reject(new Error("Unauthorized - please login again"));
+          reject(new Error("登录状态已失效，请重新登录"));
         } else {
-          reject(new Error(`Upload failed with status ${xhr.status}`));
+          reject(new Error(`上传失败（HTTP ${xhr.status}），请稍后重试`));
         }
       };
 
-      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.onerror = () => reject(new Error("网络连接异常，请检查网络后重试"));
       xhr.send(formData);
     });
   },

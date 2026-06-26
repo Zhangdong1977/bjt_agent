@@ -107,7 +107,7 @@ function handleTaskComplete() {
 }
 
 function formatDate(dateStr: string | null): string {
-  if (!dateStr) return 'N/A'
+  if (!dateStr) return '暂无'
   return new Date(dateStr).toLocaleString('zh-CN')
 }
 

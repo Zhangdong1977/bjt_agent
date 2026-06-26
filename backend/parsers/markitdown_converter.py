@@ -72,11 +72,11 @@ class MarkitdownConverter:
 
     def convert(self, file_path: Path, progress_callback=None, images_dir: Path = None) -> ConversionResult:
         if not file_path.exists():
-            raise FileNotFoundError(f"Input file not found: {file_path}")
+            raise FileNotFoundError(f"文件不存在，请重新上传：{file_path}")
 
         suffix = file_path.suffix.lower()
         if suffix not in [".docx", ".doc", ".pdf"]:
-            raise ValueError(f"Unsupported file type: {suffix}. Expected .docx, .doc, or .pdf")
+            raise ValueError(f"暂不支持 {suffix or '未知'} 格式，请上传 DOCX、DOC 或 PDF 文件")
 
         file_size = file_path.stat().st_size
         logger.info(f"Markitdown conversion: {file_path} ({file_size / (1024 * 1024):.2f}MB)")
@@ -103,7 +103,7 @@ class MarkitdownConverter:
             raise
         except Exception as e:
             logger.error(f"Markitdown conversion failed: {e}")
-            raise MarkitdownConversionError(f"Markitdown conversion failed: {e}")
+            raise MarkitdownConversionError(f"文档转换失败：{e}")
 
     def _convert_docx(self, converter, file_path: Path, images_dir: Path, progress_callback) -> ConversionResult:
         """Convert DOCX/DOC file to Markdown."""
@@ -147,7 +147,7 @@ class MarkitdownConverter:
         doc = fitz.open(str(file_path))
         if doc.is_encrypted:
             doc.close()
-            raise MarkitdownConversionError("PDF is encrypted")
+            raise MarkitdownConversionError("PDF 文件已加密，请解除密码后重新上传")
 
         total_pages = len(doc)
         logger.info(f"PDF fitz conversion: {file_path.name}, {total_pages} pages")
@@ -208,7 +208,7 @@ def _extract_pdf_text_with_fitz(file_path: Path) -> str:
         doc = fitz.open(str(file_path))
         if doc.is_encrypted:
             doc.close()
-            raise ValueError("PDF is encrypted")
+            raise ValueError("PDF 文件已加密，请解除密码后重新上传")
 
         max_pages = 500
         for page_num in range(min(len(doc), max_pages)):

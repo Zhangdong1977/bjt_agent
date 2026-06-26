@@ -341,7 +341,7 @@ def parse_document(self, document_id: str) -> dict:
 
             if not document:
                 logger.error(f"[PARSE] Document not found in DB: {document_id}")
-                return {"status": "error", "message": "Document not found"}
+                return {"status": "error", "message": "文档不存在或已被删除"}
 
             document.status = "parsing"
             await db.flush()
@@ -349,10 +349,10 @@ def parse_document(self, document_id: str) -> dict:
             file_path = Path(document.file_path)
             if not file_path.exists():
                 document.status = "failed"
-                document.parse_error = "File not found"
+                document.parse_error = "文件不存在，请重新上传"
                 await db.flush()
                 logger.error(f"[PARSE] File not found on disk: {file_path}")
-                return {"status": "error", "message": "File not found"}
+                return {"status": "error", "message": "文件不存在，请重新上传"}
 
             try:
                 result = await _parse_document_internal(document, file_path, settings)

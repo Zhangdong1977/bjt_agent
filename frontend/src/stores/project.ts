@@ -526,7 +526,7 @@ export const useProjectStore = defineStore("project", () => {
       case "error":
         if (currentTask.value) {
           currentTask.value.status = "failed";
-          currentTask.value.error_message = event.message || "Unknown error";
+          currentTask.value.error_message = event.message || "审查失败，暂无详细原因";
         }
         stopHeartbeat();
         disconnectSSE();

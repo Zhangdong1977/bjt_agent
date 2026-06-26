@@ -61,7 +61,7 @@ function getToolResultText(result: any): string {
     return result.content
   }
   if (result?.status === 'error') {
-    return `失败: ${result.error || 'unknown'}`
+    return `失败: ${result.error || '暂无详细原因'}`
   }
   const str = JSON.stringify(result)
   return str || String(result)
@@ -75,7 +75,7 @@ function getToolResultText(result: any): string {
       <div class="card-header">
         <span class="step-number">#{{ stepNumber }}</span>
         <span class="step-label">{{ stepType === 'master' ? '主代理' : stepType === 'observation' ? '观察' : stepType === 'tool_call' ? '工具调用' : stepType === 'tool_result' ? '工具结果' : '思考' }}</span>
-        <span v-if="status === 'running'" class="status-running">RUNNING</span>
+        <span v-if="status === 'running'" class="status-running">执行中</span>
         <span v-if="duration !== undefined" class="duration">{{ duration }}ms</span>
         <span class="timestamp">{{ formatTime(timestamp) }}</span>
       </div>

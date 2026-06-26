@@ -396,7 +396,7 @@ async function handleSSEEvent(event: any) {
     case 'error':
       // 错误事件
       phase.value = 'failed'
-      errorMessage.value = event.message || 'Unknown error'
+      errorMessage.value = event.message || '审查失败，暂无详细原因'
       stopStatusPolling()
       projectStore.stopHeartbeat()
       disconnect()

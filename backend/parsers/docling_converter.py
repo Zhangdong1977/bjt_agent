@@ -249,11 +249,11 @@ class DoclingConverter:
         docling_json_path: Path = None,
     ) -> ConversionResult:
         if not file_path.exists():
-            raise FileNotFoundError(f"Input file not found: {file_path}")
+            raise FileNotFoundError(f"文件不存在，请重新上传：{file_path}")
 
         suffix = file_path.suffix.lower()
         if suffix != ".pdf":
-            raise ValueError(f"DoclingConverter only supports PDF, got {suffix}")
+            raise ValueError(f"该解析器仅支持 PDF 文件，当前格式为 {suffix or '未知'}")
 
         file_size = file_path.stat().st_size
         logger.info(f"Docling PDF conversion: {file_path} ({file_size / (1024 * 1024):.2f}MB)")
@@ -269,7 +269,7 @@ class DoclingConverter:
             raise
         except Exception as e:
             logger.error(f"Docling conversion failed: {e}")
-            raise DoclingConversionError(f"Docling conversion failed: {e}") from e
+            raise DoclingConversionError(f"文档转换失败：{e}") from e
 
     def _create_page_images_dir(self) -> Path:
         """Create a temp directory for offloading page images during conversion."""
@@ -316,8 +316,8 @@ class DoclingConverter:
         )
 
         if result.status.name == "FAILURE":
-            errors = "; ".join(str(e) for e in result.errors) if result.errors else "unknown"
-            raise DoclingConversionError(f"Docling conversion failed: {errors}")
+            errors = "; ".join(str(e) for e in result.errors) if result.errors else "未知错误"
+            raise DoclingConversionError(f"文档转换失败：{errors}")
 
         # Log any warnings from Docling (e.g. timeout warnings)
         if result.errors:

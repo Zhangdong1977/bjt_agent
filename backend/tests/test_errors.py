@@ -246,7 +246,7 @@ class TestDocumentEdgeCases:
         )
 
         assert response.status_code == 400
-        assert "Unsupported file type" in response.json()["detail"]
+        assert "暂不支持" in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_upload_without_doc_type(

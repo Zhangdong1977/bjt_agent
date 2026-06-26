@@ -15,7 +15,7 @@ from backend.schemas.document import DocumentResponse, DocumentListResponse, Doc
 settings = get_settings()
 router = APIRouter(prefix="/projects/{project_id}/documents", tags=["Documents"])
 
-DOCUMENT_NOT_FOUND = "Document not found"
+DOCUMENT_NOT_FOUND = "文档不存在或已被删除"
 
 
 async def verify_project_ownership(
@@ -40,14 +40,14 @@ async def verify_project_ownership(
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
+            detail="项目不存在或无权访问",
         )
     if allow_interior and is_interior_user(current_user):
         return project
     if project.user_id != current_user.id or project.is_deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
+            detail="项目不存在或无权访问",
         )
     return project
 
@@ -74,7 +74,7 @@ async def list_documents(
 async def upload_document(
     project_id: str,
     db: DBSession,
-    doc_type: str = Query(..., description="Document type: 'tender' or 'bid'"),
+    doc_type: str = Query(..., description="文档类型：tender（招标文件）或 bid（投标文件）"),
     file: UploadFile = File(...),
     current_user: CurrentUser = None,
 ) -> Document:
@@ -88,7 +88,7 @@ async def upload_document(
     if doc_type not in ("tender", "bid"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="doc_type must be 'tender' or 'bid'",
+            detail="文档类型不正确，请选择招标文件或投标文件",
         )
 
     # Check document count limit per type (max 10) — query directly to avoid lazy load
@@ -111,7 +111,7 @@ async def upload_document(
     if file_ext not in supported_extensions:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file type: {file_ext}. Supported: {', '.join(supported_extensions)}",
+            detail=f"暂不支持 {file_ext or '未知'} 格式，请上传 PDF、DOCX 或 DOC 文件",
         )
 
     # Validate file size - check content length without reading into memory
@@ -122,14 +122,14 @@ async def upload_document(
     if file_size == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Empty file is not allowed",
+            detail="文件内容为空，请重新选择文件",
         )
 
     if file_size > settings.max_upload_size_bytes:
         max_mb = settings.max_upload_size_mb
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File size ({file_size / (1024*1024):.2f} MB) exceeds maximum allowed size ({max_mb} MB)",
+            detail=f"文件过大（{file_size / (1024*1024):.2f} MB），最大支持 {max_mb} MB",
         )
 
     # Create project directory
@@ -193,7 +193,7 @@ async def get_document_content(
     if document.status != "parsed":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Document is not parsed yet. Current status: {document.status}",
+            detail=f"文档尚未解析完成，当前状态：{document.status}",
         )
 
     # Determine content format based on file extension

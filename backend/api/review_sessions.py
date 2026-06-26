@@ -60,7 +60,7 @@ async def get_session(
     service = TodoService(db)
     session = await service.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="审查会话不存在或已过期")
     return session.to_dict()
 
 
@@ -74,7 +74,7 @@ async def get_progress(
     service = TodoService(db)
     session = await service.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="审查会话不存在或已过期")
 
     todos = await service.get_session_todos(session_id)
     return {
@@ -96,7 +96,7 @@ async def get_result(
     service = TodoService(db)
     session = await service.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="审查会话不存在或已过期")
 
     return {
         "session_id": session_id,
@@ -117,7 +117,7 @@ async def start_review(
     service = TodoService(db)
     session = await service.get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="审查会话不存在或已过期")
 
     # 获取 SSE event_callback（从 app state 获取）
     event_callback = getattr(app.state, "sse_callbacks", {}).get(session_id)
@@ -147,6 +147,6 @@ async def start_review(
         asyncio.create_task(run_master())
     except Exception as e:
         logger.exception(f"Failed to start review task for session {session_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to start review")
+        raise HTTPException(status_code=500, detail="启动审查失败，请稍后重试")
 
-    return {"message": "Review started", "session_id": session_id}
+    return {"message": "审查已启动", "session_id": session_id}

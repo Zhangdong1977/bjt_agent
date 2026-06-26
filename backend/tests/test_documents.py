@@ -146,7 +146,7 @@ class TestDocumentUpload:
         )
 
         assert response.status_code == 400
-        assert "Unsupported file type" in response.json()["detail"]
+        assert "暂不支持" in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_upload_invalid_doc_type(self, client: AsyncClient, auth_headers: dict):
@@ -162,7 +162,7 @@ class TestDocumentUpload:
         )
 
         assert response.status_code == 400
-        assert "doc_type must be 'tender' or 'bid'" in response.json()["detail"]
+        assert "文档类型不正确" in response.json()["detail"]
 
 
 class TestDocumentList:
@@ -244,7 +244,7 @@ class TestDocumentContent:
         )
 
         assert response.status_code == 400
-        assert "Document is not parsed yet" in response.json()["detail"]
+        assert "文档尚未解析完成" in response.json()["detail"]
 
 
 class TestDocumentDelete:

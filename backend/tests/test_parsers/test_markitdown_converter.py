@@ -24,7 +24,7 @@ class TestMarkitdownConverter:
         converter = MarkitdownConverter()
         with pytest.raises(ValueError) as exc_info:
             converter.convert(unsupported_file)
-        assert "Unsupported file type" in str(exc_info.value)
+        assert "暂不支持" in str(exc_info.value)
 
     def test_nonexistent_file(self):
         converter = MarkitdownConverter()

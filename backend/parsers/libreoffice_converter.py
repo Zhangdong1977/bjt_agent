@@ -49,11 +49,11 @@ class LibreOfficeConverter:
             FileNotFoundError: If input file doesn't exist
         """
         if not file_path.exists():
-            raise FileNotFoundError(f"Input file not found: {file_path}")
+            raise FileNotFoundError(f"文件不存在，请重新上传：{file_path}")
 
         suffix = file_path.suffix.lower()
         if suffix not in [".docx", ".doc"]:
-            raise ValueError(f"Unsupported file type: {suffix}. Expected .docx or .doc")
+            raise ValueError(f"暂不支持 {suffix or '未知'} 格式，请上传 DOCX 或 DOC 文件")
 
         file_size = file_path.stat().st_size
         logger.info(f"LibreOffice HTML conversion: {file_path} ({file_size / (1024 * 1024):.2f}MB)")
@@ -73,7 +73,7 @@ class LibreOfficeConverter:
         if html_path and html_path.exists():
             text = html_path.read_text(encoding="utf-8")
         else:
-            raise LibreOfficeConversionError("LibreOffice did not generate HTML output")
+            raise LibreOfficeConversionError("文档转换未生成可预览内容，请更换文件后重试")
 
         logger.info(f"LibreOffice conversion successful: {len(text)} characters")
 
@@ -117,7 +117,7 @@ class LibreOfficeConverter:
         if result.returncode != 0:
             stderr = result.stderr.decode() if result.stderr else ""
             logger.error(f"LibreOffice conversion failed: {stderr}")
-            raise LibreOfficeConversionError(f"LibreOffice conversion failed: {stderr}")
+            raise LibreOfficeConversionError(f"文档转换失败：{stderr}")
 
         # Find the generated HTML file
         # LibreOffice creates stem.html and a stem_files/ directory for images
@@ -130,7 +130,7 @@ class LibreOfficeConverter:
                 html_path = html_files[0]
             else:
                 stderr = result.stderr.decode() if result.stderr else ""
-                raise LibreOfficeConversionError(f"LibreOffice did not generate HTML file: {stderr}")
+                raise LibreOfficeConversionError(f"文档转换未生成预览文件：{stderr}")
 
         # Find the images directory (usually stem_files/)
         images_dir = output_dir / f"{stem}_files"

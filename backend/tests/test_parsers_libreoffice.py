@@ -41,7 +41,7 @@ class TestLibreOfficeConverter:
         txt_path = temp_dir / "sample.txt"
         txt_path.touch()
 
-        with pytest.raises(ValueError, match="Unsupported file type"):
+        with pytest.raises(ValueError, match="暂不支持"):
             asyncio.run(converter.convert(txt_path))
 
     def test_conversion_error_libreoffice_failed(self, sample_docx_path):

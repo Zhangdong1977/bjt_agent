@@ -59,11 +59,11 @@ async def _verify_project(
     )
     project = result.scalar_one_or_none()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在或无权访问")
     if allow_interior and is_interior_user(current_user):
         return project
     if project.user_id != current_user.id or project.is_deleted:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在或无权访问")
     return project
 
 
@@ -81,7 +81,7 @@ async def _verify_finding(
     )
     finding = result.scalar_one_or_none()
     if not finding:
-        raise HTTPException(status_code=404, detail="Finding not found")
+        raise HTTPException(status_code=404, detail="审查发现不存在或已被删除")
     return finding
 
 
@@ -199,7 +199,7 @@ async def batch_confirm_findings(
     )
     task = task_result.scalar_one_or_none()
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(status_code=404, detail="任务不存在或已被删除")
 
     # Get all non-compliant findings, optionally filtered by rule_doc_name
     query = select(ReviewResult).where(
@@ -456,7 +456,7 @@ async def review_feedback(
     )
     feedback = result.scalar_one_or_none()
     if not feedback:
-        raise HTTPException(status_code=404, detail="Pending feedback not found")
+        raise HTTPException(status_code=404, detail="待审核反馈不存在或已处理")
 
     feedback.status = "accepted" if body.action == "accept" else "rejected"
     feedback.reviewed_by = current_user.id

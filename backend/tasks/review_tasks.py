@@ -125,10 +125,10 @@ def create_session_factory():
 
 
 # Error message constants
-ERROR_TASK_NOT_FOUND = "Task not found"
-ERROR_PROJECT_NOT_FOUND = "Project not found"
-ERROR_TENDER_NOT_FOUND = "Tender document not found"
-ERROR_BID_NOT_FOUND = "Bid document not found"
+ERROR_TASK_NOT_FOUND = "任务不存在或已被删除"
+ERROR_PROJECT_NOT_FOUND = "项目不存在或无权访问"
+ERROR_TENDER_NOT_FOUND = "请先上传并解析招标文件"
+ERROR_BID_NOT_FOUND = "请先上传并解析投标文件"
 
 
 def _get_stream_key(task_id: str) -> str:
@@ -331,7 +331,7 @@ async def _progress_watchdog(task_id: str, cancel_event: asyncio.Event):
                 f"no event for {elapsed:.0f}s (limit {settings.agent_progress_timeout}s)"
             )
             _publish_event(task_id, "error", {
-                "message": f"Task hung: no progress for {elapsed:.0f}s"
+                "message": f"审查已超过 {elapsed:.0f} 秒没有进展，系统已自动停止任务"
             })
             cancel_event.set()
             break
@@ -446,7 +446,7 @@ def run_review(self, task_id: str) -> dict:
             # Session closed — connection returned to pool
 
             # Phase 2: Run review (no DB session held during the long-running agent)
-            _publish_event(task_id, "progress", {"message": "Starting document analysis..."})
+            _publish_event(task_id, "progress", {"message": "正在分析文档..."})
 
             cancel_event = asyncio.Event()
             watchdog_task = asyncio.create_task(
@@ -523,7 +523,7 @@ def run_review(self, task_id: str) -> dict:
             # Check if we were terminated gracefully
             if termination_event.is_set():
                 logger.warning(f"[run_review] Task {task_id} was terminated gracefully via SIGTERM")
-                return {"status": "cancelled", "message": "Task cancelled by user"}
+                return {"status": "cancelled", "message": "任务已取消"}
 
     return run_async(_run())
 
@@ -583,8 +583,8 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
         return run_async(_run_merge())
     except SoftTimeLimitExceeded:
         logger.error(f"[merge_review_results] SoftTimeLimitExceeded for project {project_id}")
-        _publish_event(latest_task_id, "error", {"message": "Merge task exceeded time limit"})
-        return {"status": "error", "message": "Merge task exceeded time limit"}
+        _publish_event(latest_task_id, "error", {"message": "结果合并超时，请稍后重试"})
+        return {"status": "error", "message": "结果合并超时，请稍后重试"}
 
 
 def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: list | None = None) -> int:
@@ -649,14 +649,14 @@ def _create_error_finding(error_msg: str) -> list[dict]:
     """Create an error finding result."""
     return [{
         "requirement_key": "review_error",
-        "requirement_content": "Review process encountered an error",
+        "requirement_content": "审查过程发生异常",
         "bid_content": error_msg,
         "is_compliant": False,
         "severity": "critical",
         "location_page": None,
         "location_line": None,
-        "suggestion": "Check system logs for details",
-        "explanation": f"Agent execution failed: {error_msg}",
+        "suggestion": "请稍后重试；如果问题仍然存在，请联系管理员查看系统日志",
+        "explanation": f"智能体执行失败：{error_msg}",
     }]
 
 
@@ -719,11 +719,11 @@ async def _run_agent_review(
     # Validate all document paths exist
     for name, path in tender_docs:
         if not path or not Path(path).exists():
-            raise FileNotFoundError(f"Tender document not parsed: {name}")
+            raise FileNotFoundError(f"招标文件尚未解析完成或解析结果不存在：{name}")
 
     for name, path in bid_docs:
         if not path or not Path(path).exists():
-            raise FileNotFoundError(f"Bid document not parsed: {name}")
+            raise FileNotFoundError(f"投标文件尚未解析完成或解析结果不存在：{name}")
 
     # Rule library path from config
     rule_library_path = str(get_settings().rule_library_dir)
@@ -833,13 +833,13 @@ async def _run_agent_review(
             return non_compliant_count
 
         else:
-            error_msg = result.get("error", "Unknown error")
-            event_cb("error", {"message": f"MasterAgent error: {error_msg}"})
+            error_msg = result.get("error", "未知错误")
+            event_cb("error", {"message": f"主智能体执行失败：{error_msg}"})
             raise Exception(error_msg)
 
     except Exception as e:
         logger.exception(f"MasterAgent execution failed for task {task_id}: {e}")
-        event_cb("error", {"message": f"Agent error: {str(e)}"})
+        event_cb("error", {"message": f"智能体执行失败：{str(e)}"})
         raise  # Re-raise so run_review._run() handles status update
 
     finally:

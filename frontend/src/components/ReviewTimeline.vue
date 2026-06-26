@@ -340,7 +340,16 @@ function getStepLabel(stepType: string): string {
   if (stepType === 'thought') {
     return '思考过程'
   }
-  return stepType
+  if (stepType === 'tool_call') {
+    return '工具调用'
+  }
+  if (stepType === 'tool_result') {
+    return '工具结果'
+  }
+  if (stepType === 'master') {
+    return '主代理'
+  }
+  return '执行步骤'
 }
 
 function getFriendlyToolName(toolName?: string): string {
@@ -361,7 +370,7 @@ function formatToolResult(toolResult: ToolResult): string {
       return `${getFriendlyToolName(toolResult.name)}: ${content}`
     }
     if (result.status === 'error') {
-      return `${getFriendlyToolName(toolResult.name)}: 失败 - ${result.error || 'unknown'}`
+      return `${getFriendlyToolName(toolResult.name)}: 失败 - ${result.error || '暂无详细原因'}`
     }
     // Fallback for other object formats
     const resultContent = typeof result === 'object'
@@ -374,7 +383,7 @@ function formatToolResult(toolResult: ToolResult): string {
   if (result.status === 'success') {
     return `完成: ${result.content?.slice(0, 200) || ''}...`
   }
-  return `失败: ${result.error || 'unknown'}`
+  return `失败: ${result.error || '暂无详细原因'}`
 }
 
 function formatTime(date: Date): string {
@@ -423,7 +432,7 @@ defineExpose({ connect, disconnect, reset })
                 {{ getStepEmoji(step.step_type) }} {{ getStepLabel(step.step_type) }}
               </span>
               <span v-if="step.status === 'running'" class="status-running">
-                <Tag color="processing">RUNNING</Tag>
+                <Tag color="processing">执行中</Tag>
               </span>
               <span v-if="step.duration" class="duration">{{ step.duration }}s</span>
               <span class="timestamp">{{ formatTime(step.timestamp) }}</span>

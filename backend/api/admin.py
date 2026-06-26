@@ -33,14 +33,14 @@ async def verify_internal_key(
     """校验静态 API Key（+ 可选 IP 白名单）。"""
     if not settings.usage_sync_api_key:
         # 未配置 key 时拒绝（避免误开放）
-        raise HTTPException(status_code=503, detail="usage_sync_api_key not configured")
+        raise HTTPException(status_code=503, detail="用量同步密钥未配置")
     if x_internal_key != settings.usage_sync_api_key:
-        raise HTTPException(status_code=401, detail="invalid internal key")
+        raise HTTPException(status_code=401, detail="内部密钥无效")
     allowlist = [ip.strip() for ip in settings.usage_sync_ip_allowlist.split(",") if ip.strip()]
     if allowlist:
         ip = _client_ip(request)
         if ip not in allowlist:
-            raise HTTPException(status_code=403, detail="ip not allowed")
+            raise HTTPException(status_code=403, detail="当前 IP 不允许访问")
     return True
 
 
@@ -95,7 +95,7 @@ async def list_usage_records(
             since_ts_str, since_id = cursor.split("|")
             since_ts = datetime.fromisoformat(since_ts_str)
         except (ValueError, AttributeError):
-            raise HTTPException(status_code=400, detail="invalid cursor format")
+            raise HTTPException(status_code=400, detail="游标格式不正确")
         stmt = stmt.where(
             or_(
                 AiUsageRecord.created_at > since_ts,
@@ -179,7 +179,7 @@ async def list_usage_tasks(
             since_ts_str, since_id = cursor.split("|")
             since_ts = datetime.fromisoformat(since_ts_str)
         except (ValueError, AttributeError):
-            raise HTTPException(status_code=400, detail="invalid cursor format")
+            raise HTTPException(status_code=400, detail="游标格式不正确")
         stmt = stmt.where(
             or_(
                 AiUsageTaskSummary.updated_at > since_ts,

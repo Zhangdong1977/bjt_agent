@@ -301,11 +301,11 @@ async def trigger_experience_extraction(
     )
     review_task = result.scalar_one_or_none()
     if not review_task:
-        raise HTTPException(status_code=404, detail=f"ReviewTask {task_id} 不存在")
+        raise HTTPException(status_code=404, detail=f"审查任务 {task_id} 不存在")
     if review_task.status != "completed":
         raise HTTPException(
             status_code=400,
-            detail=f"ReviewTask {task_id} 状态为 {review_task.status}，仅支持已完成的任务",
+            detail=f"审查任务 {task_id} 当前状态为 {review_task.status}，仅支持已完成的任务",
         )
 
     # 2. 检查是否已提取（除非 force=true）
@@ -316,7 +316,7 @@ async def trigger_experience_extraction(
         if existing.scalar_one_or_none():
             raise HTTPException(
                 status_code=409,
-                detail=f"任务 {task_id} 已有提取记录，使用 force=true 可强制重新提取",
+                detail=f"任务 {task_id} 已有提取记录，可勾选强制重新提取后再试",
             )
 
     # 3. 派发 Celery 任务

@@ -114,7 +114,7 @@ async def lifespan(app: FastAPI):
             for t in stale:
                 logger.warning(f"[startup] Failing stale task {t.id}, started_at={t.started_at}")
                 t.status = "failed"
-                t.error_message = "Stale task cleaned up on startup"
+                t.error_message = "上次异常中断的任务已在启动时自动结束"
                 t.completed_at = datetime.now(timezone.utc)
             await db.commit()
             if stale:
@@ -230,12 +230,12 @@ async def stream_task_events(task_id: str, token: str | None = None):
             if user_id is None:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid token",
+                    detail="登录状态无效，请重新登录",
                 )
         except JWTError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token",
+                detail="登录状态无效，请重新登录",
             )
 
     async def event_generator():
@@ -282,7 +282,7 @@ async def cleanup_tasks_on_restart():
                     pass  # Task may have already completed
 
             task.status = "failed"
-            task.error_message = "Service restarting"
+            task.error_message = "服务正在重启，任务已自动结束，请重新发起"
             task.completed_at = datetime.now(timezone.utc)
             cleaned_count += 1
 

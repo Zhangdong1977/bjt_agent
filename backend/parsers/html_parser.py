@@ -119,7 +119,7 @@ class HTMLParser:
             # Use html.parser for broad compatibility, lxml can be added as optional dependency
             self.soup = BeautifulSoup(html, "html.parser")
         except Exception as e:
-            raise HTMLParserError(f"Failed to parse HTML: {e}")
+            raise HTMLParserError(f"HTML 内容解析失败：{e}")
 
     def parse(self) -> ParsedDocument:
         """Parse the HTML document and extract all structural elements.

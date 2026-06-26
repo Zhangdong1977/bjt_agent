@@ -164,7 +164,7 @@ async def refresh_token(request: RefreshTokenRequest, db: DBSession) -> Token:
 
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="登录状态已失效，请重新登录",
         headers={"WWW-Authenticate": "Bearer"},
     )
 

@@ -58,14 +58,14 @@ async def get_project(
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
+            detail="项目不存在或无权访问",
         )
     if not is_interior_user(current_user) and (
         project.user_id != current_user.id or project.is_deleted
     ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
+            detail="项目不存在或无权访问",
         )
     return project
 
@@ -90,7 +90,7 @@ async def update_project(
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
+            detail="项目不存在或无权访问",
         )
 
     if project_data.name is not None:
@@ -127,7 +127,7 @@ async def delete_project(
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
+            detail="项目不存在或无权访问",
         )
 
     if not project.is_deleted:

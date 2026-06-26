@@ -109,11 +109,11 @@ async def delete_document(
     file_path = os.path.join(user_dir, document_id)
 
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail="文档不存在或已被删除")
 
     # 安全检查：确保文件在用户目录下
     if not file_path.startswith(os.path.abspath(user_dir)):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail="无权访问该文档")
 
     # 删除原始文件
     os.remove(file_path)
@@ -131,7 +131,7 @@ async def delete_document(
     # 触发 RAG 同步（异步，不阻塞响应）
     asyncio.create_task(sync_knowledge_base(current_user.id))
 
-    return {"message": "Document deleted"}
+    return {"message": "文档已删除"}
 
 @router.get("/documents/{document_id}/preview")
 async def preview_document(
@@ -160,17 +160,17 @@ async def preview_document(
             pass
 
     if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="请先登录后再访问文档")
 
     user_dir = os.path.join(settings.knowledge_base_path, user.id)
     file_path = os.path.join(user_dir, document_id)
 
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail="文档不存在或已被删除")
 
     # 安全检查：确保文件在用户目录下
     if not file_path.startswith(os.path.abspath(user_dir)):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail="无权访问该文档")
 
     # 返回文件内容让浏览器直接显示
     from fastapi.responses import FileResponse
@@ -187,11 +187,11 @@ async def get_document_content(
     file_path = os.path.join(user_dir, f"{document_id}.md")
 
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail="文档不存在或已被删除")
 
     # 安全检查：确保文件在用户目录下
     if not file_path.startswith(os.path.abspath(user_dir)):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail="无权访问该文档")
 
     # 读取文件内容
     with open(file_path, 'r', encoding='utf-8') as f:
@@ -266,11 +266,11 @@ async def get_document_shards(
     md_file_path = os.path.join(user_dir, f"{document_id}.md")
 
     if not os.path.exists(md_file_path):
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail="文档不存在或已被删除")
 
     # 安全检查
     if not md_file_path.startswith(os.path.abspath(user_dir)):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail="无权访问该文档")
 
     # 读取文件内容
     with open(md_file_path, 'r', encoding='utf-8') as f:
@@ -317,7 +317,7 @@ async def rag_search(
             )
             return response.json()
     except httpx.RequestError:
-        raise HTTPException(status_code=503, detail="RAG service unavailable")
+        raise HTTPException(status_code=503, detail="知识库检索服务暂不可用，请稍后重试")
 
 
 @router.post("/search")
@@ -363,7 +363,7 @@ async def global_search(
                 "totalResults": results.get("totalResults", 0)
             }
     except httpx.RequestError:
-        raise HTTPException(status_code=503, detail="RAG service unavailable")
+        raise HTTPException(status_code=503, detail="知识库检索服务暂不可用，请稍后重试")
 
 
 @router.get("/index-status")

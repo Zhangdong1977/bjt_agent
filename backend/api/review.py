@@ -46,14 +46,14 @@ async def verify_project_ownership(
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
+            detail="项目不存在或无权访问",
         )
     if allow_interior and is_interior_user(current_user):
         return project
     if project.user_id != current_user.id or project.is_deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
+            detail="项目不存在或无权访问",
         )
     return project
 
@@ -102,7 +102,7 @@ async def start_review(
     for existing_task in existing_tasks:
         # Auto-cancel stale tasks from crashed workers - they can't complete
         existing_task.status = "failed"
-        existing_task.error_message = "Task cancelled - stale task from previous crashed worker"
+        existing_task.error_message = "上次异常中断的审查任务已自动结束，请重新发起审查"
         existing_task.completed_at = datetime.now(timezone.utc)
     if existing_tasks:
         await db.flush()
@@ -227,7 +227,7 @@ async def get_review_task_status(
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Review task not found",
+            detail="审查任务不存在或已被删除",
         )
     return task
 
@@ -250,13 +250,13 @@ async def cancel_review_task(
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Review task not found",
+            detail="审查任务不存在或已被删除",
         )
 
     if task.status not in ["pending", "running"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Task cannot be cancelled",
+            detail="当前任务状态不可取消",
         )
 
     # Revoke Celery task if running
@@ -302,12 +302,12 @@ async def heartbeat_review_task(
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Review task not found",
+            detail="审查任务不存在或已被删除",
         )
 
     if task.status != "running":
         # Still return 200 for non-running tasks to avoid frontend errors
-        return {"status": task.status, "message": "Task not running"}
+        return {"status": task.status, "message": "任务当前未在运行"}
 
     task.last_heartbeat = datetime.now(timezone.utc)
     await db.flush()
@@ -341,7 +341,7 @@ async def get_review_task_steps(
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Review task not found",
+            detail="审查任务不存在或已被删除",
         )
 
     result = await db.execute(
@@ -371,7 +371,7 @@ async def get_review_task_results(
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Review task not found",
+            detail="审查任务不存在或已被删除",
         )
 
     result = await db.execute(
@@ -410,7 +410,7 @@ async def get_review_task_todos(
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Review task not found",
+            detail="审查任务不存在或已被删除",
         )
 
     result = await db.execute(
@@ -452,7 +452,7 @@ async def get_todo_report(
     if not todo:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Todo item not found",
+            detail="检查项不存在或已被删除",
         )
 
     report_path = (todo.result or {}).get("report_path")
@@ -468,14 +468,14 @@ async def get_todo_report(
     if not report_path:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report file not found",
+            detail="审查报告尚未生成",
         )
 
     report_file = FilePath(report_path)
     if not report_file.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report file not found on disk",
+            detail="审查报告文件不存在，请重新生成",
         )
 
     content = report_file.read_text(encoding="utf-8")
@@ -517,7 +517,7 @@ async def stream_review_events(
     if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Task not found",
+            detail="任务不存在或已被删除",
         )
 
     # Events that contain detailed step/timeline data — blocked for external users
