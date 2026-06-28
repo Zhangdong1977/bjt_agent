@@ -23,6 +23,7 @@ from mini_agent.tools.mcp_loader import load_mcp_tools_async, cleanup_mcp_connec
 from mini_agent.tools.file_tools import WriteTool, ReadTool
 
 from backend.config import get_settings
+from backend.utils.time_utils import ensure_utc_aware, utc_now
 from backend.agent.tools.doc_search import DocSearchTool
 from backend.agent.tools.rag_search import RAGSearchTool
 from backend.agent.tools.comparator import ComparatorTool
@@ -743,7 +744,7 @@ class BidReviewAgent(BaseAgent):
                 await db.execute(
                     sql_update(ReviewTask)
                     .where(ReviewTask.id == self._task_id)
-                    .values(last_heartbeat=datetime.now(timezone.utc))
+                    .values(last_heartbeat=utc_now())
                 )
                 await db.commit()
         except Exception as e:
@@ -790,11 +791,12 @@ class BidReviewAgent(BaseAgent):
                     self._heartbeat_fail_count = 0
                     return True  # No heartbeat yet, assume OK
 
-                elapsed = (datetime.now(timezone.utc) - task.last_heartbeat).total_seconds()
+                last_heartbeat = ensure_utc_aware(task.last_heartbeat)
+                elapsed = (utc_now() - last_heartbeat).total_seconds()
                 if elapsed > self.heartbeat_timeout:
                     logger.warning(
                         f"[BidReviewAgent] Heartbeat timeout: {elapsed:.1f}s > {self.heartbeat_timeout}s, "
-                        f"task_id={self._task_id}, last_heartbeat={task.last_heartbeat}"
+                        f"task_id={self._task_id}, last_heartbeat={last_heartbeat}"
                     )
                     self._cancel_reason = "heartbeat_timeout"
                     return False

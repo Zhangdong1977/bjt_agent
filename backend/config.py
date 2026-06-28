@@ -94,6 +94,33 @@ class Settings(BaseSettings):
     rule_library_dir: Path = Path(__file__).parent.parent / "docs" / "rules"
 
     @property
+    def project_root(self) -> Path:
+        """Get the backend project root."""
+        return Path(__file__).resolve().parent.parent
+
+    @property
+    def rule_library_path(self) -> Path:
+        """Get an existing rule library path for the current runtime.
+
+        Local Windows development can inherit the Linux deployment path from
+        .env. When that configured path is not available, fall back to this
+        worktree's bundled rules.
+        """
+        configured = self.rule_library_dir
+        configured_path = configured if configured.is_absolute() else self.project_root / configured
+        configured_path = configured_path.resolve()
+
+        if configured_path.exists() and configured_path.is_dir():
+            return configured_path
+
+        default_path = (self.project_root / "docs" / "rules").resolve()
+        configured_text = configured.as_posix().replace("\\", "/")
+        if configured_text.endswith("/docs/rules") and default_path.exists() and default_path.is_dir():
+            return default_path
+
+        return configured_path
+
+    @property
     def knowledge_base_path(self) -> Path:
         """Get absolute knowledge base path."""
         if self.knowledge_base_dir.is_absolute():

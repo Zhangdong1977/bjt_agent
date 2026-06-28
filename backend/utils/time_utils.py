@@ -27,3 +27,26 @@ def utc_now() -> datetime:
     will be persisted or returned to clients.
     """
     return datetime.now(timezone.utc)
+
+
+def ensure_utc_aware(value: datetime | None) -> datetime | None:
+    """Return a timezone-aware UTC datetime.
+
+    Some existing databases still return UTC timestamps as naive datetimes even
+    when the application writes aware values. Treat naive values as UTC so time
+    arithmetic does not fail with mixed aware/naive datetimes.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def utc_seconds_between(start: datetime, end: datetime) -> int:
+    """Return elapsed seconds between two UTC datetimes."""
+    start_utc = ensure_utc_aware(start)
+    end_utc = ensure_utc_aware(end)
+    if start_utc is None or end_utc is None:
+        return 0
+    return int((end_utc - start_utc).total_seconds())
