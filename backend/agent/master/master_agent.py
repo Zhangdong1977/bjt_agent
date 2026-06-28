@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Optional, Callable
 
 from sqlalchemy import update
@@ -13,6 +12,7 @@ from .sub_agent_executor import SubAgentExecutor, detect_anomaly
 from backend.services.todo_service import TodoService
 from backend.models.review_task import ReviewTask
 from backend.config import get_settings
+from backend.utils.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -438,7 +438,7 @@ class MasterAgent:
                 await db.execute(
                     update(ReviewTask)
                     .where(ReviewTask.id == self._session_id)
-                    .values(last_heartbeat=datetime.now(timezone.utc))
+                    .values(last_heartbeat=utc_now())
                 )
                 await db.commit()
             logger.info(f"[_refresh_heartbeat] Refreshed heartbeat for session {self._session_id}")

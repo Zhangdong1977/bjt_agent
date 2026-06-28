@@ -3,12 +3,12 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.celery_app import celery_app
 from backend.config import get_settings
 from backend.models import ReviewTask, ReviewResult, AgentStep
+from backend.utils.time_utils import utc_now, utc_seconds_between
 
 logger = logging.getLogger(__name__)
 
@@ -384,8 +384,10 @@ def run_review(self, task_id: str) -> dict:
                 if not task:
                     return {"status": "error", "message": ERROR_TASK_NOT_FOUND}
 
+                now = utc_now()
                 task.status = "running"
-                task.started_at = datetime.now(timezone.utc)
+                task.started_at = now
+                task.last_heartbeat = now
                 await db.commit()
 
                 _publish_event(task_id, "status", {"status": "running"})
@@ -500,10 +502,11 @@ def run_review(self, task_id: str) -> dict:
                         else:
                             task.status = "failed"
                         task.error_message = error_msg
-                        task.completed_at = datetime.now(timezone.utc)
+                        task.completed_at = utc_now()
                         if task.started_at and task.completed_at:
-                            task.duration_seconds = int(
-                                (task.completed_at - task.started_at).total_seconds()
+                            task.duration_seconds = utc_seconds_between(
+                                task.started_at,
+                                task.completed_at,
                             )
                         await status_db.commit()
                 # 任务终态（failed/cancelled）落库后刷新用量汇总行，确保运营台拿到终态。
@@ -726,7 +729,7 @@ async def _run_agent_review(
             raise FileNotFoundError(f"投标文件尚未解析完成或解析结果不存在：{name}")
 
     # Rule library path from config
-    rule_library_path = str(get_settings().rule_library_dir)
+    rule_library_path = str(get_settings().rule_library_path)
 
     # Create event callback for SSE — passes session_factory so _publish_event
     # can reuse the main task engine instead of creating new ones.
@@ -809,10 +812,11 @@ async def _run_agent_review(
                 review_task = task_result.scalar_one_or_none()
                 if review_task:
                     review_task.status = "completed"
-                    review_task.completed_at = datetime.now(timezone.utc)
+                    review_task.completed_at = utc_now()
                     if review_task.started_at and review_task.completed_at:
-                        review_task.duration_seconds = int(
-                            (review_task.completed_at - review_task.started_at).total_seconds()
+                        review_task.duration_seconds = utc_seconds_between(
+                            review_task.started_at,
+                            review_task.completed_at,
                         )
                     await update_db.commit()
 
