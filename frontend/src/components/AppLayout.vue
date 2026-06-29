@@ -1,15 +1,34 @@
 <script setup lang="ts">
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { GiftOutlined, GlobalOutlined, UserOutlined, WalletOutlined } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import { useBillingStore } from '@/stores/billing'
 import AppSidebar from './AppSidebar.vue'
 import ThemeToggle from './ThemeToggle.vue'
+import PurchaseModal from './billing/PurchaseModal.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
+const billingStore = useBillingStore()
+const rechargeOpen = ref(false)
+
+onMounted(() => {
+  void billingStore.fetchWallet()
+})
 
 function logout() {
   authStore.logout()
+  billingStore.reset()
   router.push({ name: 'login' })
+}
+
+function goProfile() {
+  router.push({ name: 'profile-center' })
+}
+
+function openOfficialSite() {
+  window.open('https://aibjt.com/', '_blank', 'noopener,noreferrer')
 }
 </script>
 
@@ -24,9 +43,30 @@ function logout() {
         <h1 class="header-title">标书审查智能体</h1>
       </div>
       <div class="header-right">
+        <div class="wallet-strip">
+          <span class="metric-pill">
+            <WalletOutlined />
+            {{ billingStore.balanceWen }}文
+          </span>
+          <span class="metric-pill">
+            <GiftOutlined />
+            {{ billingStore.points }}积分
+          </span>
+        </div>
+        <button class="recharge-btn" @click="rechargeOpen = true">
+          <WalletOutlined />
+          立即充值
+        </button>
+        <button class="plugin-btn" @click="openOfficialSite">
+          <GlobalOutlined />
+          标捷通快速编标插件
+        </button>
         <ThemeToggle />
         <div class="header-divider"></div>
-        <span class="header-username">{{ authStore.user?.username }}</span>
+        <button class="profile-btn" @click="goProfile">
+          <UserOutlined />
+          {{ authStore.user?.nickname || authStore.user?.username }}
+        </button>
         <button class="logout-btn" @click="logout">退出</button>
       </div>
     </a-layout-header>
@@ -38,6 +78,7 @@ function logout() {
         <router-view />
       </a-layout-content>
     </a-layout>
+    <PurchaseModal v-model:open="rechargeOpen" @paid="billingStore.fetchWallet" />
   </a-layout>
 </template>
 
@@ -98,7 +139,7 @@ function logout() {
 .header-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .header-divider {
@@ -107,10 +148,70 @@ function logout() {
   background: var(--line);
 }
 
-.header-username {
-  color: var(--sub);
+.wallet-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.metric-pill {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg2);
+  color: var(--bright);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.recharge-btn,
+.plugin-btn,
+.profile-btn {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: pointer;
   font-size: 0.8125rem;
-  font-weight: 500;
+  font-weight: 600;
+  font-family: inherit;
+  transition: filter 0.2s ease, background 0.2s ease, color 0.2s ease;
+  white-space: nowrap;
+}
+
+.recharge-btn {
+  padding: 0 12px;
+  background: var(--blue);
+  color: #fff;
+}
+
+.plugin-btn {
+  padding: 0 12px;
+  background: var(--amber);
+  color: #171717;
+}
+
+.profile-btn {
+  padding: 0 8px;
+  background: transparent;
+  color: var(--sub);
+}
+
+.recharge-btn:hover,
+.plugin-btn:hover {
+  filter: brightness(1.08);
+}
+
+.profile-btn:hover {
+  color: var(--blue);
+  background: var(--blue-bg);
 }
 
 .logout-btn {
@@ -163,6 +264,11 @@ function logout() {
 
   .header-title {
     font-size: 0.95rem;
+  }
+
+  .wallet-strip,
+  .plugin-btn {
+    display: none;
   }
 }
 </style>

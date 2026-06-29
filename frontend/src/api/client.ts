@@ -21,6 +21,16 @@ import type {
   BatchFeedbackReviewResponse,
   FeedbackCreateRequest,
   PaginatedProjectSummary,
+  Wallet,
+  RechargePackage,
+  Coupon,
+  OrderPreviewRequest,
+  OrderPreview,
+  BillingOrder,
+  ConsumptionRecord,
+  PaymentQr,
+  OrderStatus,
+  ProfileUpdateRequest,
 } from "@/types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
@@ -191,6 +201,90 @@ export const authApi = {
   async getMe(): Promise<User> {
     const response = await apiClient.get("/auth/me");
     return response.data;
+  },
+};
+
+export const profileApi = {
+  async getProfile(): Promise<User> {
+    const response = await apiClient.get("/profile/me");
+    return response.data;
+  },
+
+  async updateProfile(data: ProfileUpdateRequest): Promise<User> {
+    const response = await apiClient.put("/profile/me", data);
+    return response.data;
+  },
+
+  async changePassword(
+    oldPassword: string,
+    newPassword: string,
+    confirmNewPassword: string,
+  ): Promise<void> {
+    await apiClient.post("/profile/password", {
+      old_password: oldPassword,
+      new_password: newPassword,
+      confirm_new_password: confirmNewPassword,
+    });
+  },
+};
+
+export const billingApi = {
+  async getWallet(): Promise<Wallet> {
+    const response = await apiClient.get("/billing/wallet");
+    return response.data;
+  },
+
+  async listPackages(): Promise<RechargePackage[]> {
+    const response = await apiClient.get("/billing/packages");
+    return response.data;
+  },
+
+  async listCoupons(): Promise<Coupon[]> {
+    const response = await apiClient.get("/billing/coupons");
+    return response.data;
+  },
+
+  async previewOrder(data: OrderPreviewRequest): Promise<OrderPreview> {
+    const response = await apiClient.post("/billing/orders/preview", data);
+    return response.data;
+  },
+
+  async createOrder(data: OrderPreviewRequest & { accepted_agreement: boolean }): Promise<BillingOrder> {
+    const response = await apiClient.post("/billing/orders", data);
+    return response.data;
+  },
+
+  async listOrders(params?: {
+    start_date?: string;
+    end_date?: string;
+    product_name?: string;
+  }): Promise<BillingOrder[]> {
+    const response = await apiClient.get("/billing/orders", { params });
+    return response.data.orders;
+  },
+
+  async getPayQr(orderId: string): Promise<PaymentQr> {
+    const response = await apiClient.get(`/billing/orders/${orderId}/pay-qrcode`);
+    return response.data;
+  },
+
+  async mockPay(orderId: string): Promise<OrderStatus> {
+    const response = await apiClient.post(`/billing/orders/${orderId}/mock-pay`);
+    return response.data;
+  },
+
+  async getOrderStatus(orderId: string): Promise<OrderStatus> {
+    const response = await apiClient.get(`/billing/orders/${orderId}/status`);
+    return response.data;
+  },
+
+  async listConsumptions(params?: {
+    start_date?: string;
+    end_date?: string;
+    project_name?: string;
+  }): Promise<ConsumptionRecord[]> {
+    const response = await apiClient.get("/billing/consumptions", { params });
+    return response.data.consumptions;
   },
 };
 

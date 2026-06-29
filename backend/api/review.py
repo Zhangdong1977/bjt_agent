@@ -2,7 +2,6 @@
 
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -14,6 +13,7 @@ from sqlalchemy import func, select
 from backend.api.deps import DBSession, CurrentUser, get_token_claims, oauth2_scheme, is_interior_user
 from backend.config import get_settings
 from backend.models import Project, ReviewTask, ReviewResult, AgentStep, TodoItem
+from backend.utils.time_utils import utc_now
 from backend.schemas.review import (
     ReviewResponse,
     ReviewResultResponse,
@@ -85,6 +85,19 @@ async def start_review(
 ) -> ReviewTask:
     """Start a new review task for the project."""
     await verify_project_ownership(project_id, current_user, db)
+    if not is_interior_user(current_user):
+        from backend.services.billing import ensure_wallet
+
+        wallet = await ensure_wallet(db, current_user.id)
+        if wallet.balance_wen <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "code": "INSUFFICIENT_BALANCE",
+                    "message": "余额不足，请先充值后再发起 AI 检查",
+                    "balance_wen": wallet.balance_wen,
+                },
+            )
 
     # Extract concurrency from JWT claims
     from backend.api.deps import oauth2_scheme, get_token_claims
@@ -103,7 +116,7 @@ async def start_review(
         # Auto-cancel stale tasks from crashed workers - they can't complete
         existing_task.status = "failed"
         existing_task.error_message = "上次异常中断的审查任务已自动结束，请重新发起审查"
-        existing_task.completed_at = datetime.now(timezone.utc)
+        existing_task.completed_at = utc_now()
     if existing_tasks:
         await db.flush()
 
@@ -131,7 +144,7 @@ async def start_review(
         )
         task.status = "failed"
         task.error_message = "任务队列暂不可用，请稍后重试"
-        task.completed_at = datetime.now(timezone.utc)
+        task.completed_at = utc_now()
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -273,7 +286,7 @@ async def cancel_review_task(
     set_task_cancelled(task_id)
 
     task.status = "cancelled"
-    task.completed_at = datetime.now(timezone.utc)
+    task.completed_at = utc_now()
     await db.flush()
     await db.refresh(task)
     return task
@@ -309,7 +322,7 @@ async def heartbeat_review_task(
         # Still return 200 for non-running tasks to avoid frontend errors
         return {"status": task.status, "message": "任务当前未在运行"}
 
-    task.last_heartbeat = datetime.now(timezone.utc)
+    task.last_heartbeat = utc_now()
     await db.flush()
     return {"status": "ok", "last_heartbeat": task.last_heartbeat}
 

@@ -824,6 +824,8 @@ async def _run_agent_review(
                 # await 而非 fire-and-forget：保证终态一定写入汇总表。
                 from backend.services.usage_summary import refresh_task_summary
                 await refresh_task_summary(task_id)
+                from backend.services.billing import settle_review_consumption
+                await settle_review_consumption(task_id)
 
             logger.info(f"[_run_agent_review] Completed: {non_compliant_count} non-compliant findings")
 

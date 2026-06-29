@@ -4,6 +4,10 @@ export interface User {
   username: string;
   email: string;
   created_at: string;
+  nickname?: string | null;
+  city?: string | null;
+  company?: string | null;
+  bidding_industries?: string | null;
   interior_user?: boolean;
   concurrency?: number;
 }
@@ -12,6 +16,100 @@ export interface Token {
   access_token: string;
   refresh_token?: string;
   token_type: string;
+}
+
+export interface Wallet {
+  balance_wen: number;
+  points: number;
+}
+
+export interface RechargePackage {
+  code: string;
+  name: string;
+  amount_cents: number;
+  balance_wen: number;
+  caution?: string | null;
+  payment_mode: "real" | "mock";
+}
+
+export interface Coupon {
+  id: number;
+  code?: string | null;
+  amount_cents: number;
+  amount_yuan: number;
+  valid_until?: string | null;
+  status: string;
+  raw_status?: number | null;
+}
+
+export interface OrderPreviewRequest {
+  package_code: string;
+  coupon_id?: number | null;
+  use_points: number;
+}
+
+export interface OrderPreview {
+  package_code: string;
+  product_name: string;
+  order_amount_cents: number;
+  coupon_amount_cents: number;
+  points_used: number;
+  points_amount_cents: number;
+  actual_payment_cents: number;
+  package_balance_wen: number;
+  current_balance_wen: number;
+  current_points: number;
+}
+
+export interface BillingOrder {
+  id: string;
+  order_no: string;
+  product_name: string;
+  created_at: string;
+  status: string;
+  order_amount_cents: number;
+  actual_payment_cents: number;
+  coupon_code?: string | null;
+  coupon_amount_cents: number;
+  points_used: number;
+  expires_at: string;
+  paid_at?: string | null;
+  balance_after_wen?: number | null;
+  current_balance_wen?: number | null;
+}
+
+export interface ConsumptionRecord {
+  id: string;
+  consumed_at: string;
+  project_name: string;
+  consumed_wen: number;
+  earned_points: number;
+  used_by: string;
+  cost_cny?: number | null;
+}
+
+export interface PaymentQr {
+  order_id: string;
+  order_no: string;
+  actual_payment_cents: number;
+  payment_mode: "real" | "mock";
+  qr_payload: string;
+  expires_at: string;
+}
+
+export interface OrderStatus {
+  order_id: string;
+  order_no: string;
+  status: string;
+  paid_at?: string | null;
+  balance_after_wen?: number | null;
+}
+
+export interface ProfileUpdateRequest {
+  nickname?: string | null;
+  city?: string | null;
+  company?: string | null;
+  bidding_industries?: string | null;
 }
 
 // Project types

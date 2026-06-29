@@ -42,6 +42,11 @@ const router = createRouter({
           component: () => import("@/views/KnowledgeView.vue"),
         },
         {
+          path: "profile",
+          name: "profile-center",
+          component: () => import("@/views/ProfileCenterView.vue"),
+        },
+        {
           path: "projects/:id",
           name: "project",
           component: () => import("@/views/ProjectView.vue"),

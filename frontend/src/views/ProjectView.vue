@@ -115,8 +115,14 @@ async function handleStartReview() {
   try {
     await projectStore.startReview()
     router.push({ name: 'review-execution', params: { id: projectId.value } })
-  } catch {
-    message.error('启动审查失败')
+  } catch (err) {
+    const error = err as { response?: { status?: number; data?: { detail?: unknown } } }
+    const detail = error.response?.data?.detail
+    if (error.response?.status === 402 && typeof detail === 'object' && detail && 'message' in detail) {
+      message.warning(String((detail as { message: unknown }).message))
+    } else {
+      message.error('启动审查失败')
+    }
   }
 }
 

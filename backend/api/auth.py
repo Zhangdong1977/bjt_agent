@@ -25,7 +25,10 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-EXTERNAL_AUTH_URL = "https://aibjt.com:40060/prod-api/aiCheckLogin"
+# 运营台认证端点。生产走默认值(含 /prod-api，由 nginx 剥离前缀转后端 /aiCheckLogin)；
+# dev 经 .env 的 OPERATE_API_BASE_URL 指本地 operate-two 直连(无 /prod-api)。
+# 与 profile.py(aiCheckUpdatePwd) / operate_coupons.py 同源，统一用 settings.operate_api_base_url。
+EXTERNAL_AUTH_URL = f"{settings.operate_api_base_url.rstrip('/')}/aiCheckLogin"
 
 
 MOCK_AUTH_ENABLED = False
@@ -52,11 +55,12 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
         concurrency = ext_result["concurrency"]
         external_user_id = None
         external_user_name = body.username
+        external_nickname = None
         enterprise_name = None
     else:
         # Call external auth API
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
                 resp = await client.post(
                     EXTERNAL_AUTH_URL,
                     json={"username": body.username, "password": body.password},
@@ -85,6 +89,7 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
         # 落库到本地 users + JWT claims，供 ai_usage_records 归属使用
         external_user_id = ext_result.get("userId")  # sys_user.user_id (bigint)
         external_user_name = ext_result.get("userName")
+        external_nickname = ext_result.get("nickName")
         enterprise_name = ext_result.get("enterpriseName")
 
     # Check permission
@@ -112,6 +117,10 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
     user.external_user_id = external_user_id
     user.enterprise_name = enterprise_name
     user.interior_user = interior_user
+    if external_nickname:
+        user.nickname = external_nickname
+    if enterprise_name and not user.company:
+        user.company = enterprise_name
     await db.flush()
 
     # Create tokens with claims
@@ -152,6 +161,10 @@ async def get_current_user_info(
         username=current_user.username,
         email=current_user.email,
         created_at=current_user.created_at,
+        nickname=current_user.nickname,
+        city=current_user.city,
+        company=current_user.company or current_user.enterprise_name,
+        bidding_industries=current_user.bidding_industries,
         interior_user=claims["interior_user"],
         concurrency=claims["concurrency"],
     )

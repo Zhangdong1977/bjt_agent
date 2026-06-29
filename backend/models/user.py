@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, Boolean, String, func
+from sqlalchemy import BigInteger, Boolean, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -20,6 +20,10 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    nickname: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    company: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    bidding_industries: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # —— 运营台 sys_user 冗余字段（aiCheckLogin 返回，用于 ai_usage_records 归属）——
     external_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)  # sys_user.user_id

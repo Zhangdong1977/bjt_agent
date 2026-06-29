@@ -18,6 +18,10 @@ class UserResponse(BaseModel):
     username: str
     email: str
     created_at: datetime
+    nickname: str | None = None
+    city: str | None = None
+    company: str | None = None
+    bidding_industries: str | None = None
     interior_user: bool = False
     concurrency: int = 2
 

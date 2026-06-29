@@ -8,6 +8,8 @@ from .knowledge import router as knowledge_router
 from .feedback import router as feedback_router
 from .experience import router as experience_router
 from .admin import router as admin_router
+from .profile import router as profile_router
+from .billing import router as billing_router
 
 __all__ = [
     "auth_router",
@@ -19,4 +21,6 @@ __all__ = [
     "feedback_router",
     "experience_router",
     "admin_router",
+    "profile_router",
+    "billing_router",
 ]

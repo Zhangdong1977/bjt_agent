@@ -35,6 +35,19 @@ class Settings(BaseSettings):
     usage_sync_api_key: str = ""          # env: USAGE_SYNC_API_KEY，必填（运营台与本端共享）
     usage_sync_ip_allowlist: str = ""     # env: USAGE_SYNC_IP_ALLOWLIST，逗号分隔，可选
 
+    # Operate platform integration. Used for shared coupon lookup/mark-used.
+    operate_api_base_url: str = "https://aibjt.com:40060/prod-api"
+    operate_api_timeout_seconds: float = 5.0
+
+    # operate-two 充值桥接内部接口共享密钥（X-Internal-Token）。env: OPERATE_INTERNAL_TOKEN
+    # 须与 operate-two application-*.yml 的 document.bocom.internalToken 同值；为空则真实支付路径不可用。
+    operate_internal_token: str = ""
+
+    # 充值真实交行支付（dev：测试套餐真实、其余模拟；prod：4 套餐真实、测试套餐隐藏）
+    billing_real_pay_enabled: bool = False   # env: BILLING_REAL_PAY_ENABLED
+    billing_real_package_codes: str = ""     # env: BILLING_REAL_PACKAGE_CODES，逗号分隔，dev="test"
+    billing_hidden_package_codes: str = ""   # env: BILLING_HIDDEN_PACKAGE_CODES，逗号分隔，prod="test"
+
     # Database
     database_url: str = ""  # Must be set via environment variable
 
