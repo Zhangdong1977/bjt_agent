@@ -23,12 +23,14 @@ const packages = ref<RechargePackage[]>([]);
 const coupons = ref<Coupon[]>([]);
 const selectedPackageCode = ref("premium");
 const selectedCouponId = ref<number | null>(null);
+const couponCode = ref("");
 const usePoints = ref<number | null>(0);
 const acceptedAgreement = ref(false);
 const preview = ref<OrderPreview | null>(null);
 const qr = ref<PaymentQr | null>(null);
 const order = ref<BillingOrder | null>(null);
 const loading = ref(false);
+const couponImporting = ref(false);
 const previewLoading = ref(false);
 const payLoading = ref(false);
 const polling = ref(false);
@@ -39,12 +41,14 @@ const selectedPackage = computed(() =>
 );
 
 const availableCoupons = computed(() =>
-  coupons.value.filter((coupon) => coupon.status === "未使用" && coupon.amount_cents > 0),
+  coupons.value
+    .filter((coupon) => coupon.status === "未使用" && coupon.amount_cents > 0)
+    .sort((a, b) => couponExpireTime(a) - couponExpireTime(b)),
 );
 
 const couponOptions = computed(() =>
   availableCoupons.value.map((coupon) => ({
-    label: `${formatYuan(coupon.amount_cents)} 优惠券`,
+    label: `${formatYuan(coupon.amount_cents)} 优惠券（有效期至 ${formatDate(coupon.valid_until)}）`,
     value: coupon.id,
   })),
 );
@@ -60,6 +64,15 @@ function formatYuan(cents: number) {
 
 function formatDate(value?: string | null) {
   return value ? new Date(value).toLocaleDateString() : "-";
+}
+
+function couponExpireTime(coupon: Coupon) {
+  return coupon.valid_until ? new Date(coupon.valid_until).getTime() : Number.MAX_SAFE_INTEGER;
+}
+
+function getApiErrorMessage(err: unknown, fallback: string) {
+  const error = err as { response?: { data?: { detail?: string } } };
+  return error.response?.data?.detail || fallback;
 }
 
 function normalizeUsePoints(value: number | null | undefined) {
@@ -80,9 +93,47 @@ async function loadData() {
     if (!packages.value.some((item) => item.code === selectedPackageCode.value)) {
       selectedPackageCode.value = packages.value[0]?.code ?? "";
     }
+    if (
+      selectedCouponId.value &&
+      !availableCoupons.value.some((coupon) => coupon.id === selectedCouponId.value)
+    ) {
+      selectedCouponId.value = null;
+    }
     await refreshPreview();
   } finally {
     loading.value = false;
+  }
+}
+
+async function importCoupon() {
+  const code = couponCode.value.trim();
+  if (!code) {
+    message.warning("请输入优惠券兑换码");
+    return;
+  }
+  couponImporting.value = true;
+  try {
+    const result = await billingApi.redeemCoupon(code);
+    coupons.value = result.coupons;
+    const redeemed =
+      result.coupon ??
+      result.coupons.find((coupon) => (coupon.code || "").trim().toLowerCase() === code.toLowerCase());
+    const canUseRedeemed = redeemed?.status === "未使用" && redeemed.amount_cents > 0;
+    if (canUseRedeemed) {
+      selectedCouponId.value = redeemed.id;
+    } else if (
+      selectedCouponId.value &&
+      !availableCoupons.value.some((coupon) => coupon.id === selectedCouponId.value)
+    ) {
+      selectedCouponId.value = null;
+    }
+    couponCode.value = "";
+    message.success(canUseRedeemed ? "优惠券已导入并选中" : "优惠券已导入，当前不可用于充值");
+    await refreshPreview();
+  } catch (err) {
+    message.error(getApiErrorMessage(err, "优惠券导入失败"));
+  } finally {
+    couponImporting.value = false;
   }
 }
 
@@ -240,6 +291,18 @@ watch(
           <div class="summary-row">
             <span>已选套餐价格</span>
             <strong>{{ preview ? formatYuan(preview.order_amount_cents) : "-" }}</strong>
+          </div>
+
+          <label class="field-label">导入优惠券</label>
+          <div class="coupon-import">
+            <a-input
+              v-model:value="couponCode"
+              placeholder="输入优惠券兑换码"
+              class="coupon-code-input"
+              :disabled="couponImporting"
+              @pressEnter="importCoupon"
+            />
+            <a-button :loading="couponImporting" @click="importCoupon">导入</a-button>
           </div>
 
           <label class="field-label">选择优惠券</label>
@@ -413,6 +476,15 @@ watch(
 
 .full-input {
   width: 100%;
+}
+
+.coupon-import {
+  display: flex;
+  gap: 8px;
+}
+
+.coupon-code-input {
+  flex: 1;
 }
 
 .coupon-hint {

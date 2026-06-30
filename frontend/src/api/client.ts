@@ -24,6 +24,7 @@ import type {
   Wallet,
   RechargePackage,
   Coupon,
+  CouponRedeemResponse,
   OrderPreviewRequest,
   OrderPreview,
   BillingOrder,
@@ -241,6 +242,11 @@ export const billingApi = {
 
   async listCoupons(): Promise<Coupon[]> {
     const response = await apiClient.get("/billing/coupons");
+    return response.data;
+  },
+
+  async redeemCoupon(code: string): Promise<CouponRedeemResponse> {
+    const response = await apiClient.post("/billing/coupons/redeem", { code });
     return response.data;
   },
 

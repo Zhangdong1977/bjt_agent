@@ -62,6 +62,9 @@ $FrontPort   = 3000
 # Inject toolchain into PATH for child processes (so uvicorn/celery/npm find deps)
 $env:PYTHONPATH = $RootDir
 $env:PATH = "$NodeDir;$CondaEnv;$CondaEnv\Scripts;" + $env:PATH
+if ($env:DEBUG -and $env:DEBUG -notmatch '^(true|false|1|0|yes|no|on|off)$') {
+    $env:DEBUG = "false"
+}
 
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 

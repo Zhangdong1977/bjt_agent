@@ -24,6 +24,8 @@ const orders = ref<BillingOrder[]>([]);
 const consumptions = ref<ConsumptionRecord[]>([]);
 const coupons = ref<Coupon[]>([]);
 const loading = ref(false);
+const couponCode = ref("");
+const couponImporting = ref(false);
 
 const orderFilters = reactive({
   start_date: "",
@@ -60,6 +62,7 @@ const consumptionColumns = [
 
 const couponColumns = [
   { title: "序号", dataIndex: "index", width: 70 },
+  { title: "兑换码", dataIndex: "code" },
   { title: "优惠券金额", dataIndex: "amount_cents" },
   { title: "有效期", dataIndex: "valid_until" },
   { title: "状态", dataIndex: "status" },
@@ -97,6 +100,18 @@ function orderStatusText(status: string) {
   if (status === "pending") return "未付费";
   if (status === "cancelled") return "已取消";
   return status;
+}
+
+function couponStatusClass(status: string) {
+  if (status === "未使用") return "badge-info";
+  if (status === "已过期") return "badge-warning";
+  if (status === "已使用") return "badge-success";
+  return "badge-error";
+}
+
+function getApiErrorMessage(err: unknown, fallback: string) {
+  const error = err as { response?: { data?: { detail?: string } } };
+  return error.response?.data?.detail || fallback;
 }
 
 async function loadProfile() {
@@ -160,6 +175,29 @@ async function loadConsumptions() {
 
 async function loadCoupons() {
   coupons.value = await billingApi.listCoupons();
+}
+
+async function importCoupon() {
+  const code = couponCode.value.trim();
+  if (!code) {
+    message.warning("请输入优惠券兑换码");
+    return;
+  }
+  couponImporting.value = true;
+  try {
+    const result = await billingApi.redeemCoupon(code);
+    coupons.value = result.coupons;
+    couponCode.value = "";
+    if (result.coupon?.status === "未使用" && result.coupon.amount_cents > 0) {
+      message.success("优惠券已导入，可在充值时使用");
+    } else {
+      message.success(`优惠券已导入，当前状态：${result.coupon?.status ?? "未知"}`);
+    }
+  } catch (err) {
+    message.error(getApiErrorMessage(err, "优惠券导入失败"));
+  } finally {
+    couponImporting.value = false;
+  }
 }
 
 async function loadAll() {
@@ -294,8 +332,29 @@ onMounted(() => {
         </a-tab-pane>
 
         <a-tab-pane key="coupons" tab="优惠券">
-          <a-table :columns="couponColumns" :data-source="couponRows" row-key="id" size="middle">
+          <div class="coupon-toolbar">
+            <a-input
+              v-model:value="couponCode"
+              placeholder="输入优惠券兑换码"
+              class="coupon-code-input"
+              :disabled="couponImporting"
+              @pressEnter="importCoupon"
+            />
+            <a-button type="primary" :loading="couponImporting" @click="importCoupon">
+              导入优惠券
+            </a-button>
+          </div>
+          <a-table
+            :columns="couponColumns"
+            :data-source="couponRows"
+            row-key="id"
+            size="middle"
+            :scroll="{ x: 760 }"
+          >
             <template #bodyCell="{ column, record }">
+              <template v-if="column.dataIndex === 'code'">
+                {{ record.code || "-" }}
+              </template>
               <template v-if="column.dataIndex === 'amount_cents'">
                 {{ formatCents(record.amount_cents) }}
               </template>
@@ -303,7 +362,7 @@ onMounted(() => {
                 {{ formatDate(record.valid_until) }}
               </template>
               <template v-else-if="column.dataIndex === 'status'">
-                <span :class="['badge', record.status === '未使用' ? 'badge-info' : 'badge-success']">
+                <span :class="['badge', couponStatusClass(record.status)]">
                   {{ record.status }}
                 </span>
               </template>
@@ -372,6 +431,19 @@ onMounted(() => {
 
 .query-input {
   width: 220px;
+}
+
+.coupon-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.coupon-code-input {
+  width: 320px;
+  max-width: 100%;
 }
 
 </style>

@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
+from fastapi import HTTPException, status
 
 from backend.config import get_settings
 from backend.schemas.billing import CouponResponse
@@ -39,12 +40,26 @@ def _amount_to_cents(value: Any) -> int:
         return 0
 
 
+def _is_expired(valid_until: datetime | None) -> bool:
+    if not valid_until:
+        return False
+    now = datetime.now(valid_until.tzinfo)
+    if (
+        valid_until.hour == 0
+        and valid_until.minute == 0
+        and valid_until.second == 0
+        and valid_until.microsecond == 0
+    ):
+        return valid_until.date() < now.date()
+    return valid_until < now
+
+
 def _status_label(status: int | None, valid_until: datetime | None) -> str:
     if status == 2:
         return "已使用"
     if status == 3:
         return "已过期"
-    if valid_until and valid_until < datetime.now(valid_until.tzinfo):
+    if _is_expired(valid_until):
         return "已过期"
     if status == 1:
         return "未使用"
@@ -79,6 +94,11 @@ def _normalize_coupon(row: dict[str, Any]) -> CouponResponse | None:
         status=_status_label(raw_status, valid_until),
         raw_status=raw_status,
     )
+
+
+def _is_success_response(data: Any) -> bool:
+    code = data.get("code") if isinstance(data, dict) else None
+    return code in (0, 200, "0", "200")
 
 
 async def list_user_coupons(customer_account: str, *, include_all: bool = True) -> list[CouponResponse]:
@@ -117,6 +137,51 @@ async def list_user_coupons(customer_account: str, *, include_all: bool = True) 
     return coupons
 
 
+async def bind_coupon_by_code(customer_account: str, customer_name: str, code: str) -> None:
+    settings = get_settings()
+    base_url = settings.operate_api_base_url.rstrip("/")
+    normalized_code = code.strip()
+    if not normalized_code:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请输入优惠券兑换码")
+    if not base_url:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="运营平台优惠券服务未配置")
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.operate_api_timeout_seconds, trust_env=False) as client:
+            response = await client.post(
+                f"{base_url}/system/coupon/openBinDing",
+                json={
+                    "code": normalized_code,
+                    "customerName": customer_name,
+                    "customerAccount": customer_account,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+    except httpx.RequestError as exc:
+        logger.warning("[operate-coupons] bind request failed for %s: %s", customer_account, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="运营平台优惠券服务不可用，请稍后重试",
+        ) from exc
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "[operate-coupons] bind non-200 for %s: %s",
+            customer_account,
+            exc.response.text[:500],
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="运营平台优惠券服务返回异常") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="运营平台优惠券服务返回异常") from exc
+
+    if not _is_success_response(data):
+        detail = data.get("msg") if isinstance(data, dict) else None
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=detail or "优惠券导入失败",
+        )
+
+
 async def find_available_coupon(customer_account: str, coupon_id: int) -> CouponResponse | None:
     coupons = await list_user_coupons(customer_account, include_all=True)
     for coupon in coupons:
@@ -141,5 +206,4 @@ async def mark_coupon_used(coupon_id: int) -> bool:
     except Exception as exc:
         logger.warning("[operate-coupons] mark-used failed for %s: %s", coupon_id, exc)
         return False
-    code = data.get("code") if isinstance(data, dict) else None
-    return code in (0, 200, "0", "200")
+    return _is_success_response(data)

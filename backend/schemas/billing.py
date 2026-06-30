@@ -29,6 +29,15 @@ class CouponResponse(BaseModel):
     raw_status: int | None = None
 
 
+class CouponRedeemRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=128)
+
+
+class CouponRedeemResponse(BaseModel):
+    coupon: CouponResponse | None = None
+    coupons: list[CouponResponse]
+
+
 class OrderPreviewRequest(BaseModel):
     package_code: str
     coupon_id: int | None = None

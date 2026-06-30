@@ -42,6 +42,11 @@ export interface Coupon {
   raw_status?: number | null;
 }
 
+export interface CouponRedeemResponse {
+  coupon?: Coupon | null;
+  coupons: Coupon[];
+}
+
 export interface OrderPreviewRequest {
   package_code: string;
   coupon_id?: number | null;

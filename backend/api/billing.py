@@ -10,6 +10,8 @@ from backend.models import BillingOrder, ConsumptionRecord, UserWallet
 from backend.schemas.billing import (
     ConsumptionListResponse,
     ConsumptionResponse,
+    CouponRedeemRequest,
+    CouponRedeemResponse,
     CouponResponse,
     OrderCreateRequest,
     OrderListResponse,
@@ -29,7 +31,7 @@ from backend.services.billing import (
     package_payment_mode,
     preview_order,
 )
-from backend.services.operate_coupons import list_user_coupons
+from backend.services.operate_coupons import bind_coupon_by_code, list_user_coupons
 from backend.services import operate_recharge
 from backend.utils.time_utils import utc_now
 
@@ -70,6 +72,30 @@ async def get_packages() -> list[PackageResponse]:
 @router.get("/coupons", response_model=list[CouponResponse])
 async def get_coupons(current_user: CurrentUser) -> list[CouponResponse]:
     return await list_user_coupons(current_user.username, include_all=True)
+
+
+@router.post("/coupons/redeem", response_model=CouponRedeemResponse)
+async def redeem_coupon(
+    body: CouponRedeemRequest,
+    current_user: CurrentUser,
+) -> CouponRedeemResponse:
+    code = body.code.strip()
+    coupons = await list_user_coupons(current_user.username, include_all=True)
+    redeemed = next(
+        (coupon for coupon in coupons if (coupon.code or "").strip().lower() == code.lower()),
+        None,
+    )
+    if redeemed is not None:
+        return CouponRedeemResponse(coupon=redeemed, coupons=coupons)
+
+    customer_name = current_user.nickname or current_user.username
+    await bind_coupon_by_code(current_user.username, customer_name, code)
+    coupons = await list_user_coupons(current_user.username, include_all=True)
+    redeemed = next(
+        (coupon for coupon in coupons if (coupon.code or "").strip().lower() == code.lower()),
+        None,
+    )
+    return CouponRedeemResponse(coupon=redeemed, coupons=coupons)
 
 
 @router.post("/orders/preview", response_model=OrderPreviewResponse)
