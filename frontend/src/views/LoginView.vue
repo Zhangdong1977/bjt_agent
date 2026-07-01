@@ -5,9 +5,9 @@ import { useAuthStore } from '@/stores/auth'
 import loginBgUrl from '@/assets/images/clientLogin/loginBg.jpg'
 import loginLeftUrl from '@/assets/images/clientLogin/loginLeft.png'
 import logoUrl from '@/assets/images/clientLogin/logo.png'
+import { getRegisterUrl } from '@/utils/externalLinks'
 
-const REGISTER_URL = new URL('https://aibjt.com:40060/pluginLogin?promoterCode=9yr4j0r1')
-REGISTER_URL.searchParams.set('returnUrl', `${window.location.origin}/login`)
+const registerUrl = getRegisterUrl()
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -48,7 +48,7 @@ async function handleLogin() {
           <button class="auth-tab auth-tab--active" type="button" role="tab" aria-selected="true">登录</button>
           <a
             class="auth-tab"
-            :href="REGISTER_URL.toString()"
+            :href="registerUrl"
             role="tab"
             aria-selected="false"
           >

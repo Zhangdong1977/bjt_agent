@@ -34,6 +34,11 @@ async def create_recharge_order(
     """创建真实交行聚合支付订单。返回 {display_code_text, pay_mer_tran_no}。失败抛 503。"""
     settings = get_settings()
     base_url = settings.operate_api_base_url.rstrip("/")
+    if not base_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="交行下单服务未配置",
+        )
     payload = {
         "totalAmount": total_amount_yuan,
         "packageName": package_name,
@@ -77,6 +82,8 @@ async def query_order_status(pay_mer_tran_no: str) -> str:
     """
     settings = get_settings()
     base_url = settings.operate_api_base_url.rstrip("/")
+    if not base_url:
+        return "pending"
     params = {"payMerTranNo": pay_mer_tran_no}
     try:
         async with httpx.AsyncClient(timeout=settings.operate_api_timeout_seconds, trust_env=False) as client:

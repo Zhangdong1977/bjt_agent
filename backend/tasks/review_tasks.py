@@ -102,6 +102,10 @@ def create_session_factory():
     from backend.config import get_settings
 
     settings = get_settings()
+    # honor DB_USE_PGBOUNCER: transaction mode doesn't support prepared statements
+    _task_connect_args = {"timeout": 30, "command_timeout": 120}
+    if settings.db_use_pgbouncer:
+        _task_connect_args["statement_cache_size"] = 0
     engine = create_async_engine(
         settings.database_url,
         echo=settings.debug,
@@ -109,10 +113,7 @@ def create_session_factory():
         pool_size=5,
         max_overflow=10,
         pool_recycle=1800,
-        connect_args={
-            "timeout": 30,
-            "command_timeout": 120,
-        },
+        connect_args=_task_connect_args,
     )
     session_factory = async_sessionmaker(
         engine,

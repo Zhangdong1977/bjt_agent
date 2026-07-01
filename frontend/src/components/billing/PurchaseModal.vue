@@ -168,22 +168,30 @@ async function submitOrder() {
   }
   loading.value = true;
   try {
-    order.value = await billingApi.createOrder({
+    const createdOrder = await billingApi.createOrder({
       package_code: selectedPackageCode.value,
       coupon_id: selectedCouponId.value,
       use_points: normalizeUsePoints(usePoints.value),
       accepted_agreement: acceptedAgreement.value,
     });
+    order.value = createdOrder;
     if (order.value.status === "completed") {
       message.success("充值成功");
       emit("paid");
       close();
       return;
     }
-    qr.value = await billingApi.getPayQr(order.value.id);
+    try {
+      qr.value = await billingApi.getPayQr(order.value.id);
+    } catch (err) {
+      message.error(getApiErrorMessage(err, "获取支付二维码失败，请稍后重试"));
+      return;
+    }
     if (qr.value.payment_mode === "real") {
       startPolling();
     }
+  } catch (err) {
+    message.error(getApiErrorMessage(err, "订单提交失败"));
   } finally {
     loading.value = false;
   }

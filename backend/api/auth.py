@@ -25,10 +25,19 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-# 运营台认证端点。生产走默认值(含 /prod-api，由 nginx 剥离前缀转后端 /aiCheckLogin)；
-# dev 经 .env 的 OPERATE_API_BASE_URL 指本地 operate-two 直连(无 /prod-api)。
+# 运营台认证端点。生产含 /prod-api，由 nginx 剥离前缀转后端 /aiCheckLogin；
+# dev/pre-release 经 .env 的 OPERATE_API_BASE_URL 指 operate-two 直连(无 /prod-api)。
 # 与 profile.py(aiCheckUpdatePwd) / operate_coupons.py 同源，统一用 settings.operate_api_base_url。
-EXTERNAL_AUTH_URL = f"{settings.operate_api_base_url.rstrip('/')}/aiCheckLogin"
+
+
+def external_auth_url() -> str:
+    base_url = settings.operate_api_base_url.rstrip("/")
+    if not base_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="运营平台认证地址未配置",
+        )
+    return f"{base_url}/aiCheckLogin"
 
 
 MOCK_AUTH_ENABLED = False
@@ -62,7 +71,7 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
         try:
             async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
                 resp = await client.post(
-                    EXTERNAL_AUTH_URL,
+                    external_auth_url(),
                     json={"username": body.username, "password": body.password},
                 )
         except httpx.RequestError as e:

@@ -48,7 +48,7 @@ const orderColumns = [
   { title: "实际付款金额", dataIndex: "actual_payment_cents" },
   { title: "优惠券", dataIndex: "coupon_amount_cents" },
   { title: "订单有效期", dataIndex: "expires_at" },
-  { title: "当前余额", dataIndex: "current_balance_wen" },
+  { title: "充值后余额", dataIndex: "current_balance_wen" },
 ];
 
 const consumptionColumns = [

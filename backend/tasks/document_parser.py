@@ -317,12 +317,17 @@ def parse_document(self, document_id: str) -> dict:
     settings = get_settings()
 
     # Create a fresh engine and session factory for this task to avoid event loop issues
+    # honor DB_USE_PGBOUNCER: transaction mode doesn't support prepared statements
+    _task_connect_args = {"timeout": 30, "command_timeout": 120}
+    if settings.db_use_pgbouncer:
+        _task_connect_args["statement_cache_size"] = 0
     engine = create_async_engine(
         settings.database_url,
         pool_pre_ping=True,
         pool_size=2,
         max_overflow=5,
         pool_recycle=1800,
+        connect_args=_task_connect_args,
     )
     session_factory = async_sessionmaker(
         engine,

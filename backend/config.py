@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     usage_sync_api_key: str = ""          # env: USAGE_SYNC_API_KEY，必填（运营台与本端共享）
     usage_sync_ip_allowlist: str = ""     # env: USAGE_SYNC_IP_ALLOWLIST，逗号分隔，可选
 
-    # Operate platform integration. Used for shared coupon lookup/mark-used.
-    operate_api_base_url: str = "https://aibjt.com:40060/prod-api"
+    # Operate platform integration. Must be set per environment; do not fall
+    # back to production from dev/pre-release.
+    operate_api_base_url: str = ""
     operate_api_timeout_seconds: float = 5.0
 
     # operate-two 充值桥接内部接口共享密钥（X-Internal-Token）。env: OPERATE_INTERNAL_TOKEN

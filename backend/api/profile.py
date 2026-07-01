@@ -73,7 +73,13 @@ async def change_password(
     if body.new_password != body.confirm_new_password:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="两次输入的新密码不一致")
 
-    url = f"{settings.operate_api_base_url.rstrip('/')}/aiCheckUpdatePwd"
+    base_url = settings.operate_api_base_url.rstrip("/")
+    if not base_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="运营平台密码服务未配置",
+        )
+    url = f"{base_url}/aiCheckUpdatePwd"
     try:
         async with httpx.AsyncClient(timeout=settings.operate_api_timeout_seconds, trust_env=False) as client:
             response = await client.post(

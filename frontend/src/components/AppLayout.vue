@@ -7,6 +7,7 @@ import { useBillingStore } from '@/stores/billing'
 import AppSidebar from './AppSidebar.vue'
 import ThemeToggle from './ThemeToggle.vue'
 import PurchaseModal from './billing/PurchaseModal.vue'
+import { getOfficialSiteUrl } from '@/utils/externalLinks'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -28,7 +29,7 @@ function goProfile() {
 }
 
 function openOfficialSite() {
-  window.open('https://aibjt.com/', '_blank', 'noopener,noreferrer')
+  window.open(getOfficialSiteUrl(), '_blank', 'noopener,noreferrer')
 }
 </script>
 
