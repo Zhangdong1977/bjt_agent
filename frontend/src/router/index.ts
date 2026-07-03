@@ -47,11 +47,6 @@ const router = createRouter({
           component: () => import("@/views/ProfileCenterView.vue"),
         },
         {
-          path: "projects/:id",
-          name: "project",
-          component: () => import("@/views/ProjectView.vue"),
-        },
-        {
           path: "projects/:id/review",
           name: "review-timeline",
           component: () => import("@/views/ReviewTimelineView.vue"),
