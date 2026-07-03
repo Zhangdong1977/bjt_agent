@@ -9,6 +9,34 @@ import type {
   PaymentQr,
   RechargePackage,
 } from "@/types";
+import iconSelect from "@/assets/images/ui/plan-icon-select.png";
+import iconOrder from "@/assets/images/ui/common-icon-order.png";
+import iconWallet from "@/assets/images/ui/common-icon-wallet.png";
+import iconPoints from "@/assets/images/ui/common-icon-points.png";
+import iconCart from "@/assets/images/ui/common-icon-cart-full.png";
+import dividerUrl from "@/assets/images/ui/plan-divider.png";
+import pkgTrial from "@/assets/images/ui/plan-icon-trial.png";
+import pkgBasic from "@/assets/images/ui/plan-icon-basic.png";
+import pkgPremium from "@/assets/images/ui/plan-icon-premium.png";
+import pkgLuxury from "@/assets/images/ui/plan-icon-luxury.png";
+
+// 套餐图标映射：名称关键词 -> 切图
+const PACKAGE_ICONS: Array<{ keys: string[]; icon: string }> = [
+  { keys: ["trial", "体验"], icon: pkgTrial },
+  { keys: ["basic", "基础"], icon: pkgBasic },
+  { keys: ["luxury", "豪华"], icon: pkgLuxury },
+  { keys: ["premium", "尊享", "尊惠", "高级"], icon: pkgPremium },
+];
+
+function iconFor(pkg: RechargePackage): string {
+  const haystack = `${pkg.code || ""} ${pkg.name || ""}`.toLowerCase();
+  for (const entry of PACKAGE_ICONS) {
+    if (entry.keys.some((k) => haystack.includes(k.toLowerCase()))) {
+      return entry.icon;
+    }
+  }
+  return pkgBasic;
+}
 
 const props = defineProps<{
   open: boolean;
@@ -273,31 +301,70 @@ watch(
   <a-modal
     :open="open"
     title="套餐购买"
-    width="920px"
+    width="960px"
     :footer="null"
     :destroy-on-close="false"
     @cancel="close"
   >
     <a-spin :spinning="loading && !qr">
       <div v-if="!qr" class="purchase-body">
-        <div class="package-grid">
-          <button
-            v-for="item in packages"
-            :key="item.code"
-            type="button"
-            :class="['package-card', { active: item.code === selectedPackageCode }]"
-            @click="selectedPackageCode = item.code"
-          >
-            <strong>{{ item.name }}</strong>
-            <span class="package-balance">{{ item.balance_wen }}文</span>
-            <span class="package-price">{{ formatYuan(item.amount_cents) }}</span>
-            <span v-if="item.caution" class="package-caution">{{ item.caution }}</span>
-          </button>
+        <!-- 左侧：套餐选择区 -->
+        <div class="package-section">
+          <div class="section-head">
+            <img :src="iconSelect" alt="" class="section-head-icon" />
+            <span>套餐选择</span>
+          </div>
+
+          <div class="package-grid">
+            <button
+              v-for="item in packages"
+              :key="item.code"
+              type="button"
+              :class="['package-card', { active: item.code === selectedPackageCode }]"
+              @click="selectedPackageCode = item.code"
+            >
+              <span v-if="item.code === selectedPackageCode" class="selected-bar"></span>
+              <img class="package-icon" :src="iconFor(item)" alt="" />
+              <strong class="package-name">{{ item.name }}</strong>
+              <span
+                class="package-divider"
+                :style="{ backgroundImage: `url(${dividerUrl})` }"
+              ></span>
+              <span class="package-balance">{{ item.balance_wen }}文</span>
+              <span class="package-price">{{ formatYuan(item.amount_cents) }}</span>
+              <span v-if="item.caution" class="package-caution">{{ item.caution }}</span>
+            </button>
+          </div>
         </div>
 
-        <div class="order-panel">
+        <!-- 右侧：订单详情区 -->
+        <div class="order-section">
+          <div class="order-head">
+            <img :src="iconOrder" alt="" class="order-head-icon" />
+            <span>订单详情</span>
+          </div>
+
+          <div class="balance-row">
+            <span
+              class="balance-item balance-item--pill"
+              :style="{ backgroundImage: `url(${iconWallet})` }"
+            >
+              <span>{{ preview?.current_balance_wen ?? 0 }}文</span>
+            </span>
+            <span
+              class="balance-item balance-item--pill"
+              :style="{ backgroundImage: `url(${iconPoints})` }"
+            >
+              <span>{{ preview?.current_points ?? 0 }}积分</span>
+            </span>
+          </div>
+
           <div class="summary-row">
-            <span>已选套餐价格</span>
+            <span>已选套餐</span>
+            <strong>{{ selectedPackage?.name || "-" }}</strong>
+          </div>
+          <div class="summary-row">
+            <span>套餐价格</span>
             <strong>{{ preview ? formatYuan(preview.order_amount_cents) : "-" }}</strong>
           </div>
 
@@ -327,7 +394,7 @@ watch(
             {{ formatDate(availableCoupons[0]?.valid_until) }}
           </div>
 
-          <label class="field-label">选择积分抵扣</label>
+          <label class="field-label">积分抵扣</label>
           <a-input-number
             v-model:value="usePoints"
             :min="0"
@@ -337,23 +404,27 @@ watch(
           />
 
           <div class="summary-row final">
-            <span>待支付价格</span>
+            <span>待支付</span>
             <strong>{{ preview ? formatYuan(preview.actual_payment_cents) : "-" }}</strong>
           </div>
 
-          <a-checkbox v-model:checked="acceptedAgreement">
+          <a-checkbox v-model:checked="acceptedAgreement" class="agreement-check">
             我已阅读并同意服务协议
           </a-checkbox>
 
-          <a-button
-            type="primary"
-            size="large"
-            block
-            :loading="loading || previewLoading"
+          <button
+            type="button"
+            class="submit-btn"
+            :disabled="loading || previewLoading || !acceptedAgreement"
             @click="submitOrder"
           >
             提交订单
-          </a-button>
+          </button>
+
+          <div class="cart-hint">
+            <img :src="iconCart" alt="" />
+            <span>提交后将生成订单，可使用微信/支付宝扫码支付</span>
+          </div>
         </div>
       </div>
 
@@ -390,96 +461,207 @@ watch(
 <style scoped>
 .purchase-body {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) 320px;
-  gap: 28px;
+  grid-template-columns: minmax(0, 1.4fr) 320px;
+  gap: 24px;
+  font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
 }
 
+/* ============ 区块标题 ============ */
+.section-head,
+.order-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #222;
+  margin-bottom: 14px;
+}
+
+.section-head-icon {
+  width: 28px;
+  height: auto;
+  object-fit: contain;
+}
+
+.order-head-icon {
+  width: 24px;
+  height: auto;
+  object-fit: contain;
+}
+
+/* ============ 套餐卡片 ============ */
 .package-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  gap: 12px;
 }
 
 .package-card {
-  min-height: 300px;
-  border: 1px solid var(--line);
-  background: var(--bg1);
-  color: var(--text);
-  border-radius: var(--r);
-  padding: 18px 14px;
+  position: relative;
+  min-height: 280px;
+  border: 1px solid #e4e6f1;
+  background: #fff;
+  color: #333;
+  border-radius: 10px;
+  padding: 22px 10px 18px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 8px;
   cursor: pointer;
+  overflow: hidden;
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
   font-family: inherit;
 }
 
-.package-card:hover,
-.package-card.active {
-  border-color: var(--blue);
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--blue) 18%, transparent);
+.package-card:hover {
+  border-color: #D7041A;
+  box-shadow: 0 6px 18px rgba(215, 4, 26, 0.12);
   transform: translateY(-1px);
 }
 
-.package-card strong {
-  font-size: 1rem;
-  color: var(--bright);
+.package-card.active {
+  border-color: #D7041A;
+  box-shadow: 0 8px 22px rgba(215, 4, 26, 0.18);
+  background: linear-gradient(180deg, #fff 0%, #fff7f8 100%);
+}
+
+/* 选中态顶部红条（用 CSS 渲染，对应 plan-selected-bar.png 语义） */
+.selected-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, #D7041A, #B80015);
+}
+
+.package-icon {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  margin-top: 4px;
+}
+
+.package-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+}
+
+.package-divider {
+  width: 100px;
+  height: 1px;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+  opacity: 0.6;
 }
 
 .package-balance {
-  font-size: 1.35rem;
+  font-size: 20px;
   font-weight: 700;
-  color: var(--blue);
+  color: #D7041A;
+  letter-spacing: 0.5px;
 }
 
 .package-price {
-  width: 88px;
-  height: 30px;
-  border: 1px solid var(--line2);
+  min-width: 76px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #f0d5da;
+  border-radius: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--r-sm);
-  color: var(--bright);
-  background: var(--bg2);
+  color: #D7041A;
+  background: #fff5f6;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .package-caution {
-  min-height: 34px;
-  color: var(--amber);
-  font-size: 0.78rem;
+  margin-top: 4px;
+  color: #f0a429;
+  font-size: 11px;
   line-height: 1.4;
   text-align: center;
 }
 
-.order-panel {
+/* ============ 订单区 ============ */
+.order-section {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
+  background: #fafbfd;
+  border: 1px solid #eef0f5;
+  border-radius: 10px;
+  padding: 18px 18px 20px;
+}
+
+.balance-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #eef0f5;
+}
+
+.balance-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #555;
+  font-weight: 500;
+}
+
+/* 胶囊图标作为数值背景：图片左侧是小图标，右侧留白区叠数值文字 */
+.balance-item--pill {
+  height: 26px;
+  padding: 0 10px 0 32px; /* 左侧留给图标区，右侧留白 */
+  background-repeat: no-repeat;
+  background-position: left center;
+  background-size: auto 26px; /* 按高度铺满，宽度按 3:1 比例约 78px */
+  align-items: center;
+  color: #333;
+  font-weight: 600;
 }
 
 .summary-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  color: var(--sub);
+  color: #888;
+  font-size: 13px;
 }
 
 .summary-row strong {
-  color: var(--bright);
-  font-size: 1.25rem;
+  color: #222;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.summary-row.final {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px dashed #e4e6f1;
 }
 
 .summary-row.final strong {
-  font-size: 1.5rem;
-  color: var(--blue);
+  font-size: 22px;
+  font-weight: 700;
+  color: #D7041A;
 }
 
 .field-label {
-  color: var(--sub);
-  font-size: 0.86rem;
+  color: #888;
+  font-size: 12px;
+  margin-top: 2px;
 }
 
 .full-input {
@@ -488,7 +670,7 @@ watch(
 
 .coupon-import {
   display: flex;
-  gap: 8px;
+  gap: 6px;
 }
 
 .coupon-code-input {
@@ -496,10 +678,67 @@ watch(
 }
 
 .coupon-hint {
-  color: var(--muted);
-  font-size: 0.78rem;
+  color: #999;
+  font-size: 11px;
+  margin-top: -4px;
 }
 
+.agreement-check {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #888;
+}
+
+/* 提交订单大按钮（与「立即充值」同款 CSS 渐变按钮，订单区内满宽） */
+.submit-btn {
+  width: 100%;
+  height: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #D7041A 0%, #B80015 100%);
+  color: #fff;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 4px;
+  box-shadow: 0 6px 16px rgba(215, 4, 26, 0.28);
+  transition: filter 0.2s ease, transform 0.1s ease;
+}
+
+.submit-btn:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.submit-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.submit-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.cart-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #aaa;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.cart-hint img {
+  width: 18px;
+  height: 17px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+/* ============ 支付二维码面板 ============ */
 .pay-panel {
   display: grid;
   grid-template-columns: 240px 1fr;
@@ -513,8 +752,8 @@ watch(
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--line);
-  border-radius: var(--r);
+  border: 1px solid #e4e6f1;
+  border-radius: 10px;
   background: #fff;
 }
 
@@ -530,12 +769,13 @@ watch(
 }
 
 .pay-summary p {
-  color: var(--sub);
+  color: #666;
+  font-size: 14px;
 }
 
 .pay-hint {
-  color: var(--amber);
-  font-size: 0.82rem;
+  color: #f0a429;
+  font-size: 13px;
 }
 
 @media (max-width: 900px) {
@@ -549,7 +789,7 @@ watch(
   }
 
   .package-card {
-    min-height: 220px;
+    min-height: 240px;
   }
 }
 </style>

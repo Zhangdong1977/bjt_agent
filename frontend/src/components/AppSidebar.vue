@@ -1,17 +1,21 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router'
 import { computed, ref, watch } from 'vue'
-import { FileSearchOutlined, HistoryOutlined, ExperimentOutlined, UserOutlined } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+import iconCheck from '@/assets/images/ui/common-icon-check.png'
+import iconOrder from '@/assets/images/ui/common-icon-order.png'
+import iconUser from '@/assets/images/ui/common-icon-user.png'
+import iconDashboard from '@/assets/images/ui/common-icon-dashboard.png'
+import illustrationLuxury from '@/assets/images/ui/common-illustration-luxury.png'
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 
 const allMenuItems = [
-  { key: '/home/check', label: '标书检查', icon: FileSearchOutlined, internalOnly: false },
-  { key: '/home/history', label: '历史标书', icon: HistoryOutlined, internalOnly: false },
-  { key: '/home/profile', label: '个人中心', icon: UserOutlined, internalOnly: false },
-  { key: '/home/experience', label: '标书复盘', icon: ExperimentOutlined, internalOnly: true },
+  { key: '/home/check', label: '标书检查', subtitle: '创建新项目，上传标书', icon: iconCheck, internalOnly: false },
+  { key: '/home/history', label: '历史标书', subtitle: '查看历史审查记录与报告', icon: iconOrder, internalOnly: false },
+  { key: '/home/profile', label: '用户中心', subtitle: '管理账号权限，维护个人信息', icon: iconUser, internalOnly: false },
+  { key: '/home/experience', label: '标书复盘', subtitle: '复盘项目，优化审查质量', icon: iconDashboard, internalOnly: true },
 ]
 
 // 标书复盘仅内部用户可见
@@ -41,17 +45,25 @@ function navigate(path: string) {
         @click="navigate(item.key)"
       >
         <span class="sidebar-item__indicator"></span>
-        <component :is="item.icon" class="sidebar-item__icon" />
-        <span class="sidebar-item__label">{{ item.label }}</span>
+        <img :src="item.icon" alt="" class="sidebar-item__icon" />
+        <span class="sidebar-item__text">
+          <span class="sidebar-item__label">{{ item.label }}</span>
+          <span class="sidebar-item__subtitle">{{ item.subtitle }}</span>
+        </span>
       </li>
     </ul>
+    <div class="sidebar-illustration">
+      <img :src="illustrationLuxury" alt="" />
+    </div>
   </nav>
 </template>
 
 <style scoped>
 .sidebar {
-  padding: 16px 0;
+  padding: 16px 0 0;
   height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .sidebar-section-label {
@@ -68,13 +80,14 @@ function navigate(path: string) {
   list-style: none;
   padding: 0;
   margin: 0;
+  flex: 1 1 auto;
 }
 
 .sidebar-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 20px;
+  padding: 14px 20px;
   cursor: pointer;
   transition: all 0.2s ease;
   position: relative;
@@ -96,13 +109,13 @@ function navigate(path: string) {
   width: 3px;
   height: 20px;
   border-radius: 0 3px 3px 0;
-  background: var(--blue);
+  background: #D7041A;
   transition: transform 0.2s ease;
 }
 
 .sidebar-item--active {
-  color: var(--blue);
-  background: var(--blue-bg);
+  color: #D7041A;
+  background: #fff5f6;
 }
 
 .sidebar-item--active .sidebar-item__indicator {
@@ -110,16 +123,48 @@ function navigate(path: string) {
 }
 
 .sidebar-item--active:hover {
-  background: var(--blue-bg);
-  color: var(--blue);
+  background: #fff5f6;
+  color: #D7041A;
 }
 
 .sidebar-item__icon {
-  font-size: 16px;
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
   flex-shrink: 0;
+}
+
+.sidebar-item__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.5;
+  min-width: 0;
 }
 
 .sidebar-item__label {
   white-space: nowrap;
+}
+
+.sidebar-item__subtitle {
+  font-size: 11px;
+  color: #999;
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* active 时副标题保持灰色（不随主标题变红），保持层次 */
+
+.sidebar-illustration {
+  flex-shrink: 0;
+  line-height: 0; /* 消除 inline 图片下方基线缝隙 */
+}
+
+.sidebar-illustration img {
+  width: 100%;
+  height: auto;
+  display: block;
 }
 </style>

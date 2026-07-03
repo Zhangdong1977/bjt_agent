@@ -1,18 +1,23 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { GiftOutlined, GlobalOutlined, UserOutlined, WalletOutlined } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { useBillingStore } from '@/stores/billing'
 import AppSidebar from './AppSidebar.vue'
-import ThemeToggle from './ThemeToggle.vue'
 import PurchaseModal from './billing/PurchaseModal.vue'
-import { getOfficialSiteUrl } from '@/utils/externalLinks'
+import logoUrl from '@/assets/images/ui/common-logo-black.png'
+import iconWallet from '@/assets/images/ui/common-icon-wallet.png'
+import iconPoints from '@/assets/images/ui/common-icon-points.png'
+import iconCart from '@/assets/images/ui/common-icon-cart-full.png'
+import iconUser from '@/assets/images/ui/common-icon-user.png'
+import wecomQrcode from '@/assets/images/ui/common-wecom-qrcode.jpg'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const billingStore = useBillingStore()
 const rechargeOpen = ref(false)
+const contactOpen = ref(false)
+const officialSiteUrl = 'https://aibjt.com/'
 
 onMounted(() => {
   void billingStore.fetchWallet()
@@ -28,8 +33,8 @@ function goProfile() {
   router.push({ name: 'profile-center' })
 }
 
-function openOfficialSite() {
-  window.open(getOfficialSiteUrl(), '_blank', 'noopener,noreferrer')
+function goOfficialSite() {
+  window.open(officialSiteUrl, '_blank', 'noopener')
 }
 </script>
 
@@ -40,37 +45,40 @@ function openOfficialSite() {
 
     <a-layout-header class="app-header">
       <div class="header-left">
-        <img src="/logo.ico" alt="标书审查智能体" class="header-logo-icon" />
-        <h1 class="header-title">标书审查智能体</h1>
+        <img :src="logoUrl" alt="标书审查智能体" class="header-logo" />
       </div>
+
       <div class="header-right">
-        <div class="wallet-strip">
-          <span class="metric-pill">
-            <WalletOutlined />
-            {{ billingStore.balanceWen }}文
+        <div class="account-strip">
+          <span
+            class="metric metric--pill metric--wallet"
+            :style="{ backgroundImage: `url(${iconWallet})` }"
+            @click="rechargeOpen = true"
+          >
+            <span class="metric-value">{{ billingStore.balanceWen }}文</span>
           </span>
-          <span class="metric-pill">
-            <GiftOutlined />
-            {{ billingStore.points }}积分
+          <span
+            class="metric metric--pill metric--points"
+            :style="{ backgroundImage: `url(${iconPoints})` }"
+          >
+            <span class="metric-value">{{ billingStore.points }}积分</span>
+          </span>
+          <span class="metric metric--cart" title="购物车">
+            <img :src="iconCart" alt="" />
           </span>
         </div>
-        <button class="recharge-btn" @click="rechargeOpen = true">
-          <WalletOutlined />
-          立即充值
-        </button>
-        <button class="plugin-btn" @click="openOfficialSite">
-          <GlobalOutlined />
-          标捷通快速编标插件
-        </button>
-        <ThemeToggle />
+        <button class="recharge-btn" @click="rechargeOpen = true">立即充值</button>
+        <button class="outline-btn" @click="goOfficialSite">前往官网</button>
+        <button class="outline-btn" @click="contactOpen = true">联系我们</button>
         <div class="header-divider"></div>
         <button class="profile-btn" @click="goProfile">
-          <UserOutlined />
-          {{ authStore.user?.nickname || authStore.user?.username }}
+          <img :src="iconUser" alt="" />
+          <span>{{ authStore.user?.nickname || authStore.user?.username }}</span>
         </button>
         <button class="logout-btn" @click="logout">退出</button>
       </div>
     </a-layout-header>
+
     <a-layout class="app-body">
       <a-layout-sider width="220" class="app-sider" :trigger="null">
         <AppSidebar />
@@ -80,18 +88,32 @@ function openOfficialSite() {
       </a-layout-content>
     </a-layout>
     <PurchaseModal v-model:open="rechargeOpen" @paid="billingStore.fetchWallet" />
+    <a-modal
+      :open="contactOpen"
+      title="联系我们"
+      :footer="null"
+      width="360px"
+      :destroy-on-close="false"
+      @cancel="contactOpen = false"
+    >
+      <div class="contact-modal">
+        <img :src="wecomQrcode" alt="企业微信二维码" class="contact-qrcode" />
+        <p class="contact-tip">扫码添加专属客服企微，获取专属服务</p>
+      </div>
+    </a-modal>
   </a-layout>
 </template>
 
 <style scoped>
 .app-layout {
   min-height: 100vh;
+  background: #f5f7fa;
 }
 
 /* 顶部 2px 品牌色条 */
 .brand-bar {
   height: 2px;
-  background: linear-gradient(90deg, var(--blue), var(--purple));
+  background: linear-gradient(90deg, #D7041A, #B80015);
   position: fixed;
   top: 0;
   left: 0;
@@ -103,157 +125,236 @@ function openOfficialSite() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: var(--bg1);
-  padding: 0 24px;
-  height: 56px;
-  line-height: 56px;
-  box-shadow: var(--shadow-sm);
+  background: #fff;
+  padding: 0 28px;
+  height: 64px;
+  line-height: 64px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
   position: fixed;
   top: 2px;
   left: 0;
   right: 0;
   z-index: 99;
+  font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
 }
 
 .header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 40px;
 }
 
-.header-logo-icon {
+.header-logo {
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  width: 110px;
+  height: auto;
   object-fit: contain;
-}
-
-.header-title {
-  font-family: 'Plus Jakarta Sans', 'DM Sans', sans-serif;
-  color: var(--bright);
-  font-size: 1.1rem;
-  font-weight: 700;
-  margin: 0;
-  letter-spacing: -0.02em;
 }
 
 .header-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 16px;
+}
+
+.account-strip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+  color: #555;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.metric img {
+  width: auto;
+  height: 24px;
+  object-fit: contain;
+}
+
+/* 胶囊图标作为数值背景：图片左侧是小图标，右侧留白区叠数值文字 */
+.metric--pill {
+  height: 32px;
+  padding: 0 14px 0 40px; /* 左侧留给图标区，右侧留白 */
+  border: 0;
+  background-repeat: no-repeat;
+  background-position: left center;
+  background-size: auto 32px; /* 按高度铺满，宽度按 3:1 比例约 96px */
+  align-items: center;
+  cursor: default;
+}
+
+.metric--wallet {
+  cursor: pointer;
+  transition: filter 0.2s ease;
+}
+
+.metric--wallet:hover {
+  filter: brightness(1.04);
+}
+
+.metric--cart {
+  cursor: pointer;
+}
+
+.metric--cart img {
+  width: 22px;
+  height: 21px;
+}
+
+.metric-value {
+  color: #333;
+}
+
+.recharge-btn {
+  height: 34px;
+  line-height: 34px; /* 覆盖从 .app-header 继承的 64px，使文字垂直居中 */
+  padding: 0 18px;
+  border: 0;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #D7041A 0%, #B80015 100%);
+  color: #fff;
+  cursor: pointer;
+  font-family: inherit; /* 只继承字体族，避免 font 简写连带重置 line-height */
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  box-shadow: 0 4px 12px rgba(215, 4, 26, 0.28);
+  transition: filter 0.2s ease, transform 0.1s ease;
+}
+
+.recharge-btn:hover {
+  filter: brightness(1.06);
+}
+
+.recharge-btn:active {
+  transform: scale(0.98);
+}
+
+/* 白底红边按钮：前往官网 / 联系我们，配色与主色调一致 */
+.outline-btn {
+  height: 34px;
+  line-height: 34px;
+  padding: 0 16px;
+  border: 1px solid #D7041A;
+  border-radius: 6px;
+  background: #fff;
+  color: #D7041A;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.1s ease;
+}
+
+.outline-btn:hover {
+  background: #D7041A;
+  color: #fff;
+}
+
+.outline-btn:active {
+  transform: scale(0.98);
+}
+
+/* 联系我们企微二维码弹窗 */
+.contact-modal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0 4px;
+}
+
+.contact-qrcode {
+  width: 100%;
+  max-width: 280px;
+  height: auto;
+  object-fit: contain;
+}
+
+.contact-tip {
+  margin: 16px 0 0;
+  color: #555;
+  font-size: 14px;
+  text-align: center;
 }
 
 .header-divider {
   width: 1px;
-  height: 20px;
-  background: var(--line);
-}
-
-.wallet-strip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.metric-pill {
-  height: 30px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--bg2);
-  color: var(--bright);
-  font-size: 0.8rem;
-  font-weight: 600;
-  line-height: 1;
-}
-
-.recharge-btn,
-.plugin-btn,
-.profile-btn {
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: none;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  font-family: inherit;
-  transition: filter 0.2s ease, background 0.2s ease, color 0.2s ease;
-  white-space: nowrap;
-}
-
-.recharge-btn {
-  padding: 0 12px;
-  background: var(--blue);
-  color: #fff;
-}
-
-.plugin-btn {
-  padding: 0 12px;
-  background: var(--amber);
-  color: #171717;
+  height: 22px;
+  background: #e4e6f1;
 }
 
 .profile-btn {
-  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 4px;
+  border: 0;
   background: transparent;
-  color: var(--sub);
+  color: #555;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+  transition: color 0.2s ease;
 }
 
-.recharge-btn:hover,
-.plugin-btn:hover {
-  filter: brightness(1.08);
+.profile-btn img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
 }
 
 .profile-btn:hover {
-  color: var(--blue);
-  background: var(--blue-bg);
+  color: #D7041A;
 }
 
 .logout-btn {
   background: none;
   border: none;
-  color: var(--muted);
-  font-size: 0.8125rem;
+  color: #999;
+  font-size: 13px;
   cursor: pointer;
   padding: 4px 8px;
-  border-radius: var(--r-sm);
-  transition: all 0.2s ease;
+  transition: color 0.2s ease;
   font-family: inherit;
 }
 
 .logout-btn:hover {
-  color: var(--red);
-  background: var(--red-bg);
+  color: #D7041A;
 }
 
 .app-body {
-  margin-top: 58px; /* 56px header + 2px brand bar */
+  margin-top: 66px; /* 64px header + 2px brand bar */
 }
 
 .app-sider {
-  background: var(--bg2);
+  background: #fff;
   position: fixed;
-  top: 58px;
+  top: 66px;
   left: 0;
   bottom: 0;
   overflow-y: auto;
+  border-right: 1px solid #f0f0f0;
 }
 
 .app-content {
   margin-left: 220px;
   padding: 24px;
-  background: var(--bg);
-  min-height: calc(100vh - 58px);
+  background: #f5f7fa;
+  min-height: calc(100vh - 66px);
   overflow: auto;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 991px) {
   .app-content {
     margin-left: 0;
     padding: 16px;
@@ -263,13 +364,34 @@ function openOfficialSite() {
     display: none;
   }
 
-  .header-title {
-    font-size: 0.95rem;
+  .account-strip {
+    gap: 10px;
   }
 
-  .wallet-strip,
-  .plugin-btn {
-    display: none;
+  /* 胶囊图标缩小，但保留数值文字（背景图需配文字才完整） */
+  .metric--pill {
+    height: 28px;
+    padding: 0 10px 0 34px;
+    background-size: auto 28px;
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 767px) {
+  .header-left {
+    gap: 12px;
+  }
+
+  .header-logo {
+    width: 88px;
+  }
+
+  .recharge-btn {
+    padding: 0 12px;
+  }
+
+  .outline-btn {
+    padding: 0 12px;
   }
 }
 </style>

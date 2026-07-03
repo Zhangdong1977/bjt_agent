@@ -3,26 +3,21 @@ import { onMounted, computed } from 'vue'
 import { RouterView } from 'vue-router'
 import { ConfigProvider, theme } from 'ant-design-vue'
 import { useAuthStore } from '@/stores/auth'
-import { useTheme } from '@/composables/useTheme'
 
 const authStore = useAuthStore()
-const { theme: appTheme, initTheme } = useTheme()
 
 onMounted(() => {
   authStore.initialize()
-  initTheme()
 })
-
-const isDark = computed(() => appTheme.value === 'dark')
 
 const antdTheme = computed(() => ({
   token: {
-    colorPrimary: '#4f6ef7',
+    colorPrimary: '#D7041A',
     borderRadius: 8,
     fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
     fontSize: 14,
   },
-  algorithm: isDark.value ? theme.darkAlgorithm : theme.defaultAlgorithm,
+  algorithm: theme.defaultAlgorithm,
 }))
 </script>
 
