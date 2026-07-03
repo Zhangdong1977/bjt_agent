@@ -572,6 +572,110 @@ export const useProjectStore = defineStore("project", () => {
     delete documentPollRetries[documentId];
   }
 
+  // ============================================================
+  // 草稿文档（独立于项目）：选文件即上传解析，点「开始检查」时才关联到项目。
+  // draft 文档统一存进 documents.value（project_id === null 即为草稿）。
+  // ============================================================
+
+  async function uploadDraftDocument(
+    docType: "tender" | "bid",
+    file: File,
+  ) {
+    const uploadKey = `draft_${docType}_${Date.now()}`;
+    try {
+      const doc = await documentsApi.uploadDraft(docType, file, (progress) => {
+        uploadProgress.value[uploadKey] = progress;
+      });
+      documents.value.push(doc);
+      // SSE 按 document_id 推送解析进度，与 project 无关，可直接复用
+      connectDocParseSSE(doc.id);
+      pollDraftStatus(doc.id);
+      return doc;
+    } finally {
+      delete uploadProgress.value[uploadKey];
+    }
+  }
+
+  // 草稿文档轮询：用 listDrafts 拉取全部草稿状态，更新对应 doc（不依赖 currentProject）
+  function pollDraftStatus(documentId: string) {
+    if (documentPollIntervals[documentId]) return;
+
+    const checkStatus = async () => {
+      try {
+        const drafts = await documentsApi.listDrafts();
+        const updatedDoc = drafts.find((d) => d.id === documentId);
+        if (updatedDoc) {
+          const index = documents.value.findIndex((d) => d.id === documentId);
+          if (index !== -1) {
+            documents.value[index] = {
+              ...updatedDoc,
+              parse_progress: documents.value[index].parse_progress,
+            };
+          }
+        }
+        delete documentPollRetries[documentId];
+
+        const current = documents.value.find((d) => d.id === documentId);
+        if (current && (current.status === "parsed" || current.status === "failed")) {
+          clearDocumentPoll(documentId);
+          disconnectDocParseSSE(documentId);
+        }
+      } catch (err) {
+        console.error("Failed to poll draft document status:", err);
+        documentPollRetries[documentId] = (documentPollRetries[documentId] || 0) + 1;
+        if (documentPollRetries[documentId] >= MAX_POLL_RETRIES) {
+          clearDocumentPoll(documentId);
+        }
+      }
+    };
+
+    void checkStatus();
+    documentPollIntervals[documentId] = window.setInterval(checkStatus, 2000);
+  }
+
+  // 加载当前用户的所有草稿文档（进入检查页时恢复未完成的解析）
+  async function loadDraftDocuments() {
+    try {
+      const drafts = await documentsApi.listDrafts();
+      // 合并：替换掉旧的草稿条目，保留项目文档
+      documents.value = documents.value.filter((d) => d.project_id !== null);
+      documents.value.push(...drafts);
+      // 为仍在解析的草稿重连 SSE + 轮询
+      for (const doc of drafts) {
+        if (doc.status === "pending" || doc.status === "parsing") {
+          connectDocParseSSE(doc.id);
+          pollDraftStatus(doc.id);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load draft documents:", err);
+    }
+  }
+
+  // 删除草稿文档
+  async function deleteDraftDocument(documentId: string) {
+    clearDocumentPoll(documentId);
+    disconnectDocParseSSE(documentId);
+    await documentsApi.deleteDraft(documentId);
+    documents.value = documents.value.filter((d) => d.id !== documentId);
+  }
+
+  // 把所有草稿文档关联到指定项目（点「开始检查」创建项目后调用）
+  async function attachDraftDocuments(projectId: string) {
+    const drafts = documents.value.filter((d) => d.project_id === null);
+    for (const doc of drafts) {
+      try {
+        const updated = await documentsApi.attach(doc.id, projectId);
+        const index = documents.value.findIndex((d) => d.id === doc.id);
+        if (index !== -1) {
+          documents.value[index] = { ...updated, parse_progress: documents.value[index].parse_progress };
+        }
+      } catch (err) {
+        console.error(`Failed to attach document ${doc.id}:`, err);
+      }
+    }
+  }
+
   async function fetchReviewTasks() {
     if (!currentProject.value) return;
     reviewTasks.value = await reviewApi.getTasks(currentProject.value.id);
@@ -740,6 +844,10 @@ export const useProjectStore = defineStore("project", () => {
     selectProject,
     uploadDocument,
     deleteDocument,
+    uploadDraftDocument,
+    loadDraftDocuments,
+    deleteDraftDocument,
+    attachDraftDocuments,
     startReview,
     fetchReviewResults,
     handleSSEEvent,

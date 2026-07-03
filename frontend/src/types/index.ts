@@ -18,6 +18,12 @@ export interface Token {
   token_type: string;
 }
 
+export interface Captcha {
+  captcha_id: string;
+  image: string;
+  expires_in: number;
+}
+
 export interface Wallet {
   balance_wen: number;
   points: number;
@@ -147,7 +153,8 @@ export interface ParseProgress {
 // Document types
 export interface Document {
   id: string;
-  project_id: string;
+  project_id: string | null;
+  owner_user_id: string | null;
   doc_type: "tender" | "bid";
   original_filename: string;
   file_path: string;

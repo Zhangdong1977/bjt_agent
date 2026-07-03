@@ -8,7 +8,8 @@ class DocumentResponse(BaseModel):
     """Schema for document response."""
 
     id: str
-    project_id: str
+    project_id: str | None
+    owner_user_id: str | None
     doc_type: str
     original_filename: str
     file_path: str

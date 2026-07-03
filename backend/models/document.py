@@ -17,7 +17,16 @@ class Document(Base):
 
     __tablename__ = "documents"
 
-    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    # project_id 可空：用户在检查页选文件时立即上传解析，此时项目尚未创建。
+    # 点「开始检查」创建项目后，通过 attach 接口把草稿文档关联到项目。
+    project_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    # owner_user_id：草稿文档（project_id IS NULL）的归属用户；关联项目后仍保留以备审计。
+    owner_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     doc_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'tender' (招标书) or 'bid' (应标书)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_path: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -31,7 +40,9 @@ class Document(Base):
     parse_error: Mapped[str | None] = mapped_column(nullable=True)
 
     # Relationships
-    project: Mapped["Project"] = relationship("Project", back_populates="documents")
+    project: Mapped["Project | None"] = relationship(
+        "Project", back_populates="documents", foreign_keys=[project_id]
+    )
 
     def __repr__(self) -> str:
         return f"<Document(id={self.id}, doc_type={self.doc_type}, filename={self.original_filename})>"
