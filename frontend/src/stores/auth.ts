@@ -34,10 +34,15 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function login(username: string, password: string) {
+  async function login(
+    username: string,
+    password: string,
+    captchaId: string,
+    captchaCode: string,
+  ) {
     loading.value = true
     try {
-      await authApi.login(username, password)
+      await authApi.login(username, password, captchaId, captchaCode)
       user.value = await authApi.getMe()
       _restoreClaims()
     } finally {

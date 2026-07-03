@@ -5,6 +5,7 @@ import axios, {
 import type {
   User,
   Token,
+  Captcha,
   Project,
   CreateProjectRequest,
   Document,
@@ -182,10 +183,22 @@ apiClient.interceptors.response.use(
 
 // Auth API
 export const authApi = {
-  async login(username: string, password: string): Promise<Token> {
+  async getCaptcha(): Promise<Captcha> {
+    const response = await apiClient.get("/auth/captcha");
+    return response.data as Captcha;
+  },
+
+  async login(
+    username: string,
+    password: string,
+    captchaId: string,
+    captchaCode: string,
+  ): Promise<Token> {
     const response = await apiClient.post("/auth/login", {
       username,
       password,
+      captcha_id: captchaId,
+      captcha_code: captchaCode,
     });
     const token = response.data as Token;
     setAccessToken(token.access_token);
@@ -202,6 +215,32 @@ export const authApi = {
   async getMe(): Promise<User> {
     const response = await apiClient.get("/auth/me");
     return response.data;
+  },
+
+  /** 站内注册·下发短信验证码（先校验图形验证码，后端转发到运营平台 /aiGetCode）。 */
+  async sendSms(
+    phone: string,
+    captchaId: string,
+    captchaCode: string,
+  ): Promise<void> {
+    await apiClient.post("/auth/send-sms", {
+      phone,
+      captcha_id: captchaId,
+      captcha_code: captchaCode,
+    });
+  },
+
+  /** 站内注册（后端转发到运营平台 /aiRegister，注册即开通 use_check=1）。 */
+  async register(payload: {
+    phone: string;
+    sms_code: string;
+    password: string;
+    confirm_password: string;
+    nickname: string;
+    captcha_id: string;
+    captcha_code: string;
+  }): Promise<void> {
+    await apiClient.post("/auth/register", payload);
   },
 };
 
@@ -426,6 +465,83 @@ export const documentsApi = {
 
   async delete(projectId: string, documentId: string): Promise<void> {
     await apiClient.delete(`/projects/${projectId}/documents/${documentId}`);
+  },
+
+  // ===== 草稿文档（独立于项目）：选文件即上传解析，点「开始检查」时才关联到项目 =====
+
+  async uploadDraft(
+    docType: "tender" | "bid",
+    file: File,
+    onProgress?: (progress: UploadProgress) => void,
+  ): Promise<Document> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      formData.append("file", file);
+
+      xhr.open(
+        "POST",
+        `${API_BASE}/documents/upload?doc_type=${docType}`,
+      );
+
+      const token = getAccessToken();
+      if (token) {
+        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      }
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && onProgress) {
+          onProgress({
+            loaded: event.loaded,
+            total: event.total,
+            percent: Math.round((event.loaded / event.total) * 100),
+          });
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch {
+            reject(new Error("服务器返回的数据格式不正确，请稍后重试"));
+          }
+        } else if (xhr.status === 401) {
+          reject(new Error("登录状态已失效，请重新登录"));
+        } else {
+          try {
+            const errorData = JSON.parse(xhr.responseText);
+            reject(new Error(errorData.detail || `上传失败（HTTP ${xhr.status}）`));
+          } catch {
+            reject(new Error(`上传失败（HTTP ${xhr.status}）`));
+          }
+        }
+      };
+
+      xhr.onerror = () => reject(new Error("网络连接异常，请检查网络后重试"));
+      xhr.send(formData);
+    });
+  },
+
+  async listDrafts(): Promise<Document[]> {
+    const response = await apiClient.get(`/documents/drafts`);
+    return response.data.documents;
+  },
+
+  async attach(documentId: string, projectId: string): Promise<Document> {
+    const response = await apiClient.post(
+      `/documents/${documentId}/attach?project_id=${projectId}`,
+    );
+    return response.data;
+  },
+
+  async deleteDraft(documentId: string): Promise<void> {
+    await apiClient.delete(`/documents/${documentId}`);
+  },
+
+  async getDraftContent(documentId: string): Promise<DocumentContent> {
+    const response = await apiClient.get(`/documents/${documentId}/content`);
+    return response.data;
   },
 };
 
