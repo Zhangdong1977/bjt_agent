@@ -18,7 +18,16 @@ from backend.api.deps import (
 )
 from backend.config import get_settings
 from backend.models import User
-from backend.schemas.auth import LoginRequest, Token, UserResponse, RefreshTokenRequest
+from backend.schemas.auth import (
+    CaptchaResponse,
+    LoginRequest,
+    RegisterRequest,
+    SendSmsRequest,
+    Token,
+    UserResponse,
+    RefreshTokenRequest,
+)
+from backend.services.captcha_service import generate_captcha, verify_captcha
 from backend.middleware.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
@@ -40,6 +49,31 @@ def external_auth_url() -> str:
     return f"{base_url}/aiCheckLogin"
 
 
+def _operate_headers() -> dict[str, str]:
+    """运营平台 server-to-server 内部接口的共享密钥头。
+
+    与 ``services/operate_recharge.py`` 的 ``_headers()`` 同源：复用
+    ``OPERATE_INTERNAL_TOKEN``（须与 operate-two ``document.bocom.internalToken`` 同值）。
+    """
+    token = settings.operate_internal_token
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="运营平台内部接口共享密钥未配置",
+        )
+    return {"X-Internal-Token": token}
+
+
+def _operate_url(path: str) -> str:
+    base_url = settings.operate_api_base_url.rstrip("/")
+    if not base_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="运营平台认证地址未配置",
+        )
+    return f"{base_url}{path}"
+
+
 MOCK_AUTH_ENABLED = False
 
 MOCK_AUTH_RESPONSE = {
@@ -52,10 +86,31 @@ MOCK_AUTH_RESPONSE = {
 }
 
 
+@router.get("/captcha", response_model=CaptchaResponse)
+@limiter.limit("30/minute")
+async def get_captcha(request: Request) -> CaptchaResponse:
+    """生成登录用 4 位图形验证码：返回签名 captcha_id + 内联 PNG data URL。
+
+    前端用 ``image`` 直接渲染图片，登录时回传 ``captcha_id`` 与用户输入。
+    """
+    art = generate_captcha()
+    return CaptchaResponse(
+        captcha_id=art.captcha_id,
+        image=art.image,
+        expires_in=art.expires_in,
+    )
+
+
 @router.post("/login", response_model=Token)
 @limiter.limit("100/minute")
 async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
     """Login via external auth API and issue JWT tokens."""
+    # 图形验证码先于外部认证校验，拦截暴力探测、避免无意义的外部调用
+    if not verify_captcha(body.captcha_id, body.captcha_code):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="图形验证码错误或已失效",
+        )
     if MOCK_AUTH_ENABLED:
         logger.warning("Using mock auth data (external API disabled)")
         ext_result = MOCK_AUTH_RESPONSE["data"]
@@ -230,3 +285,89 @@ async def refresh_token(request: RefreshTokenRequest, db: DBSession) -> Token:
     )
 
     return Token(access_token=access_token, refresh_token=new_refresh_token)
+
+
+@router.post("/send-sms")
+@limiter.limit("1/minute")
+async def send_sms(request: Request, body: SendSmsRequest) -> dict:
+    """站内注册·下发短信验证码。
+
+    先校验图形验证码（防刷短信，复用登录同款 captcha 体系），再转发到运营平台
+    ``/aiGetCode``（明文 + X-Internal-Token）。运营平台内部已含 60 秒冷却，
+    此处再叠 ``1/minute`` 限流做双保险。
+    """
+    if not verify_captcha(body.captcha_id, body.captcha_code):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="图形验证码错误或已失效",
+        )
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.operate_api_timeout_seconds, trust_env=False
+        ) as client:
+            resp = await client.post(
+                _operate_url("/aiGetCode"),
+                json={"account": body.phone},
+                headers=_operate_headers(),
+            )
+    except httpx.RequestError as e:
+        logger.error("Send-sms upstream request failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="短信服务不可用，请稍后重试",
+        )
+
+    data = resp.json()
+    if data.get("code") != 200:
+        # 透传运营平台消息（如"请X秒后重新发送短信！"）
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=data.get("msg", "验证码发送失败"),
+        )
+    return {"message": data.get("msg", "验证码已发送")}
+
+
+@router.post("/register")
+@limiter.limit("5/minute")
+async def register(request: Request, body: RegisterRequest) -> dict:
+    """站内注册。先校验图形验证码，再转发到运营平台 ``/aiRegister``。
+
+    运营平台注册成功即置 ``use_check=1``（注册即开通），用户随后可用手机号+密码
+    通过 ``/auth/login`` 登录。本端不自动登录——回到登录 tab 手动登录，流程清晰。
+    """
+    if not verify_captcha(body.captcha_id, body.captcha_code):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="图形验证码错误或已失效",
+        )
+    payload = {
+        # RegisterBody 约定：account=账号(手机号)、username=昵称
+        "account": body.phone,
+        "username": body.nickname,
+        "verificationCode": body.sms_code,
+        "password": body.password,
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.operate_api_timeout_seconds, trust_env=False
+        ) as client:
+            resp = await client.post(
+                _operate_url("/aiRegister"),
+                json=payload,
+                headers=_operate_headers(),
+            )
+    except httpx.RequestError as e:
+        logger.error("Register upstream request failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="注册服务不可用，请稍后重试",
+        )
+
+    data = resp.json()
+    if data.get("code") != 200:
+        # 透传：手机号已注册 / 验证码有误 / 密码强度不足 等
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=data.get("msg", "注册失败"),
+        )
+    return {"message": "注册成功，请登录"}
