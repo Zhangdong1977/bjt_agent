@@ -1,7 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { useTheme } from '@/composables/useTheme'
 
 defineProps<{
   projectName: string
@@ -9,9 +7,6 @@ defineProps<{
 }>()
 
 const router = useRouter()
-const { theme, toggleTheme } = useTheme()
-
-const isDark = computed(() => theme.value === 'dark')
 
 function goBack() {
   router.back()
@@ -25,10 +20,6 @@ function goBack() {
       <h1 class="project-title">{{ projectName }}</h1>
     </div>
     <div class="header-right">
-      <!-- 主题切换按钮 -->
-      <button class="theme-toggle" @click="toggleTheme">
-        {{ isDark ? '☀️' : '🌙' }}
-      </button>
       <!-- 状态徽章 -->
       <span :class="['status-badge', `status-${status}`]">
         <span v-if="status === 'running'" class="live-dot"></span>
@@ -80,23 +71,6 @@ function goBack() {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-
-.theme-toggle {
-  width: 36px;
-  height: 36px;
-  border-radius: var(--r);
-  background: var(--bg3);
-  border: 1px solid var(--line2);
-  cursor: pointer;
-  font-size: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.theme-toggle:hover {
-  background: var(--bg4);
 }
 
 .status-badge {
