@@ -64,7 +64,7 @@ const tenderInput = ref<HTMLInputElement | null>(null)
 const bidInput = ref<HTMLInputElement | null>(null)
 
 onMounted(() => {
-  // 恢复未完成解析的草稿文档（刷新页面后仍能继续显示进度）
+  // 恢复解析中的草稿（续上进度）；已结束的草稿在 store 内静默清理，使卡片回到初始状态
   void projectStore.loadDraftDocuments()
 })
 

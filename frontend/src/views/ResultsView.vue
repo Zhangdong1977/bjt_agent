@@ -228,15 +228,17 @@ async function startNewReview() {
   filter: grayscale(0.4);
 }
 
-/* 文字层：绝对定位，从图标右缘（left:38%）延伸到胶囊右缘（right:8%），文字居中。
-   用 left+right 双向定位而非固定 width，让文字区自适应按钮宽度，5 字也能容纳 */
+/* 文字层：按 PNG 像素测量精确定位。
+   背景 PNG 148×60，胶囊实测 bbox x[9,138] y[5,46]：
+   - 胶囊垂直中心在 y=25.5/60≈42.5%，故 top 用 42.5%（不是 50%）让文字落在胶囊中线；
+   - 时间线图左侧图标结束于 x=42/148≈28%，文本区 x[45,138] 几何中心在
+     (45+138)/2/148≈61.8%；改用 left:30%/right:7% 得中心 61.5%，与图像吻合且整体左移。 */
 .bg-btn-text {
   position: absolute;
-  top: 50%;
-  left: 38%;
-  right: 8%;
-  /* 向上微调 1px 修正中文字体基线导致的视觉偏下 */
-  transform: translateY(calc(-50% - 1px));
+  top: 42.5%;
+  left: 30%;
+  right: 7%;
+  transform: translateY(-50%);
   text-align: center;
   font-family: inherit;
   font-size: 12px;

@@ -1,6 +1,7 @@
 """Authentication API routes."""
 
 import logging
+import time
 from datetime import timedelta
 
 import httpx
@@ -301,6 +302,9 @@ async def send_sms(request: Request, body: SendSmsRequest) -> dict:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="图形验证码错误或已失效",
         )
+    # 手机号脱敏（中间4位），仅用于日志
+    masked_phone = body.phone[:3] + "****" + body.phone[7:] if len(body.phone) == 11 else body.phone
+    started_at = time.monotonic()
     try:
         async with httpx.AsyncClient(
             timeout=settings.operate_api_timeout_seconds, trust_env=False
@@ -311,7 +315,10 @@ async def send_sms(request: Request, body: SendSmsRequest) -> dict:
                 headers=_operate_headers(),
             )
     except httpx.RequestError as e:
-        logger.error("Send-sms upstream request failed: %s", e)
+        logger.error(
+            "Send-sms upstream request failed: phone=%s timeout=%ss err=%s",
+            masked_phone, settings.operate_api_timeout_seconds, e,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="短信服务不可用，请稍后重试",
@@ -324,6 +331,10 @@ async def send_sms(request: Request, body: SendSmsRequest) -> dict:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=data.get("msg", "验证码发送失败"),
         )
+    logger.info(
+        "Send-sms forwarded ok: phone=%s cost=%dms",
+        masked_phone, int((time.monotonic() - started_at) * 1000),
+    )
     return {"message": data.get("msg", "验证码已发送")}
 
 

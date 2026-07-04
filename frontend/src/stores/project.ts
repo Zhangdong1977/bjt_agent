@@ -633,19 +633,35 @@ export const useProjectStore = defineStore("project", () => {
     documentPollIntervals[documentId] = window.setInterval(checkStatus, 2000);
   }
 
-  // 加载当前用户的所有草稿文档（进入检查页时恢复未完成的解析）
+  // 进入检查页时调用：
+  //  - 解析中（pending/parsing）的草稿：恢复进 store 并重连 SSE + 轮询，续上进度；
+  //  - 已结束（parsed/failed）的草稿：上次未走完「立即检查」流程的遗留物，不展示，
+  //    并在后台静默删除，使上传卡片回到初始状态、避免数据库累积脏数据。
   async function loadDraftDocuments() {
     try {
       const drafts = await documentsApi.listDrafts();
       // 合并：替换掉旧的草稿条目，保留项目文档
       documents.value = documents.value.filter((d) => d.project_id !== null);
-      documents.value.push(...drafts);
-      // 为仍在解析的草稿重连 SSE + 轮询
-      for (const doc of drafts) {
-        if (doc.status === "pending" || doc.status === "parsing") {
-          connectDocParseSSE(doc.id);
-          pollDraftStatus(doc.id);
-        }
+
+      const activeDrafts = drafts.filter(
+        (d) => d.status === "pending" || d.status === "parsing",
+      );
+      const finishedDrafts = drafts.filter(
+        (d) => d.status === "parsed" || d.status === "failed",
+      );
+
+      // 只恢复解析中的草稿，并重连 SSE + 轮询
+      documents.value.push(...activeDrafts);
+      for (const doc of activeDrafts) {
+        connectDocParseSSE(doc.id);
+        pollDraftStatus(doc.id);
+      }
+
+      // 后台并行清理遗留的已结束草稿（不阻塞页面渲染，单个失败不影响其它）
+      if (finishedDrafts.length > 0) {
+        await Promise.allSettled(
+          finishedDrafts.map((doc) => documentsApi.deleteDraft(doc.id)),
+        );
       }
     } catch (err) {
       console.error("Failed to load draft documents:", err);
