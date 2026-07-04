@@ -3,7 +3,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { computed, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import iconCheck from '@/assets/images/ui/common-icon-check.png'
-import iconOrder from '@/assets/images/ui/common-icon-order.png'
+import iconCalendar from '@/assets/images/ui/common-icon-calendar.png'
 import iconUser from '@/assets/images/ui/common-icon-user.png'
 import iconDashboard from '@/assets/images/ui/common-icon-dashboard.png'
 import illustrationLuxury from '@/assets/images/ui/common-illustration-luxury.png'
@@ -13,7 +13,7 @@ const authStore = useAuthStore()
 
 const allMenuItems = [
   { key: '/home/check', label: '标书检查', subtitle: '创建新项目，上传标书', icon: iconCheck, internalOnly: false },
-  { key: '/home/history', label: '历史标书', subtitle: '查看历史审查记录与报告', icon: iconOrder, internalOnly: false },
+  { key: '/home/history', label: '历史标书', subtitle: '查看历史审查记录与报告', icon: iconCalendar, internalOnly: false },
   { key: '/home/profile', label: '用户中心', subtitle: '管理账号权限，维护个人信息', icon: iconUser, internalOnly: false },
   { key: '/home/experience', label: '标书复盘', subtitle: '复盘项目，优化审查质量', icon: iconDashboard, internalOnly: true },
 ]
