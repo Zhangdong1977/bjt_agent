@@ -5,6 +5,10 @@ import { renderMarkdown } from '@/utils/markdown'
 import { reviewApi } from '@/api/client'
 import BatchConfirmBar from '@/components/feedback/BatchConfirmBar.vue'
 import FindingsTable from '@/components/execution/FindingsTable.vue'
+// 统计卡片背景图（自带图标）：大类 / 总数 / 风险
+import bgCategory from '@/assets/images/ui/result-card-category.png'
+import bgTotal from '@/assets/images/ui/result-card-total.png'
+import bgRisk from '@/assets/images/ui/result-card-risk.png'
 
 const props = defineProps<{
   reviewResults: ReviewResponse | null | undefined
@@ -147,19 +151,27 @@ function getSeverityColorClass(severity: string): string {
 
 <template>
   <div class="review-results-area">
-    <!-- 统计区 -->
+    <!-- 统计区（背景图自带图标，文字叠加在右侧） -->
     <div v-if="hasFindings" class="stats-bar">
-      <div class="stat-box">
-        <div class="stat-val sv-blue">{{ summary.category_count }}</div>
-        <div class="stat-lbl">检查大类</div>
+      <div class="stat-card" :style="{ backgroundImage: `url(${bgCategory})` }">
+        <div class="stat-text">
+          <div class="stat-val val-red">{{ summary.category_count }}</div>
+          <div class="stat-lbl">检查大类</div>
+        </div>
       </div>
-      <div class="stat-box">
-        <div class="stat-val sv-purple">{{ summary.check_item_count }}</div>
-        <div class="stat-lbl">检查项总数</div>
+
+      <div class="stat-card" :style="{ backgroundImage: `url(${bgTotal})` }">
+        <div class="stat-text">
+          <div class="stat-val val-blue">{{ summary.check_item_count }}</div>
+          <div class="stat-lbl">检查项总数</div>
+        </div>
       </div>
-      <div class="stat-box">
-        <div class="stat-val sv-red">{{ summary.risk_item_count }}</div>
-        <div class="stat-lbl">风险项总数</div>
+
+      <div class="stat-card" :style="{ backgroundImage: `url(${bgRisk})` }">
+        <div class="stat-text">
+          <div class="stat-val val-amber">{{ summary.risk_item_count }}</div>
+          <div class="stat-lbl">风险项总数</div>
+        </div>
       </div>
     </div>
 
@@ -238,36 +250,50 @@ function getSeverityColorClass(severity: string): string {
   padding: 1rem;
 }
 
-/* 统计区 */
+/* 统计区（背景图自带图标，数字与标签叠加在右侧） */
 .stats-bar {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 6px;
-  margin-bottom: 1rem;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 18px;
 }
 
-.stat-box {
-  background: var(--bg2);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  padding: 10px 12px;
+.stat-card {
+  position: relative;
+  height: 90px;
+  /* 背景图平铺：图标在左、文字水平居中与背景搭配 */
+  background-size: 100% 100%;
+  background-position: left center;
+  background-repeat: no-repeat;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 22px;
+  overflow: hidden;
+}
+
+.stat-text {
+  text-align: center;
+  min-width: 0;
 }
 
 .stat-val {
-  font-size: 22px;
-  font-weight: 600;
+  font-size: 28px;
+  font-weight: 700;
   line-height: 1;
   letter-spacing: -0.02em;
 }
 
-.sv-blue { color: var(--blue); }
-.sv-purple { color: var(--blue); }
-.sv-red { color: var(--red); }
+.val-red { color: #D7041A; }
+.val-blue { color: #2090F0; }
+.val-amber { color: #FA8C16; }
 
 .stat-lbl {
-  font-size: 10px;
-  color: var(--muted);
-  margin-top: 4px;
+  font-size: 12px;
+  color: #888;
+  margin-top: 6px;
+  letter-spacing: 0.02em;
 }
 
 /* 左右分栏 */
@@ -523,5 +549,16 @@ function getSeverityColorClass(severity: string): string {
   text-align: center;
   padding: 2rem;
   color: var(--sub);
+}
+
+@media (max-width: 767px) {
+  .stats-bar {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .split-panel {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

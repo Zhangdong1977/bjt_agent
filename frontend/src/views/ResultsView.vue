@@ -6,6 +6,9 @@ import { useProjectStore } from '@/stores/project'
 import { reviewApi } from '@/api/client'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 import type { ReviewResponse } from '@/types'
+// 按钮图（自带胶囊/图标，文字叠加在右侧）：查看时间线 / 重新审查
+import btnTimeline from '@/assets/images/ui/result-btn-timeline.png'
+import btnRecheck from '@/assets/images/ui/result-btn-recheck.png'
 
 const route = useRoute()
 const router = useRouter()
@@ -121,20 +124,26 @@ async function startNewReview() {
             {{ getStatusLabel(task.status) }} - {{ formatDate(task.created_at) }}
           </option>
         </select>
-        <button class="view-task-btn" :disabled="!selectedTaskId" @click="goToTaskExecution">
-          查看时间线
+        <button
+          class="bg-btn"
+          :style="{ backgroundImage: `url(${btnTimeline})` }"
+          :disabled="!selectedTaskId"
+          @click="goToTaskExecution"
+        >
+          <span class="bg-btn-text text-white">查看时间线</span>
         </button>
         <button
           v-if="!fromExperience"
-          class="view-task-btn restart-btn"
+          class="bg-btn"
+          :style="{ backgroundImage: `url(${btnRecheck})` }"
           @click="startNewReview"
         >
-          重新审查
+          <span class="bg-btn-text text-red">重新审查</span>
         </button>
       </div>
 
       <section v-if="taskResults" class="section">
-        <h2>审查结果</h2>
+        <h2 class="section-title">审查结果</h2>
         <ReviewResultsArea
           :review-results="taskResults"
           :todos="todos"
@@ -189,31 +198,56 @@ async function startNewReview() {
   font-size: 0.9rem;
 }
 
-.view-task-btn {
-  padding: 0.5rem 1rem;
-  background: var(--blue);
-  color: var(--white);
+/* 图片按钮：背景 PNG（自带胶囊+左侧图标），文字绝对定位落在胶囊右侧内部 */
+.bg-btn {
+  position: relative;
+  /* 放大按钮以容纳「查看时间线」5 字：等比缩放背景图（148×60）到高度 52px → 宽 128px */
+  height: 52px;
+  width: 128px;
+  padding: 0;
   border: none;
-  border-radius: var(--r);
+  background-color: transparent;
+  background-size: 100% 100%;
+  background-position: center;
+  background-repeat: no-repeat;
   cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 500;
-  transition: filter 0.2s;
+  transition: filter 0.2s ease, transform 0.1s ease;
 }
 
-.view-task-btn:hover:not(:disabled) {
-  filter: brightness(1.1);
+.bg-btn:hover:not(:disabled) {
+  filter: brightness(1.06);
 }
 
-.view-task-btn:disabled {
-  background: var(--muted);
+.bg-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.bg-btn:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.5;
+  filter: grayscale(0.4);
 }
 
-.restart-btn {
-  background: var(--green);
+/* 文字层：绝对定位，从图标右缘（left:38%）延伸到胶囊右缘（right:8%），文字居中。
+   用 left+right 双向定位而非固定 width，让文字区自适应按钮宽度，5 字也能容纳 */
+.bg-btn-text {
+  position: absolute;
+  top: 50%;
+  left: 38%;
+  right: 8%;
+  /* 向上微调 1px 修正中文字体基线导致的视觉偏下 */
+  transform: translateY(calc(-50% - 1px));
+  text-align: center;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 1px;
+  white-space: nowrap;
 }
+
+.text-white { color: #fff; }
+.text-red { color: #D7041A; }
 
 .section {
   background: var(--bg1);
@@ -222,11 +256,26 @@ async function startNewReview() {
   border: 1px solid var(--line);
 }
 
-.section h2 {
-  color: var(--text);
-  margin-bottom: 1rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 2px solid var(--blue);
+.section-title {
+  position: relative;
+  color: #222;
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 1.25rem;
+  padding-bottom: 12px;
+  letter-spacing: 0.5px;
+}
+
+/* 标题下方朱红强调短下划线条 */
+.section-title::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: #D7041A;
 }
 
 .no-results {
