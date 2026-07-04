@@ -28,7 +28,7 @@ from backend.utils.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
-POINT_CENT_VALUE = 10  # 1 point = 1 wen = 0.1 CNY = 10 cents
+POINT_CENT_VALUE = 1  # 1 point = 1 cent = 0.01 CNY（充值时 1 积分抵 1 分钱）
 
 
 @dataclass(frozen=True)
@@ -302,7 +302,7 @@ async def settle_review_consumption(task_id: str) -> ConsumptionRecord | None:
             await db.flush()
 
         wallet.balance_wen -= consumed_wen
-        earned_points = 0
+        earned_points = consumed_wen  # 每消费 1 文返 1 积分
         wallet.points += earned_points
 
         used_by = user.username if user else project.user_id

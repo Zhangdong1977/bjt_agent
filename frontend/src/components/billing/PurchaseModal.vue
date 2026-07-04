@@ -399,7 +399,7 @@ watch(
             v-model:value="usePoints"
             :min="0"
             :max="preview?.current_points ?? 0"
-            :step="10"
+            :step="1"
             class="full-input"
           />
 
