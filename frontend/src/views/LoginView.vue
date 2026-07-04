@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { authApi } from '@/api/client'
+import AgreementModal from '@/components/AgreementModal.vue'
 import illustrationUrl from '@/assets/images/ui/login-illustration.png'
 import logoUrl from '@/assets/images/ui/common-logo-white.png'
 import iconUser from '@/assets/images/ui/login-input-username.png'
@@ -11,6 +12,12 @@ import iconCaptcha from '@/assets/images/ui/login-input-captcha.png'
 
 const router = useRouter()
 const authStore = useAuthStore()
+
+// ============ 用户协议 / 隐私政策 ============
+// 登录与注册共用同一份勾选状态；未勾选时拦截提交并提示
+const acceptedAgreement = ref(false)
+const serviceAgreementOpen = ref(false)
+const privacyAgreementOpen = ref(false)
 
 // ============ 公共：图形验证码（登录/注册共用一份） ============
 const captchaId = ref('')
@@ -79,6 +86,10 @@ function extractDetail(e: unknown, fallback: string): string {
 
 async function handleLogin() {
   loginError.value = ''
+  if (!acceptedAgreement.value) {
+    loginError.value = '请先阅读并同意《用户服务协议》和《隐私政策》'
+    return
+  }
   try {
     await authStore.login(
       username.value,
@@ -126,6 +137,11 @@ async function handleSendSms() {
 async function handleRegister() {
   regError.value = ''
   regSuccess.value = ''
+  // 协议勾选拦截：优先于字段校验，让用户先看到协议要求
+  if (!acceptedAgreement.value) {
+    regError.value = '请先阅读并同意《用户服务协议》和《隐私政策》'
+    return
+  }
   // 前端基础校验（与后端 schema 互补，提前拦截以省一次往返）
   if (!regPhone.value || !regNickname.value || !regPassword.value || !regSmsCode.value) {
     regError.value = '请填写完整信息'
@@ -263,6 +279,24 @@ async function handleRegister() {
 
             <div v-if="loginError" class="error-msg" role="alert">{{ loginError }}</div>
 
+            <div class="agreement-row">
+              <label class="agreement-label">
+                <input v-model="acceptedAgreement" type="checkbox" class="agreement-check" />
+                <span>我已阅读并同意</span>
+              </label>
+              <a
+                href="/agreements/user-service"
+                class="agreement-link"
+                @click.prevent="serviceAgreementOpen = true"
+              >《用户服务协议》</a>
+              <span>和</span>
+              <a
+                href="/agreements/privacy"
+                class="agreement-link"
+                @click.prevent="privacyAgreementOpen = true"
+              >《隐私政策》</a>
+            </div>
+
             <button type="submit" :disabled="authStore.loading" class="submit-btn">
               <span v-if="authStore.loading" class="btn-loading" aria-hidden="true"></span>
               {{ authStore.loading ? '登 录 中...' : '登 录' }}
@@ -373,6 +407,24 @@ async function handleRegister() {
             <div v-if="regError" class="error-msg" role="alert">{{ regError }}</div>
             <div v-if="regSuccess" class="success-msg" role="status">{{ regSuccess }}</div>
 
+            <div class="agreement-row">
+              <label class="agreement-label">
+                <input v-model="acceptedAgreement" type="checkbox" class="agreement-check" />
+                <span>我已阅读并同意</span>
+              </label>
+              <a
+                href="/agreements/user-service"
+                class="agreement-link"
+                @click.prevent="serviceAgreementOpen = true"
+              >《用户服务协议》</a>
+              <span>和</span>
+              <a
+                href="/agreements/privacy"
+                class="agreement-link"
+                @click.prevent="privacyAgreementOpen = true"
+              >《隐私政策》</a>
+            </div>
+
             <button type="submit" :disabled="regLoading" class="submit-btn">
               <span v-if="regLoading" class="btn-loading" aria-hidden="true"></span>
               {{ regLoading ? '注 册 中...' : '注 册' }}
@@ -381,6 +433,10 @@ async function handleRegister() {
         </template>
       </div>
     </section>
+
+    <!-- 协议模态框：登录/注册共用 -->
+    <AgreementModal v-model:open="serviceAgreementOpen" type="service" />
+    <AgreementModal v-model:open="privacyAgreementOpen" type="privacy" />
 
     <!-- 底部版权 -->
     <footer class="login-copyright">
@@ -644,10 +700,70 @@ async function handleRegister() {
   line-height: 22px;
 }
 
+/* ============ 协议勾选行 ============ */
+.agreement-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: -6px 0 4px;
+  color: #888;
+  font-size: 13px;
+  line-height: 22px;
+  user-select: none;
+}
+
+.agreement-label {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.agreement-check {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0 6px 0 0;
+  border: 1px solid #c0c4cc;
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+  flex-shrink: 0;
+}
+
+.agreement-check:checked {
+  border-color: #D7041A;
+  background: #D7041A;
+}
+
+.agreement-check:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.agreement-link {
+  color: #D7041A;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.agreement-link:hover {
+  text-decoration: underline;
+}
+
 .submit-btn {
   width: 100%;
   height: 52px;
-  margin-top: 30px;
+  margin-top: 18px;
   border: 0;
   border-radius: 6px;
   background: linear-gradient(90deg, #D7041A 0%, #B80015 100%);
