@@ -85,19 +85,19 @@ async def start_review(
 ) -> ReviewTask:
     """Start a new review task for the project."""
     await verify_project_ownership(project_id, current_user, db)
-    if not is_interior_user(current_user):
-        from backend.services.billing import ensure_wallet
+    # 内部用户与外部用户统一走余额校验（便于内部测试计费/积分）。
+    from backend.services.billing import ensure_wallet
 
-        wallet = await ensure_wallet(db, current_user.id)
-        if wallet.balance_wen <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail={
-                    "code": "INSUFFICIENT_BALANCE",
-                    "message": "余额不足，请先充值后再发起 AI 检查",
-                    "balance_wen": wallet.balance_wen,
-                },
-            )
+    wallet = await ensure_wallet(db, current_user.id)
+    if wallet.balance_wen <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": "INSUFFICIENT_BALANCE",
+                "message": "余额不足，请先充值后再发起 AI 检查",
+                "balance_wen": wallet.balance_wen,
+            },
+        )
 
     # Extract concurrency from JWT claims
     from backend.api.deps import oauth2_scheme, get_token_claims

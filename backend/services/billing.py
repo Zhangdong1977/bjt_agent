@@ -286,9 +286,7 @@ async def settle_review_consumption(task_id: str) -> ConsumptionRecord | None:
 
         user_result = await db.execute(select(User).where(User.id == project.user_id))
         user = user_result.scalar_one_or_none()
-        if (user and user.interior_user) or (summary and summary.interior_user):
-            logger.info("[billing] skip settlement for interior-user task %s", task_id)
-            return None
+        # 内部用户与外部用户走统一计费流程，不再豁免（便于内部测试计费/积分）。
 
         consumed_wen = cost_to_wen(summary.cost_cny if summary else None)
 
