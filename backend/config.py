@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     billing_real_pay_enabled: bool = False   # env: BILLING_REAL_PAY_ENABLED
     billing_real_package_codes: str = ""     # env: BILLING_REAL_PACKAGE_CODES，逗号分隔，dev="test"
     billing_hidden_package_codes: str = ""   # env: BILLING_HIDDEN_PACKAGE_CODES，逗号分隔，prod="test"
+    # 测试套餐（code="test"）显式开关。默认 False——fail-closed：即使漏配
+    # BILLING_HIDDEN_PACKAGE_CODES，prod 也不会暴露 1 分钱测试套餐。dev 在 .env 设 true 开启。
+    billing_test_package_enabled: bool = False  # env: BILLING_TEST_PACKAGE_ENABLED
 
     # Database
     database_url: str = ""  # Must be set via environment variable

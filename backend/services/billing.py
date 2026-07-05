@@ -62,9 +62,23 @@ def package_payment_mode(code: str) -> str:
     return "real" if code in _parse_codes(settings.billing_real_package_codes) else "mock"
 
 
+def _is_package_visible(code: str, settings) -> bool:
+    """套餐是否对终端用户可见。
+
+    两道闸门，任一命中即隐藏：
+    1. fail-closed：测试套餐（code="test"）默认隐藏，仅在 billing_test_package_enabled=true 时显示。
+       这样即使漏配 BILLING_HIDDEN_PACKAGE_CODES，prod 也不会暴露 1 分钱测试套餐。
+    2. 显式隐藏清单 billing_hidden_package_codes（逗号分隔），用于运维按需下架任意套餐。
+    """
+    if code == "test" and not settings.billing_test_package_enabled:
+        return False
+    if code in _parse_codes(settings.billing_hidden_package_codes):
+        return False
+    return True
+
+
 def list_packages() -> list[PackageResponse]:
     settings = get_settings()
-    hidden = _parse_codes(settings.billing_hidden_package_codes)
     return [
         PackageResponse(
             code=item.code,
@@ -75,7 +89,7 @@ def list_packages() -> list[PackageResponse]:
             payment_mode=package_payment_mode(item.code),
         )
         for item in PACKAGES.values()
-        if item.code not in hidden
+        if _is_package_visible(item.code, settings)
     ]
 
 
