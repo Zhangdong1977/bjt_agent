@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { authApi } from '@/api/client'
@@ -44,6 +44,25 @@ const regLoading = ref(false)
 const smsSending = ref(false)
 const smsCountdown = ref(0)
 let smsTimer: ReturnType<typeof setInterval> | null = null
+
+// ============ 密码强度实时校验（与后端 checkPasswordStrength 规则一致）============
+// 规则：8-20 位，且大写/小写/数字/符号 4 类中至少包含 3 类
+const passwordStrength = computed(() => {
+  const pwd = regPassword.value
+  if (!pwd) return { ok: false, text: '' }
+  if (pwd.length < 8 || pwd.length > 20) {
+    return { ok: false, text: '密码长度需在 8 到 20 位' }
+  }
+  let kinds = 0
+  if (/[a-z]/.test(pwd)) kinds += 1
+  if (/[A-Z]/.test(pwd)) kinds += 1
+  if (/[0-9]/.test(pwd)) kinds += 1
+  if (/[^a-zA-Z0-9]/.test(pwd)) kinds += 1
+  if (kinds < 3) {
+    return { ok: false, text: '密码需含大写/小写/数字/符号中至少 3 类' }
+  }
+  return { ok: true, text: '' }
+})
 
 async function fetchCaptcha() {
   try {
@@ -391,6 +410,9 @@ async function handleRegister() {
                 placeholder="设置密码(8-20位,含大小写/数字/符号3类)"
               />
             </div>
+            <div v-if="regPassword && !passwordStrength.ok" class="pwd-hint" role="note">
+              {{ passwordStrength.text }}
+            </div>
 
             <div class="form-item">
               <img class="input-icon" :src="iconPassword" alt="" />
@@ -691,6 +713,13 @@ async function handleRegister() {
   color: #D7041A;
   font-size: 13px;
   line-height: 22px;
+}
+
+.pwd-hint {
+  margin: -6px 0 14px;
+  color: #999;
+  font-size: 12px;
+  line-height: 20px;
 }
 
 .success-msg {
