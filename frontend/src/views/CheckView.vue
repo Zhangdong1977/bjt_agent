@@ -154,7 +154,7 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
   }))
   tempUploads.push(...items)
 
-  // ③ 串行上传（保持原有 for-await 顺序语义）
+  // ③ 串行上传(保持原有 for-await 顺序语义)
   for (const item of items) {
     await uploadOne(item)
   }
@@ -162,27 +162,34 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
 
 // 单文件上传（handleUpload 与 retryTempUpload 共用）
 async function uploadOne(item: TempUploadItem) {
-  item.status = 'uploading'
-  item.percent = 0
-  item.loaded = 0
+  // 从 reactive 数组里按 localId 取出 Proxy 引用,后续修改走 Proxy 才能触发响应式。
+  // 直接改 push 前的原始对象,Vue 检测不到 —— 这是 reactive 数组的陷阱。
+  const findReactive = (): TempUploadItem | undefined =>
+    tempUploads.find((t) => t.localId === item.localId)
+
+  const reactiveItem = findReactive()
+  if (!reactiveItem) return
+  reactiveItem.status = 'uploading'
+  reactiveItem.percent = 0
+  reactiveItem.loaded = 0
   let lastLog = 0
   try {
     await projectStore.uploadDraftDocument(item.docType, item.file, (p) => {
-      item.percent = p.percent
-      item.loaded = p.loaded
-      item.total = p.total
+      // 始终从数组里取最新的 Proxy 引用(避免闭包捕获旧引用)
+      const cur = findReactive()
+      if (!cur) return
+      cur.percent = p.percent
+      cur.loaded = p.loaded
+      cur.total = p.total
       // 节流打印:每秒最多 1 条,避免 console 刷屏
       const now = Date.now()
       if (now - lastLog > 1000) {
         lastLog = now
-        // 在卡片右上角实时显示已传字节(绕过 a-progress,用纯文本)
-        // 同时 console 打印,定位响应式断点
         console.log('[diag]', {
-          percent: item.percent,
-          loaded: item.loaded,
-          total: item.total,
-          itemId: item.localId,
-          arrayIdx: tempUploads.findIndex((t) => t.localId === item.localId),
+          percent: cur.percent,
+          loaded: cur.loaded,
+          total: cur.total,
+          itemId: cur.localId,
         })
       }
     })
@@ -191,8 +198,11 @@ async function uploadOne(item: TempUploadItem) {
     if (idx !== -1) tempUploads.splice(idx, 1)
     message.success(`${item.filename} 上传成功，开始解析`)
   } catch (err) {
-    item.status = 'error'
-    item.errorMsg = err instanceof Error ? err.message : '上传失败'
+    const cur = findReactive()
+    if (cur) {
+      cur.status = 'error'
+      cur.errorMsg = err instanceof Error ? err.message : '上传失败'
+    }
     // 不弹 toast，错误已显示在卡片上
   }
 }
