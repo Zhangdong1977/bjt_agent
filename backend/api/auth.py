@@ -75,6 +75,19 @@ def _operate_url(path: str) -> str:
     return f"{base_url}{path}"
 
 
+def _clarify_sms_error(msg: str | None) -> str | None:
+    """把上游透传文案里模糊的「验证码」明确为「短信验证码」。
+
+    send-sms / register 透传这一步，本端图形验证码已校验通过，上游若再返回
+    含「验证码」的错误，必指短信验证码。注册页同时有图形 + 短信两个验证码，
+    原样透传「验证码有误」会让用户分不清是哪一个出错。已含「短信」或「图形」
+    字样的原样返回，避免重复前缀 / 误改。
+    """
+    if not msg or "短信" in msg or "图形" in msg:
+        return msg
+    return msg.replace("验证码", "短信验证码")
+
+
 MOCK_AUTH_ENABLED = False
 
 MOCK_AUTH_RESPONSE = {
@@ -326,10 +339,10 @@ async def send_sms(request: Request, body: SendSmsRequest) -> dict:
 
     data = resp.json()
     if data.get("code") != 200:
-        # 透传运营平台消息（如"请X秒后重新发送短信！"）
+        # 透传运营平台消息（如"请X秒后重新发送短信！"）；模糊的「验证码」明确为短信验证码
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=data.get("msg", "验证码发送失败"),
+            detail=_clarify_sms_error(data.get("msg")) or "验证码发送失败",
         )
     logger.info(
         "Send-sms forwarded ok: phone=%s cost=%dms",
@@ -376,9 +389,10 @@ async def register(request: Request, body: RegisterRequest) -> dict:
 
     data = resp.json()
     if data.get("code") != 200:
-        # 透传：手机号已注册 / 验证码有误 / 密码强度不足 等
+        # 透传：手机号已注册 / 短信验证码有误 / 密码强度不足 等；
+        # 模糊的「验证码」明确为短信验证码（图形验证码本端已先行校验）
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=data.get("msg", "注册失败"),
+            detail=_clarify_sms_error(data.get("msg")) or "注册失败",
         )
     return {"message": "注册成功，请登录"}
