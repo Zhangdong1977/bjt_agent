@@ -352,7 +352,17 @@ def parse_document(self, document_id: str) -> dict:
             await db.flush()
 
             file_path = Path(document.file_path)
-            if not file_path.exists():
+            # NFS 跨节点读竞态兜底：上传侧已 fsync，但 client→server 传播仍可能有
+            # 亚秒级窗口。这里短重试吸收掉，避免误判「文件不存在」。
+            for _attempt in range(4):
+                if file_path.exists():
+                    break
+                logger.warning(
+                    f"[PARSE] File not visible yet (attempt {_attempt + 1}/4): {file_path}"
+                )
+                if _attempt < 3:
+                    time_module.sleep(0.5)
+            else:
                 document.status = "failed"
                 document.parse_error = "文件不存在，请重新上传"
                 await db.flush()

@@ -1,5 +1,6 @@
 """Documents API routes."""
 
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -365,7 +366,11 @@ def _validate_upload_file(file: UploadFile) -> None:
 
 
 def _save_upload_file(file: UploadFile, doc_dir: Path) -> str:
-    """把上传文件保存到指定目录，返回绝对路径。"""
+    """把上传文件保存到指定目录，返回绝对路径。
+
+    写完后 fsync 强制把数据刷到磁盘（NFS 场景下确保写已传播到 server，
+    对其它 client 可见），避免「上传后 parser 跨节点读不到文件」的竞态。
+    """
     doc_dir.mkdir(parents=True, exist_ok=True)
     unique_filename = (
         f"{Path(file.filename).stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -374,6 +379,8 @@ def _save_upload_file(file: UploadFile, doc_dir: Path) -> str:
     file_path = doc_dir / unique_filename
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+        buffer.flush()
+        os.fsync(buffer.fileno())
     return str(file_path)
 
 
