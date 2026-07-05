@@ -172,7 +172,6 @@ async function uploadOne(item: TempUploadItem) {
   reactiveItem.status = 'uploading'
   reactiveItem.percent = 0
   reactiveItem.loaded = 0
-  let lastLog = 0
   try {
     await projectStore.uploadDraftDocument(item.docType, item.file, (p) => {
       // 始终从数组里取最新的 Proxy 引用(避免闭包捕获旧引用)
@@ -181,17 +180,6 @@ async function uploadOne(item: TempUploadItem) {
       cur.percent = p.percent
       cur.loaded = p.loaded
       cur.total = p.total
-      // 节流打印:每秒最多 1 条,避免 console 刷屏
-      const now = Date.now()
-      if (now - lastLog > 1000) {
-        lastLog = now
-        console.log('[diag]', {
-          percent: cur.percent,
-          loaded: cur.loaded,
-          total: cur.total,
-          itemId: cur.localId,
-        })
-      }
     })
     // 成功：移除临时卡，doc 卡会从 store 自动出现并接管「解析中」
     const idx = tempUploads.findIndex((t) => t.localId === item.localId)
@@ -495,10 +483,6 @@ function getStatusClass(status: string) {
                       :show-info="false"
                       :stroke-width="6"
                     />
-                    <!-- 诊断探针:超大字号纯文本,绕过 a-progress -->
-                    <div style="font-size: 36px; font-weight: bold; color: #1677ff; margin-top: 8px">
-                      {{ item.percent }}% ({{ formatBytes(item.loaded) }})
-                    </div>
                   </template>
                   <div v-else-if="item.status === 'error'" class="parse-error-block">
                     <span class="status status-error">上传失败</span>
