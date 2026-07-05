@@ -165,11 +165,26 @@ async function uploadOne(item: TempUploadItem) {
   item.status = 'uploading'
   item.percent = 0
   item.loaded = 0
+  let lastLog = 0
   try {
     await projectStore.uploadDraftDocument(item.docType, item.file, (p) => {
       item.percent = p.percent
       item.loaded = p.loaded
       item.total = p.total
+      // 节流打印:每秒最多 1 条,避免 console 刷屏
+      const now = Date.now()
+      if (now - lastLog > 1000) {
+        lastLog = now
+        // 在卡片右上角实时显示已传字节(绕过 a-progress,用纯文本)
+        // 同时 console 打印,定位响应式断点
+        console.log('[diag]', {
+          percent: item.percent,
+          loaded: item.loaded,
+          total: item.total,
+          itemId: item.localId,
+          arrayIdx: tempUploads.findIndex((t) => t.localId === item.localId),
+        })
+      }
     })
     // 成功：移除临时卡，doc 卡会从 store 自动出现并接管「解析中」
     const idx = tempUploads.findIndex((t) => t.localId === item.localId)
@@ -470,6 +485,10 @@ function getStatusClass(status: string) {
                       :show-info="false"
                       :stroke-width="6"
                     />
+                    <!-- 诊断探针:超大字号纯文本,绕过 a-progress -->
+                    <div style="font-size: 36px; font-weight: bold; color: #1677ff; margin-top: 8px">
+                      {{ item.percent }}% ({{ formatBytes(item.loaded) }})
+                    </div>
                   </template>
                   <div v-else-if="item.status === 'error'" class="parse-error-block">
                     <span class="status status-error">上传失败</span>
