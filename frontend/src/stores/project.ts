@@ -580,11 +580,13 @@ export const useProjectStore = defineStore("project", () => {
   async function uploadDraftDocument(
     docType: "tender" | "bid",
     file: File,
+    onProgress?: (progress: UploadProgress) => void,
   ) {
     const uploadKey = `draft_${docType}_${Date.now()}`;
     try {
       const doc = await documentsApi.uploadDraft(docType, file, (progress) => {
         uploadProgress.value[uploadKey] = progress;
+        onProgress?.(progress);
       });
       documents.value.push(doc);
       // SSE 按 document_id 推送解析进度，与 project 无关，可直接复用

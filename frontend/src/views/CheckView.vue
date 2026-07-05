@@ -63,6 +63,46 @@ const docViewerTitle = ref('')
 const tenderInput = ref<HTMLInputElement | null>(null)
 const bidInput = ref<HTMLInputElement | null>(null)
 
+// ============================================================
+// 临时上传卡片：上传进行中（XHR 字节进度）期间占位，上传成功后由 doc 卡接管为「解析中」。
+// 不进 store —— 只在 CheckView 内部有意义（草稿场景）。
+// ============================================================
+interface TempUploadItem {
+  localId: string
+  filename: string
+  docType: 'tender' | 'bid'
+  status: 'queued' | 'uploading' | 'error'
+  percent: number
+  loaded: number
+  total: number
+  errorMsg?: string
+  file: File
+}
+
+const tempUploads = ref<TempUploadItem[]>([])
+
+const tenderTempUploads = computed(() =>
+  tempUploads.value.filter((t) => t.docType === 'tender'),
+)
+const bidTempUploads = computed(() =>
+  tempUploads.value.filter((t) => t.docType === 'bid'),
+)
+
+// 该 docType 是否有任意一张卡正在传/排队中，用于禁用上传按钮
+const isUploadingTender = computed(() =>
+  tenderTempUploads.value.some((t) => t.status === 'uploading' || t.status === 'queued'),
+)
+const isUploadingBid = computed(() =>
+  bidTempUploads.value.some((t) => t.status === 'uploading' || t.status === 'queued'),
+)
+
+function formatBytes(n: number): string {
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' M'
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' G'
+}
+
 onMounted(() => {
   // 恢复解析中的草稿（续上进度）；已结束的草稿在 store 内静默清理，使卡片回到初始状态
   void projectStore.loadDraftDocuments()
@@ -80,26 +120,73 @@ function pickBid() {
   bidInput.value?.click()
 }
 
-// 选完文件立即上传 + 解析（多文件逐个上传）
+// 选完文件：一次性为所有选中文件创建临时卡（queued），再串行上传。
+// 上传期间临时卡显示字节进度，成功后由 doc 卡接管为「解析中」。
 async function handleUpload(event: Event, docType: 'tender' | 'bid') {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files ?? [])
   input.value = ''
   if (!files.length) return
 
+  // ① 旧版 .doc 直接拦截，不创建临时卡
+  const validFiles: File[] = []
   for (const file of files) {
     if (isLegacyDocFile(file)) {
       message.warning(legacyDocWarning(file.name))
       continue
     }
-    try {
-      await projectStore.uploadDraftDocument(docType, file)
-      message.success(`${file.name} 上传成功，开始解析`)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : '上传失败'
-      message.error(`${file.name} ${msg}`)
-    }
+    validFiles.push(file)
   }
+  if (!validFiles.length) return
+
+  // ② 一次性入队：所有文件先标为 queued，UI 立刻出现 N 张「等待中」卡
+  const items: TempUploadItem[] = validFiles.map((file) => ({
+    localId: `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    filename: file.name,
+    docType,
+    status: 'queued',
+    percent: 0,
+    loaded: 0,
+    total: file.size,
+    file,
+  }))
+  tempUploads.value.push(...items)
+
+  // ③ 串行上传（保持原有 for-await 顺序语义）
+  for (const item of items) {
+    await uploadOne(item)
+  }
+}
+
+// 单文件上传（handleUpload 与 retryTempUpload 共用）
+async function uploadOne(item: TempUploadItem) {
+  item.status = 'uploading'
+  item.percent = 0
+  item.loaded = 0
+  try {
+    await projectStore.uploadDraftDocument(item.docType, item.file, (p) => {
+      item.percent = p.percent
+      item.loaded = p.loaded
+      item.total = p.total
+    })
+    // 成功：移除临时卡，doc 卡会从 store 自动出现并接管「解析中」
+    const idx = tempUploads.value.findIndex((t) => t.localId === item.localId)
+    if (idx !== -1) tempUploads.value.splice(idx, 1)
+    message.success(`${item.filename} 上传成功，开始解析`)
+  } catch (err) {
+    item.status = 'error'
+    item.errorMsg = err instanceof Error ? err.message : '上传失败'
+    // 不弹 toast，错误已显示在卡片上
+  }
+}
+
+function retryTempUpload(item: TempUploadItem) {
+  void uploadOne(item)
+}
+
+function removeTempUpload(item: TempUploadItem) {
+  const idx = tempUploads.value.findIndex((t) => t.localId === item.localId)
+  if (idx !== -1) tempUploads.value.splice(idx, 1)
 }
 
 async function handleDeleteDraft(docId: string) {
@@ -267,9 +354,47 @@ function getStatusClass(status: string) {
       <div class="documents-grid">
         <!-- 招标文件 -->
         <div class="document-card">
-          <h3>招标文件 ({{ tenderDrafts.length }})</h3>
+          <h3>招标文件 ({{ tenderDrafts.length + tenderTempUploads.length }})</h3>
 
-          <div v-if="tenderDrafts.length > 0" class="doc-list">
+          <div v-if="tenderDrafts.length > 0 || tenderTempUploads.length > 0" class="doc-list">
+            <!-- 临时上传卡片：上传中（XHR 字节进度）占位，成功后由下方 doc 卡接管 -->
+            <div
+              v-for="item in tenderTempUploads"
+              :key="item.localId"
+              class="doc-item temp-upload-item"
+            >
+              <div class="doc-header">
+                <div class="doc-icon">📄</div>
+                <div class="doc-main">
+                  <p class="filename">{{ item.filename }}</p>
+                  <template v-if="item.status === 'uploading' || item.status === 'queued'">
+                    <div class="upload-progress-row">
+                      <span class="upload-status-text">
+                        {{ item.status === 'queued' ? '等待中' : '上传中 ' + item.percent + '%' }}
+                      </span>
+                      <span class="upload-bytes text-mono">
+                        {{ formatBytes(item.loaded) }} / {{ formatBytes(item.total) }}
+                      </span>
+                    </div>
+                    <a-progress
+                      :percent="item.percent"
+                      :status="item.status === 'queued' ? 'normal' : 'active'"
+                      :show-info="false"
+                      :stroke-width="6"
+                    />
+                  </template>
+                  <div v-else-if="item.status === 'error'" class="parse-error-block">
+                    <span class="status status-error">上传失败</span>
+                    <p class="error-message">{{ item.errorMsg || '上传失败，请重试' }}</p>
+                  </div>
+                </div>
+              </div>
+              <div v-if="item.status === 'error'" class="doc-actions">
+                <button class="view-btn" @click="retryTempUpload(item)">重试</button>
+                <button class="delete-btn" @click="removeTempUpload(item)">移除</button>
+              </div>
+            </div>
+
             <div v-for="doc in tenderDrafts" :key="doc.id" class="doc-item">
               <div class="doc-header">
                 <div class="doc-icon">📄</div>
@@ -300,19 +425,62 @@ function getStatusClass(status: string) {
             </div>
           </div>
 
-          <div v-if="tenderDrafts.length >= 10" class="upload-limit">已达上限（10个文件）</div>
+          <div v-if="tenderDrafts.length + tenderTempUploads.length >= 10" class="upload-limit">已达上限（10个文件）</div>
           <div v-else class="upload-area">
-            <button type="button" class="upload-pick-btn" @click="pickTender">
-              + 添加招标文件（PDF / Word .docx）
+            <button
+              type="button"
+              class="upload-pick-btn"
+              :disabled="isUploadingTender"
+              @click="pickTender"
+            >
+              {{ isUploadingTender ? '上传中…' : '+ 添加招标文件（PDF / Word .docx）' }}
             </button>
           </div>
         </div>
 
         <!-- 投标文件 -->
         <div class="document-card">
-          <h3>投标文件 ({{ bidDrafts.length }})</h3>
+          <h3>投标文件 ({{ bidDrafts.length + bidTempUploads.length }})</h3>
 
-          <div v-if="bidDrafts.length > 0" class="doc-list">
+          <div v-if="bidDrafts.length > 0 || bidTempUploads.length > 0" class="doc-list">
+            <!-- 临时上传卡片：上传中（XHR 字节进度）占位，成功后由下方 doc 卡接管 -->
+            <div
+              v-for="item in bidTempUploads"
+              :key="item.localId"
+              class="doc-item temp-upload-item"
+            >
+              <div class="doc-header">
+                <div class="doc-icon">📄</div>
+                <div class="doc-main">
+                  <p class="filename">{{ item.filename }}</p>
+                  <template v-if="item.status === 'uploading' || item.status === 'queued'">
+                    <div class="upload-progress-row">
+                      <span class="upload-status-text">
+                        {{ item.status === 'queued' ? '等待中' : '上传中 ' + item.percent + '%' }}
+                      </span>
+                      <span class="upload-bytes text-mono">
+                        {{ formatBytes(item.loaded) }} / {{ formatBytes(item.total) }}
+                      </span>
+                    </div>
+                    <a-progress
+                      :percent="item.percent"
+                      :status="item.status === 'queued' ? 'normal' : 'active'"
+                      :show-info="false"
+                      :stroke-width="6"
+                    />
+                  </template>
+                  <div v-else-if="item.status === 'error'" class="parse-error-block">
+                    <span class="status status-error">上传失败</span>
+                    <p class="error-message">{{ item.errorMsg || '上传失败，请重试' }}</p>
+                  </div>
+                </div>
+              </div>
+              <div v-if="item.status === 'error'" class="doc-actions">
+                <button class="view-btn" @click="retryTempUpload(item)">重试</button>
+                <button class="delete-btn" @click="removeTempUpload(item)">移除</button>
+              </div>
+            </div>
+
             <div v-for="doc in bidDrafts" :key="doc.id" class="doc-item">
               <div class="doc-header">
                 <div class="doc-icon">📄</div>
@@ -343,10 +511,15 @@ function getStatusClass(status: string) {
             </div>
           </div>
 
-          <div v-if="bidDrafts.length >= 10" class="upload-limit">已达上限（10个文件）</div>
+          <div v-if="bidDrafts.length + bidTempUploads.length >= 10" class="upload-limit">已达上限（10个文件）</div>
           <div v-else class="upload-area">
-            <button type="button" class="upload-pick-btn" @click="pickBid">
-              + 添加投标文件（PDF / Word .docx）
+            <button
+              type="button"
+              class="upload-pick-btn"
+              :disabled="isUploadingBid"
+              @click="pickBid"
+            >
+              {{ isUploadingBid ? '上传中…' : '+ 添加投标文件（PDF / Word .docx）' }}
             </button>
           </div>
         </div>
@@ -709,6 +882,37 @@ function getStatusClass(status: string) {
 .upload-pick-btn:hover {
   background: #FEE7E8;
   border-color: #D7041A;
+}
+
+.upload-pick-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  border-color: #d9d9d9;
+  color: #999;
+  background: #f5f5f5;
+}
+.upload-pick-btn:disabled:hover {
+  background: #f5f5f5;
+  border-color: #d9d9d9;
+}
+
+/* 临时上传卡片（上传中占位，未持久化到后端） */
+.temp-upload-item {
+  background: #fafbfc;
+}
+.upload-progress-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 4px 0 6px;
+  font-size: 12px;
+}
+.upload-status-text {
+  color: #1677ff;
+  font-weight: 500;
+}
+.upload-bytes {
+  color: #8c8c8c;
 }
 
 .upload-limit {
