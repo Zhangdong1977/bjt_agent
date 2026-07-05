@@ -30,7 +30,9 @@ upstream bjt_backend {
 }
 
 server {
-    listen 8000 ssl http2;
+    # ⚠️ 不要启用 http2：HTTP/2 下 Chrome/Edge 的 xhr.upload.onprogress 触发不可靠，
+    # 会导致大文件上传进度条卡 0% 跳 100%。HTTP/1.1 下 XHR 上传进度在所有浏览器都可靠。
+    listen 8000 ssl;
     server_name _;
 
     root /home/bjt/bjt_agent/frontend/dist;
