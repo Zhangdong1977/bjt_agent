@@ -490,11 +490,6 @@ export const documentsApi = {
       }
 
       xhr.upload.onprogress = (event) => {
-        console.log("[uploadDraft] onprogress", {
-          lengthComputable: event.lengthComputable,
-          loaded: event.loaded,
-          total: event.total,
-        });
         if (event.lengthComputable && onProgress) {
           onProgress({
             loaded: event.loaded,
@@ -505,11 +500,6 @@ export const documentsApi = {
       };
 
       xhr.onload = () => {
-        console.log("[uploadDraft] onload", {
-          status: xhr.status,
-          responseLen: xhr.responseText?.length ?? 0,
-          responsePreview: xhr.responseText?.slice(0, 200),
-        });
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             resolve(JSON.parse(xhr.responseText));
@@ -528,24 +518,7 @@ export const documentsApi = {
         }
       };
 
-      xhr.onerror = () => {
-        console.log("[uploadDraft] onerror (网络层中断)");
-        reject(new Error("网络连接异常，请检查网络后重试"));
-      };
-      xhr.onabort = () => {
-        console.log("[uploadDraft] onabort (被中止)");
-        reject(new Error("上传被中止"));
-      };
-      xhr.ontimeout = () => {
-        console.log("[uploadDraft] ontimeout");
-        reject(new Error("上传超时"));
-      };
-      console.log("[uploadDraft] send 开始", {
-        url: `${API_BASE}/documents/upload?doc_type=${docType}`,
-        fileName: file.name,
-        fileSize: file.size,
-        fileType: file.type,
-      });
+      xhr.onerror = () => reject(new Error("网络连接异常，请检查网络后重试"));
       xhr.send(formData);
     });
   },

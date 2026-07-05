@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { documentsApi } from '@/api/client'
@@ -79,13 +79,15 @@ interface TempUploadItem {
   file: File
 }
 
-const tempUploads = ref<TempUploadItem[]>([])
+// reactive 让数组元素的属性变更触发响应式（ref 包数组只对数组本身响应，
+// 直接改 item.percent 不会重渲染 UI —— 这是 108M 大文件上传时进度条卡 0% 的真因）
+const tempUploads = reactive<TempUploadItem[]>([])
 
 const tenderTempUploads = computed(() =>
-  tempUploads.value.filter((t) => t.docType === 'tender'),
+  tempUploads.filter((t) => t.docType === 'tender'),
 )
 const bidTempUploads = computed(() =>
-  tempUploads.value.filter((t) => t.docType === 'bid'),
+  tempUploads.filter((t) => t.docType === 'bid'),
 )
 
 // 该 docType 是否有任意一张卡正在传/排队中，用于禁用上传按钮
@@ -150,7 +152,7 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
     total: file.size,
     file,
   }))
-  tempUploads.value.push(...items)
+  tempUploads.push(...items)
 
   // ③ 串行上传（保持原有 for-await 顺序语义）
   for (const item of items) {
@@ -170,8 +172,8 @@ async function uploadOne(item: TempUploadItem) {
       item.total = p.total
     })
     // 成功：移除临时卡，doc 卡会从 store 自动出现并接管「解析中」
-    const idx = tempUploads.value.findIndex((t) => t.localId === item.localId)
-    if (idx !== -1) tempUploads.value.splice(idx, 1)
+    const idx = tempUploads.findIndex((t) => t.localId === item.localId)
+    if (idx !== -1) tempUploads.splice(idx, 1)
     message.success(`${item.filename} 上传成功，开始解析`)
   } catch (err) {
     item.status = 'error'
@@ -185,8 +187,8 @@ function retryTempUpload(item: TempUploadItem) {
 }
 
 function removeTempUpload(item: TempUploadItem) {
-  const idx = tempUploads.value.findIndex((t) => t.localId === item.localId)
-  if (idx !== -1) tempUploads.value.splice(idx, 1)
+  const idx = tempUploads.findIndex((t) => t.localId === item.localId)
+  if (idx !== -1) tempUploads.splice(idx, 1)
 }
 
 async function handleDeleteDraft(docId: string) {
