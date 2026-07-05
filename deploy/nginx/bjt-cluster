@@ -30,7 +30,7 @@ upstream bjt_backend {
 }
 
 server {
-    listen 8000;
+    listen 8000 ssl http2;
     server_name _;
 
     root /home/bjt/bjt_agent/frontend/dist;
@@ -61,6 +61,10 @@ server {
         # SSE 关键配置
         proxy_buffering off;
         proxy_cache off;
+
+        # 大文件上传：关闭请求体缓冲，让字节流直通后端，
+        # 否则前端 xhr.upload.onprogress 会卡 0% 跳 100%
+        proxy_request_buffering off;
 
         # SSE 长连接：审查任务最长 8 小时 + 余量
         proxy_read_timeout 86400;
