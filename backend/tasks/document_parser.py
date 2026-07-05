@@ -356,7 +356,9 @@ def parse_document(self, document_id: str) -> dict:
                 document.status = "failed"
                 document.parse_error = "文件不存在，请重新上传"
                 await db.flush()
+                await db.commit()
                 logger.error(f"[PARSE] File not found on disk: {file_path}")
+                _publish_parse_progress(document.id, "failed", 0, 0, 0, sub_stage="error")
                 return {"status": "error", "message": "文件不存在，请重新上传"}
 
             try:
