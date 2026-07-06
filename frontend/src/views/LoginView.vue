@@ -462,7 +462,7 @@ async function handleRegister() {
 
     <!-- 底部版权 -->
     <footer class="login-copyright">
-      2026 版权所有 郑州迪维勒菩科技有限公司　版本号:V1.0.0
+      2026 版权所有 郑州迪维勒普科技有限公司　版本号:V1.0.0
     </footer>
   </main>
 </template>
