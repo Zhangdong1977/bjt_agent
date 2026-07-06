@@ -168,6 +168,18 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
         external_nickname = ext_result.get("nickName")
         enterprise_name = ext_result.get("enterpriseName")
 
+    # 维护模式：开启后拦截非内部用户的登录（内部用户仍可登录以便关闭维护）。
+    # 只拦新登录，已在线会话不受影响。返回 503，前端 extractDetail 会把 detail
+    # 渲染到登录错误位（"当前系统维护中"）。
+    from backend.services.maintenance_service import get_maintenance_state
+
+    _maintenance = await get_maintenance_state(db)
+    if _maintenance.is_enabled and not interior_user:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="当前系统维护中",
+        )
+
     # 系统对所有用户开放：不再依据 useCheck 拦截登录。
     # interiorUser 仍照常透传，内部/外部用户的功能差异保持不变。
     # Find or create local user

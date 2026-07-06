@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { authApi } from '@/api/client'
+import { authApi, systemStatusApi } from '@/api/client'
 import AgreementModal from '@/components/AgreementModal.vue'
 import AnnouncementMarquee from '@/components/announcement/AnnouncementMarquee.vue'
 import illustrationUrl from '@/assets/images/ui/login-illustration.png'
@@ -93,7 +93,23 @@ function startSmsCountdown() {
   }, 1000)
 }
 
-onMounted(fetchCaptcha)
+// 维护模式横幅：进页公开拉取一次。登录被拒时 extractDetail 也会显示后端 detail。
+const maintenanceOn = ref(false)
+const maintenanceReason = ref('')
+async function fetchMaintenance() {
+  try {
+    const m = await systemStatusApi.getMaintenance()
+    maintenanceOn.value = m.is_enabled
+    maintenanceReason.value = m.reason || ''
+  } catch {
+    // 公开端点失败不应阻塞登录页
+  }
+}
+
+onMounted(() => {
+  fetchCaptcha()
+  fetchMaintenance()
+})
 onUnmounted(clearSmsTimer)
 
 function extractDetail(e: unknown, fallback: string): string {
@@ -212,6 +228,11 @@ async function handleRegister() {
   <main class="login-page">
     <!-- 顶部跑马灯：展示系统公告（无公告时自动隐藏） -->
     <AnnouncementMarquee />
+    <!-- 维护模式横幅：维护中时阻止登录并提示 -->
+    <div v-if="maintenanceOn" class="maintenance-banner" role="alert">
+      🔧 当前系统维护中<span v-if="maintenanceReason">：{{ maintenanceReason }}</span
+      >，暂无法登录。
+    </div>
     <!-- 左侧插画：靠左、高度顶满、比例不变 -->
     <div class="login-art-wrap">
       <img class="login-art" :src="illustrationUrl" alt="" aria-hidden="true" />

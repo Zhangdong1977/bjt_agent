@@ -12,6 +12,7 @@ from .admin import router as admin_router
 from .profile import router as profile_router
 from .billing import router as billing_router
 from .announcements import router as announcements_router
+from .system_status import router as system_status_router
 
 __all__ = [
     "auth_router",
@@ -27,4 +28,5 @@ __all__ = [
     "profile_router",
     "billing_router",
     "announcements_router",
+    "system_status_router",
 ]

@@ -13,6 +13,7 @@ from .ai_usage_record import AiUsageRecord
 from .ai_usage_task_summary import AiUsageTaskSummary
 from .billing import BillingOrder, ConsumptionRecord, UserWallet, WalletTransaction
 from .announcement import SystemAnnouncement, SystemAnnouncementRead
+from .system_maintenance import SystemMaintenance, MAINTENANCE_ROW_ID
 from backend.experience.models import ExperienceFeedback, ExperienceCase, ExperienceSkill, ExperienceClusterMembership
 
 __all__ = [
@@ -39,6 +40,8 @@ __all__ = [
     "WalletTransaction",
     "SystemAnnouncement",
     "SystemAnnouncementRead",
+    "SystemMaintenance",
+    "MAINTENANCE_ROW_ID",
     "ExperienceFeedback",
     "ExperienceCase",
     "ExperienceSkill",

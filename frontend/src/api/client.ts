@@ -41,6 +41,10 @@ import type {
   AnnouncementListResponse,
   UnreadCountResponse,
   MarkAllReadResponse,
+  MaintenancePublic,
+  MaintenanceState,
+  MaintenanceUpdateRequest,
+  SystemStatus,
 } from "@/types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
@@ -917,6 +921,26 @@ export const announcementApi = {
 
   async remove(id: string): Promise<void> {
     await apiClient.delete(`/announcements/${id}`);
+  },
+};
+
+export const systemStatusApi = {
+  /** 公开维护态（登录页横幅，无需登录）。 */
+  async getMaintenance(): Promise<MaintenancePublic> {
+    const response = await apiClient.get("/system-status/maintenance");
+    return response.data;
+  },
+
+  /** 系统状态页一次拿全（内部用户）。 */
+  async getStatus(): Promise<SystemStatus> {
+    const response = await apiClient.get("/system-status");
+    return response.data;
+  },
+
+  /** 切换维护模式（内部用户）。 */
+  async setMaintenance(data: MaintenanceUpdateRequest): Promise<MaintenanceState> {
+    const response = await apiClient.post("/system-status/maintenance", data);
+    return response.data;
   },
 };
 

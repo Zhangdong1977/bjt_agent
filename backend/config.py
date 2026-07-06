@@ -184,6 +184,10 @@ class Settings(BaseSettings):
     celery_broker_url: str = ""  # Must be set via environment variable
     celery_result_backend: str = ""  # Must be set via environment variable
 
+    # 集群节点期望清单（系统状态页用）。JSON 字符串，env: CLUSTER_NODE_SPECS。
+    # 形如 [{"name":"node1","label":"节点1 (192.168.40.110)","roles":["review","parser"]}]。
+    # 为空时仅展示实际响应的 worker；配置后整节点掉线也能显示为 offline。
+    cluster_node_specs: str = ""
     # Proxy
     http_proxy: str = "http://127.0.0.1:7890"
     https_proxy: str = "http://127.0.0.1:7890"

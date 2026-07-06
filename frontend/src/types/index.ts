@@ -498,3 +498,73 @@ export interface MarkAllReadResponse {
   marked_count: number;
 }
 
+// ---------------------------------------------------------------------------
+// System status（系统状态 / 维护模式）
+// ---------------------------------------------------------------------------
+
+export interface MaintenancePublic {
+  is_enabled: boolean;
+  reason: string;
+  started_at: string | null;
+}
+
+export interface MaintenanceState {
+  is_enabled: boolean;
+  reason: string;
+  started_at: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+export interface MaintenanceUpdateRequest {
+  enabled: boolean;
+  reason?: string;
+}
+
+export interface WorkerNode {
+  name: string;
+  node: string;
+  role: "review" | "parser" | "standalone";
+  index: number | null;
+  alive: boolean;
+  active_review_tasks: number;
+  active_parser_tasks: number;
+  processed: number;
+  uptime: number | null;
+}
+
+export interface ClusterNode {
+  name: string;
+  label: string;
+  roles: string[];
+  alive_workers: number;
+  total_workers: number;
+  active_review_tasks: number;
+  active_parser_tasks: number;
+  processed: number;
+  is_online: boolean;
+}
+
+export interface QueueDepths {
+  review: number | null;
+  parser: number | null;
+}
+
+export interface SystemOverview {
+  running_reviews: number;
+  parsing_documents: number;
+  review_queue: number | null;
+  parser_queue: number | null;
+  alive_workers: number;
+  total_workers: number;
+  degraded: boolean;
+}
+
+export interface SystemStatus {
+  maintenance: MaintenanceState;
+  overview: SystemOverview;
+  nodes: ClusterNode[];
+  workers: WorkerNode[];
+  queue_depths: QueueDepths;
+}
+

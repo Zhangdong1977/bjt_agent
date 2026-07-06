@@ -16,7 +16,7 @@ from starlette import status
 
 from backend.config import get_settings
 from backend.models import init_db, close_db
-from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, review_sessions_router, knowledge_router, feedback_router, experience_router, admin_router, profile_router, billing_router, announcements_router
+from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, review_sessions_router, knowledge_router, feedback_router, experience_router, admin_router, profile_router, billing_router, announcements_router, system_status_router
 from backend.api.events import router as events_router
 from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
@@ -94,6 +94,17 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
 
+    # Ensure the singleton maintenance-mode row exists (idempotent). Failure
+    # here must NOT block startup — login will fail-open (treat as not-enabled).
+    try:
+        from backend.models import async_session_factory
+        from backend.services.maintenance_service import ensure_maintenance_row
+
+        async with async_session_factory() as db:
+            await ensure_maintenance_row(db)
+    except Exception as e:
+        logger.warning(f"[startup] ensure_maintenance_row failed: {e}")
+
     # Clean up stale tasks from previous runs (tasks stuck in pending/running
     # for over 45 minutes are assumed dead from crashed workers)
     try:
@@ -160,6 +171,7 @@ app.include_router(admin_router, prefix=settings.api_prefix)
 app.include_router(profile_router, prefix=settings.api_prefix)
 app.include_router(billing_router, prefix=settings.api_prefix)
 app.include_router(announcements_router, prefix=settings.api_prefix)
+app.include_router(system_status_router, prefix=settings.api_prefix)
 app.include_router(events_router)
 
 # Mount workspace directory as static files for image access

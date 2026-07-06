@@ -1,14 +1,38 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from "vue";
 import { announcementApi } from "@/api/client";
 import type { PublicAnnouncement, AnnouncementSeverity } from "@/types";
 
-/** 登录页跑马灯：拉取公开公告横向滚动展示。无公告时整条隐藏。
+/** 公告跑马灯：拉取公开公告横向滚动展示。无公告时整条隐藏。
+ *
+ * 两种定价态（variant）：
+ * - ``overlay``（默认）：``position: absolute`` 贴在定位父容器顶部，登录页使用；
+ * - ``bar``：``position: fixed`` 固定为视口顶栏，登录后主布局使用，并通过
+ *   ``v-model:visible`` 把「是否有公告」通知父组件，以便父组件相应下移顶部留白。
  *
  * 单份内容用 Web Animations API 驱动：从视口右缘滑入、左缘滑出，循环往复。
  * 全程只渲染一份内容 —— 短公告不会「同一条并排两份」；滑出瞬间即从右缘重新滑入，
- * 无空窗、无跳跃。视口/内容尺寸变化时自动重算距离与时长。 */
+ * 无空窗、无跳跃。视口/内容尺寸变化时自动重算距离与时长。
+ *
+ * 准实时刷新：组件挂载后每 20s 重新拉取一次（管理员改动 20s 内反映到跑马灯）；
+ * 标签页隐藏时暂停轮询，重新可见时立即拉一次再恢复。请求失败保留上次内容；
+ * 轮询返回内容未变时跳过重建，避免滚动跑到一半被打断重置回起点。 */
+const props = withDefaults(
+  defineProps<{
+    variant?: "overlay" | "bar";
+    visible?: boolean;
+  }>(),
+  { variant: "overlay", visible: false },
+);
+const emit = defineEmits<{ "update:visible": [boolean] }>();
+
 const announcements = ref<PublicAnnouncement[]>([]);
+
+// 公告有无变化时通知父组件，供其按需调整布局（如顶部留白偏移）
+watch(
+  () => announcements.value.length,
+  (n) => emit("update:visible", n > 0),
+);
 
 const items = computed(() =>
   announcements.value.map((a) => ({
@@ -26,6 +50,11 @@ const severityClass = (s: AnnouncementSeverity) => `marquee-item--${s}`;
 let animation: Animation | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let motionMq: MediaQueryList | null = null;
+
+/** 准实时刷新：每 20s 重新拉取一次，管理员改动在 20s 内反映到跑马灯。 */
+const POLL_INTERVAL = 20_000;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+let loading = false;
 
 const prefersReducedMotion = () =>
   typeof window !== "undefined" &&
@@ -53,14 +82,49 @@ function rebuildAnimation() {
   );
 }
 
+/** 比较两份公告的跑马灯展示内容是否一致（顺序 + id/标题/正文/严重度）。
+ * 用于轮询时跳过无变化的重建，避免滚动跑到一半被打断重置。 */
+function sameMarqueeItems(
+  a: PublicAnnouncement[],
+  b: PublicAnnouncement[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.id !== y.id ||
+      x.title !== y.title ||
+      x.content !== y.content ||
+      x.severity !== y.severity
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 async function load() {
+  if (loading) return; // 避免轮询与手动触发（如可见性回调）重叠并发
+  loading = true;
+  let changed = false;
   try {
-    announcements.value = await announcementApi.getPublic(20);
+    const items = await announcementApi.getPublic(20);
+    if (!sameMarqueeItems(announcements.value, items)) {
+      // 内容有变化才赋值（触发重渲染）并标记需要重建动画
+      announcements.value = items;
+      changed = true;
+    }
+    // 内容未变：announcements.value 引用不变，Vue 不重渲染，当前滚动继续
   } catch {
-    announcements.value = [];
+    /* 失败保留上次内容：首次失败时仍为初始 []（跑马灯隐藏），
+     * 后续轮询失败不清空，避免网络抖动导致跑马灯闪烁消失。 */
   } finally {
-    await nextTick();
-    rebuildAnimation();
+    loading = false;
+    if (changed) {
+      await nextTick();
+      rebuildAnimation();
+    }
   }
 }
 
@@ -70,6 +134,30 @@ function onMotionChange(e: MediaQueryListEvent) {
     animation = null;
   } else {
     rebuildAnimation();
+  }
+}
+
+/** 启动/停止轮询。 */
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(load, POLL_INTERVAL);
+}
+
+function stopPolling() {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+/** 标签页隐藏时暂停轮询省请求；重新可见时立即拉一次并恢复轮询。 */
+function onVisibilityChange() {
+  if (typeof document === "undefined") return;
+  if (document.hidden) {
+    stopPolling();
+  } else {
+    load();
+    startPolling();
   }
 }
 
@@ -84,6 +172,10 @@ onMounted(async () => {
     motionMq = window.matchMedia("(prefers-reduced-motion: reduce)");
     motionMq.addEventListener("change", onMotionChange);
   }
+  startPolling();
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
 });
 
 onBeforeUnmount(() => {
@@ -93,11 +185,20 @@ onBeforeUnmount(() => {
   resizeObserver = null;
   motionMq?.removeEventListener("change", onMotionChange);
   motionMq = null;
+  stopPolling();
+  if (typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+  }
 });
 </script>
 
 <template>
-  <div v-if="announcements.length" class="announcement-marquee" role="status">
+  <div
+    v-if="announcements.length"
+    class="announcement-marquee"
+    :class="`announcement-marquee--${props.variant}`"
+    role="status"
+  >
     <span class="marquee-label">
       <span class="marquee-icon">📢</span>
       系统公告
@@ -131,6 +232,12 @@ onBeforeUnmount(() => {
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.04);
   overflow: hidden;
   font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+}
+
+/* bar 定价态：登录后主布局用作 fixed 顶栏，层级高于品牌条(100)/顶栏(99) */
+.announcement-marquee--bar {
+  position: fixed;
+  z-index: 200;
 }
 
 .marquee-label {

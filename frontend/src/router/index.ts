@@ -74,6 +74,12 @@ const router = createRouter({
           component: () => import("@/views/AnnouncementManageView.vue"),
           meta: { interiorOnly: true },
         },
+        {
+          path: "system-status",
+          name: "system-status",
+          component: () => import("@/views/SystemStatusView.vue"),
+          meta: { interiorOnly: true },
+        },
       ],
     },
   ],

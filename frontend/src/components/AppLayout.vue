@@ -8,6 +8,7 @@ import AppSidebar from './AppSidebar.vue'
 import PurchaseModal from './billing/PurchaseModal.vue'
 import AnnouncementPopup from './announcement/AnnouncementPopup.vue'
 import AnnouncementInbox from './announcement/AnnouncementInbox.vue'
+import AnnouncementMarquee from './announcement/AnnouncementMarquee.vue'
 import logoUrl from '@/assets/images/ui/common-logo-black.png'
 import iconWallet from '@/assets/images/ui/common-icon-wallet.png'
 import iconPoints from '@/assets/images/ui/common-icon-points.png'
@@ -22,6 +23,7 @@ const announcementStore = useAnnouncementStore()
 const rechargeOpen = ref(false)
 const contactOpen = ref(false)
 const inboxOpen = ref(false)
+const marqueeVisible = ref(false)
 const officialSiteUrl = 'https://aibjt.com/'
 
 onMounted(() => {
@@ -47,7 +49,9 @@ function goOfficialSite() {
 </script>
 
 <template>
-  <a-layout class="app-layout">
+  <a-layout class="app-layout" :class="{ 'has-marquee': marqueeVisible }">
+    <!-- 顶部系统公告跑马灯：无公告时整条隐藏，--marquee-h 回落为 0，布局自动复位 -->
+    <AnnouncementMarquee variant="bar" v-model:visible="marqueeVisible" />
     <!-- 顶部品牌色条 -->
     <div class="brand-bar"></div>
 
@@ -132,6 +136,11 @@ function goOfficialSite() {
 .app-layout {
   min-height: 100vh;
   background: #f5f7fa;
+  /* 顶部跑马灯高度：有公告时 32px，无公告 0（布局回落，向后兼容） */
+  --marquee-h: 0px;
+}
+.app-layout.has-marquee {
+  --marquee-h: 32px;
 }
 
 /* 顶部 2px 品牌色条 */
@@ -139,7 +148,7 @@ function goOfficialSite() {
   height: 2px;
   background: linear-gradient(90deg, #D7041A, #B80015);
   position: fixed;
-  top: 0;
+  top: var(--marquee-h);
   left: 0;
   right: 0;
   z-index: 100;
@@ -155,7 +164,7 @@ function goOfficialSite() {
   line-height: 64px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
   position: fixed;
-  top: 2px;
+  top: calc(2px + var(--marquee-h));
   left: 0;
   right: 0;
   z-index: 99;
@@ -378,13 +387,13 @@ function goOfficialSite() {
 }
 
 .app-body {
-  margin-top: 66px; /* 64px header + 2px brand bar */
+  margin-top: calc(66px + var(--marquee-h)); /* 64px header + 2px brand bar + 跑马灯 */
 }
 
 .app-sider {
   background: #fff;
   position: fixed;
-  top: 66px;
+  top: calc(66px + var(--marquee-h));
   left: 0;
   bottom: 0;
   overflow-y: auto;
@@ -395,7 +404,7 @@ function goOfficialSite() {
   margin-left: 220px;
   padding: 24px;
   background: #f5f7fa;
-  min-height: calc(100vh - 66px);
+  min-height: calc(100vh - 66px - var(--marquee-h));
   overflow: auto;
 }
 
