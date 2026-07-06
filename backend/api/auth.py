@@ -128,7 +128,6 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
     if MOCK_AUTH_ENABLED:
         logger.warning("Using mock auth data (external API disabled)")
         ext_result = MOCK_AUTH_RESPONSE["data"]
-        use_check = ext_result["useCheck"]
         interior_user = ext_result["interiorUser"] == 1
         concurrency = ext_result["concurrency"]
         external_user_id = None
@@ -160,7 +159,6 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
             )
 
         ext_result = ext_data.get("data", {})
-        use_check = ext_result.get("useCheck", 0)
         interior_user = ext_result.get("interiorUser", 0) == 1
         concurrency = ext_result.get("concurrency") or settings.max_sub_agent_concurrency
         # 运营台 aiCheckLogin 扩展返回的归属维度（userId/userName/enterpriseName），
@@ -170,13 +168,8 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
         external_nickname = ext_result.get("nickName")
         enterprise_name = ext_result.get("enterpriseName")
 
-    # Check permission
-    if use_check != 1:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="您没有使用检查功能的权限",
-        )
-
+    # 系统对所有用户开放：不再依据 useCheck 拦截登录。
+    # interiorUser 仍照常透传，内部/外部用户的功能差异保持不变。
     # Find or create local user
     result = await db.execute(select(User).where(User.username == body.username))
     user = result.scalar_one_or_none()
