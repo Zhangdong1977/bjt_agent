@@ -1,6 +1,7 @@
 testdocuments/
 logs/
 .claude/
+CLAUDE.md
 workspace/
 __pycache__/
 *.pyc
