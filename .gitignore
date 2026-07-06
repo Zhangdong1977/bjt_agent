@@ -2,7 +2,6 @@ testdocuments/
 logs/
 .claude/
 workspace/
-models/
 __pycache__/
 *.pyc
 node_modules/
