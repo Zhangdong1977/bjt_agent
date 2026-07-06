@@ -16,9 +16,17 @@ const allMenuItems = [
   { key: '/home/history', label: '历史标书', subtitle: '查看历史审查记录与报告', icon: iconCalendar, internalOnly: false },
   { key: '/home/profile', label: '用户中心', subtitle: '管理账号权限，维护个人信息', icon: iconUser, internalOnly: false },
   { key: '/home/experience', label: '标书复盘', subtitle: '复盘项目，优化审查质量', icon: iconDashboard, internalOnly: true },
+  {
+    key: '/home/announcements',
+    label: '系统公告',
+    subtitle: '发布与管理全站公告',
+    iconSvg:
+      '<svg viewBox="0 0 1024 1024" width="20" height="20"><path fill="currentColor" d="M832 128H192c-35.3 0-64 28.7-64 64v384c0 35.3 28.7 64 64 64h224v106.7c-38.2 22-64 63-64 110 0 6.6 5.4 12 12 12h296c6.6 0 12-5.4 12-12 0-47-25.8-88-64-110V640h224c35.3 0 64-28.7 64-64V192c0-35.3-28.7-64-64-64zM316 544c-22.1 0-40-17.9-40-40s17.9-40 40-40 40 17.9 40 40-17.9 40-40 40zm392 0c-22.1 0-40-17.9-40-40s17.9-40 40-40 40 17.9 40 40-17.9 40-40 40zm44-184H272c-17.7 0-32-14.3-32-32s14.3-32 32-32h480c17.7 0 32 14.3 32 32s-14.3 32-32 32z"/></svg>',
+    internalOnly: true,
+  },
 ]
 
-// 标书复盘仅内部用户可见
+// 标书复盘 / 系统公告仅内部用户可见
 const menuItems = computed(() =>
   allMenuItems.filter((item) => !item.internalOnly || authStore.isInteriorUser)
 )
@@ -45,7 +53,12 @@ function navigate(path: string) {
         @click="navigate(item.key)"
       >
         <span class="sidebar-item__indicator"></span>
-        <img :src="item.icon" alt="" class="sidebar-item__icon" />
+        <span
+          v-if="item.iconSvg"
+          class="sidebar-item__icon sidebar-item__icon--svg"
+          v-html="item.iconSvg"
+        ></span>
+        <img v-else :src="item.icon" alt="" class="sidebar-item__icon" />
         <span class="sidebar-item__text">
           <span class="sidebar-item__label">{{ item.label }}</span>
           <span class="sidebar-item__subtitle">{{ item.subtitle }}</span>
@@ -132,6 +145,15 @@ function navigate(path: string) {
   height: 20px;
   object-fit: contain;
   flex-shrink: 0;
+}
+
+/* 内联 SVG 图标：currentColor 跟随列表项颜色（active 时变红） */
+.sidebar-item__icon--svg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  line-height: 0;
 }
 
 .sidebar-item__text {

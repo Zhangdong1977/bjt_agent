@@ -3,8 +3,11 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useBillingStore } from '@/stores/billing'
+import { useAnnouncementStore } from '@/stores/announcement'
 import AppSidebar from './AppSidebar.vue'
 import PurchaseModal from './billing/PurchaseModal.vue'
+import AnnouncementPopup from './announcement/AnnouncementPopup.vue'
+import AnnouncementInbox from './announcement/AnnouncementInbox.vue'
 import logoUrl from '@/assets/images/ui/common-logo-black.png'
 import iconWallet from '@/assets/images/ui/common-icon-wallet.png'
 import iconPoints from '@/assets/images/ui/common-icon-points.png'
@@ -15,17 +18,22 @@ import wecomQrcode from '@/assets/images/ui/common-wecom-qrcode.jpg'
 const router = useRouter()
 const authStore = useAuthStore()
 const billingStore = useBillingStore()
+const announcementStore = useAnnouncementStore()
 const rechargeOpen = ref(false)
 const contactOpen = ref(false)
+const inboxOpen = ref(false)
 const officialSiteUrl = 'https://aibjt.com/'
 
 onMounted(() => {
   void billingStore.fetchWallet()
+  // 拉取未读公告：驱动顶栏角标 + 自动弹窗
+  void announcementStore.initialize()
 })
 
 function logout() {
   authStore.logout()
   billingStore.reset()
+  announcementStore.reset()
   router.push({ name: 'login' })
 }
 
@@ -70,6 +78,20 @@ function goOfficialSite() {
         <button class="recharge-btn" @click="rechargeOpen = true">立即充值</button>
         <button class="outline-btn" @click="goOfficialSite">前往官网</button>
         <button class="outline-btn" @click="contactOpen = true">联系我们</button>
+        <a-badge
+          :count="announcementStore.unreadCount"
+          :overflow-count="99"
+          :offset="[-4, 4]"
+        >
+          <button class="inbox-btn" title="系统公告" @click="inboxOpen = true">
+            <svg viewBox="0 0 1024 1024" width="20" height="20" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M512 928c45.1 0 81.7-36.6 81.7-81.7H430.3c0 45.1 36.6 81.7 81.7 81.7zm253.4-244.3V482.2c0-127.5-84.9-233.9-209.5-262.6v-28.4c0-34.5-28-62.5-62.5-62.5s-62.5 28-62.5 62.5v28.4c-124.6 28.7-209.5 135.1-209.5 262.6v201.5L136 755.1v41.7h752v-41.7l-85.6-71.4zM768 728H256v-12.8l62.4-52.1V482.2c0-97.3 60.4-180.5 150.9-206.9l55.5-16.1v-63.4l1.4-.4 1.4.4v63.4l55.5 16.1c90.5 26.4 150.9 109.6 150.9 206.9v180.9L768 715.2V728z"
+              />
+            </svg>
+          </button>
+        </a-badge>
         <div class="header-divider"></div>
         <button class="profile-btn" @click="goProfile">
           <img :src="iconUser" alt="" />
@@ -88,6 +110,8 @@ function goOfficialSite() {
       </a-layout-content>
     </a-layout>
     <PurchaseModal v-model:open="rechargeOpen" @paid="billingStore.fetchWallet" />
+    <AnnouncementPopup />
+    <AnnouncementInbox v-model:open="inboxOpen" />
     <a-modal
       :open="contactOpen"
       title="联系我们"
@@ -290,6 +314,27 @@ function goOfficialSite() {
   width: 1px;
   height: 22px;
   background: #e4e6f1;
+}
+
+/* 系统公告铃铛 */
+.inbox-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #666;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.inbox-btn:hover {
+  background: #fff5f6;
+  color: #d7041a;
 }
 
 .profile-btn {

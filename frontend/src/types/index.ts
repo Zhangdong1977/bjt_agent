@@ -403,6 +403,10 @@ export interface ProjectFeedbackSummary {
   reviewed_feedback: number;
   unreviewed_feedback: number;
   created_at: string;
+  is_deleted: boolean;
+  has_documents: boolean;
+  has_review: boolean;
+  review_completed: boolean;
 }
 
 // Paginated response wrapper for project summary list
@@ -412,3 +416,85 @@ export interface PaginatedProjectSummary {
   limit: number;
   offset: number;
 }
+
+// ---------------------------------------------------------------------------
+// System announcements (系统公告)
+// ---------------------------------------------------------------------------
+
+export type AnnouncementSeverity = "info" | "important" | "urgent";
+
+/** 登录页跑马灯用的公开公告（未登录可读，仅公开展示字段）。 */
+export interface PublicAnnouncement {
+  id: string;
+  title: string;
+  content: string;
+  severity: AnnouncementSeverity;
+  published_at: string;
+}
+
+/** 已登录用户视角的公告（带当前用户的已读状态）。 */
+export interface Announcement {
+  id: string;
+  title: string;
+  content: string;
+  severity: AnnouncementSeverity;
+  is_active: boolean;
+  published_at: string;
+  expires_at: string | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  updated_at: string;
+  is_read: boolean;
+  read_at: string | null;
+}
+
+/** 管理端视角（内部用户）：含已读统计，不含个人已读状态。 */
+export interface AnnouncementManage {
+  id: string;
+  title: string;
+  content: string;
+  severity: AnnouncementSeverity;
+  is_active: boolean;
+  published_at: string;
+  expires_at: string | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  updated_at: string;
+  read_count: number;
+  total_users: number;
+}
+
+export interface AnnouncementCreateRequest {
+  title: string;
+  content: string;
+  severity?: AnnouncementSeverity;
+  is_active?: boolean;
+  published_at?: string | null;
+  expires_at?: string | null;
+}
+
+export interface AnnouncementUpdateRequest {
+  title?: string;
+  content?: string;
+  severity?: AnnouncementSeverity;
+  is_active?: boolean;
+  published_at?: string | null;
+  expires_at?: string | null;
+}
+
+export interface AnnouncementListResponse {
+  items: Announcement[];
+  total: number;
+  unread_count: number;
+}
+
+export interface UnreadCountResponse {
+  unread_count: number;
+}
+
+export interface MarkAllReadResponse {
+  marked_count: number;
+}
+

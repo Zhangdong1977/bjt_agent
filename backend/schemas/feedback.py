@@ -160,6 +160,11 @@ class ProjectFeedbackSummary(BaseModel):
     reviewed_feedback: int
     unreviewed_feedback: int
     created_at: datetime
+    # 项目状态维度（后端用相关子查询计算）
+    is_deleted: bool
+    has_documents: bool
+    has_review: bool
+    review_completed: bool
 
 
 class PaginatedProjectSummary(BaseModel):

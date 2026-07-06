@@ -68,6 +68,12 @@ const router = createRouter({
           component: () => import("@/views/ExperienceDashboard.vue"),
           meta: { interiorOnly: true },
         },
+        {
+          path: "announcements",
+          name: "announcement-manage",
+          component: () => import("@/views/AnnouncementManageView.vue"),
+          meta: { interiorOnly: true },
+        },
       ],
     },
   ],

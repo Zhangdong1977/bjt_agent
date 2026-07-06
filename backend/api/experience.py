@@ -4,12 +4,12 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.deps import DBSession, InteriorUser
 from backend.experience.models import ExperienceCase, ExperienceFeedback, ExperienceSkill, ExperienceClusterMembership
-from backend.models import Project, ReviewTask, User
+from backend.models import Document, Project, ReviewTask, User
 from backend.schemas.feedback import PaginatedProjectSummary, ProjectFeedbackSummary
 
 logger = logging.getLogger(__name__)
@@ -213,6 +213,13 @@ async def projects_feedback_summary(
             )
         ).label("unreviewed_feedback"),
         Project.created_at,
+        # 项目状态维度：相关子查询（标量布尔），不进 FROM，不改变上方 feedback 聚合基数
+        Project.is_deleted.label("is_deleted"),
+        exists().where(Document.project_id == Project.id).label("has_documents"),
+        exists().where(ReviewTask.project_id == Project.id).label("has_review"),
+        exists().where(
+            and_(ReviewTask.project_id == Project.id, ReviewTask.status == "completed")
+        ).label("review_completed"),
     )
 
     query = (
@@ -271,6 +278,10 @@ async def projects_feedback_summary(
             reviewed_feedback=row.reviewed_feedback,
             unreviewed_feedback=row.unreviewed_feedback,
             created_at=row.created_at,
+            is_deleted=row.is_deleted,
+            has_documents=row.has_documents,
+            has_review=row.has_review,
+            review_completed=row.review_completed,
         )
         for row in rows
     ]

@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { authApi } from '@/api/client'
 import AgreementModal from '@/components/AgreementModal.vue'
+import AnnouncementMarquee from '@/components/announcement/AnnouncementMarquee.vue'
 import illustrationUrl from '@/assets/images/ui/login-illustration.png'
 import logoUrl from '@/assets/images/ui/common-logo-white.png'
 import iconUser from '@/assets/images/ui/login-input-username.png'
@@ -209,6 +210,8 @@ async function handleRegister() {
 
 <template>
   <main class="login-page">
+    <!-- 顶部跑马灯：展示系统公告（无公告时自动隐藏） -->
+    <AnnouncementMarquee />
     <!-- 左侧插画：靠左、高度顶满、比例不变 -->
     <div class="login-art-wrap">
       <img class="login-art" :src="illustrationUrl" alt="" aria-hidden="true" />

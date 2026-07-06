@@ -33,6 +33,14 @@ import type {
   PaymentQr,
   OrderStatus,
   ProfileUpdateRequest,
+  PublicAnnouncement,
+  Announcement,
+  AnnouncementManage,
+  AnnouncementCreateRequest,
+  AnnouncementUpdateRequest,
+  AnnouncementListResponse,
+  UnreadCountResponse,
+  MarkAllReadResponse,
 } from "@/types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
@@ -834,6 +842,81 @@ export const feedbackApi = {
       params,
     });
     return response.data;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// System announcements (系统公告)
+// ---------------------------------------------------------------------------
+
+export const announcementApi = {
+  /** 登录页跑马灯：公开公告（无需登录）。 */
+  async getPublic(limit = 20): Promise<PublicAnnouncement[]> {
+    const response = await apiClient.get("/announcements/public", {
+      params: { limit },
+    });
+    return response.data;
+  },
+
+  /** 未读计数（顶栏角标 + 弹窗触发用）。 */
+  async getUnreadCount(): Promise<UnreadCountResponse> {
+    const response = await apiClient.get("/announcements/unread-count");
+    return response.data;
+  },
+
+  /** 当前用户可见的公告列表（带已读状态）+ 未读计数。 */
+  async list(params?: {
+    unread_only?: boolean;
+    limit?: number;
+    offset?: number;
+  }): Promise<AnnouncementListResponse> {
+    const response = await apiClient.get("/announcements", { params });
+    return response.data;
+  },
+
+  async get(id: string): Promise<Announcement> {
+    const response = await apiClient.get(`/announcements/${id}`);
+    return response.data;
+  },
+
+  /** 标记一条公告为已读（幂等）。 */
+  async markRead(id: string): Promise<Announcement> {
+    const response = await apiClient.post(`/announcements/${id}/read`);
+    return response.data;
+  },
+
+  /** 一键全部已读。 */
+  async markAllRead(): Promise<MarkAllReadResponse> {
+    const response = await apiClient.post("/announcements/mark-all-read");
+    return response.data;
+  },
+
+  // —— 管理端（内部用户）——
+
+  async listForManage(params?: {
+    include_inactive?: boolean;
+    limit?: number;
+    offset?: number;
+  }): Promise<AnnouncementManage[]> {
+    const response = await apiClient.get("/announcements/manage", { params });
+    return response.data;
+  },
+
+  async create(data: AnnouncementCreateRequest): Promise<AnnouncementManage> {
+    const response = await apiClient.post("/announcements", data);
+    return response.data;
+  },
+
+  async update(
+    id: string,
+    data: AnnouncementUpdateRequest,
+  ): Promise<AnnouncementManage> {
+    const response = await apiClient.patch(`/announcements/${id}`, data);
+    return response.data;
+  },
+
+  async remove(id: string): Promise<void> {
+    await apiClient.delete(`/announcements/${id}`);
   },
 };
 

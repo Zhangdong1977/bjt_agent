@@ -310,6 +310,7 @@ function formatDate(dateStr: string): string {
                   <th class="num-col">已审核</th>
                   <th class="num-col">待审核</th>
                   <th>创建时间</th>
+                  <th>状态</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -317,7 +318,7 @@ function formatDate(dateStr: string): string {
                 <tr
                   v-for="proj in projectList"
                   :key="proj.project_id"
-                  class="project-row"
+                  :class="['project-row', { 'project-row-deleted': proj.is_deleted }]"
                 >
                   <td class="username-cell">{{ proj.username }}</td>
                   <td class="project-name-cell">{{ proj.project_name }}</td>
@@ -331,6 +332,13 @@ function formatDate(dateStr: string): string {
                     <span v-else class="num-zero">0</span>
                   </td>
                   <td class="time-cell">{{ formatDate(proj.created_at) }}</td>
+                  <td class="status-cell">
+                    <span v-if="proj.is_deleted" class="status-badge status-deleted">已删除</span>
+                    <span v-else-if="proj.review_completed" class="status-badge status-completed">审核完成</span>
+                    <span v-else-if="proj.has_review" class="status-badge status-running">审核未完成</span>
+                    <span v-else-if="proj.has_documents" class="status-badge status-pending">待审核</span>
+                    <span v-else class="status-badge status-empty">未上传文档</span>
+                  </td>
                   <td class="action-cell">
                     <button
                       class="row-action-btn detail-btn"
@@ -1184,6 +1192,55 @@ function formatDate(dateStr: string): string {
   font-size: 11px;
   font-weight: 600;
   border-radius: 10px;
+}
+
+.status-cell {
+  white-space: nowrap;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 10px;
+}
+
+.status-deleted {
+  background: var(--bg3);
+  color: var(--muted);
+}
+
+.status-completed {
+  background: var(--green-bg);
+  color: var(--green);
+}
+
+.status-running {
+  background: var(--amber-bg);
+  color: var(--amber);
+}
+
+.status-pending {
+  background: var(--bg3);
+  color: var(--sub);
+}
+
+.status-empty {
+  background: var(--bg2);
+  color: var(--dim);
+  border: 1px dashed var(--line);
+}
+
+.project-row-deleted {
+  opacity: 0.55;
+}
+
+.project-row-deleted .project-name-cell {
+  text-decoration: line-through;
+  color: var(--muted);
 }
 
 .num-zero {
