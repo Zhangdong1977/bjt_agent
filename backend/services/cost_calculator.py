@@ -43,9 +43,9 @@ _LLM_RATES = {
     "volcengine": _VOLCENGINE,
 }
 
-# —— OCR（按次）—— accurate_basic 公开价
+# —— OCR（按次）—— 百度 accurate_basic，按内部约定结转单价（非厂商公开价）
 _OCR_PER_CALL = {
-    "baidu_ocr": 0.015,
+    "baidu_ocr": 0.028,
 }
 
 
