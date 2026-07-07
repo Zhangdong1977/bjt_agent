@@ -46,10 +46,22 @@ const smsSending = ref(false)
 const smsCountdown = ref(0)
 let smsTimer: ReturnType<typeof setInterval> | null = null
 
+// ============ 重置密码表单（从登录表单「重置密码？」链接进入）============
+// 与注册表单独立的字段集，但复用图形验证码（captchaId/captchaImage）与短信倒计时
+// （smsCountdown/smsSending）——注册与重置不会同时进行，共享倒计时安全。
+const showReset = ref(false)
+const resetPhone = ref('')
+const resetCaptchaCode = ref('')
+const resetSmsCode = ref('')
+const resetNewPassword = ref('')
+const resetConfirmPassword = ref('')
+const resetError = ref('')
+const resetSuccess = ref('')
+const resetLoading = ref(false)
+
 // ============ 密码强度实时校验（与后端 checkPasswordStrength 规则一致）============
-// 规则：8-20 位，且大写/小写/数字/符号 4 类中至少包含 3 类
-const passwordStrength = computed(() => {
-  const pwd = regPassword.value
+// 规则：8-20 位，且大写/小写/数字/符号 4 类中至少包含 3 类。注册与重置共用。
+function checkPasswordStrength(pwd: string): { ok: boolean; text: string } {
   if (!pwd) return { ok: false, text: '' }
   if (pwd.length < 8 || pwd.length > 20) {
     return { ok: false, text: '密码长度需在 8 到 20 位' }
@@ -63,7 +75,9 @@ const passwordStrength = computed(() => {
     return { ok: false, text: '密码需含大写/小写/数字/符号中至少 3 类' }
   }
   return { ok: true, text: '' }
-})
+}
+const passwordStrength = computed(() => checkPasswordStrength(regPassword.value))
+const resetPasswordStrength = computed(() => checkPasswordStrength(resetNewPassword.value))
 
 async function fetchCaptcha() {
   try {
@@ -222,6 +236,85 @@ async function handleRegister() {
     regLoading.value = false
   }
 }
+
+// ============ 重置密码 ============
+function backToLogin() {
+  showReset.value = false
+  activeTab.value = 'login'
+  resetError.value = ''
+  resetSuccess.value = ''
+}
+
+async function handleSendResetSms() {
+  resetError.value = ''
+  if (!resetPhone.value) {
+    resetError.value = '请先输入手机号'
+    return
+  }
+  if (!/^1[3-9]\d{9}$/.test(resetPhone.value)) {
+    resetError.value = '手机号格式不正确'
+    return
+  }
+  if (!resetCaptchaCode.value) {
+    resetError.value = '请先输入图形验证码'
+    return
+  }
+  smsSending.value = true
+  try {
+    await authApi.sendResetSms(resetPhone.value, captchaId.value, resetCaptchaCode.value)
+    startSmsCountdown()
+  } catch (e: unknown) {
+    resetError.value = extractDetail(e, '验证码发送失败')
+    resetCaptchaCode.value = ''
+    await fetchCaptcha()
+  } finally {
+    smsSending.value = false
+  }
+}
+
+async function handleResetPassword() {
+  resetError.value = ''
+  resetSuccess.value = ''
+  // 前端基础校验（与后端 schema 互补，提前拦截以省一次往返）
+  if (!resetPhone.value || !resetSmsCode.value || !resetNewPassword.value) {
+    resetError.value = '请填写完整信息'
+    return
+  }
+  if (resetNewPassword.value !== resetConfirmPassword.value) {
+    resetError.value = '两次输入的密码不一致'
+    return
+  }
+  if (resetNewPassword.value.length < 8 || resetNewPassword.value.length > 20) {
+    resetError.value = '密码长度需在 8 到 20 个字符'
+    return
+  }
+  resetLoading.value = true
+  try {
+    await authApi.resetPassword({
+      phone: resetPhone.value,
+      sms_code: resetSmsCode.value,
+      new_password: resetNewPassword.value,
+      confirm_new_password: resetConfirmPassword.value,
+    })
+    resetSuccess.value = '重置成功，请登录'
+    // 重置成功：切回登录 tab，预填手机号到用户名，清空重置表单
+    username.value = resetPhone.value
+    showReset.value = false
+    activeTab.value = 'login'
+    resetPhone.value = ''
+    resetCaptchaCode.value = ''
+    resetSmsCode.value = ''
+    resetNewPassword.value = ''
+    resetConfirmPassword.value = ''
+    await fetchCaptcha()
+  } catch (e: unknown) {
+    resetError.value = extractDetail(e, '重置失败')
+    resetCaptchaCode.value = ''
+    await fetchCaptcha()
+  } finally {
+    resetLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -242,6 +335,7 @@ async function handleRegister() {
     <!-- 登录表单：靠右浮动，与图片右缘重叠产生立体感 -->
     <section class="login-right" aria-label="标捷通账号登录">
       <div class="login-card">
+        <template v-if="!showReset">
         <div class="auth-tabs" role="tablist" aria-label="账号入口">
           <button
             class="auth-tab"
@@ -294,6 +388,10 @@ async function handleRegister() {
                 aria-label="登录密码"
                 placeholder="请输入登录密码"
               />
+            </div>
+
+            <div class="reset-link-row">
+              <a class="reset-link" href="#" @click.prevent="showReset = true">重置密码？</a>
             </div>
 
             <div class="form-item form-item--captcha">
@@ -477,6 +575,112 @@ async function handleRegister() {
             </button>
           </form>
         </template>
+        </template>
+
+        <!-- 重置密码视图（从登录表单「重置密码？」链接进入） -->
+        <div v-else class="auth-reset">
+          <div class="reset-header">
+            <button type="button" class="back-link" @click="backToLogin">← 返回登录</button>
+            <h2 class="reset-title">重置密码</h2>
+          </div>
+          <p class="login-hint">通过手机短信验证码验证身份后，设置新的登录密码</p>
+
+          <form class="login-form" @submit.prevent="handleResetPassword">
+            <div class="form-item">
+              <img class="input-icon" :src="iconUser" alt="" />
+              <input
+                v-model.trim="resetPhone"
+                type="text"
+                inputmode="numeric"
+                maxlength="11"
+                required
+                autocomplete="off"
+                aria-label="手机号"
+                placeholder="请输入注册手机号"
+              />
+            </div>
+
+            <div class="form-item form-item--captcha">
+              <img class="input-icon" :src="iconCaptcha" alt="" />
+              <input
+                v-model.trim="resetCaptchaCode"
+                type="text"
+                inputmode="numeric"
+                maxlength="4"
+                required
+                autocomplete="off"
+                aria-label="图形验证码"
+                placeholder="请输入图形验证码"
+              />
+              <img
+                v-if="captchaImage"
+                class="captcha-img"
+                :src="captchaImage"
+                alt="图形验证码"
+                title="看不清？点击刷新"
+                @click="fetchCaptcha"
+              />
+              <span v-else class="captcha-placeholder" @click="fetchCaptcha">点击加载</span>
+            </div>
+
+            <div class="form-item form-item--sms">
+              <img class="input-icon" :src="iconCaptcha" alt="" />
+              <input
+                v-model.trim="resetSmsCode"
+                type="text"
+                inputmode="numeric"
+                maxlength="6"
+                required
+                autocomplete="one-time-code"
+                aria-label="短信验证码"
+                placeholder="请输入短信验证码"
+              />
+              <button
+                type="button"
+                class="sms-btn"
+                :disabled="smsCountdown > 0 || smsSending"
+                @click="handleSendResetSms"
+              >
+                {{ smsCountdown > 0 ? `${smsCountdown}s 后重发` : (smsSending ? '发送中...' : '获取验证码') }}
+              </button>
+            </div>
+
+            <div class="form-item">
+              <img class="input-icon" :src="iconPassword" alt="" />
+              <input
+                v-model="resetNewPassword"
+                type="password"
+                required
+                autocomplete="new-password"
+                aria-label="新密码"
+                placeholder="设置新密码(8-20位,含大小写/数字/符号3类)"
+              />
+            </div>
+            <div v-if="resetNewPassword && !resetPasswordStrength.ok" class="pwd-hint" role="note">
+              {{ resetPasswordStrength.text }}
+            </div>
+
+            <div class="form-item">
+              <img class="input-icon" :src="iconPassword" alt="" />
+              <input
+                v-model="resetConfirmPassword"
+                type="password"
+                required
+                autocomplete="new-password"
+                aria-label="确认新密码"
+                placeholder="请再次输入新密码"
+              />
+            </div>
+
+            <div v-if="resetError" class="error-msg" role="alert">{{ resetError }}</div>
+            <div v-if="resetSuccess" class="success-msg" role="status">{{ resetSuccess }}</div>
+
+            <button type="submit" :disabled="resetLoading" class="submit-btn">
+              <span v-if="resetLoading" class="btn-loading" aria-hidden="true"></span>
+              {{ resetLoading ? '重 置 中...' : '重 置 密 码' }}
+            </button>
+          </form>
+        </div>
       </div>
     </section>
 
@@ -617,6 +821,55 @@ async function handleRegister() {
 
 .auth-tab:not(.auth-tab--active):hover {
   color: #B80015;
+}
+
+/* ============ 登录表单：重置密码入口链接 ============ */
+.reset-link-row {
+  text-align: right;
+  margin: -16px 0 18px;
+}
+
+.reset-link {
+  color: #888;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.reset-link:hover {
+  color: #D7041A;
+  text-decoration: underline;
+}
+
+/* ============ 重置密码视图 ============ */
+.reset-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.back-link {
+  border: 0;
+  background: transparent;
+  color: #888;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.back-link:hover {
+  color: #D7041A;
+}
+
+.reset-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 500;
+  color: #333;
+  letter-spacing: 1px;
 }
 
 .login-hint {

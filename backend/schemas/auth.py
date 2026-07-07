@@ -71,6 +71,36 @@ class RegisterRequest(BaseModel):
         return self
 
 
+class ResetPasswordRequest(BaseModel):
+    """重置密码请求（未登录·手机验证）。后端转发到运营平台 ``/aiResetPwd``。
+
+    场景：用户在登录页「重置密码？」入口，凭短信验证码重置账户密码，无需旧密码。
+    字段约定（与 /aiRegister 对齐）：phone=手机号(作 account)、sms_code=短信验证码、
+    new_password/confirm_new_password=明文新密码（server-to-server，不走 RSA）。
+    发码复用 ``SendSmsRequest``（先校验图形验证码再转发 /aiGetResetCode）。
+    """
+
+    phone: str = Field(..., min_length=1)
+    sms_code: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=1)
+    confirm_new_password: str = Field(..., min_length=1)
+
+    @field_validator("phone")
+    @classmethod
+    def _validate_phone(cls, v: str) -> str:
+        import re
+
+        if not re.match(r"^1[3-9]\d{9}$", v):
+            raise ValueError("手机号格式不正确")
+        return v
+
+    @model_validator(mode="after")
+    def _check_password_match(self) -> "ResetPasswordRequest":
+        if self.new_password != self.confirm_new_password:
+            raise ValueError("两次输入的密码不一致")
+        return self
+
+
 class CaptchaResponse(BaseModel):
     """Schema for ``GET /auth/captcha`` response (签名令牌 + 内联 PNG data URL)。"""
 

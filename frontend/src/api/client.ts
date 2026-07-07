@@ -254,6 +254,30 @@ export const authApi = {
   }): Promise<void> {
     await apiClient.post("/auth/register", payload);
   },
+
+  /** 重置密码·下发短信验证码（先校验图形验证码，后端转发到运营平台 /aiGetResetCode）。
+   *  与 sendSms（注册发码）镜像，区别仅在运营平台侧要求手机号已注册。 */
+  async sendResetSms(
+    phone: string,
+    captchaId: string,
+    captchaCode: string,
+  ): Promise<void> {
+    await apiClient.post("/auth/send-reset-sms", {
+      phone,
+      captcha_id: captchaId,
+      captcha_code: captchaCode,
+    });
+  },
+
+  /** 重置密码（凭短信验证码，后端转发到运营平台 /aiResetPwd 重置 sys_user.password）。 */
+  async resetPassword(payload: {
+    phone: string;
+    sms_code: string;
+    new_password: string;
+    confirm_new_password: string;
+  }): Promise<void> {
+    await apiClient.post("/auth/reset-password", payload);
+  },
 };
 
 export const profileApi = {

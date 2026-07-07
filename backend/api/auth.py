@@ -23,6 +23,7 @@ from backend.schemas.auth import (
     CaptchaResponse,
     LoginRequest,
     RegisterRequest,
+    ResetPasswordRequest,
     SendSmsRequest,
     Token,
     UserResponse,
@@ -401,3 +402,94 @@ async def register(request: Request, body: RegisterRequest) -> dict:
             detail=_clarify_sms_error(data.get("msg")) or "注册失败",
         )
     return {"message": "注册成功，请登录"}
+
+
+@router.post("/send-reset-sms")
+@limiter.limit("1/minute")
+async def send_reset_sms(request: Request, body: SendSmsRequest) -> dict:
+    """重置密码·下发短信验证码。
+
+    与 ``/auth/send-sms``（注册发码）镜像：先校验图形验证码防刷短信，再转发到运营平台
+    ``/aiGetResetCode``。区别仅在运营平台侧——``/aiGetCode`` 要求手机号未注册、
+    ``/aiGetResetCode`` 要求已注册。复用 ``SendSmsRequest``（字段一致：
+    phone/captcha_id/captcha_code）。
+    """
+    if not verify_captcha(body.captcha_id, body.captcha_code):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="图形验证码错误或已失效",
+        )
+    masked_phone = body.phone[:3] + "****" + body.phone[7:] if len(body.phone) == 11 else body.phone
+    started_at = time.monotonic()
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.operate_api_timeout_seconds, trust_env=False
+        ) as client:
+            resp = await client.post(
+                _operate_url("/aiGetResetCode"),
+                json={"account": body.phone},
+                headers=_operate_headers(),
+            )
+    except httpx.RequestError as e:
+        logger.error(
+            "Send-reset-sms upstream request failed: phone=%s timeout=%ss err=%s",
+            masked_phone, settings.operate_api_timeout_seconds, e,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="短信服务不可用，请稍后重试",
+        )
+
+    data = resp.json()
+    if data.get("code") != 200:
+        # 透传：该手机号未注册 / 短信码有误 / 冷却中等；模糊的「验证码」明确为短信验证码
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_clarify_sms_error(data.get("msg")) or "验证码发送失败",
+        )
+    logger.info(
+        "Send-reset-sms forwarded ok: phone=%s cost=%dms",
+        masked_phone, int((time.monotonic() - started_at) * 1000),
+    )
+    return {"message": data.get("msg", "验证码已发送")}
+
+
+@router.post("/reset-password")
+@limiter.limit("5/minute")
+async def reset_password(request: Request, body: ResetPasswordRequest) -> dict:
+    """重置密码（未登录·凭短信验证码）。转发到运营平台 ``/aiResetPwd``。
+
+    运营平台校验短信码后重置 sys_user.password（与 ``aiCheckUpdatePwd`` 同库同字段）。
+    重置不要求图形验证码——发码时已校验，此处以短信码作为身份凭证。
+    """
+    payload = {
+        # 与 /aiRegister 字段约定一致：account=手机号、verificationCode=短信码
+        "account": body.phone,
+        "verificationCode": body.sms_code,
+        "password": body.new_password,
+        "confirmPassword": body.confirm_new_password,
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.operate_api_timeout_seconds, trust_env=False
+        ) as client:
+            resp = await client.post(
+                _operate_url("/aiResetPwd"),
+                json=payload,
+                headers=_operate_headers(),
+            )
+    except httpx.RequestError as e:
+        logger.error("Reset-password upstream request failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="重置服务不可用，请稍后重试",
+        )
+
+    data = resp.json()
+    if data.get("code") != 200:
+        # 透传：短信验证码有误 / 新密码不能与旧密码相同 / 密码强度不足 / 该手机号未注册 等
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=data.get("msg") or "重置失败",
+        )
+    return {"message": "重置成功，请登录"}
