@@ -216,11 +216,6 @@ onMounted(() => {
 
 <template>
   <div class="profile-center">
-    <a-breadcrumb class="breadcrumb">
-      <a-breadcrumb-item>首页</a-breadcrumb-item>
-      <a-breadcrumb-item>个人中心</a-breadcrumb-item>
-    </a-breadcrumb>
-
     <a-spin :spinning="loading">
       <a-tabs v-model:activeKey="activeKey" class="center-tabs">
         <a-tab-pane key="info" tab="我的信息">
@@ -375,15 +370,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.profile-center {
-  max-width: 1280px;
-  margin: 0 auto;
-}
-
-.breadcrumb {
-  margin-bottom: 18px;
-}
-
 .center-tabs {
   background: var(--bg1);
   border: 1px solid var(--line);

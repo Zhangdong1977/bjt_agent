@@ -177,11 +177,6 @@ function getScoreColor(score: number): string {
 
 <template>
   <div class="knowledge-view">
-    <a-breadcrumb class="breadcrumb">
-      <a-breadcrumb-item>首页</a-breadcrumb-item>
-      <a-breadcrumb-item>知识库</a-breadcrumb-item>
-    </a-breadcrumb>
-
     <div class="knowledge-container">
       <!-- 左侧：搜索区域 (70%) -->
       <div class="search-panel">
@@ -347,11 +342,7 @@ function getScoreColor(score: number): string {
 
 <style scoped>
 .knowledge-view {
-  padding: 0 24px 24px;
-}
-
-.breadcrumb {
-  margin-bottom: 24px;
+  padding: 0 0 24px;
 }
 
 .knowledge-container {

@@ -290,9 +290,7 @@ onUnmounted(stopAutoRefresh)
 
 <style scoped>
 .system-status {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 24px 20px 48px;
+  padding: 0 0 24px;
 }
 .page-head {
   display: flex;

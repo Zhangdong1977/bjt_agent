@@ -38,11 +38,6 @@ async function deleteProject(projectId: string) {
 
 <template>
   <div class="history-view">
-    <a-breadcrumb class="breadcrumb">
-      <a-breadcrumb-item>首页</a-breadcrumb-item>
-      <a-breadcrumb-item>历史标书</a-breadcrumb-item>
-    </a-breadcrumb>
-
     <a-card class="filter-card" :bordered="false">
       <div class="filters">
         <a-input-search
@@ -101,15 +96,6 @@ async function deleteProject(projectId: string) {
 </template>
 
 <style scoped>
-.history-view {
-  max-width: 1200px;
-  margin: 0 auto;
-}
-
-.breadcrumb {
-  margin-bottom: 24px;
-}
-
 .filter-card,
 .list-card {
   border-radius: var(--r-lg);

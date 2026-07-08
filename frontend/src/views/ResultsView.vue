@@ -109,13 +109,6 @@ async function startNewReview() {
 <template>
   <div class="results-view">
     <main class="content">
-      <a-breadcrumb class="breadcrumb">
-        <a-breadcrumb-item>
-          <a @click="goBack">{{ fromExperience ? '标书复盘' : '历史标书' }}</a>
-        </a-breadcrumb-item>
-        <a-breadcrumb-item>审查结果</a-breadcrumb-item>
-      </a-breadcrumb>
-
       <!-- 任务选择器 -->
       <div v-if="projectStore.reviewTasks.length > 0" class="task-bar">
         <label class="task-label">审查记录:</label>
@@ -162,13 +155,7 @@ async function startNewReview() {
 
 <style scoped>
 .content {
-  max-width: 1200px;
-  margin: 20px auto;
-  padding: 0 20px;
-}
-
-.breadcrumb {
-  margin-bottom: 20px;
+  padding: 0;
 }
 
 .task-bar {

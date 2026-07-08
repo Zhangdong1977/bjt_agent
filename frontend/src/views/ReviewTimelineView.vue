@@ -54,9 +54,7 @@ onUnmounted(() => {
 
 <style scoped>
 .content {
-  max-width: 1200px;
-  margin: 2rem auto;
-  padding: 0 2rem;
+  padding: 0;
 }
 
 .section {

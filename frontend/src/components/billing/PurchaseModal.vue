@@ -620,13 +620,19 @@ watch(
   font-weight: 500;
 }
 
-/* 胶囊图标作为数值背景：图片左侧是小图标，右侧留白区叠数值文字 */
+/*
+ * 胶囊数值徽章：背景图（图标 + 左圆角帽）只作左端帽，胶囊主体由 CSS 绘制。
+ * 数值文字长度变化（0文 ~ 10000文）时，背景既不会被截断，文字也不会超出背景。
+ * 同款实现见 AppLayout.vue .metric--pill。
+ */
 .balance-item--pill {
   height: 26px;
   padding: 0 10px 0 32px; /* 左侧留给图标区，右侧留白 */
+  border-radius: 9999px; /* 胶囊形：与图片半圆帽一致 */
+  background-color: #FBE2BC; /* 图片文字区底色，向右延伸；与图片米色无接缝 */
   background-repeat: no-repeat;
   background-position: left center;
-  background-size: auto 26px; /* 按高度铺满，宽度按 3:1 比例约 78px */
+  background-size: auto 26px; /* 按高度铺满，宽度按 3:1 比例约 78px（仅作左端帽） */
   align-items: center;
   color: #333;
   font-weight: 600;

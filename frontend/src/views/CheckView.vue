@@ -315,11 +315,6 @@ function getStatusClass(status: string) {
     <input ref="tenderInput" type="file" accept=".pdf,.docx" multiple hidden @change="handleUpload($event, 'tender')" />
     <input ref="bidInput" type="file" accept=".pdf,.docx" multiple hidden @change="handleUpload($event, 'bid')" />
 
-    <a-breadcrumb class="breadcrumb">
-      <a-breadcrumb-item>首页</a-breadcrumb-item>
-      <a-breadcrumb-item>标书检查</a-breadcrumb-item>
-    </a-breadcrumb>
-
     <!-- 卡片①：创建新项目 -->
     <section class="card card-project">
       <div class="card-project__main">
@@ -579,16 +574,10 @@ function getStatusClass(status: string) {
 
 <style scoped>
 .check-view {
-  max-width: 1200px;
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 24px;
   font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
-}
-
-.breadcrumb {
-  margin-bottom: 0;
 }
 
 /* ============ 卡片通用 ============ */

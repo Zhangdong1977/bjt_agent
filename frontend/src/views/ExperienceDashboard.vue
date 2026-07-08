@@ -590,7 +590,7 @@ function formatDate(dateStr: string): string {
 <style scoped>
 .experience-dashboard {
   width: 100%;
-  padding: 24px 32px;
+  padding: 24px 0;
   box-sizing: border-box;
 }
 

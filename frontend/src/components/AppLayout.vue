@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useBillingStore } from '@/stores/billing'
 import { useAnnouncementStore } from '@/stores/announcement'
 import AppSidebar from './AppSidebar.vue'
+import AppBreadcrumb from './AppBreadcrumb.vue'
 import PurchaseModal from './billing/PurchaseModal.vue'
 import AnnouncementPopup from './announcement/AnnouncementPopup.vue'
 import AnnouncementInbox from './announcement/AnnouncementInbox.vue'
@@ -110,6 +111,7 @@ function goOfficialSite() {
         <AppSidebar />
       </a-layout-sider>
       <a-layout-content class="app-content">
+        <AppBreadcrumb />
         <router-view />
       </a-layout-content>
     </a-layout>
@@ -212,14 +214,22 @@ function goOfficialSite() {
   object-fit: contain;
 }
 
-/* 胶囊图标作为数值背景：图片左侧是小图标，右侧留白区叠数值文字 */
+/*
+ * 胶囊数值徽章：背景图（图标 + 左圆角帽）只作左端帽，胶囊主体由 CSS 绘制。
+ * 这样数值文字长度变化（0文 ~ 10000文）时，背景既不会被截断，文字也不会超出背景。
+ * - background-color 取图片文字区底色 #FBE2BC：长文本时向右无缝延伸（文字永不出框）；
+ * - border-radius 提供右圆角帽（图片自带左圆角帽）：短/长文本都能干净收边（背景永不截断）；
+ * - 图片右侧米色区与 CSS 底色一致，叠加处无接缝。
+ */
 .metric--pill {
   height: 32px;
   padding: 0 14px 0 40px; /* 左侧留给图标区，右侧留白 */
   border: 0;
+  border-radius: 9999px; /* 胶囊形：与图片半圆帽一致，并随响应式高度自适应 */
+  background-color: #FBE2BC; /* 图片文字区底色，向右延伸；与图片米色无接缝 */
   background-repeat: no-repeat;
   background-position: left center;
-  background-size: auto 32px; /* 按高度铺满，宽度按 3:1 比例约 96px */
+  background-size: auto 32px; /* 按高度铺满，宽度按 3:1 比例约 96px（仅作左端帽） */
   align-items: center;
   cursor: default;
 }
