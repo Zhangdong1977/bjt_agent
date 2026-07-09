@@ -1,5 +1,6 @@
 """Rate limiting middleware and utilities."""
 
+import logging
 from urllib.parse import urlparse, parse_qs, urlencode
 
 from slowapi import Limiter
@@ -7,6 +8,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from fastapi import Request
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 
 def get_client_ip(request: Request) -> str:
@@ -63,11 +66,26 @@ def create_limiter() -> Limiter:
 limiter = create_limiter()
 
 
-def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
-    """Handle rate limit exceeded errors."""
+def rate_limit_exceeded_handler(request: Request, _exc: RateLimitExceeded):
+    """Handle rate limit exceeded errors.
+
+    返回友好中文文案，不向用户透传 ``exc.detail``（如 "1 per 1 minute"）——
+    那是限流规则的技术描述，对最终用户既无用也不友好。
+
+    同时打一条诊断日志，便于定位"生产大面积误伤"根因：若 ``counted_ip`` 与
+    ``direct_ip`` 恒为同一内网地址且 ``xff`` 为空，说明反向代理未透传
+    ``X-Forwarded-For``，全站共用一个 IP 限额。
+    """
+    counted_ip = get_client_ip(request)
+    direct_ip = request.client.host if request.client else None
+    logger.info(
+        "[RateLimit] blocked path=%s counted_ip=%s direct_ip=%s xff=%s",
+        request.url.path,
+        counted_ip,
+        direct_ip,
+        request.headers.get("X-Forwarded-For"),
+    )
     return JSONResponse(
         status_code=429,
-        content={
-            "detail": f"Rate limit exceeded: {exc.detail}. Please try again later."
-        },
+        content={"detail": "操作过于频繁，请稍后再试"},
     )

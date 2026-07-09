@@ -134,6 +134,16 @@ function extractDetail(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback
 }
 
+// 是否命中 429 限流（slowapi 在端点逻辑前拦截）。axios 错误的 response.status === 429。
+function isRateLimited(e: unknown): boolean {
+  return (
+    e !== null &&
+    typeof e === 'object' &&
+    'response' in e &&
+    (e as any).response?.status === 429
+  )
+}
+
 async function handleLogin() {
   loginError.value = ''
   if (!acceptedAgreement.value) {
@@ -175,10 +185,17 @@ async function handleSendSms() {
     await authApi.sendSms(regPhone.value, captchaId.value, regCaptchaCode.value)
     startSmsCountdown()
   } catch (e: unknown) {
-    regError.value = extractDetail(e, '验证码发送失败')
-    // 图形验证码消费后失效，刷新
-    regCaptchaCode.value = ''
-    await fetchCaptcha()
+    if (isRateLimited(e)) {
+      // 限流在图形验证码校验之前拦截，图形码未消费、无需刷新；
+      // 启动倒计时避免用户连点持续触发 429。
+      regError.value = '获取过于频繁，请 1 分钟后再试'
+      startSmsCountdown()
+    } else {
+      regError.value = extractDetail(e, '验证码发送失败')
+      // 图形验证码消费后失效，刷新
+      regCaptchaCode.value = ''
+      await fetchCaptcha()
+    }
   } finally {
     smsSending.value = false
   }
@@ -264,9 +281,16 @@ async function handleSendResetSms() {
     await authApi.sendResetSms(resetPhone.value, captchaId.value, resetCaptchaCode.value)
     startSmsCountdown()
   } catch (e: unknown) {
-    resetError.value = extractDetail(e, '验证码发送失败')
-    resetCaptchaCode.value = ''
-    await fetchCaptcha()
+    if (isRateLimited(e)) {
+      // 限流在图形验证码校验之前拦截，图形码未消费、无需刷新；
+      // 启动倒计时避免用户连点持续触发 429。
+      resetError.value = '获取过于频繁，请 1 分钟后再试'
+      startSmsCountdown()
+    } else {
+      resetError.value = extractDetail(e, '验证码发送失败')
+      resetCaptchaCode.value = ''
+      await fetchCaptcha()
+    }
   } finally {
     smsSending.value = false
   }
@@ -390,10 +414,6 @@ async function handleResetPassword() {
               />
             </div>
 
-            <div class="reset-link-row">
-              <a class="reset-link" href="#" @click.prevent="showReset = true">重置密码？</a>
-            </div>
-
             <div class="form-item form-item--captcha">
               <img class="input-icon" :src="iconCaptcha" alt="" />
               <input
@@ -416,6 +436,7 @@ async function handleResetPassword() {
                 @click="fetchCaptcha"
               />
               <span v-else class="captcha-placeholder" @click="fetchCaptcha">点击加载</span>
+              <a class="reset-link reset-link--inline" href="#" @click.prevent="showReset = true">重置密码？</a>
             </div>
 
             <div v-if="loginError" class="error-msg" role="alert">{{ loginError }}</div>
@@ -823,22 +844,24 @@ async function handleResetPassword() {
   color: #B80015;
 }
 
-/* ============ 登录表单：重置密码入口链接 ============ */
-.reset-link-row {
-  text-align: right;
-  margin: -16px 0 18px;
-}
-
+/* ============ 登录表单：重置密码入口链接（内联于图形验证码同一行，置于验证码图片右侧） ============ */
 .reset-link {
   color: #888;
   font-size: 13px;
   text-decoration: none;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .reset-link:hover {
   color: #D7041A;
   text-decoration: underline;
+}
+
+/* 内联于验证码行末尾：不再独占一行，消除验证码输入区被撑高的行高 */
+.reset-link--inline {
+  flex-shrink: 0;
+  margin-left: 12px;
 }
 
 /* ============ 重置密码视图 ============ */

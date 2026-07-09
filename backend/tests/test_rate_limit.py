@@ -75,7 +75,8 @@ class TestAuthRateLimiting:
 
         # The last request should have been rate limited
         assert response.status_code == 429
-        assert "rate" in response.json()["detail"].lower() or "retry" in response.json()["detail"].lower()
+        # 限流文案已中文化（见 rate_limit_exceeded_handler），按中文关键词断言
+        assert "频繁" in response.json()["detail"] or "稍后" in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_login_endpoint_rate_limited(
