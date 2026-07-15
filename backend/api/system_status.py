@@ -115,6 +115,10 @@ async def get_system_status(
     maintenance = await get_maintenance_state(db)
     running_reviews = await _running_review_count(db)
     parsing_docs = await _parsing_document_count(db)
+    # 先提交（结束事务、解除行锁、归还连接占用）再做慢的 celery inspect 广播：
+    # 否则请求若在 inspect（2-4s，broker 异常时可能阻塞更久）期间被取消/挂起，
+    # 会残留 idle in transaction 连接、泄漏占满连接池。状态页只读，commit 无副作用。
+    await db.commit()
     cluster = await get_cluster_status()
 
     return SystemStatusResponse(

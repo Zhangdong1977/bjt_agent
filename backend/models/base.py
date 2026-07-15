@@ -58,12 +58,20 @@ class Base(DeclarativeBase):
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Get database session for dependency injection."""
+    """Get database session for dependency injection.
+
+    用 ``BaseException`` 兜底（含 ``asyncio.CancelledError``）：客户端中途
+    取消请求（系统状态页轮询抢占、导航离开等）时 Starlette 会向协程注入
+    ``CancelledError``——它是 ``BaseException`` 子类，``except Exception``
+    接不住，会跳过 rollback，使连接以 ``idle in transaction`` 状态泄漏、
+    逐步占满连接池（曾导致全站文档上传 500）。改用 ``BaseException`` 保证
+    回滚一定执行；连接关闭仍由 ``finally`` + ``async with`` 兜底。
+    """
     async with async_session_factory() as session:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except BaseException:
             await session.rollback()
             raise
         finally:
