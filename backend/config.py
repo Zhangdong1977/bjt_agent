@@ -148,6 +148,12 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 500  # Maximum file upload size in MB (supports large documents like 投标文件.docx)
     max_upload_size_bytes: int = 500 * 1024 * 1024  # Calculated bytes
 
+    # 单连接上传限速（字节/秒）；0 表示不限速。env: UPLOAD_BYTES_PER_SEC。
+    # 后端流式分块读取 + 时间补偿实现：因 nginx proxy_request_buffering off，
+    # 后端读慢会 TCP 反压到浏览器，端到端限速成立。默认 4 MB/s（500MB ≈ 125s）。
+    # 集群并发上限由 nginx limit_conn 控制，见 deploy/nginx/bjt-cluster。
+    upload_bytes_per_sec: int = 4 * 1024 * 1024  # 4 MB/s
+
     # Rate Limiting
     rate_limit_per_minute: int = 60  # Default rate limit per minute
     rate_limit_auth_per_minute: int = 10  # Stricter limit for auth endpoints

@@ -1,7 +1,5 @@
 """Documents API routes."""
 
-import os
-import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +8,7 @@ from sqlalchemy import select
 
 from backend.api.deps import DBSession, CurrentUser, is_interior_user
 from backend.config import get_settings
+from backend.middleware.upload_throttle import throttled_save
 from backend.models import Document, Project
 from backend.schemas.document import DocumentResponse, DocumentListResponse, DocumentContentResponse
 
@@ -148,8 +147,7 @@ async def upload_document(
     # Save file with unique name to avoid conflicts
     unique_filename = f"{Path(file.filename).stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{Path(file.filename).suffix}"
     file_path = doc_dir / unique_filename
-    with file_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    await throttled_save(file, file_path, bytes_per_sec=settings.upload_bytes_per_sec)
 
     # Create document record
     document = Document(
@@ -365,11 +363,12 @@ def _validate_upload_file(file: UploadFile) -> None:
         )
 
 
-def _save_upload_file(file: UploadFile, doc_dir: Path) -> str:
+async def _save_upload_file(file: UploadFile, doc_dir: Path) -> str:
     """把上传文件保存到指定目录，返回绝对路径。
 
     写完后 fsync 强制把数据刷到磁盘（NFS 场景下确保写已传播到 server，
     对其它 client 可见），避免「上传后 parser 跨节点读不到文件」的竞态。
+    通过 throttled_save 实现单连接上传限速（见 settings.upload_bytes_per_sec）。
     """
     doc_dir.mkdir(parents=True, exist_ok=True)
     unique_filename = (
@@ -377,10 +376,9 @@ def _save_upload_file(file: UploadFile, doc_dir: Path) -> str:
         f"{Path(file.filename).suffix}"
     )
     file_path = doc_dir / unique_filename
-    with file_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        buffer.flush()
-        os.fsync(buffer.fileno())
+    await throttled_save(
+        file, file_path, bytes_per_sec=settings.upload_bytes_per_sec, fsync=True
+    )
     return str(file_path)
 
 
@@ -406,7 +404,7 @@ async def upload_draft_document(
 
     # 草稿文档落盘到 workspace/{user_id}/_drafts/{tender|bid}/
     draft_dir = settings.workspace_path / str(current_user.id) / "_drafts" / doc_type
-    file_path = _save_upload_file(file, draft_dir)
+    file_path = await _save_upload_file(file, draft_dir)
 
     document = Document(
         project_id=None,

@@ -28,7 +28,32 @@ server {
         proxy_read_timeout 86400;
     }
 
-    location ^~ /api {
+    # ---- 上传接口：限并发（每 IP 同时上传 ≤3，防多用户/多标签页打满带宽）----
+    # 用正则精确匹配上传端点并对每 IP 限连接数。注意 nginx location 优先级：
+    # ^~ 前缀匹配命中后不再查正则，故下方 /api 已降级为普通前缀（location /api），
+    # 本正则 location 才能优先生效。GET 列表（同路径 projects/{id}/documents）
+    # 虽也命中，但瞬时完成、不占长连接，不会误伤。
+    #
+    # ⚠️ limit_conn_zone 必须定义在 http{} 块，请在 /etc/nginx/nginx.conf 的 http{} 内加：
+    #       limit_conn_zone $binary_remote_addr zone=upload_conn:1m;
+    location ~ ^/api/(projects/[^/]+/documents|documents/upload|knowledge/upload)$ {
+        limit_conn upload_conn 3;     # 每 IP 同时上传 ≤3
+        limit_conn_status 429;        # 超限返回 429（前端已有全局 429 处理）
+
+        proxy_pass http://127.0.0.1:8001;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 请求体流式：前端上传进度条可靠 + 配合后端 throttled_save 端到端限速
+        proxy_request_buffering off;
+        # 慢速上传（4MB/s × 500MB ≈ 125s）耗时变长，放宽读写超时
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    location /api {
         proxy_pass http://127.0.0.1:8001;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

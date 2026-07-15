@@ -2,9 +2,9 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Body
 from typing import List, Annotated
 import asyncio
 import os
-import shutil
 import json
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .deps import get_current_user, get_db_session
 from backend.config import get_settings
+from backend.middleware.upload_throttle import throttled_save
 from backend.models import User
 from backend.schemas.knowledge import KnowledgeDocumentResponse, KnowledgeDocumentListResponse
 from backend.schemas.auth import TokenData
@@ -76,8 +77,7 @@ async def upload_document(
     unique_filename = f"{uuid4()}{file_ext}"
     file_path = os.path.join(user_dir, unique_filename)
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    await throttled_save(file, Path(file_path), bytes_per_sec=settings.upload_bytes_per_sec)
 
     stat = os.stat(file_path)
 
