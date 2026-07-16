@@ -15,7 +15,10 @@ CREATE TABLE IF NOT EXISTS review_share_tokens (
     updated_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS ix_review_share_tokens_token             ON review_share_tokens(token);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_review_share_tokens_token      ON review_share_tokens(token);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_review_share_tokens_active_task_creator
+    ON review_share_tokens(task_id, created_by_user_id)
+    WHERE is_active;
 CREATE INDEX IF NOT EXISTS ix_review_share_tokens_project_id        ON review_share_tokens(project_id);
 CREATE INDEX IF NOT EXISTS ix_review_share_tokens_task_id           ON review_share_tokens(task_id);
 CREATE INDEX IF NOT EXISTS ix_review_share_tokens_created_by_user_id ON review_share_tokens(created_by_user_id);

@@ -18,6 +18,9 @@ const props = defineProps<{
   // 可选的自定义报告获取函数：分享页（非项目所有者）传入基于 share token 的
   // fetcher 以绕过 ownership 校验；不传则走默认的 reviewApi.getTodoReport。
   reportFetcher?: (todoId: string) => Promise<string>
+  // 只读模式：分享页（非项目所有者查看）时为 true，隐藏"全部确认"等写操作按钮，
+  // 这些操作只对项目所有者有意义，对查看者会因权限不足而失败。
+  readOnly?: boolean
 }>()
 
 const summary = computed(() => props.reviewResults?.summary ?? {
@@ -217,7 +220,7 @@ function getSeverityColorClass(severity: string): string {
                 {{ selectedGroup.isCompliant ? '全部合规' : `风险项 ${selectedGroup.nonCompliantCount}` }}
               </span>
               <BatchConfirmBar
-                v-if="!selectedGroup.isCompliant"
+                v-if="!selectedGroup.isCompliant && !readOnly"
                 :project-id="projectId"
                 :task-id="taskId"
                 :rule-doc-name="selectedGroup.ruleDocName"
@@ -234,6 +237,7 @@ function getSeverityColorClass(severity: string): string {
               v-if="selectedGroup.allFindings.length > 0"
               :findings="selectedGroup.allFindings"
               :project-id="projectId"
+              :read-only="readOnly"
             />
           </div>
         </template>

@@ -12,6 +12,8 @@ interface Finding extends ReviewResult {
 defineProps<{
   findings: Finding[]
   projectId?: string
+  // 只读模式：隐藏每条 finding 的反馈条（FindingFeedbackBar），分享页查看者无权提交反馈。
+  readOnly?: boolean
 }>()
 
 // Track feedback per finding (keyed by finding.id)
@@ -92,9 +94,9 @@ function getSeverityLabel(severity: string): string {
                     <span class="detail-label">位置:</span>
                     <span>第 {{ finding.location_page }} 页{{ finding.location_line ? `, 第 ${finding.location_line} 行` : '' }}</span>
                   </div>
-                  <!-- Feedback bar for non-compliant findings -->
+                  <!-- Feedback bar for non-compliant findings (hidden in read-only/share view) -->
                   <FindingFeedbackBar
-                    v-if="projectId"
+                    v-if="projectId && !readOnly"
                     :finding="finding"
                     :project-id="projectId"
                     :existing-feedback="getUserFeedback(finding.id)"

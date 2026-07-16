@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import { shareApi, type ShareTokenInfo } from '@/api/client'
 
 const props = defineProps<{
@@ -14,6 +14,7 @@ const emit = defineEmits<{
 }>()
 
 const loading = ref(false)
+const revoking = ref(false)
 const tokenInfo = ref<ShareTokenInfo | null>(null)
 const errorMsg = ref('')
 // 完整可访问 URL：origin + /shared/{token}
@@ -60,6 +61,31 @@ async function copyLink() {
   }
 }
 
+// 撤销分享：禁用当前 token，已发出的链接立即失效。二次确认避免误触。
+function handleRevoke() {
+  const info = tokenInfo.value
+  if (!info || revoking.value) return
+  Modal.confirm({
+    title: '撤销分享',
+    content: '撤销后，已分享的链接将立即失效，对方无法再通过该链接查看。确定撤销吗？',
+    okText: '撤销',
+    okType: 'danger',
+    cancelText: '取消',
+    async onOk() {
+      revoking.value = true
+      try {
+        await shareApi.revokeToken(info.token)
+        message.success('分享已撤销')
+        emit('update:open', false)
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '撤销失败，请稍后重试')
+      } finally {
+        revoking.value = false
+      }
+    },
+  })
+}
+
 function handleClose() {
   emit('update:open', false)
 }
@@ -96,6 +122,12 @@ function handleClose() {
         <p v-if="tokenInfo.expires_at" class="share-expire">
           有效期至：{{ new Date(tokenInfo.expires_at).toLocaleString('zh-CN') }}
         </p>
+
+        <div class="share-footer">
+          <a-button danger block :loading="revoking" @click="handleRevoke">
+            撤销分享
+          </a-button>
+        </div>
       </div>
     </a-spin>
   </a-modal>
@@ -133,6 +165,10 @@ function handleClose() {
   text-align: center;
   color: var(--sub, #999);
   font-size: 12px;
+}
+
+.share-footer {
+  margin-top: 16px;
 }
 
 .share-error {

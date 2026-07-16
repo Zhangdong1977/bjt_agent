@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from pathlib import Path as FilePath
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 
@@ -21,9 +21,10 @@ from backend.models import Project, ReviewTask, ReviewResult, ReviewShareToken, 
 from backend.schemas.share import (
     ShareTokenCreate,
     ShareTokenResponse,
+    SharedTodoItemResponse,
     SharedReviewPayload,
 )
-from backend.schemas.review import ReviewResultResponse, TodoItemResponse
+from backend.schemas.review import ReviewResultResponse
 from backend.utils.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -66,9 +67,26 @@ async def _resolve_share(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="分享链接无效或已被撤销")
     if require_active and not share.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="分享链接无效或已被撤销")
-    if share.expires_at is not None and share.expires_at <= utc_now():
+    if require_active and share.expires_at is not None and share.expires_at <= utc_now():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="分享链接已过期")
     return share
+
+
+async def _get_shared_project(share: ReviewShareToken, db: DBSession) -> Project:
+    """Resolve the still-visible project behind a share token."""
+    result = await db.execute(
+        select(Project).where(
+            Project.id == share.project_id,
+            Project.is_deleted.is_(False),
+        )
+    )
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="分享的项目已不存在",
+        )
+    return project
 
 
 @router.post(
@@ -93,8 +111,13 @@ async def create_share_token(
     await _verify_my_project(project_id, current_user, db)
 
     # Validate that the task belongs to this project.
+    # Serialize token issuance for the same task.  Together with the partial
+    # unique index this prevents double-clicks/concurrent requests from
+    # creating two independently revocable "current" links.
     task_result = await db.execute(
-        select(ReviewTask).where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        select(ReviewTask)
+        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .with_for_update()
     )
     task = task_result.scalar_one_or_none()
     if not task:
@@ -112,21 +135,27 @@ async def create_share_token(
             ReviewShareToken.task_id == task_id,
             ReviewShareToken.created_by_user_id == current_user.id,
             ReviewShareToken.is_active.is_(True),
-        )
+        ).order_by(ReviewShareToken.created_at.desc()).limit(1)
     )
     existing = existing_result.scalar_one_or_none()
     if existing:
-        if expires_at is not None:
-            existing.expires_at = expires_at
+        if existing.expires_at is None or existing.expires_at > utc_now():
+            if expires_at is not None:
+                existing.expires_at = expires_at
+            await db.flush()
+            return ShareTokenResponse(
+                token=existing.token,
+                share_url=f"/shared/{existing.token}",
+                project_id=existing.project_id,
+                task_id=existing.task_id,
+                expires_at=existing.expires_at,
+                created_at=existing.created_at,
+            )
+
+        # An expired row may still be marked active.  Retire it before issuing
+        # a replacement so the partial unique index remains satisfied.
+        existing.is_active = False
         await db.flush()
-        return ShareTokenResponse(
-            token=existing.token,
-            share_url=f"/shared/{existing.token}",
-            project_id=existing.project_id,
-            task_id=existing.task_id,
-            expires_at=existing.expires_at,
-            created_at=existing.created_at,
-        )
 
     share = ReviewShareToken(
         project_id=project_id,
@@ -174,8 +203,7 @@ async def get_shared_review(
             detail="分享的审查任务已不存在",
         )
 
-    project_result = await db.execute(select(Project).where(Project.id == share.project_id))
-    project = project_result.scalar_one_or_none()
+    project = await _get_shared_project(share, db)
 
     findings_result = await db.execute(
         select(ReviewResult)
@@ -196,7 +224,7 @@ async def get_shared_review(
         task_id=share.task_id,
         project_name=project.name if project else None,
         findings=[ReviewResultResponse.model_validate(f) for f in findings],
-        todos=[TodoItemResponse.model_validate(t) for t in todos],
+        todos=[SharedTodoItemResponse.model_validate(t) for t in todos],
     )
 
 
@@ -226,15 +254,14 @@ async def get_shared_todo_report(
     if not todo:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="检查项不存在或已被删除")
 
+    project = await _get_shared_project(share, db)
     report_path = (todo.result or {}).get("report_path")
-
-    project_result = await db.execute(select(Project).where(Project.id == share.project_id))
-    project = project_result.scalar_one_or_none()
-    owner_user_id = project.user_id if project else None
+    workspace_dir = (
+        settings.workspace_path / str(project.user_id) / share.project_id
+    ).resolve()
 
     # Fallback: scan the OWNER's workspace for review_*.md files.
-    if not report_path and owner_user_id:
-        workspace_dir = settings.workspace_path / str(owner_user_id) / share.project_id
+    if not report_path:
         if workspace_dir.exists():
             review_files = sorted(workspace_dir.glob("review_*.md"))
             if review_files:
@@ -243,7 +270,19 @@ async def get_shared_todo_report(
     if not report_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="审查报告尚未生成")
 
-    report_file = FilePath(report_path)
+    report_file = FilePath(report_path).resolve()
+    try:
+        report_file.relative_to(workspace_dir)
+    except ValueError:
+        logger.warning(
+            "Rejected shared report path outside project workspace: project_id=%s todo_id=%s",
+            share.project_id,
+            todo_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="审查报告文件不存在，请重新生成",
+        )
     if not report_file.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="审查报告文件不存在，请重新生成")
 
