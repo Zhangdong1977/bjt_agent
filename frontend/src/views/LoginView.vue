@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { authApi, systemStatusApi } from '@/api/client'
 import AgreementModal from '@/components/AgreementModal.vue'
@@ -12,6 +12,7 @@ import iconPassword from '@/assets/images/ui/login-input-password.png'
 import iconCaptcha from '@/assets/images/ui/login-input-captcha.png'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 
 // ============ 用户协议 / 隐私政策 ============
@@ -157,7 +158,9 @@ async function handleLogin() {
       captchaId.value,
       loginCaptchaCode.value,
     )
-    router.push({ name: 'home' })
+    // 优先跳回分享链接等原目标页；无则回首页。
+    const redirect = route.query.redirect
+    router.push(typeof redirect === 'string' && redirect ? redirect : { name: 'home' })
   } catch (e: unknown) {
     loginError.value = extractDetail(e, '登录失败，请检查用户名和密码')
     // 登录失败后旧验证码令牌不应复用：清空输入并刷新图片

@@ -5,6 +5,7 @@ import { Modal } from 'ant-design-vue'
 import { useProjectStore } from '@/stores/project'
 import { reviewApi } from '@/api/client'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
+import ShareResultModal from '@/components/ShareResultModal.vue'
 import type { ReviewResponse } from '@/types'
 // 按钮图（自带胶囊/图标，文字叠加在右侧）：查看时间线 / 重新审查
 import btnTimeline from '@/assets/images/ui/result-btn-timeline.png'
@@ -19,21 +20,31 @@ const fromExperience = computed(() => route.query.from === 'experience')
 const selectedTaskId = ref<string>('')
 const todos = ref<any[]>([])
 const taskResults = ref<ReviewResponse | null>(null)
+// 分享弹窗
+const shareOpen = ref(false)
 
 onMounted(async () => {
   await projectStore.selectProject(projectId.value)
   await projectStore.fetchReviewTasks()
 
-  // 默认选中最新任务并加载数据
+  // 优先选中 URL 中指定的任务（用于分享链接定位），否则默认最新任务。
   if (projectStore.reviewTasks.length > 0) {
-    const latestTask = projectStore.reviewTasks[0]
-    selectedTaskId.value = latestTask.id
+    const queryTaskId = route.query.taskId as string | undefined
+    const matched =
+      queryTaskId && projectStore.reviewTasks.some((t) => t.id === queryTaskId)
+        ? queryTaskId
+        : projectStore.reviewTasks[0].id
+    selectedTaskId.value = matched
   }
 })
 
 // 当 selectedTaskId 变化时加载结果和 todos
 watch(selectedTaskId, async (newTaskId) => {
   if (!newTaskId) return
+  // 把当前任务写回 URL（保留 from 等其它 query），便于刷新保持/再次分享。
+  if (route.query.taskId !== newTaskId) {
+    router.replace({ query: { ...route.query, taskId: newTaskId } })
+  }
   try {
     const [findings, taskTodos] = await Promise.all([
       reviewApi.getResultsByTask(projectId.value, newTaskId).catch(() => []),
@@ -133,6 +144,13 @@ async function startNewReview() {
         >
           <span class="bg-btn-text text-red">重新审查</span>
         </button>
+        <button
+          class="share-btn"
+          :disabled="!selectedTaskId || !taskResults"
+          @click="shareOpen = true"
+        >
+          分享结果
+        </button>
       </div>
 
       <section v-if="taskResults" class="section">
@@ -143,12 +161,25 @@ async function startNewReview() {
           :project-id="projectId"
           :task-id="selectedTaskId"
         />
+        <a-alert
+          class="disclaimer-alert"
+          type="warning"
+          show-icon
+          message="检查结果由大模型生成，仅供参考，请谨慎判别！"
+          description="本结果不可作为最终判定是否废标的依据，最终结果以专家实际判别为准。"
+        />
       </section>
 
       <div v-else class="no-results">
         <p>暂无审查结果。</p>
         <a-button type="primary" @click="goBack">返回历史列表</a-button>
       </div>
+
+      <ShareResultModal
+        v-model:open="shareOpen"
+        :project-id="projectId"
+        :task-id="selectedTaskId"
+      />
     </main>
   </div>
 </template>
@@ -215,6 +246,32 @@ async function startNewReview() {
   filter: grayscale(0.4);
 }
 
+/* 文字型分享按钮：与 PNG 按钮并列，简洁描边风格 */
+.share-btn {
+  margin-left: auto;
+  height: 36px;
+  padding: 0 18px;
+  border: 1px solid #D7041A;
+  border-radius: var(--r);
+  background: #fff;
+  color: #D7041A;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.share-btn:hover:not(:disabled) {
+  background: #D7041A;
+  color: #fff;
+}
+
+.share-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 /* 文字层：按 PNG 像素测量精确定位。
    背景 PNG 148×60，胶囊实测 bbox x[9,138] y[5,46]：
    - 胶囊垂直中心在 y=25.5/60≈42.5%，故 top 用 42.5%（不是 50%）让文字落在胶囊中线；
@@ -265,6 +322,11 @@ async function startNewReview() {
   height: 3px;
   border-radius: 2px;
   background: #D7041A;
+}
+
+/* 免责声明提示卡：紧跟审查结果末尾，与结果区分明 */
+.disclaimer-alert {
+  margin-top: 1.25rem;
 }
 
 .no-results {

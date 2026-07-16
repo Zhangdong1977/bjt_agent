@@ -11,6 +11,14 @@ const router = createRouter({
       meta: { guest: true },
     },
     {
+      // 分享结果查看页：仍要求登录（meta.requiresAuth 由守卫处理）。
+      // 未登录会被守卫带上 redirect 跳到登录页，登录后自动回到本页。
+      path: "/shared/:token",
+      name: "shared-review",
+      component: () => import("@/views/SharedReviewView.vue"),
+      meta: { title: "分享的审查结果", requiresAuth: true, hideBreadcrumb: true },
+    },
+    {
       path: "/",
       redirect: "/home/check",
     },
@@ -103,7 +111,8 @@ router.beforeEach(async (to, _from, next) => {
   }
 
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
-    next({ name: "login" });
+    // 携带原目标地址，登录成功后跳回（分享链接未登录场景的关键闭环）。
+    next({ name: "login", query: { redirect: to.fullPath } });
   } else if (to.meta.guest && authStore.isAuthenticated) {
     next("/home/check");
   } else if (to.meta.interiorOnly && !authStore.isInteriorUser) {

@@ -2,7 +2,11 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { message } from "ant-design-vue";
 import { billingApi, profileApi } from "@/api/client";
+import { useAuthStore } from "@/stores/auth";
 import type { BillingOrder, ConsumptionRecord, Coupon, User } from "@/types";
+
+const authStore = useAuthStore();
+const isInterior = computed(() => authStore.isInteriorUser);
 
 const activeKey = ref("info");
 const orderActiveKey = ref("orders");
@@ -31,15 +35,28 @@ const orderFilters = reactive({
   start_date: "",
   end_date: "",
   product_name: "",
+  username: "",
+  enterprise_name: "",
 });
 const consumptionFilters = reactive({
   start_date: "",
   end_date: "",
   project_name: "",
+  username: "",
+  enterprise_name: "",
 });
 
-const orderColumns = [
+// 内部用户视角多出「用户名/企业」归属列，便于在全站数据中区分归属
+const ownershipColumns = isInterior.value
+  ? [
+      { title: "用户名", dataIndex: "username", width: 120 },
+      { title: "企业", dataIndex: "enterprise_name", width: 160 },
+    ]
+  : [];
+
+const orderColumns = computed(() => [
   { title: "序号", dataIndex: "index", width: 70 },
+  ...ownershipColumns,
   { title: "订单编号", dataIndex: "order_no" },
   { title: "产品名称", dataIndex: "product_name" },
   { title: "下单时间", dataIndex: "created_at" },
@@ -49,16 +66,17 @@ const orderColumns = [
   { title: "优惠券", dataIndex: "coupon_amount_cents" },
   { title: "订单有效期", dataIndex: "expires_at" },
   { title: "充值后余额", dataIndex: "current_balance_wen" },
-];
+]);
 
-const consumptionColumns = [
+const consumptionColumns = computed(() => [
   { title: "序号", dataIndex: "index", width: 70 },
+  ...ownershipColumns,
   { title: "消费时间", dataIndex: "consumed_at" },
   { title: "项目名称", dataIndex: "project_name" },
   { title: "消耗点数", dataIndex: "consumed_wen" },
   { title: "获得积分", dataIndex: "earned_points" },
   { title: "使用人", dataIndex: "used_by" },
-];
+]);
 
 const couponColumns = [
   { title: "序号", dataIndex: "index", width: 70 },
@@ -162,6 +180,8 @@ async function loadOrders() {
     start_date: toApiDate(orderFilters.start_date),
     end_date: toApiDate(orderFilters.end_date, true),
     product_name: orderFilters.product_name || undefined,
+    username: orderFilters.username || undefined,
+    enterprise_name: orderFilters.enterprise_name || undefined,
   });
 }
 
@@ -170,6 +190,8 @@ async function loadConsumptions() {
     start_date: toApiDate(consumptionFilters.start_date),
     end_date: toApiDate(consumptionFilters.end_date, true),
     project_name: consumptionFilters.project_name || undefined,
+    username: consumptionFilters.username || undefined,
+    enterprise_name: consumptionFilters.enterprise_name || undefined,
   });
 }
 
@@ -271,11 +293,21 @@ onMounted(() => {
                 <input v-model="orderFilters.start_date" type="date" />
                 <input v-model="orderFilters.end_date" type="date" />
                 <a-input v-model:value="orderFilters.product_name" placeholder="产品名称" class="query-input" />
+                <template v-if="isInterior">
+                  <a-input v-model:value="orderFilters.username" placeholder="用户名" class="query-input" />
+                  <a-input v-model:value="orderFilters.enterprise_name" placeholder="企业" class="query-input" />
+                </template>
                 <a-button type="primary" @click="loadOrders">查询</a-button>
               </div>
               <a-table :columns="orderColumns" :data-source="orderRows" row-key="id" size="middle" :scroll="{ x: 1120 }">
                 <template #bodyCell="{ column, record }">
-                  <template v-if="column.dataIndex === 'created_at'">
+                  <template v-if="column.dataIndex === 'username'">
+                    {{ record.username || "-" }}
+                  </template>
+                  <template v-else-if="column.dataIndex === 'enterprise_name'">
+                    {{ record.enterprise_name || "-" }}
+                  </template>
+                  <template v-else-if="column.dataIndex === 'created_at'">
                     {{ formatDateTime(record.created_at) }}
                   </template>
                   <template v-else-if="column.dataIndex === 'status'">
@@ -307,11 +339,21 @@ onMounted(() => {
                 <input v-model="consumptionFilters.start_date" type="date" />
                 <input v-model="consumptionFilters.end_date" type="date" />
                 <a-input v-model:value="consumptionFilters.project_name" placeholder="项目名称" class="query-input" />
+                <template v-if="isInterior">
+                  <a-input v-model:value="consumptionFilters.username" placeholder="用户名" class="query-input" />
+                  <a-input v-model:value="consumptionFilters.enterprise_name" placeholder="企业" class="query-input" />
+                </template>
                 <a-button type="primary" @click="loadConsumptions">查询</a-button>
               </div>
               <a-table :columns="consumptionColumns" :data-source="consumptionRows" row-key="id" size="middle">
                 <template #bodyCell="{ column, record }">
-                  <template v-if="column.dataIndex === 'consumed_at'">
+                  <template v-if="column.dataIndex === 'username'">
+                    {{ record.username || "-" }}
+                  </template>
+                  <template v-else-if="column.dataIndex === 'enterprise_name'">
+                    {{ record.enterprise_name || "-" }}
+                  </template>
+                  <template v-else-if="column.dataIndex === 'consumed_at'">
                     {{ formatDateTime(record.consumed_at) }}
                   </template>
                   <template v-else-if="column.dataIndex === 'consumed_wen'">

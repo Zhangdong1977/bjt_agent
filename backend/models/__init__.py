@@ -8,6 +8,7 @@ from .review_result import ReviewResult
 from .project_review_result import ProjectReviewResult
 from .agent_step import AgentStep
 from .todo_item import TodoItem
+from .review_share import ReviewShareToken
 from .review_session import ReviewSession
 from .ai_usage_record import AiUsageRecord
 from .ai_usage_task_summary import AiUsageTaskSummary
@@ -31,6 +32,7 @@ __all__ = [
     "ProjectReviewResult",
     "AgentStep",
     "TodoItem",
+    "ReviewShareToken",
     "ReviewSession",
     "AiUsageRecord",
     "AiUsageTaskSummary",

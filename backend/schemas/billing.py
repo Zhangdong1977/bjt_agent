@@ -76,6 +76,9 @@ class OrderResponse(BaseModel):
     paid_at: datetime | None = None
     balance_after_wen: int | None = None
     current_balance_wen: int | None = None
+    # 归属信息（仅内部用户看全站时回填；外部用户视角为 None）
+    username: str | None = None
+    enterprise_name: str | None = None
 
 
 class OrderListResponse(BaseModel):
@@ -90,6 +93,9 @@ class ConsumptionResponse(BaseModel):
     earned_points: int
     used_by: str
     cost_cny: float | None = None
+    # 归属信息（仅内部用户看全站时回填；外部用户视角为 None）
+    username: str | None = None
+    enterprise_name: str | None = None
 
 
 class ConsumptionListResponse(BaseModel):

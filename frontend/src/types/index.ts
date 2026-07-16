@@ -87,6 +87,8 @@ export interface BillingOrder {
   paid_at?: string | null;
   balance_after_wen?: number | null;
   current_balance_wen?: number | null;
+  username?: string | null;
+  enterprise_name?: string | null;
 }
 
 export interface ConsumptionRecord {
@@ -97,6 +99,8 @@ export interface ConsumptionRecord {
   earned_points: number;
   used_by: string;
   cost_cny?: number | null;
+  username?: string | null;
+  enterprise_name?: string | null;
 }
 
 export interface PaymentQr {

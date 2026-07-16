@@ -181,9 +181,12 @@ apiClient.interceptors.response.use(
         originalRequest.headers.Authorization = `Bearer ${newToken}`;
         return apiClient(originalRequest);
       } else {
-        // Refresh failed - redirect to login
+        // Refresh failed - redirect to login, preserving the original page so
+        // the user can be returned after a fresh login (e.g. shared links).
         if (window.location.pathname !== "/login") {
-          window.location.href = "/login";
+          const current = window.location.pathname + window.location.search;
+          const redirect = encodeURIComponent(current);
+          window.location.href = `/login?redirect=${redirect}`;
         }
         return Promise.reject(error);
       }
@@ -339,6 +342,8 @@ export const billingApi = {
     start_date?: string;
     end_date?: string;
     product_name?: string;
+    username?: string;
+    enterprise_name?: string;
   }): Promise<BillingOrder[]> {
     const response = await apiClient.get("/billing/orders", { params });
     return response.data.orders;
@@ -363,6 +368,8 @@ export const billingApi = {
     start_date?: string;
     end_date?: string;
     project_name?: string;
+    username?: string;
+    enterprise_name?: string;
   }): Promise<ConsumptionRecord[]> {
     const response = await apiClient.get("/billing/consumptions", { params });
     return response.data.consumptions;
@@ -656,6 +663,59 @@ export const reviewApi = {
       { responseType: "text" },
     );
     return response.data;
+  },
+};
+
+// Share API — 审查结果分享（凭令牌只读查看，需登录）
+export interface ShareTokenInfo {
+  token: string;
+  share_url: string;
+  project_id: string;
+  task_id: string;
+  expires_at: string | null;
+  created_at: string;
+}
+
+export interface SharedReview {
+  project_id: string;
+  task_id: string;
+  project_name: string | null;
+  findings: ReviewResult[];
+  todos: TodoItem[];
+}
+
+export const shareApi = {
+  // 为某次审查任务签发/复用分享令牌（仅项目所有者）。
+  async createToken(
+    projectId: string,
+    taskId: string,
+    expiresAt?: string,
+  ): Promise<ShareTokenInfo> {
+    const response = await apiClient.post(
+      `/share/projects/${projectId}/tasks/${taskId}`,
+      expiresAt ? { expires_at: expiresAt } : {},
+    );
+    return response.data;
+  },
+
+  // 凭令牌拉取分享的审查结果快照（需登录，不校验项目归属）。
+  async getSharedReview(token: string): Promise<SharedReview> {
+    const response = await apiClient.get(`/share/${token}`);
+    return response.data;
+  },
+
+  // 凭令牌拉取某检查项的 markdown 报告（需登录）。
+  async getSharedReport(token: string, todoId: string): Promise<string> {
+    const response = await apiClient.get(
+      `/share/${token}/report/${todoId}`,
+      { responseType: "text" },
+    );
+    return response.data;
+  },
+
+  // 撤销分享令牌（仅创建者）。
+  async revokeToken(token: string): Promise<void> {
+    await apiClient.delete(`/share/${token}`);
   },
 };
 

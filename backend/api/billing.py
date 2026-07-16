@@ -5,8 +5,8 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
-from backend.api.deps import DBSession, CurrentUser
-from backend.models import BillingOrder, ConsumptionRecord, UserWallet
+from backend.api.deps import DBSession, CurrentUser, is_interior_user
+from backend.models import BillingOrder, ConsumptionRecord, User, UserWallet
 from backend.schemas.billing import (
     ConsumptionListResponse,
     ConsumptionResponse,
@@ -38,7 +38,12 @@ from backend.utils.time_utils import utc_now
 router = APIRouter(prefix="/billing", tags=["Billing"])
 
 
-def _order_response(order: BillingOrder) -> OrderResponse:
+def _order_response(
+    order: BillingOrder,
+    *,
+    username: str | None = None,
+    enterprise_name: str | None = None,
+) -> OrderResponse:
     # 仅已完成订单有余额快照（balance_after_wen）；未付费/已取消订单未发生余额变动 → None（前端显示 "-"）
     return OrderResponse(
         id=order.id,
@@ -55,6 +60,8 @@ def _order_response(order: BillingOrder) -> OrderResponse:
         paid_at=order.paid_at,
         balance_after_wen=order.balance_after_wen,
         current_balance_wen=order.balance_after_wen,
+        username=username,
+        enterprise_name=enterprise_name,
     )
 
 
@@ -139,18 +146,36 @@ async def list_orders(
     start_date: datetime | None = Query(None),
     end_date: datetime | None = Query(None),
     product_name: str | None = Query(None),
+    username: str | None = Query(None),
+    enterprise_name: str | None = Query(None),
 ) -> OrderListResponse:
-    stmt = select(BillingOrder).where(BillingOrder.user_id == current_user.id)
+    interior = is_interior_user(current_user)
+    # 内部用户看全站（JOIN users 取归属）；外部用户只看自己的（归属恒为本人，但同样 JOIN 以统一返回结构）
+    stmt = select(BillingOrder, User.username, User.enterprise_name).join(
+        User, User.id == BillingOrder.user_id, isouter=True
+    )
+    if not interior:
+        stmt = stmt.where(BillingOrder.user_id == current_user.id)
     if start_date:
         stmt = stmt.where(BillingOrder.created_at >= start_date)
     if end_date:
         stmt = stmt.where(BillingOrder.created_at <= end_date)
     if product_name:
         stmt = stmt.where(BillingOrder.product_name.ilike(f"%{product_name}%"))
+    # 归属筛选仅对内部用户生效（外部已被 user_id 锁定到自己）
+    if interior and username:
+        stmt = stmt.where(User.username.ilike(f"%{username}%"))
+    if interior and enterprise_name:
+        stmt = stmt.where(User.enterprise_name.ilike(f"%{enterprise_name}%"))
     stmt = stmt.order_by(BillingOrder.created_at.desc())
 
-    rows = (await db.execute(stmt)).scalars().all()
-    return OrderListResponse(orders=[_order_response(row) for row in rows])
+    rows = (await db.execute(stmt)).all()
+    return OrderListResponse(
+        orders=[
+            _order_response(order, username=u_name, enterprise_name=ent_name)
+            for order, u_name, ent_name in rows
+        ]
+    )
 
 
 @router.get("/orders/{order_id}/pay-qrcode", response_model=PaymentQrResponse)
@@ -281,16 +306,28 @@ async def list_consumptions(
     start_date: datetime | None = Query(None),
     end_date: datetime | None = Query(None),
     project_name: str | None = Query(None),
+    username: str | None = Query(None),
+    enterprise_name: str | None = Query(None),
 ) -> ConsumptionListResponse:
-    stmt = select(ConsumptionRecord).where(ConsumptionRecord.user_id == current_user.id)
+    interior = is_interior_user(current_user)
+    # 内部用户看全站（JOIN users 取归属）；外部用户只看自己的
+    stmt = select(ConsumptionRecord, User.username, User.enterprise_name).join(
+        User, User.id == ConsumptionRecord.user_id, isouter=True
+    )
+    if not interior:
+        stmt = stmt.where(ConsumptionRecord.user_id == current_user.id)
     if start_date:
         stmt = stmt.where(ConsumptionRecord.created_at >= start_date)
     if end_date:
         stmt = stmt.where(ConsumptionRecord.created_at <= end_date)
     if project_name:
         stmt = stmt.where(ConsumptionRecord.project_name.ilike(f"%{project_name}%"))
+    if interior and username:
+        stmt = stmt.where(User.username.ilike(f"%{username}%"))
+    if interior and enterprise_name:
+        stmt = stmt.where(User.enterprise_name.ilike(f"%{enterprise_name}%"))
     stmt = stmt.order_by(ConsumptionRecord.created_at.desc())
-    rows = (await db.execute(stmt)).scalars().all()
+    rows = (await db.execute(stmt)).all()
     return ConsumptionListResponse(
         consumptions=[
             ConsumptionResponse(
@@ -301,7 +338,9 @@ async def list_consumptions(
                 earned_points=row.earned_points,
                 used_by=row.used_by,
                 cost_cny=float(row.cost_cny) if row.cost_cny is not None else None,
+                username=u_name,
+                enterprise_name=ent_name,
             )
-            for row in rows
+            for row, u_name, ent_name in rows
         ]
     )

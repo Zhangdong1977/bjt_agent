@@ -15,6 +15,9 @@ const props = defineProps<{
   todos: any[]
   projectId: string
   taskId: string
+  // 可选的自定义报告获取函数：分享页（非项目所有者）传入基于 share token 的
+  // fetcher 以绕过 ownership 校验；不传则走默认的 reviewApi.getTodoReport。
+  reportFetcher?: (todoId: string) => Promise<string>
 }>()
 
 const summary = computed(() => props.reviewResults?.summary ?? {
@@ -127,11 +130,13 @@ async function selectGroup(key: string) {
   reportContent.value = ''
   reportLoading.value = true
   try {
-    reportContent.value = await reviewApi.getTodoReport(
-      props.projectId,
-      props.taskId,
-      key,
-    )
+    reportContent.value = props.reportFetcher
+      ? await props.reportFetcher(key)
+      : await reviewApi.getTodoReport(
+          props.projectId,
+          props.taskId,
+          key,
+        )
   } catch {
     reportContent.value = '无法加载报告内容'
   } finally {
