@@ -44,9 +44,7 @@ class Settings(BaseSettings):
     # 须与 operate-two application-*.yml 的 document.bocom.internalToken 同值；为空则真实支付路径不可用。
     operate_internal_token: str = ""
 
-    # 充值真实交行支付（dev：测试套餐真实、其余模拟；prod：4 套餐真实、测试套餐隐藏）
-    billing_real_pay_enabled: bool = False   # env: BILLING_REAL_PAY_ENABLED
-    billing_real_package_codes: str = ""     # env: BILLING_REAL_PACKAGE_CODES，逗号分隔，dev="test"
+    # 充值套餐全部使用真实交行支付；以下配置只控制套餐可见性。
     billing_hidden_package_codes: str = ""   # env: BILLING_HIDDEN_PACKAGE_CODES，逗号分隔，prod="test"
     # 测试套餐（code="test"）显式开关。默认 False——fail-closed：即使漏配
     # BILLING_HIDDEN_PACKAGE_CODES，prod 也不会暴露 1 分钱测试套餐。dev 在 .env 设 true 开启。

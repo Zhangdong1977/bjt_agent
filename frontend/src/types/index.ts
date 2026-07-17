@@ -35,7 +35,6 @@ export interface RechargePackage {
   amount_cents: number;
   balance_wen: number;
   caution?: string | null;
-  payment_mode: "real" | "mock";
 }
 
 export interface Coupon {
@@ -107,7 +106,6 @@ export interface PaymentQr {
   order_id: string;
   order_no: string;
   actual_payment_cents: number;
-  payment_mode: "real" | "mock";
   qr_payload: string;
   expires_at: string;
 }

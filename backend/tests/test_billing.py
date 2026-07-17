@@ -1,6 +1,8 @@
 from decimal import Decimal
 
+from backend.api.billing import router as billing_router
 from backend.config import Settings
+from backend.schemas.billing import PackageResponse, PaymentQrResponse
 from backend.services.billing import _is_package_visible, cost_to_wen, list_packages
 
 
@@ -22,6 +24,14 @@ def test_recharge_packages_match_product_spec():
     assert packages["premium"].balance_wen == 4000
     assert packages["luxury"].amount_cents == 100000
     assert packages["luxury"].balance_wen == 15000
+
+
+def test_simulated_payment_route_and_contract_are_removed():
+    assert all("mock-pay" not in route.path for route in billing_router.routes)
+    assert "payment_mode" not in PackageResponse.model_fields
+    assert "payment_mode" not in PaymentQrResponse.model_fields
+    assert "billing_real_pay_enabled" not in Settings.model_fields
+    assert "billing_real_package_codes" not in Settings.model_fields
 
 
 def _settings(**overrides) -> Settings:

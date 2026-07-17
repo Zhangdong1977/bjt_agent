@@ -16,7 +16,6 @@ class PackageResponse(BaseModel):
     amount_cents: int
     balance_wen: int
     caution: str | None = None
-    payment_mode: str = "mock"  # "real"（真实交行聚合支付）| "mock"（模拟支付）
 
 
 class CouponResponse(BaseModel):
@@ -106,8 +105,7 @@ class PaymentQrResponse(BaseModel):
     order_id: str
     order_no: str
     actual_payment_cents: int
-    payment_mode: str = "mock"  # "real" | "mock"
-    qr_payload: str  # real: 交行二维码文本；mock: mockpay://...
+    qr_payload: str  # 交行二维码文本
     expires_at: datetime
 
 

@@ -71,7 +71,7 @@ class BillingOrder(Base):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     balance_after_wen: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # 真实交行支付桥接：operate-two 返回的 payMerTranNo（mock 支付留空）
+    # 真实交行支付桥接：operate-two 返回的 payMerTranNo
     external_order_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 真实交行支付二维码文本（displayCodeText），缓存以便重复渲染同一订单而不重复下单
     external_qr_payload: Mapped[str | None] = mapped_column(Text, nullable=True)

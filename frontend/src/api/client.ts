@@ -354,11 +354,6 @@ export const billingApi = {
     return response.data;
   },
 
-  async mockPay(orderId: string): Promise<OrderStatus> {
-    const response = await apiClient.post(`/billing/orders/${orderId}/mock-pay`);
-    return response.data;
-  },
-
   async getOrderStatus(orderId: string): Promise<OrderStatus> {
     const response = await apiClient.get(`/billing/orders/${orderId}/status`);
     return response.data;

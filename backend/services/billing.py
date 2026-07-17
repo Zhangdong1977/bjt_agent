@@ -41,7 +41,7 @@ class RechargePackage:
 
 
 PACKAGES: dict[str, RechargePackage] = {
-    # 测试套餐：1 分钱 / 200 文，dev 走真实交行（见 package_payment_mode），prod 由 billing_hidden_package_codes 隐藏
+    # 测试套餐：1 分钱 / 200 文，仍走真实交行；prod 由 billing_hidden_package_codes 隐藏
     "test": RechargePackage("test", "测试套餐", 1, 200, "真实交行支付·0.01元"),
     "experience": RechargePackage("experience", "体验套餐", 3000, 350, "500页以上标书谨慎使用"),
     "basic": RechargePackage("basic", "基础套餐", 10000, 1200),
@@ -52,14 +52,6 @@ PACKAGES: dict[str, RechargePackage] = {
 
 def _parse_codes(value: str) -> set[str]:
     return {part.strip() for part in value.split(",") if part.strip()}
-
-
-def package_payment_mode(code: str) -> str:
-    """套餐支付方式：启用且 code ∈ billing_real_package_codes → 'real'（真实交行），否则 'mock'。"""
-    settings = get_settings()
-    if not settings.billing_real_pay_enabled:
-        return "mock"
-    return "real" if code in _parse_codes(settings.billing_real_package_codes) else "mock"
 
 
 def _is_package_visible(code: str, settings) -> bool:
@@ -86,7 +78,6 @@ def list_packages() -> list[PackageResponse]:
             amount_cents=item.amount_cents,
             balance_wen=item.balance_wen,
             caution=item.caution,
-            payment_mode=package_payment_mode(item.code),
         )
         for item in PACKAGES.values()
         if _is_package_visible(item.code, settings)

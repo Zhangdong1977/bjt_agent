@@ -28,7 +28,6 @@ from backend.services.billing import (
     create_order,
     ensure_wallet,
     list_packages,
-    package_payment_mode,
     preview_order,
 )
 from backend.services.operate_coupons import bind_coupon_by_code, list_user_coupons
@@ -194,64 +193,22 @@ async def get_pay_qrcode(
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
 
-    mode = package_payment_mode(order.product_code)
-    if mode == "real":
-        # 真实交行：首次取码时下单并缓存 payMerTranNo + 二维码文本，重复请求复用（避免重复下单）
-        if not order.external_order_no or not order.external_qr_payload:
-            created = await operate_recharge.create_recharge_order(
-                total_amount_yuan=f"{order.actual_payment_cents / 100:.2f}",
-                package_name=order.product_name,
-                external_ref=order.order_no,
-            )
-            order.external_order_no = created["pay_mer_tran_no"]
-            order.external_qr_payload = created["display_code_text"]
-            await db.flush()
-        return PaymentQrResponse(
-            order_id=order.id,
-            order_no=order.order_no,
-            actual_payment_cents=order.actual_payment_cents,
-            payment_mode="real",
-            qr_payload=order.external_qr_payload,
-            expires_at=order.expires_at,
+    # 首次取码时向真实交行下单并缓存 payMerTranNo + 二维码文本，重复请求复用。
+    if not order.external_order_no or not order.external_qr_payload:
+        created = await operate_recharge.create_recharge_order(
+            total_amount_yuan=f"{order.actual_payment_cents / 100:.2f}",
+            package_name=order.product_name,
+            external_ref=order.order_no,
         )
-
+        order.external_order_no = created["pay_mer_tran_no"]
+        order.external_qr_payload = created["display_code_text"]
+        await db.flush()
     return PaymentQrResponse(
         order_id=order.id,
         order_no=order.order_no,
         actual_payment_cents=order.actual_payment_cents,
-        payment_mode="mock",
-        qr_payload=f"mockpay://bjt-agent/orders/{order.order_no}",
+        qr_payload=order.external_qr_payload,
         expires_at=order.expires_at,
-    )
-
-
-@router.post("/orders/{order_id}/mock-pay", response_model=OrderStatusResponse)
-async def mock_pay_order(
-    order_id: str,
-    db: DBSession,
-    current_user: CurrentUser,
-) -> OrderStatusResponse:
-    result = await db.execute(
-        select(BillingOrder)
-        .where(BillingOrder.id == order_id, BillingOrder.user_id == current_user.id)
-        .with_for_update()
-    )
-    order = result.scalar_one_or_none()
-    if not order:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
-    wallet_result = await db.execute(
-        select(UserWallet).where(UserWallet.user_id == current_user.id).with_for_update()
-    )
-    wallet = wallet_result.scalar_one_or_none()
-    if wallet is None:
-        wallet = await ensure_wallet(db, current_user.id)
-    await complete_order(db, current_user, order, wallet=wallet)
-    return OrderStatusResponse(
-        order_id=order.id,
-        order_no=order.order_no,
-        status=order.status,
-        paid_at=order.paid_at,
-        balance_after_wen=order.balance_after_wen,
     )
 
 
@@ -275,7 +232,6 @@ async def get_order_status(
     if (
         order.status == "pending"
         and order.external_order_no
-        and package_payment_mode(order.product_code) == "real"
     ):
         if order.expires_at < utc_now():
             order.status = "cancelled"

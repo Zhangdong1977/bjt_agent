@@ -60,7 +60,6 @@ const order = ref<BillingOrder | null>(null);
 const loading = ref(false);
 const couponImporting = ref(false);
 const previewLoading = ref(false);
-const payLoading = ref(false);
 const polling = ref(false);
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -215,26 +214,11 @@ async function submitOrder() {
       message.error(getApiErrorMessage(err, "获取支付二维码失败，请稍后重试"));
       return;
     }
-    if (qr.value.payment_mode === "real") {
-      startPolling();
-    }
+    startPolling();
   } catch (err) {
     message.error(getApiErrorMessage(err, "订单提交失败"));
   } finally {
     loading.value = false;
-  }
-}
-
-async function completeMockPayment() {
-  if (!order.value) return;
-  payLoading.value = true;
-  try {
-    await billingApi.mockPay(order.value.id);
-    message.success("充值成功");
-    emit("paid");
-    close();
-  } finally {
-    payLoading.value = false;
   }
 }
 
@@ -437,20 +421,9 @@ watch(
           <p>订单编号：{{ qr.order_no }}</p>
           <p>支付金额：{{ formatYuan(qr.actual_payment_cents) }}</p>
           <p>有效期至：{{ new Date(qr.expires_at).toLocaleString() }}</p>
-          <template v-if="qr.payment_mode === 'real'">
-            <p class="pay-hint">请使用手机扫码完成支付，到账后自动刷新</p>
-            <a-button type="primary" size="large" :loading="polling" @click="pollOrderStatus">
-              我已支付，刷新状态
-            </a-button>
-          </template>
-          <a-button
-            v-else
-            type="primary"
-            size="large"
-            :loading="payLoading"
-            @click="completeMockPayment"
-          >
-            模拟支付完成
+          <p class="pay-hint">请使用手机扫码完成支付，到账后自动刷新</p>
+          <a-button type="primary" size="large" :loading="polling" @click="pollOrderStatus">
+            我已支付，刷新状态
           </a-button>
         </div>
       </div>
