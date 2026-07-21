@@ -214,23 +214,18 @@ function goOfficialSite() {
   object-fit: contain;
 }
 
-/*
- * 胶囊数值徽章：背景图（图标 + 左圆角帽）只作左端帽，胶囊主体由 CSS 绘制。
- * 这样数值文字长度变化（0文 ~ 10000文）时，背景既不会被截断，文字也不会超出背景。
- * - background-color 取图片文字区底色 #FBE2BC：长文本时向右无缝延伸（文字永不出框）；
- * - border-radius 提供右圆角帽（图片自带左圆角帽）：短/长文本都能干净收边（背景永不截断）；
- * - 图片右侧米色区与 CSS 底色一致，叠加处无接缝。
- */
+/* 仅使用图片绘制背景；容器随文字变宽，背景图同步拉伸，避免额外胶囊与图片重叠。 */
 .metric--pill {
   height: 32px;
-  padding: 0 14px 0 40px; /* 左侧留给图标区，右侧留白 */
+  min-width: 96px;
+  box-sizing: border-box;
+  padding: 0 14px 0 40px;
   border: 0;
-  border-radius: 9999px; /* 胶囊形：与图片半圆帽一致，并随响应式高度自适应 */
-  background-color: #FBE2BC; /* 图片文字区底色，向右延伸；与图片米色无接缝 */
   background-repeat: no-repeat;
-  background-position: left center;
-  background-size: auto 32px; /* 按高度铺满，宽度按 3:1 比例约 96px（仅作左端帽） */
+  background-position: center;
+  background-size: 100% 100%;
   align-items: center;
+  white-space: nowrap;
   cursor: default;
 }
 
@@ -432,11 +427,11 @@ function goOfficialSite() {
     gap: 10px;
   }
 
-  /* 胶囊图标缩小，但保留数值文字（背景图需配文字才完整） */
+  /* 背景图和容器同步缩小，并继续覆盖完整文字区域。 */
   .metric--pill {
     height: 28px;
+    min-width: 84px;
     padding: 0 10px 0 34px;
-    background-size: auto 28px;
     font-size: 13px;
   }
 }
