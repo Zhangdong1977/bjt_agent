@@ -2,7 +2,9 @@
 
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from backend.agent.tools import baidu_ocr
@@ -123,12 +125,72 @@ async def test_ocr_api_error_returns_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(
         baidu_ocr, "AsyncClient", _make_fake_client(token_payload, ocr_payload, recorder)
     )
+    monkeypatch.setattr(baidu_ocr.asyncio, "sleep", AsyncMock())
 
     result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
 
     assert result.success is False
     assert "110" in result.error
     assert "Access token invalid" in result.error
+    assert len([url for url in recorder if "accurate_basic" in url]) == 4
+
+
+@pytest.mark.unit
+async def test_ocr_timeout_retries_three_times_then_succeeds(monkeypatch, tmp_path):
+    img = _make_png(tmp_path / "a.png")
+    recorder: list[str] = []
+    ocr_attempts = 0
+
+    class _RetryClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            nonlocal ocr_attempts
+            recorder.append(url)
+            if "oauth/2.0/token" in url:
+                return _FakeResp({"access_token": "tok", "expires_in": 2592000})
+            ocr_attempts += 1
+            if ocr_attempts <= 3:
+                raise httpx.TimeoutException("temporary timeout")
+            return _FakeResp({"words_result": [{"words": "ok"}], "words_result_num": 1})
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(baidu_ocr, "AsyncClient", _RetryClient)
+    monkeypatch.setattr(baidu_ocr.asyncio, "sleep", sleep)
+
+    result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+
+    assert result.success is True
+    assert result.content == "ok"
+    assert ocr_attempts == 4
+    assert sleep.await_count == 3
+
+
+@pytest.mark.unit
+async def test_ocr_permanent_api_error_is_not_retried(monkeypatch, tmp_path):
+    img = _make_png(tmp_path / "a.png")
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr,
+        "AsyncClient",
+        _make_fake_client(
+            {"access_token": "tok", "expires_in": 2592000},
+            {"error_code": 216201, "error_msg": "image format error"},
+            recorder,
+        ),
+    )
+
+    result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+
+    assert result.success is False
+    assert len([url for url in recorder if "accurate_basic" in url]) == 1
 
 
 @pytest.mark.unit

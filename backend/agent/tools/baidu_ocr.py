@@ -5,13 +5,14 @@
 提示词与调用流程无需改动。本工具为纯文字识别（OCR），不具备 VLM 语义理解能力。
 """
 
+import asyncio
 import base64
 import logging
 import time
 from pathlib import Path
 from typing import Any
 
-from httpx import AsyncClient, ConnectError, TimeoutException
+from httpx import AsyncClient, ConnectError, HTTPStatusError, RequestError, TimeoutException
 
 from backend.agent.tools.base import ToolResult
 from backend.config import get_settings
@@ -26,6 +27,12 @@ MAX_IMAGE_SIZE_BYTES = 4 * 1024 * 1024
 TOKEN_URL = "https://aip.baidubce.com/oauth/2.0/token"
 # access_token 提前刷新余量（秒）
 TOKEN_REFRESH_MARGIN = 60.0
+# 首次调用失败后最多再重试 3 次，即单次工具调用最多请求 4 次。
+OCR_MAX_RETRIES = 3
+OCR_RETRY_BASE_DELAY_SECONDS = 1.0
+RETRYABLE_HTTP_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+RETRYABLE_BAIDU_ERROR_CODES = {"1", "2", "18", "282000"}
+TOKEN_ERROR_CODES = {"110", "111"}
 
 # 模块级 access_token 缓存：{api_key: (token, expires_at_epoch)}
 # Celery prefork worker 为独立进程，各进程独立缓存；同进程跨事件循环复用 dict 安全。
@@ -127,7 +134,6 @@ class BaiduOcrTool(BaseTool):
                 )
 
         try:
-            access_token = await self._get_access_token()
             b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
             data = {
@@ -136,15 +142,7 @@ class BaiduOcrTool(BaseTool):
                 "paragraph": "false",
                 "probability": "false",
             }
-            url = f"{self._endpoint}?access_token={access_token}"
-
-            async with AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    url,
-                    data=data,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                )
-                result = response.json()
+            result = await self._request_ocr_with_retry(data)
 
             # 百度错误响应含 error_code（成功时无此字段或为 0）
             if result.get("error_code"):
@@ -210,6 +208,18 @@ class BaiduOcrTool(BaseTool):
             except Exception:
                 pass
             return ToolResult(success=False, error=err)
+        except HTTPStatusError as e:
+            err = f"百度OCR HTTP错误[{e.response.status_code}]"
+            logger.error(f"[BaiduOcrTool] {err}")
+            try:
+                from backend.services.usage_recorder import record_ocr_usage
+                record_ocr_usage(provider="baidu_ocr", endpoint=self._endpoint, status="error",
+                                 latency_ms=int((time.perf_counter() - call_start) * 1000),
+                                 image_size_bytes=file_size,
+                                 error_code=str(e.response.status_code), error_message=err)
+            except Exception:
+                pass
+            return ToolResult(success=False, error=err)
         except Exception as e:
             err = f"百度OCR调用异常: {e}"
             logger.error(f"[BaiduOcrTool] {err}")
@@ -221,6 +231,68 @@ class BaiduOcrTool(BaseTool):
             except Exception:
                 pass
             return ToolResult(success=False, error=err)
+
+    async def _request_ocr_with_retry(self, data: dict[str, str]) -> dict[str, Any]:
+        """调用百度 OCR；仅对瞬时故障重试，最多额外重试 3 次。"""
+        total_attempts = OCR_MAX_RETRIES + 1
+        last_exception: Exception | None = None
+        last_result: dict[str, Any] | None = None
+
+        for attempt in range(1, total_attempts + 1):
+            try:
+                access_token = await self._get_access_token()
+                url = f"{self._endpoint}?access_token={access_token}"
+                async with AsyncClient(timeout=60.0) as client:
+                    response = await client.post(
+                        url,
+                        data=data,
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+
+                error_code = str(result.get("error_code") or "")
+                if not error_code:
+                    return result
+
+                if error_code in TOKEN_ERROR_CODES:
+                    # 缓存 token 失效时强制刷新，下一次尝试会重新获取。
+                    _token_cache.pop(self._api_key, None)
+
+                if error_code not in RETRYABLE_BAIDU_ERROR_CODES | TOKEN_ERROR_CODES:
+                    return result
+                failure = f"百度OCR错误[{error_code}]: {result.get('error_msg', '未知错误')}"
+                last_result = result
+                last_exception = None
+            except HTTPStatusError as exc:
+                if exc.response.status_code not in RETRYABLE_HTTP_STATUS_CODES:
+                    raise
+                failure = f"HTTP {exc.response.status_code}"
+                last_exception = exc
+                last_result = None
+            except (RequestError, ValueError) as exc:
+                failure = str(exc) or type(exc).__name__
+                last_exception = exc
+                last_result = None
+
+            if attempt == total_attempts:
+                if last_result is not None:
+                    return last_result
+                if last_exception is not None:
+                    raise last_exception
+                raise RuntimeError("百度OCR重试失败")
+
+            delay = OCR_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+            logger.warning(
+                "[BaiduOcrTool] OCR 调用第 %d/%d 次失败（%s），%.1fs 后重试",
+                attempt,
+                total_attempts,
+                failure,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+        raise RuntimeError("百度OCR重试流程异常结束")
 
     async def _get_access_token(self) -> str:
         """获取（带缓存的）百度 access_token。冷启动并发获取为良性竞争，后写覆盖。"""
@@ -235,6 +307,7 @@ class BaiduOcrTool(BaseTool):
         }
         async with AsyncClient(timeout=30.0) as client:
             response = await client.post(TOKEN_URL, params=params)
+            response.raise_for_status()
             payload = response.json()
 
         if "access_token" not in payload:
