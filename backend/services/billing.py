@@ -125,6 +125,10 @@ async def preview_order(
     use_points: int,
 ) -> OrderPreviewResponse:
     package = get_package(package_code)
+    # 安全：与 list_packages() 用同一个 _is_package_visible 闸门。
+    # 否则隐藏的 test 套餐（1 分钱 / 200 文）能被知道 code 的用户绕过前端直接 preview / 下单。
+    if not _is_package_visible(package.code, get_settings()):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="套餐不存在")
     wallet = await ensure_wallet(db, current_user.id)
 
     coupon_amount_cents = 0
@@ -164,6 +168,9 @@ async def create_order(
     use_points: int,
 ) -> BillingOrder:
     package = get_package(package_code)
+    # 安全：纵深防御——preview_order 内也有同样校验，但这里提前拦截避免 ensure_wallet 副作用。
+    if not _is_package_visible(package.code, get_settings()):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="套餐不存在")
     wallet = await ensure_wallet(db, current_user.id)
     preview = await preview_order(
         db,
@@ -210,14 +217,23 @@ async def complete_order(
     order: BillingOrder,
     *,
     wallet: UserWallet | None = None,
+    allow_expired_if_paid: bool = False,
 ) -> BillingOrder:
+    """Complete a recharge order: deduct points, add wen, write wallet transaction.
+
+    Args:
+        allow_expired_if_paid: 设为 True 时跳过 expires_at 过期校验。
+            场景：交行真实付款回调晚于订单 30 分钟过期（用户离开页面、回调未及时接收等），
+            定时任务扫到交行 SUCCESS 后必须强制入账——钱已收就必须给文，否则吞钱。
+            默认 False 保持 API 端点（get_order_status 等）的原有行为：过期即拒绝。
+    """
     if order.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
     if order.status == "completed":
         return order
     if order.status != "pending":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单状态不可支付")
-    if order.expires_at < utc_now():
+    if order.expires_at < utc_now() and not allow_expired_if_paid:
         order.status = "cancelled"
         await db.flush()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="订单已过期")

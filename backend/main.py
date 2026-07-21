@@ -94,6 +94,26 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
 
+    # 充值配置审计：fb51261 之后所有套餐默认走真实交行支付，唯一可控开关是套餐可见性
+    # （billing_test_package_enabled / billing_hidden_package_codes）。启动时记录当前生效
+    # 的可见套餐 + 校验真实支付依赖（operate_internal_token），帮运维尽早发现配置问题。
+    try:
+        from backend.services.billing import list_packages
+        visible_codes = [p.code for p in list_packages()]
+        if not settings.operate_internal_token:
+            logger.warning(
+                "[startup][billing] OPERATE_INTERNAL_TOKEN 为空——真实交行支付不可用，"
+                "get_pay_qrcode 调 operate-two 会 503"
+            )
+        if "test" in visible_codes:
+            logger.warning(
+                "[startup][billing] 测试套餐（1 分钱 / 200 文）当前对用户可见——"
+                "生产应保持 BILLING_TEST_PACKAGE_ENABLED=false"
+            )
+        logger.info(f"[startup][billing] visible_packages={visible_codes}")
+    except Exception as e:
+        logger.warning(f"[startup][billing] config audit failed: {e}")
+
     # Ensure the singleton maintenance-mode row exists (idempotent). Failure
     # here must NOT block startup — login will fail-open (treat as not-enabled).
     try:
