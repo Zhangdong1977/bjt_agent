@@ -22,7 +22,7 @@ celery_app = Celery(
     "bid_review_agent",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["backend.tasks.review_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks"],
+    include=["backend.tasks.review_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks"],
 )
 
 # Ensure celery.current_app points to our app, so @shared_task binds correctly
@@ -70,6 +70,15 @@ celery_app.conf.update(
         "backend.tasks.feedback_tasks.rewrite_skill_from_feedback": {"queue": "review"},
         "backend.tasks.experience_tasks.extract_experience": {"queue": "review"},
         "backend.tasks.experience_tasks.process_skill_extraction": {"queue": "review"},
+        "backend.tasks.billing_tasks.poll_pending_recharge_orders": {"queue": "review"},
+    },
+    # 定时任务调度。beat 进程在 prod 单例跑（bjt-proc.sh start_celery_beat），
+    # 派发的任务路由到 review 队列由 3 节点 celery worker 消费。
+    beat_schedule={
+        "poll-pending-recharge-orders": {
+            "task": "backend.tasks.billing_tasks.poll_pending_recharge_orders",
+            "schedule": 60.0,  # 每 60 秒扫一次 pending 真实交行订单
+        },
     },
     task_annotations={
         "backend.tasks.review_tasks.run_review": {
@@ -90,6 +99,12 @@ celery_app.conf.update(
         "backend.tasks.experience_tasks.extract_experience": {
             "time_limit": 600,
             "soft_time_limit": 480,
+        },
+        # 充值轮询：扫一批 pending 订单 + 每条调一次交行查单（最多 ~10 条 × 5s 超时），
+        # 给 90s 软超时 / 120s 硬超时兜底。
+        "backend.tasks.billing_tasks.poll_pending_recharge_orders": {
+            "time_limit": 120,
+            "soft_time_limit": 90,
         },
     },
 )
