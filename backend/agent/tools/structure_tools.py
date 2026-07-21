@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 _IMAGE_REF_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+OCR_MAX_RETRIES = 3
+OCR_RETRY_BASE_DELAY_SECONDS = 1.0
+RETRYABLE_HTTP_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
 @dataclass
@@ -685,23 +688,48 @@ class ImageOcrTool(BaseTool):
         return "\n".join(output.txts)
 
     async def _remote_ocr(self, image_path: Path) -> str:
-        """Remote OCR via HTTP microservice."""
+        """Remote OCR via HTTP microservice, with three retries for transient failures."""
         suffix = image_path.suffix.lstrip(".") or "png"
         image_b64 = base64.b64encode(image_path.read_bytes()).decode()
+        total_attempts = OCR_MAX_RETRIES + 1
 
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{self._ocr_service_url}/api/ocr",
-                    json={"image_base64": image_b64, "image_format": suffix},
-                )
-                response.raise_for_status()
-                result = response.json()
-        except httpx.ConnectError:
-            raise RuntimeError(f"无法连接到 OCR 服务: {self._ocr_service_url}")
-        except httpx.TimeoutException:
-            raise RuntimeError("OCR 服务请求超时 (60s)")
+        for attempt in range(1, total_attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(
+                        f"{self._ocr_service_url}/api/ocr",
+                        json={"image_base64": image_b64, "image_format": suffix},
+                    )
+                    response.raise_for_status()
+                    result = response.json()
 
-        if not result.get("success"):
-            raise RuntimeError(result.get("error", "OCR failed"))
-        return result.get("ocr_text", "")
+                if result.get("success"):
+                    return result.get("ocr_text", "")
+                failure = RuntimeError(result.get("error", "OCR failed"))
+            except httpx.ConnectError:
+                failure = RuntimeError(f"无法连接到 OCR 服务: {self._ocr_service_url}")
+            except httpx.TimeoutException:
+                failure = RuntimeError("OCR 服务请求超时 (60s)")
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in RETRYABLE_HTTP_STATUS_CODES:
+                    raise RuntimeError(
+                        f"OCR 服务 HTTP 错误: {exc.response.status_code}"
+                    ) from exc
+                failure = RuntimeError(f"OCR 服务 HTTP 错误: {exc.response.status_code}")
+            except (httpx.RequestError, ValueError) as exc:
+                failure = RuntimeError(f"OCR 服务调用异常: {exc}")
+
+            if attempt == total_attempts:
+                raise failure
+
+            delay = OCR_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+            logger.warning(
+                "[ImageOcrTool] 远程 OCR 第 %d/%d 次调用失败（%s），%.1fs 后重试",
+                attempt,
+                total_attempts,
+                failure,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+        raise RuntimeError("OCR 服务重试流程异常结束")

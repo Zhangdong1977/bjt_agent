@@ -8,6 +8,7 @@ Bug coverage:
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from backend.agent.tools.structure_tools import (
@@ -137,3 +138,48 @@ async def test_image_ocr_tool_single_doc_works_without_doc_name(tmp_path):
     assert result.success is True
     assert "识别到的文字" in result.content
     assert result.data["source_doc"] == "solo.pdf"
+
+
+@pytest.mark.asyncio
+async def test_remote_ocr_retries_service_failure_three_times(monkeypatch, tmp_path):
+    image = tmp_path / "image.png"
+    image.write_bytes(b"fake-png")
+    attempts = 0
+
+    class _Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, *args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 3:
+                return _Response({"success": False, "error": "temporary failure"})
+            return _Response({"success": True, "ocr_text": "识别成功"})
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setattr("backend.agent.tools.structure_tools.asyncio.sleep", sleep)
+    tool = ImageOcrTool(loaders={}, ocr_service_url="http://ocr-service")
+
+    result = await tool._remote_ocr(image)
+
+    assert result == "识别成功"
+    assert attempts == 4
+    assert sleep.await_count == 3
