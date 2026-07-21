@@ -497,6 +497,52 @@ async function loadHistoricalTodos(projectId: string, taskId: string) {
   }
 }
 
+// 统一的历史数据加载入口：同时拉 todos 和 steps。
+// 用于 onMounted（冷启动兜底，避免 phase=running 但 steps 空）和轮询降级路径
+// （SSE 不通时让前端仍能从 DB 同步时间线）。
+// 外部用户 getSteps 会 403（后端 review.py:341-345 硬性拒绝），此处静默处理 ——
+// 外部用户时间线本来就以 todos 块为主，不依赖 steps。
+async function loadHistoricalStepsAndTodos(taskId: string) {
+  await loadHistoricalTodos(projectId.value, taskId)
+  try {
+    const historicalSteps = await reviewApi.getSteps(projectId.value, taskId)
+    if (historicalSteps.length > 0) {
+      const mapStep = (s: any) => ({
+        step_number: s.step_number,
+        step_type: s.step_type,
+        content: s.content || '',
+        timestamp: new Date(),
+        tool_calls: (s.tool_args as any)?.tool_calls || [],
+        tool_results: (s.tool_result as any)?.tool_results || [],
+      })
+      // 分离 master 步骤和 sub-agent 步骤
+      const masterSteps: any[] = []
+      const subStepMap = new Map<string, any[]>()
+      for (const s of historicalSteps) {
+        const todoId = (s as any).todo_id
+        if (todoId) {
+          const arr = subStepMap.get(todoId) || []
+          arr.push(mapStep(s))
+          subStepMap.set(todoId, arr)
+        } else {
+          masterSteps.push(mapStep(s))
+        }
+      }
+      steps.value = masterSteps
+      subAgentSteps.value = subStepMap
+      console.log('[ReviewExecutionView] Loaded historical steps: master=', masterSteps.length, 'sub-agents=', subStepMap.size)
+    }
+  } catch (err: any) {
+    // 外部用户 403 是预期行为，不当作错误打印；其他错误如实记录
+    const status = err?.response?.status
+    if (status === 403) {
+      console.log('[ReviewExecutionView] getSteps returned 403 (external user), skipping steps load')
+    } else {
+      console.error('[ReviewExecutionView] Failed to load historical steps:', err)
+    }
+  }
+}
+
 let statusPollTimer: ReturnType<typeof setInterval> | null = null
 
 async function refreshTaskSnapshot(taskId: string) {
@@ -505,13 +551,15 @@ async function refreshTaskSnapshot(taskId: string) {
 
   if (task.status === 'running' || task.status === 'pending') {
     phase.value = task.status
-    await loadHistoricalTodos(projectId.value, taskId)
+    // SSE 不通降级到轮询时，也要把 DB 里已落库的 steps/todos 同步过来，
+    // 否则主代理时间线和子代理详细步骤会一直空白（链路 B 的修复）。
+    await loadHistoricalStepsAndTodos(taskId)
     return
   }
 
   if (task.status === 'completed') {
     phase.value = 'completed'
-    await loadHistoricalTodos(projectId.value, taskId)
+    await loadHistoricalStepsAndTodos(taskId)
     stopStatusPolling()
     projectStore.stopHeartbeat()
     disconnect()
@@ -522,7 +570,7 @@ async function refreshTaskSnapshot(taskId: string) {
   if (task.status === 'failed') {
     phase.value = 'failed'
     errorMessage.value = task.error_message || '审查失败'
-    await loadHistoricalTodos(projectId.value, taskId)
+    await loadHistoricalStepsAndTodos(taskId)
     stopStatusPolling()
     projectStore.stopHeartbeat()
     disconnect()
@@ -532,7 +580,7 @@ async function refreshTaskSnapshot(taskId: string) {
   if (task.status === 'cancelled') {
     phase.value = 'failed'
     errorMessage.value = task.error_message || '任务已被取消'
-    await loadHistoricalTodos(projectId.value, taskId)
+    await loadHistoricalStepsAndTodos(taskId)
     stopStatusPolling()
     projectStore.stopHeartbeat()
     disconnect()
@@ -709,6 +757,10 @@ onMounted(async () => {
     projectStore.currentTask?.id &&
     (projectStore.currentTask.status === 'pending' || projectStore.currentTask.status === 'running')
   ) {
+    // 冷启动兜底：任务可能后端已经在跑（用户刷新页面/从其他入口进来），
+    // 先从 DB 把已落库的 steps/todos 拉一次填充时间线，再连 SSE 接续实时事件。
+    // pending 任务通常 steps 为空（no-op）；running 任务能填补 phase=running 但 steps 空的窗口。
+    await loadHistoricalStepsAndTodos(projectStore.currentTask.id)
     connect()
   } else if (
     projectStore.currentTask?.id &&
@@ -719,40 +771,7 @@ onMounted(async () => {
     )
   ) {
     // 已完成/失败任务：通过 API 拉取数据
-    await loadHistoricalTodos(projectId.value, projectStore.currentTask.id)
-
-    // 加载历史步骤（master + sub-agent 时间线数据）
-    try {
-      const historicalSteps = await reviewApi.getSteps(projectId.value, projectStore.currentTask.id)
-      if (historicalSteps.length > 0) {
-        const mapStep = (s: any) => ({
-          step_number: s.step_number,
-          step_type: s.step_type,
-          content: s.content || '',
-          timestamp: new Date(),
-          tool_calls: (s.tool_args as any)?.tool_calls || [],
-          tool_results: (s.tool_result as any)?.tool_results || [],
-        })
-        // 分离 master 步骤和 sub-agent 步骤
-        const masterSteps: any[] = []
-        const subStepMap = new Map<string, any[]>()
-        for (const s of historicalSteps) {
-          const todoId = (s as any).todo_id
-          if (todoId) {
-            const arr = subStepMap.get(todoId) || []
-            arr.push(mapStep(s))
-            subStepMap.set(todoId, arr)
-          } else {
-            masterSteps.push(mapStep(s))
-          }
-        }
-        steps.value = masterSteps
-        subAgentSteps.value = subStepMap
-        console.log('[ReviewExecutionView] Loaded historical steps: master=', masterSteps.length, 'sub-agents=', subStepMap.size)
-      }
-    } catch (err) {
-      console.error('[ReviewExecutionView] Failed to load historical steps:', err)
-    }
+    await loadHistoricalStepsAndTodos(projectStore.currentTask.id)
   } else {
     console.log('[ReviewExecutionView] No currentTask, SSE will not connect')
   }
@@ -782,6 +801,8 @@ onUnmounted(() => {
           :sub-agent-steps-map="subAgentStepsMap"
           :max-steps-map="maxStepsMap"
           :brain-capacity-map="brainCapacityMap"
+          :realtime-notice="realtimeNotice"
+          :has-current-task="!!projectStore.currentTask?.id"
         />
 
         <RightSidebar

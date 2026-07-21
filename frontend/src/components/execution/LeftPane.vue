@@ -54,6 +54,10 @@ interface Props {
   subAgentStepsMap?: Record<string, TimelineStep[]>
   maxStepsMap?: Record<string, number>
   brainCapacityMap?: Record<string, number>
+  // 透传父组件的实时通道状态：null=SSE 正常，非空=已降级到轮询（文案由父组件控制）
+  realtimeNotice?: string | null
+  // 是否已有 currentTask：用于区分"任务排队中"与"真无任务"
+  hasCurrentTask?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -210,12 +214,15 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail'
               <path d="M5.5 4v2l1.5 1" stroke="var(--muted)" stroke-width="1.1" stroke-linecap="round"/>
             </svg>
           </div>
-          <span class="output-title">等待智能体启动</span>
+          <span class="output-title">
+            {{ hasCurrentTask ? '任务已提交，正在排队等待执行' : '等待智能体启动' }}
+          </span>
           <span class="chip chip-wait">等待</span>
         </div>
         <div class="output-body">
           <div class="wait-status">
-            <span>正在等待服务器响应...</span>
+            <span v-if="realtimeNotice">{{ realtimeNotice }}</span>
+            <span v-else>正在等待服务器响应...</span>
           </div>
         </div>
       </div>
