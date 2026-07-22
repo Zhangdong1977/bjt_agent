@@ -12,6 +12,7 @@ import type {
   DocumentContent,
   ReviewTask,
   ReviewTaskListItem,
+  DuplicateResults,
   ReviewResponse,
   AgentStep,
   ReviewResult,
@@ -391,8 +392,8 @@ export function getTokenClaims(): {
 
 // Projects API
 export const projectsApi = {
-  async list(): Promise<Project[]> {
-    const response = await apiClient.get("/projects");
+  async list(projectType?: "review" | "duplicate"): Promise<Project[]> {
+    const response = await apiClient.get("/projects", { params: { project_type: projectType } });
     return response.data.projects;
   },
 
@@ -426,7 +427,7 @@ export const documentsApi = {
 
   async upload(
     projectId: string,
-    docType: "tender" | "bid",
+    docType: "tender" | "bid" | "duplicate_bid",
     file: File,
     onProgress?: (progress: UploadProgress) => void,
   ): Promise<Document> {
@@ -508,7 +509,7 @@ export const documentsApi = {
   // ===== 草稿文档（独立于项目）：选文件即上传解析，点「开始检查」时才关联到项目 =====
 
   async uploadDraft(
-    docType: "tender" | "bid",
+    docType: "tender" | "bid" | "duplicate_bid",
     file: File,
     onProgress?: (progress: UploadProgress) => void,
   ): Promise<Document> {
@@ -561,9 +562,14 @@ export const documentsApi = {
     });
   },
 
-  async listDrafts(): Promise<Document[]> {
-    const response = await apiClient.get(`/documents/drafts`);
+  async listDrafts(docType?: "tender" | "bid" | "duplicate_bid"): Promise<Document[]> {
+    const response = await apiClient.get(`/documents/drafts`, { params: { doc_type: docType } });
     return response.data.documents;
+  },
+
+  async getDraft(documentId: string): Promise<Document> {
+    const response = await apiClient.get(`/documents/${documentId}`);
+    return response.data;
   },
 
   async attach(documentId: string, projectId: string): Promise<Document> {
@@ -580,6 +586,39 @@ export const documentsApi = {
   async getDraftContent(documentId: string): Promise<DocumentContent> {
     const response = await apiClient.get(`/documents/${documentId}/content`);
     return response.data;
+  },
+};
+
+export const duplicateCheckApi = {
+  async start(projectId: string): Promise<ReviewTask> {
+    return (await apiClient.post(`/projects/${projectId}/duplicate-check/tasks`)).data;
+  },
+  async getTasks(projectId: string): Promise<ReviewTaskListItem[]> {
+    return (await apiClient.get(`/projects/${projectId}/duplicate-check/tasks`)).data;
+  },
+  async getTask(projectId: string, taskId: string): Promise<ReviewTask> {
+    return (await apiClient.get(`/projects/${projectId}/duplicate-check/tasks/${taskId}`)).data;
+  },
+  async getPairs(projectId: string, taskId: string): Promise<TodoItem[]> {
+    return (await apiClient.get(`/projects/${projectId}/duplicate-check/tasks/${taskId}/pairs`)).data;
+  },
+  async getResults(projectId: string, taskId: string): Promise<DuplicateResults> {
+    return (await apiClient.get(`/projects/${projectId}/duplicate-check/tasks/${taskId}/results`)).data;
+  },
+  async cancel(projectId: string, taskId: string): Promise<ReviewTask> {
+    return (await apiClient.post(`/projects/${projectId}/duplicate-check/tasks/${taskId}/cancel`)).data;
+  },
+  async heartbeat(projectId: string, taskId: string): Promise<any> {
+    return (await apiClient.post(`/projects/${projectId}/duplicate-check/tasks/${taskId}/heartbeat`)).data;
+  },
+  async retryFailed(projectId: string, taskId: string): Promise<ReviewTask> {
+    return (await apiClient.post(`/projects/${projectId}/duplicate-check/tasks/${taskId}/retry-failed`)).data;
+  },
+  async getReport(projectId: string, taskId: string, todoId: string): Promise<string> {
+    return (await apiClient.get(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/pairs/${todoId}/report`,
+      { responseType: "text" },
+    )).data;
   },
 };
 

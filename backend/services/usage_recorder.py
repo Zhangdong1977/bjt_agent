@@ -122,6 +122,31 @@ def record_ocr_usage(
     _spawn(_write_one(record))
 
 
+def record_embedding_usage(*, response: Any = None, model: str | None = None, status: str) -> None:
+    """Record one embedding request and include its input tokens in task cost."""
+    ctx = get_usage_context()
+    if ctx is None:
+        return
+    settings = get_settings()
+    provider = settings.llm_provider
+    usage = getattr(response, "usage", None) if response is not None else None
+    prompt_t = getattr(usage, "prompt_tokens", 0) or getattr(usage, "total_tokens", 0) or 0
+    total_t = getattr(usage, "total_tokens", 0) or prompt_t
+    cost = estimate_cost(provider=provider, model=model, prompt_tokens=prompt_t,
+                         completion_tokens=0, status=status) if status == "success" else None
+    record = AiUsageRecord(
+        usage_type="embedding", provider=provider, model=model,
+        prompt_tokens=prompt_t, completion_tokens=0, total_tokens=total_t,
+        status=status, cost_cny=cost,
+        external_user_id=ctx.external_user_id, local_user_id=ctx.local_user_id,
+        user_name=ctx.user_name, enterprise_name=ctx.enterprise_name,
+        interior_user=ctx.interior_user, project_id=ctx.project_id,
+        task_id=ctx.task_id, todo_id=ctx.todo_id,
+        usage_date=datetime.now(timezone.utc).date(),
+    )
+    _spawn(_write_one(record))
+
+
 def _spawn(coro) -> None:
     """在当前事件循环上 fire-and-forget；异常吞掉，绝不影响业务。"""
     try:

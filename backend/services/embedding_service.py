@@ -57,6 +57,22 @@ class EmbeddingService:
             logger.error(f"Embedding API error: {e}")
             raise
 
+    async def get_embeddings(self, texts: list[str]) -> list[list[float]]:
+        """Get embeddings in provider-sized batches and record their token usage."""
+        if not texts:
+            return []
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), 64):
+            batch = texts[start : start + 64]
+            response = await self.client.embeddings.create(model=self.model, input=batch)
+            vectors.extend(item.embedding for item in sorted(response.data, key=lambda item: item.index))
+            try:
+                from backend.services.usage_recorder import record_embedding_usage
+                record_embedding_usage(response=response, model=self.model, status="success")
+            except Exception:
+                pass
+        return vectors
+
     async def compute_similarity(self, text1: str, text2: str) -> float:
         """Compute cosine similarity between two texts.
 

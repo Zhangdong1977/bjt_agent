@@ -1,6 +1,6 @@
 """Projects API routes."""
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
 from backend.api.deps import DBSession, CurrentUser, is_interior_user
@@ -12,13 +12,16 @@ router = APIRouter(prefix="/projects", tags=["Projects"])
 
 
 @router.get("", response_model=ProjectListResponse)
-async def list_projects(db: DBSession, current_user: CurrentUser) -> ProjectListResponse:
+async def list_projects(
+    db: DBSession,
+    current_user: CurrentUser,
+    project_type: str | None = Query(None, pattern="^(review|duplicate)$"),
+) -> ProjectListResponse:
     """List non-deleted projects for the current user's history page."""
-    result = await db.execute(
-        select(Project)
-        .where(Project.user_id == current_user.id, Project.is_deleted.is_(False))
-        .order_by(Project.created_at.desc())
-    )
+    stmt = select(Project).where(Project.user_id == current_user.id, Project.is_deleted.is_(False))
+    if project_type:
+        stmt = stmt.where(Project.project_type == project_type)
+    result = await db.execute(stmt.order_by(Project.created_at.desc()))
     projects = result.scalars().all()
     return ProjectListResponse(projects=projects)
 
@@ -34,6 +37,7 @@ async def create_project(
         user_id=current_user.id,
         name=project_data.name,
         description=project_data.description,
+        project_type=project_data.project_type,
     )
     db.add(project)
     await db.flush()

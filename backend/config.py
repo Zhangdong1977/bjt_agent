@@ -107,6 +107,10 @@ class Settings(BaseSettings):
 
     # Rule Library
     rule_library_dir: Path = Path(__file__).parent.parent / "docs" / "rules"
+    duplicate_check_rule_path: Path = Path(__file__).parent.parent / "docs" / "rules-duplicate" / "duplicate-check.md"
+    duplicate_check_max_documents: int = 5
+    duplicate_check_max_candidates: int = 100
+    duplicate_check_total_timeout: int = 10800
 
     @property
     def project_root(self) -> Path:
@@ -134,6 +138,14 @@ class Settings(BaseSettings):
             return default_path
 
         return configured_path
+
+    @property
+    def duplicate_rule_path(self) -> Path:
+        """Return the absolute configured duplicate-check rule file path."""
+        configured = self.duplicate_check_rule_path
+        if configured.is_absolute():
+            return configured.resolve()
+        return (self.project_root / configured).resolve()
 
     @property
     def knowledge_base_path(self) -> Path:

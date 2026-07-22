@@ -69,7 +69,7 @@ async def list_review_tasks(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.project_id == project_id)
+        .where(ReviewTask.project_id == project_id, ReviewTask.task_type == "review")
         .order_by(ReviewTask.created_at.desc())
     )
     tasks = result.scalars().all()
@@ -84,7 +84,9 @@ async def start_review(
     current_user: CurrentUser,
 ) -> ReviewTask:
     """Start a new review task for the project."""
-    await verify_project_ownership(project_id, current_user, db)
+    project = await verify_project_ownership(project_id, current_user, db)
+    if project.project_type != "review":
+        raise HTTPException(status_code=400, detail="查重项目不能发起标书检查")
     # 内部用户与外部用户统一走余额校验（便于内部测试计费/积分）。
     from backend.services.billing import ensure_wallet
 
@@ -109,6 +111,7 @@ async def start_review(
     result = await db.execute(
         select(ReviewTask)
         .where(ReviewTask.project_id == project_id)
+        .where(ReviewTask.task_type == "review")
         .where(ReviewTask.status.in_(["pending", "running"]))
     )
     existing_tasks = result.scalars().all()
@@ -123,6 +126,7 @@ async def start_review(
     # Create new review task
     task = ReviewTask(
         project_id=project_id,
+        task_type="review",
         status="pending",
         max_concurrency=concurrency,
     )
@@ -176,7 +180,7 @@ async def get_review_results(
     # Get the latest completed review task for this project
     latest_task_result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.project_id == project_id, ReviewTask.status == "completed")
+        .where(ReviewTask.project_id == project_id, ReviewTask.task_type == "review", ReviewTask.status == "completed")
         .order_by(ReviewTask.created_at.desc())
         .limit(1)
     )
@@ -234,7 +238,7 @@ async def get_review_task_status(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id, ReviewTask.task_type == "review")
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -257,7 +261,7 @@ async def cancel_review_task(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id, ReviewTask.task_type == "review")
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -309,7 +313,7 @@ async def heartbeat_review_task(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id, ReviewTask.task_type == "review")
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -348,7 +352,7 @@ async def get_review_task_steps(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id, ReviewTask.task_type == "review")
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -378,7 +382,7 @@ async def get_review_task_results(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id, ReviewTask.task_type == "review")
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -417,7 +421,7 @@ async def get_review_task_todos(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id, ReviewTask.task_type == "review")
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -428,7 +432,7 @@ async def get_review_task_todos(
 
     result = await db.execute(
         select(TodoItem)
-        .where(TodoItem.session_id == task_id)
+        .where(TodoItem.session_id == task_id, TodoItem.todo_type == "review_rule")
         .order_by(TodoItem.created_at.asc())
     )
     todos = result.scalars().all()
@@ -524,6 +528,7 @@ async def stream_review_events(
         select(ReviewTask).where(
             ReviewTask.id == task_id,
             ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
         )
     )
     task = result.scalars().first()

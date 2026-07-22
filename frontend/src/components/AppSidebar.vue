@@ -13,6 +13,13 @@ const authStore = useAuthStore()
 
 const allMenuItems = [
   { key: '/home/check', label: '标书检查', subtitle: '创建新项目，上传标书', icon: iconCheck, internalOnly: false },
+  {
+    key: '/home/duplicate-check',
+    label: '标书查重',
+    subtitle: '多份标书两两比对查重',
+    iconSvg: '<svg viewBox="0 0 1024 1024" width="20" height="20"><path fill="currentColor" d="M384 128h384a64 64 0 0 1 64 64v512a64 64 0 0 1-64 64H384a64 64 0 0 1-64-64V192a64 64 0 0 1 64-64zm-192 128h64v512a64 64 0 0 0 64 64h384v64H320a128 128 0 0 1-128-128V256zm256 128v64h256v-64H448zm0 128v64h192v-64H448z"/></svg>',
+    internalOnly: false,
+  },
   { key: '/home/history', label: '历史标书', subtitle: '查看历史审查记录与报告', icon: iconCalendar, internalOnly: false },
   { key: '/home/profile', label: '用户中心', subtitle: '管理账号权限，维护个人信息', icon: iconUser, internalOnly: false },
   { key: '/home/experience', label: '标书复盘', subtitle: '复盘项目，优化审查质量', icon: iconDashboard, internalOnly: true },

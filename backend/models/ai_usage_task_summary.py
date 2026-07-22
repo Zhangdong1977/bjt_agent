@@ -27,6 +27,7 @@ class AiUsageTaskSummary(Base):
 
     # —— 任务状态维度（JOIN review_tasks）——
     task_status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)  # running/completed/failed/cancelled
+    task_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

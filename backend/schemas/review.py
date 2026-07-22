@@ -62,6 +62,7 @@ class ReviewTaskResponse(BaseModel):
     completed_at: datetime | None
     duration_seconds: int | None
     error_message: str | None
+    task_type: str = "review"
 
     model_config = {"from_attributes": True}
 
@@ -93,6 +94,7 @@ class ReviewTaskListItem(BaseModel):
     completed_at: datetime | None
     duration_seconds: int | None
     error_message: str | None = None
+    task_type: str = "review"
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -106,6 +108,11 @@ class TodoItemResponse(BaseModel):
     session_id: str
     rule_doc_path: str
     rule_doc_name: str
+    todo_type: str = "review_rule"
+    display_name: str | None = None
+    document_a_id: str | None = None
+    document_b_id: str | None = None
+    execution_mode: str | None = None
     check_items: list | None = None
     status: str
     result: dict | None = None

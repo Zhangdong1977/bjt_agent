@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import String, Integer, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -38,6 +39,9 @@ class Document(Base):
     word_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending", index=True)  # pending, parsing, parsed, failed
     parse_error: Mapped[str | None] = mapped_column(nullable=True)
+    structure_quality: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    structure_index_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    structure_analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Relationships
     project: Mapped["Project | None"] = relationship(

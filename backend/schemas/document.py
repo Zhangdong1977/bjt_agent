@@ -19,6 +19,8 @@ class DocumentResponse(BaseModel):
     word_count: int | None
     status: str
     parse_error: str | None
+    structure_quality: str | None = None
+    structure_analysis: dict | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

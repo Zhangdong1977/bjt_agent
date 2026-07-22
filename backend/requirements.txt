@@ -55,12 +55,14 @@ pypdfium2>=5.6.0
 
 # Utilities
 python-dotenv>=1.0.0
+PyYAML>=6.0.0
 
 # Kubernetes (for production deployment)
 kubernetes>=35.0.0
 
 # ONNX runtime (for embedding models)
 onnxruntime>=1.23.0
+numpy>=1.26.0
 
 # OpenTelemetry (for observability)
 opentelemetry-api>=1.40.0

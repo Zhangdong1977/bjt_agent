@@ -125,6 +125,7 @@ def _serialize_task(t: AiUsageTaskSummary) -> dict:
     return {
         "task_id": t.id,
         "task_status": t.task_status,
+        "task_type": t.task_type,
         "started_at": t.started_at.isoformat() if t.started_at else None,
         "completed_at": t.completed_at.isoformat() if t.completed_at else None,
         "duration_seconds": t.duration_seconds,

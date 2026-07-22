@@ -23,6 +23,7 @@ class Project(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(nullable=True)
+    project_type: Mapped[str] = mapped_column(String(20), default="review", server_default="review", nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(50), default="draft", index=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False, index=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

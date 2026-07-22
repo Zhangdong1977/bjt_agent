@@ -228,8 +228,23 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
         document.parsed_images_dir = str(images_dir)
 
     document.parsed_markdown_path = str(md_path)
+    if parsed_data.get("docling_json_path"):
+        document.docling_json_path = parsed_data["docling_json_path"]
     document.word_count = len(md_content.split())
     document.page_count = parsed_data.get("page_count")
+
+    try:
+        from backend.services.duplicate_structure import build_structure_index
+        structure_path, structure = build_structure_index(md_path)
+        document.structure_quality = structure["quality"]
+        document.structure_index_path = str(structure_path)
+        document.structure_analysis = {
+            key: value for key, value in structure.items() if key != "sections"
+        }
+    except Exception as exc:
+        logger.warning("[PARSE] structure analysis failed for %s: %s", document_id, exc)
+        document.structure_quality = "unknown"
+        document.structure_analysis = {"quality": "unknown", "error": str(exc)[:500]}
 
     document.status = "parsed"
 
