@@ -58,11 +58,15 @@ interface Props {
   realtimeNotice?: string | null
   // 是否已有 currentTask：用于区分"任务排队中"与"真无任务"
   hasCurrentTask?: boolean
+  mode?: 'review' | 'duplicate'
 }
 
 const props = withDefaults(defineProps<Props>(), {
   errorMessage: null,
+  mode: 'review',
 })
+
+const operationName = computed(() => props.mode === 'duplicate' ? '查重' : '审查')
 
 // BidReviewAgent 模式检测
 const isBidReviewAgentMode = computed(() => {
@@ -87,8 +91,8 @@ const subAgents = computed(() => {
         status: mapCheckItemStatus(item.status)
       })) || [],
       status: mapSubAgentStatus(todo.status),
-      findings: (todo.result?.findings?.filter((f: any) => !f.is_compliant) || []).map((f: any) => ({
-        type: f.severity === 'critical' ? 'crit' as const : f.severity === 'major' ? 'major' as const : f.severity === 'minor' ? 'minor' as const : 'pass' as const,
+      findings: (todo.result?.findings?.filter((f: any) => props.mode === 'duplicate' || !f.is_compliant) || []).map((f: any) => ({
+        type: f.verdict === 'suspicious' ? 'crit' as const : f.verdict === 'reasonable' ? 'pass' as const : f.severity === 'critical' ? 'crit' as const : f.severity === 'major' ? 'major' as const : f.severity === 'minor' ? 'minor' as const : 'pass' as const,
         text: f.explanation || f.message || ''
       })),
       steps: []  // 内部时间线数据
@@ -141,7 +145,7 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail'
       <div class="error-block">
         <div class="error-icon">⚠️</div>
         <div class="error-content">
-          <span class="error-label">审查失败:</span>
+          <span class="error-label">{{ operationName }}失败:</span>
           <span class="error-message">{{ errorMessage }}</span>
         </div>
       </div>
@@ -191,12 +195,12 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail'
 
     <!-- 审查完成提示 -->
     <div v-if="phase === 'completed' && !isBidReviewAgentMode" class="phase-block">
-      <div class="phase-label">审查完成</div>
+      <div class="phase-label">{{ operationName }}完成</div>
       <div class="merge-block">
         <div class="merge-block-header">
           <div class="merge-status">
             <span class="merge-icon">✓</span>
-            <span>所有子代理审查完成</span>
+            <span>所有子代理{{ operationName }}完成</span>
           </div>
           <span class="chip chip-done">完成</span>
         </div>

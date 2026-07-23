@@ -1,7 +1,14 @@
 """Document schemas."""
 
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class DuplicatePairAttachRequest(BaseModel):
+    """The two parsed drafts attached atomically to a duplicate project."""
+
+    left_document_id: str = Field(min_length=1)
+    right_document_id: str = Field(min_length=1)
 
 
 class DocumentResponse(BaseModel):

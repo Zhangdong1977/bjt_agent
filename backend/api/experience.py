@@ -216,9 +216,18 @@ async def projects_feedback_summary(
         # 项目状态维度：相关子查询（标量布尔），不进 FROM，不改变上方 feedback 聚合基数
         Project.is_deleted.label("is_deleted"),
         exists().where(Document.project_id == Project.id).label("has_documents"),
-        exists().where(ReviewTask.project_id == Project.id).label("has_review"),
         exists().where(
-            and_(ReviewTask.project_id == Project.id, ReviewTask.status == "completed")
+            and_(
+                ReviewTask.project_id == Project.id,
+                ReviewTask.task_type == "review",
+            )
+        ).label("has_review"),
+        exists().where(
+            and_(
+                ReviewTask.project_id == Project.id,
+                ReviewTask.task_type == "review",
+                ReviewTask.status == "completed",
+            )
         ).label("review_completed"),
     )
 
@@ -233,6 +242,7 @@ async def projects_feedback_summary(
             ),
         )
         .group_by(Project.id, User.username)
+        .where(Project.project_type == "review")
     )
 
     # Apply time range filter
@@ -308,7 +318,10 @@ async def trigger_experience_extraction(
     """
     # 1. 验证 ReviewTask 存在且已完成
     result = await db.execute(
-        select(ReviewTask).where(ReviewTask.id == task_id)
+        select(ReviewTask).where(
+            ReviewTask.id == task_id,
+            ReviewTask.task_type == "review",
+        )
     )
     review_task = result.scalar_one_or_none()
     if not review_task:

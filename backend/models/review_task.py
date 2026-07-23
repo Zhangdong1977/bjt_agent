@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .project import Project
     from .review_result import ReviewResult
     from .agent_step import AgentStep
+    from .duplicate_result import DuplicateResult
 
 
 class ReviewTask(Base):
@@ -20,6 +21,9 @@ class ReviewTask(Base):
     __tablename__ = "review_tasks"
 
     project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    task_type: Mapped[str] = mapped_column(
+        String(20), default="review", server_default="review", nullable=False, index=True
+    )
     status: Mapped[str] = mapped_column(String(50), default="pending", index=True)  # pending, running, completed, failed, cancelled
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -33,6 +37,9 @@ class ReviewTask(Base):
     project: Mapped["Project"] = relationship("Project", back_populates="review_tasks")
     results: Mapped[list["ReviewResult"]] = relationship("ReviewResult", back_populates="task", cascade="all, delete-orphan")
     steps: Mapped[list["AgentStep"]] = relationship("AgentStep", back_populates="task", cascade="all, delete-orphan")
+    duplicate_results: Mapped[list["DuplicateResult"]] = relationship(
+        "DuplicateResult", back_populates="task", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<ReviewTask(id={self.id}, status={self.status})>"

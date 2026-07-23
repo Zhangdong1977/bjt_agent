@@ -5,6 +5,7 @@ from .project import Project
 from .document import Document
 from .review_task import ReviewTask
 from .review_result import ReviewResult
+from .duplicate_result import DuplicateResult
 from .project_review_result import ProjectReviewResult
 from .agent_step import AgentStep
 from .todo_item import TodoItem
@@ -29,6 +30,7 @@ __all__ = [
     "Document",
     "ReviewTask",
     "ReviewResult",
+    "DuplicateResult",
     "ProjectReviewResult",
     "AgentStep",
     "TodoItem",

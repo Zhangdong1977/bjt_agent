@@ -271,7 +271,7 @@ async function startCheck() {
     }
 
     // ② 把所有草稿文档关联到该项目
-    await projectStore.attachDraftDocuments(project.id)
+    await projectStore.attachDraftDocuments(project.id, ['tender', 'bid'])
 
     // ③ 选择项目（加载文档列表，接续 SSE）
     await projectStore.selectProject(project.id)

@@ -22,7 +22,7 @@ celery_app = Celery(
     "bid_review_agent",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["backend.tasks.review_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks"],
+    include=["backend.tasks.review_tasks", "backend.tasks.duplicate_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks"],
 )
 
 # Ensure celery.current_app points to our app, so @shared_task binds correctly
@@ -63,6 +63,7 @@ celery_app.conf.update(
     },
     task_routes={
         "backend.tasks.review_tasks.run_review": {"queue": "review"},
+        "backend.tasks.duplicate_tasks.run_duplicate_check": {"queue": "review"},
         "backend.tasks.review_tasks.merge_review_results": {"queue": "review"},
         "backend.tasks.document_parser.parse_document": {"queue": "parser"},
         "backend.tasks.feedback_tasks.process_feedback": {"queue": "review"},
@@ -85,6 +86,10 @@ celery_app.conf.update(
             # Coordinate with agent_total_timeout (5400s, asyncio.wait_for in
             # _run_agent_review): asyncio terminates first; soft_time_limit gives
             # Celery a worker-level graceful window; time_limit is the hard backstop.
+            "time_limit": 6000,
+            "soft_time_limit": 5700,
+        },
+        "backend.tasks.duplicate_tasks.run_duplicate_check": {
             "time_limit": 6000,
             "soft_time_limit": 5700,
         },

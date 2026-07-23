@@ -13,6 +13,7 @@ const authStore = useAuthStore()
 
 const allMenuItems = [
   { key: '/home/check', label: '标书检查', subtitle: '创建新项目，上传标书', icon: iconCheck, internalOnly: false },
+  { key: '/home/duplicate-check', label: '标书查重', subtitle: '比对两份技术应标书', icon: iconCheck, internalOnly: false },
   { key: '/home/history', label: '历史标书', subtitle: '查看历史审查记录与报告', icon: iconCalendar, internalOnly: false },
   { key: '/home/profile', label: '用户中心', subtitle: '管理账号权限，维护个人信息', icon: iconUser, internalOnly: false },
   { key: '/home/experience', label: '标书复盘', subtitle: '复盘项目，优化审查质量', icon: iconDashboard, internalOnly: true },

@@ -45,6 +45,9 @@ import type {
   MaintenanceState,
   MaintenanceUpdateRequest,
   SystemStatus,
+  DocumentType,
+  DuplicateResultsResponse,
+  DuplicateTodoItem,
 } from "@/types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
@@ -391,8 +394,10 @@ export function getTokenClaims(): {
 
 // Projects API
 export const projectsApi = {
-  async list(): Promise<Project[]> {
-    const response = await apiClient.get("/projects");
+  async list(projectType?: "review" | "duplicate"): Promise<Project[]> {
+    const response = await apiClient.get("/projects", {
+      params: projectType ? { project_type: projectType } : undefined,
+    });
     return response.data.projects;
   },
 
@@ -426,7 +431,7 @@ export const documentsApi = {
 
   async upload(
     projectId: string,
-    docType: "tender" | "bid",
+    docType: DocumentType,
     file: File,
     onProgress?: (progress: UploadProgress) => void,
   ): Promise<Document> {
@@ -508,7 +513,7 @@ export const documentsApi = {
   // ===== 草稿文档（独立于项目）：选文件即上传解析，点「开始检查」时才关联到项目 =====
 
   async uploadDraft(
-    docType: "tender" | "bid",
+    docType: DocumentType,
     file: File,
     onProgress?: (progress: UploadProgress) => void,
   ): Promise<Document> {
@@ -656,6 +661,81 @@ export const reviewApi = {
     const response = await apiClient.get(
       `/projects/${projectId}/review/tasks/${taskId}/todos/${todoId}/report`,
       { responseType: "text" },
+    );
+    return response.data;
+  },
+};
+
+export const duplicateApi = {
+  async start(projectId: string): Promise<ReviewTask> {
+    const response = await apiClient.post(`/projects/${projectId}/duplicate-check`);
+    return response.data;
+  },
+
+  async attachDuplicatePair(
+    projectId: string,
+    leftDocumentId: string,
+    rightDocumentId: string,
+  ): Promise<Document[]> {
+    const response = await apiClient.post(
+      `/projects/${projectId}/documents/attach-duplicate-pair`,
+      {
+        left_document_id: leftDocumentId,
+        right_document_id: rightDocumentId,
+      },
+    );
+    return response.data;
+  },
+
+  async getTasks(projectId: string): Promise<ReviewTaskListItem[]> {
+    const response = await apiClient.get(`/projects/${projectId}/duplicate-check/tasks`);
+    return response.data;
+  },
+
+  async getTaskStatus(projectId: string, taskId: string): Promise<ReviewTask> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}`,
+    );
+    return response.data;
+  },
+
+  async cancel(projectId: string, taskId: string): Promise<ReviewTask> {
+    const response = await apiClient.post(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/cancel`,
+    );
+    return response.data;
+  },
+
+  async heartbeat(
+    projectId: string,
+    taskId: string,
+  ): Promise<{ status: string; last_heartbeat?: string; message?: string }> {
+    const response = await apiClient.post(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/heartbeat`,
+    );
+    return response.data;
+  },
+
+  async getSteps(projectId: string, taskId: string): Promise<AgentStep[]> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/steps`,
+    );
+    return response.data;
+  },
+
+  async getTodosByTask(projectId: string, taskId: string): Promise<DuplicateTodoItem[]> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/todos`,
+    );
+    return response.data;
+  },
+
+  async getResults(
+    projectId: string,
+    taskId: string,
+  ): Promise<DuplicateResultsResponse> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/results`,
     );
     return response.data;
   },

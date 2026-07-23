@@ -107,6 +107,9 @@ class Settings(BaseSettings):
 
     # Rule Library
     rule_library_dir: Path = Path(__file__).parent.parent / "docs" / "rules"
+    duplicate_rule_library_dir: Path = (
+        Path(__file__).parent.parent / "docs" / "rules-duplicate"
+    )
 
     @property
     def project_root(self) -> Path:
@@ -133,6 +136,21 @@ class Settings(BaseSettings):
         if configured_text.endswith("/docs/rules") and default_path.exists() and default_path.is_dir():
             return default_path
 
+        return configured_path
+
+    @property
+    def duplicate_rule_library_path(self) -> Path:
+        """Resolve the technical-bid duplicate-check rule directory."""
+        configured = self.duplicate_rule_library_dir
+        configured_path = configured if configured.is_absolute() else self.project_root / configured
+        configured_path = configured_path.resolve()
+        if configured_path.exists() and configured_path.is_dir():
+            return configured_path
+
+        default_path = (self.project_root / "docs" / "rules-duplicate").resolve()
+        configured_text = configured.as_posix().replace("\\", "/")
+        if configured_text.endswith("/docs/rules-duplicate"):
+            return default_path
         return configured_path
 
     @property

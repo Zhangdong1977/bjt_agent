@@ -27,6 +27,7 @@
 | 文档 | 看什么 |
 |---|---|
 | [项目需求.md](项目需求.md) | 需求规格 + 系统架构（§2 含架构图、组件职责、**核心数据流、6 张时序图**）|
+| [技术应标书查重功能-需求设计与开发计划.md](技术应标书查重功能-需求设计与开发计划.md) | 标书查重已确认需求、数据/API/代理/权限设计、开发计划与验收标准 |
 | [mini-agent-interaction.md](mini-agent-interaction.md) | BidReviewAgent 与 Mini-Agent 子模块交互（工具、消息 schema、Agent 循环、SSE）|
 
 ### 数据
@@ -51,6 +52,7 @@
 
 ## 子目录
 - [`rules-all/`](rules-all/) — 完整审查规则集（A001–E001 等 16 条）
+- `rules-duplicate/` — 技术应标书查重规则集（开发阶段创建）
 - [`protocal/`](protocal/) — 法律文本（用户协议、隐私政策）
 - [`ui/`](ui/) — UI 设计稿切图 + [切图清单.md](ui/切图清单.md)
 

@@ -8,6 +8,7 @@ const router = useRouter()
 const projectStore = useProjectStore()
 
 const searchText = ref('')
+const typeFilter = ref<'all' | 'review' | 'duplicate'>('all')
 
 onMounted(() => {
   projectStore.fetchProjects()
@@ -15,6 +16,10 @@ onMounted(() => {
 
 const filteredProjects = computed(() => {
   let projects = projectStore.projects
+
+  if (typeFilter.value !== 'all') {
+    projects = projects.filter(p => (p.project_type || 'review') === typeFilter.value)
+  }
 
   if (searchText.value) {
     const keyword = searchText.value.toLowerCase()
@@ -26,8 +31,11 @@ const filteredProjects = computed(() => {
   return projects
 })
 
-function goToResults(projectId: string) {
-  router.push({ name: 'review-results', params: { id: projectId } })
+function goToResults(project: any) {
+  router.push({
+    name: project.project_type === 'duplicate' ? 'duplicate-results' : 'review-results',
+    params: { id: project.id },
+  })
 }
 
 async function deleteProject(projectId: string) {
@@ -46,6 +54,11 @@ async function deleteProject(projectId: string) {
           style="width: 300px"
           allow-clear
         />
+        <a-select v-model:value="typeFilter" style="width: 160px">
+          <a-select-option value="all">全部类型</a-select-option>
+          <a-select-option value="review">标书检查</a-select-option>
+          <a-select-option value="duplicate">标书查重</a-select-option>
+        </a-select>
       </div>
     </a-card>
 
@@ -54,6 +67,7 @@ async function deleteProject(projectId: string) {
         :dataSource="filteredProjects"
         :columns="[
           { title: '项目名称', dataIndex: 'name', key: 'name' },
+          { title: '类型', dataIndex: 'project_type', key: 'project_type', width: 110 },
           { title: '描述', dataIndex: 'description', key: 'description' },
           { title: '创建时间', dataIndex: 'created_at', key: 'created_at' },
           { title: '操作', key: 'action' }
@@ -63,9 +77,14 @@ async function deleteProject(projectId: string) {
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">
-            <a @click="goToResults(record.id)" class="project-link">
+            <a @click="goToResults(record)" class="project-link">
               {{ record.name }}
             </a>
+          </template>
+          <template v-else-if="column.key === 'project_type'">
+            <a-tag :color="record.project_type === 'duplicate' ? 'purple' : 'blue'">
+              {{ record.project_type === 'duplicate' ? '标书查重' : '标书检查' }}
+            </a-tag>
           </template>
           <template v-else-if="column.key === 'description'">
             {{ record.description || '-' }}
@@ -75,7 +94,7 @@ async function deleteProject(projectId: string) {
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a @click="goToResults(record.id)">审查结果</a>
+              <a @click="goToResults(record)">{{ record.project_type === 'duplicate' ? '查重结果' : '审查结果' }}</a>
               <a-divider type="vertical" />
               <a-popconfirm
                 title="确定要删除此项目吗？"

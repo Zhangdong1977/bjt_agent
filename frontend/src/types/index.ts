@@ -130,6 +130,7 @@ export interface Project {
   id: string;
   name: string;
   description: string | null;
+  project_type: "review" | "duplicate";
   user_id: string;
   status: string;
   is_deleted: boolean;
@@ -142,6 +143,7 @@ export interface Project {
 export interface CreateProjectRequest {
   name: string;
   description?: string;
+  project_type?: "review" | "duplicate";
 }
 
 // Document parse progress (from SSE events)
@@ -157,7 +159,7 @@ export interface Document {
   id: string;
   project_id: string | null;
   owner_user_id: string | null;
-  doc_type: "tender" | "bid";
+  doc_type: DocumentType;
   original_filename: string;
   file_path: string;
   parsed_md_path: string | null;
@@ -170,6 +172,12 @@ export interface Document {
   created_at: string;
 }
 
+export type DocumentType =
+  | "tender"
+  | "bid"
+  | "duplicate_left"
+  | "duplicate_right";
+
 export interface DocumentContent {
   content: string;
   images: string[];
@@ -180,6 +188,7 @@ export interface DocumentContent {
 export interface ReviewTask {
   id: string;
   project_id: string;
+  task_type?: "review" | "duplicate";
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   started_at: string | null;
   completed_at: string | null;
@@ -191,12 +200,54 @@ export interface ReviewTask {
 export interface ReviewTaskListItem {
   id: string;
   project_id: string;
+  task_type?: "review" | "duplicate";
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   started_at: string | null;
   completed_at: string | null;
   duration_seconds: number | null;
   error_message: string | null;
   created_at: string;
+}
+
+export type DuplicateVerdict = "reasonable" | "suspicious";
+
+export interface DuplicateResult {
+  id: string;
+  task_id: string;
+  todo_id: string | null;
+  rule_doc_name: string;
+  check_item_name: string;
+  verdict: DuplicateVerdict;
+  similarity_score: number;
+  match_type: string;
+  left_document_id: string;
+  left_filename: string | null;
+  left_excerpt: string;
+  left_location: Record<string, any>;
+  right_document_id: string;
+  right_filename: string | null;
+  right_excerpt: string;
+  right_location: Record<string, any>;
+  explanation: string;
+  suggestion: string | null;
+  evidence: Record<string, any> | null;
+  created_at: string;
+}
+
+export interface DuplicateTodoItem
+  extends Omit<TodoItem, "rule_doc_path" | "result"> {
+  result: { findings: DuplicateResult[] } | null;
+}
+
+export interface DuplicateResultsResponse {
+  summary: {
+    rule_count: number;
+    completed_rule_count: number;
+    reasonable_count: number;
+    suspicious_count: number;
+  };
+  findings: DuplicateResult[];
+  todos: DuplicateTodoItem[];
 }
 
 export interface ReviewResult {

@@ -56,6 +56,7 @@ class ReviewTaskResponse(BaseModel):
 
     id: str
     project_id: str
+    task_type: str = "review"
     status: str
     celery_task_id: str | None
     started_at: datetime | None
@@ -88,6 +89,7 @@ class ReviewTaskListItem(BaseModel):
 
     id: str
     project_id: str
+    task_type: str = "review"
     status: str
     started_at: datetime | None
     completed_at: datetime | None

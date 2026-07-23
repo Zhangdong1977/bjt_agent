@@ -4,6 +4,7 @@ import {
   projectsApi,
   documentsApi,
   reviewApi,
+  duplicateApi,
   getAccessToken,
 } from "@/api/client";
 import type {
@@ -14,6 +15,7 @@ import type {
   SSEEvent,
   UploadProgress,
   ReviewTaskListItem,
+  DocumentType,
 } from "@/types";
 
 export interface AgentStep {
@@ -66,10 +68,18 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
-  async function createProject(name: string, description?: string) {
+  async function createProject(
+    name: string,
+    description?: string,
+    projectType: "review" | "duplicate" = "review",
+  ) {
     loading.value = true;
     try {
-      const project = await projectsApi.create({ name, description });
+      const project = await projectsApi.create({
+        name,
+        description,
+        project_type: projectType,
+      });
       projects.value.unshift(project);
       return project;
     } finally {
@@ -113,7 +123,7 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   async function uploadDocument(
-    docType: "tender" | "bid",
+    docType: DocumentType,
     file: File,
     onProgress?: (progress: UploadProgress) => void,
   ) {
@@ -578,7 +588,7 @@ export const useProjectStore = defineStore("project", () => {
   // ============================================================
 
   async function uploadDraftDocument(
-    docType: "tender" | "bid",
+    docType: DocumentType,
     file: File,
     onProgress?: (progress: UploadProgress) => void,
   ) {
@@ -639,28 +649,34 @@ export const useProjectStore = defineStore("project", () => {
   //  - 解析中（pending/parsing）的草稿：恢复进 store 并重连 SSE + 轮询，续上进度；
   //  - 已结束（parsed/failed）的草稿：上次未走完「立即检查」流程的遗留物，不展示，
   //    并在后台静默删除，使上传卡片回到初始状态、避免数据库累积脏数据。
-  async function loadDraftDocuments() {
+  async function loadDraftDocuments(
+    docTypes: DocumentType[] = ["tender", "bid"],
+    retainFinished = false,
+  ) {
     try {
       const drafts = await documentsApi.listDrafts();
-      // 合并：替换掉旧的草稿条目，保留项目文档
-      documents.value = documents.value.filter((d) => d.project_id !== null);
+      // 只替换当前业务角色的草稿，保留项目文档及其它页面的草稿。
+      documents.value = documents.value.filter(
+        (d) => d.project_id !== null || !docTypes.includes(d.doc_type),
+      );
 
-      const activeDrafts = drafts.filter(
+      const scopedDrafts = drafts.filter((d) => docTypes.includes(d.doc_type));
+
+      const activeDrafts = scopedDrafts.filter(
         (d) => d.status === "pending" || d.status === "parsing",
       );
-      const finishedDrafts = drafts.filter(
+      const finishedDrafts = scopedDrafts.filter(
         (d) => d.status === "parsed" || d.status === "failed",
       );
 
-      // 只恢复解析中的草稿，并重连 SSE + 轮询
-      documents.value.push(...activeDrafts);
+      documents.value.push(...activeDrafts, ...(retainFinished ? finishedDrafts : []));
       for (const doc of activeDrafts) {
         connectDocParseSSE(doc.id);
         pollDraftStatus(doc.id);
       }
 
       // 后台并行清理遗留的已结束草稿（不阻塞页面渲染，单个失败不影响其它）
-      if (finishedDrafts.length > 0) {
+      if (!retainFinished && finishedDrafts.length > 0) {
         await Promise.allSettled(
           finishedDrafts.map((doc) => documentsApi.deleteDraft(doc.id)),
         );
@@ -679,8 +695,14 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   // 把所有草稿文档关联到指定项目（点「开始检查」创建项目后调用）
-  async function attachDraftDocuments(projectId: string) {
-    const drafts = documents.value.filter((d) => d.project_id === null);
+  async function attachDraftDocuments(
+    projectId: string,
+    docTypes?: DocumentType[],
+  ) {
+    const drafts = documents.value.filter(
+      (d) => d.project_id === null && (!docTypes || docTypes.includes(d.doc_type)),
+    );
+    const errors: unknown[] = [];
     for (const doc of drafts) {
       try {
         const updated = await documentsApi.attach(doc.id, projectId);
@@ -690,13 +712,20 @@ export const useProjectStore = defineStore("project", () => {
         }
       } catch (err) {
         console.error(`Failed to attach document ${doc.id}:`, err);
+        errors.push(err);
       }
     }
+    if (errors.length > 0) throw errors[0];
   }
 
   async function fetchReviewTasks() {
     if (!currentProject.value) return;
     reviewTasks.value = await reviewApi.getTasks(currentProject.value.id);
+  }
+
+  async function fetchDuplicateTasks() {
+    if (!currentProject.value) return;
+    reviewTasks.value = await duplicateApi.getTasks(currentProject.value.id);
   }
 
   async function selectReviewTask(taskId: string | null) {
@@ -711,6 +740,7 @@ export const useProjectStore = defineStore("project", () => {
       currentTask.value = {
         id: task.id,
         project_id: task.project_id,
+        task_type: task.task_type,
         status: task.status,
         started_at: task.started_at,
         completed_at: task.completed_at,
@@ -793,6 +823,11 @@ export const useProjectStore = defineStore("project", () => {
   // Track current heartbeat context for visibility change handler
   let heartbeatProjectId: string | null = null;
   let heartbeatTaskId: string | null = null;
+  let heartbeatMode: "review" | "duplicate" = "review";
+
+  function heartbeatApi() {
+    return heartbeatMode === "duplicate" ? duplicateApi : reviewApi;
+  }
 
   function handleVisibilityChange() {
     if (
@@ -801,22 +836,27 @@ export const useProjectStore = defineStore("project", () => {
       heartbeatTaskId
     ) {
       // Page became visible — send an immediate heartbeat
-      reviewApi
+      heartbeatApi()
         .heartbeat(heartbeatProjectId, heartbeatTaskId)
         .catch(console.warn);
     }
   }
 
-  function startHeartbeat(projectId: string, taskId: string) {
+  function startHeartbeat(
+    projectId: string,
+    taskId: string,
+    mode: "review" | "duplicate" = "review",
+  ) {
     stopHeartbeat();
     if (!projectId || !taskId) return;
 
     heartbeatProjectId = projectId;
     heartbeatTaskId = taskId;
+    heartbeatMode = mode;
 
     heartbeatTimer = window.setInterval(async () => {
       try {
-        await reviewApi.heartbeat(projectId, taskId);
+        await heartbeatApi().heartbeat(projectId, taskId);
       } catch (err) {
         console.warn("[startHeartbeat] Heartbeat failed:", err);
         // Don't stop - the task might still be running and we want to keep trying
@@ -824,7 +864,7 @@ export const useProjectStore = defineStore("project", () => {
     }, HEARTBEAT_INTERVAL);
 
     // Also send immediately
-    reviewApi.heartbeat(projectId, taskId).catch(console.warn);
+    heartbeatApi().heartbeat(projectId, taskId).catch(console.warn);
 
     // Listen for visibility changes to send heartbeat on tab restore
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -874,6 +914,7 @@ export const useProjectStore = defineStore("project", () => {
     disconnectSSE,
     clearDocumentPoll,
     fetchReviewTasks,
+    fetchDuplicateTasks,
     selectReviewTask,
     loadHistoricalSteps,
     startHeartbeat,

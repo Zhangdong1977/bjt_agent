@@ -14,5 +14,7 @@ declare module 'vue-router' {
     resolveParentName?: (to: RouteLocationNormalized) => string | null | undefined
     /** 整条隐藏面包屑（用于沉浸式全屏工作台等） */
     hideBreadcrumb?: boolean
+    /** 共享执行页使用的任务类型。 */
+    taskType?: 'review' | 'duplicate'
   }
 }

@@ -61,9 +61,13 @@ async def _verify_project(
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在或无权访问")
     if allow_interior and is_interior_user(current_user):
+        if project.project_type != "review":
+            raise HTTPException(status_code=400, detail="查重项目第一版暂不支持反馈或复盘")
         return project
     if project.user_id != current_user.id or project.is_deleted:
         raise HTTPException(status_code=404, detail="项目不存在或无权访问")
+    if project.project_type != "review":
+        raise HTTPException(status_code=400, detail="查重项目第一版暂不支持反馈或复盘")
     return project
 
 
@@ -77,6 +81,7 @@ async def _verify_finding(
         .where(
             ReviewResult.id == finding_id,
             ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
         )
     )
     finding = result.scalar_one_or_none()

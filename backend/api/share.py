@@ -48,6 +48,11 @@ async def _verify_my_project(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="项目不存在或无权访问",
         )
+    if project.project_type != "review":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="查重项目第一版暂不支持分享",
+        )
     return project
 
 
@@ -77,6 +82,7 @@ async def _get_shared_project(share: ReviewShareToken, db: DBSession) -> Project
     result = await db.execute(
         select(Project).where(
             Project.id == share.project_id,
+            Project.project_type == "review",
             Project.is_deleted.is_(False),
         )
     )
@@ -116,7 +122,11 @@ async def create_share_token(
     # creating two independently revocable "current" links.
     task_result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(
+            ReviewTask.id == task_id,
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+        )
         .with_for_update()
     )
     task = task_result.scalar_one_or_none()
@@ -193,7 +203,9 @@ async def get_shared_review(
 
     task_result = await db.execute(
         select(ReviewTask).where(
-            ReviewTask.id == share.task_id, ReviewTask.project_id == share.project_id
+            ReviewTask.id == share.task_id,
+            ReviewTask.project_id == share.project_id,
+            ReviewTask.task_type == "review",
         )
     )
     task = task_result.scalar_one_or_none()

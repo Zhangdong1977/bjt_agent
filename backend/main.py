@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import asyncio
+import json
 import logging
 import logging.config
 import sys
@@ -16,7 +17,7 @@ from starlette import status
 
 from backend.config import get_settings
 from backend.models import init_db, close_db
-from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, review_sessions_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, profile_router, billing_router, announcements_router, system_status_router
+from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, duplicate_check_router, review_sessions_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, profile_router, billing_router, announcements_router, system_status_router
 from backend.api.events import router as events_router
 from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
@@ -183,6 +184,7 @@ app.include_router(projects_router, prefix=settings.api_prefix)
 app.include_router(documents_router, prefix=settings.api_prefix)
 app.include_router(documents_drafts_router, prefix=settings.api_prefix)
 app.include_router(review_router, prefix=settings.api_prefix)
+app.include_router(duplicate_check_router, prefix=settings.api_prefix)
 app.include_router(review_sessions_router, prefix=settings.api_prefix)
 app.include_router(share_router, prefix=settings.api_prefix)
 app.include_router(knowledge_router, prefix=settings.api_prefix)
@@ -245,7 +247,7 @@ async def debug_redis():
 
 
 @app.get("/api/events/tasks/{task_id}/stream")
-async def stream_task_events(task_id: str, token: str | None = None):
+async def stream_task_events(task_id: str, token: str):
     """Stream SSE events for a specific task.
 
     This endpoint provides real-time updates about task progress,
@@ -256,28 +258,70 @@ async def stream_task_events(task_id: str, token: str | None = None):
     logger = logging.getLogger(__name__)
     logger.info(f"SSE connection requested for task: {task_id}")
 
-    # Validate token if provided (optional for backwards compatibility)
-    if token:
-        from jose import JWTError, jwt
-        from backend.config import get_settings
-        settings = get_settings()
-        try:
-            payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-            user_id: str = payload.get("sub")
-            if user_id is None:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="登录状态无效，请重新登录",
-                )
-        except JWTError:
+    # EventSource cannot set Authorization headers, so authenticate through the
+    # query token and enforce task ownership here. Detailed agent events are
+    # filtered server-side for external users.
+    from jose import JWTError, jwt
+    from sqlalchemy import select
+    from backend.config import get_settings
+    from backend.models import Project, ReviewTask, async_session_factory
+
+    settings = get_settings()
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        user_id: str | None = payload.get("sub")
+        if user_id is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="登录状态无效，请重新登录",
             )
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录状态无效，请重新登录",
+        )
+
+    async with async_session_factory() as db:
+        task = (
+            await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
+        ).scalar_one_or_none()
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务不存在或已被删除")
+        project = (
+            await db.execute(select(Project).where(Project.id == task.project_id))
+        ).scalar_one_or_none()
+        is_internal = bool(payload.get("interior_user", False))
+        if project is None or (
+            not is_internal
+            and (project.user_id != user_id or project.is_deleted)
+        ):
+            raise HTTPException(status_code=404, detail="任务不存在或无权访问")
+
+    blocked_events = {
+        "step",
+        "sub_agent_step",
+        "sub_agent_step_start",
+        "sub_agent_llm_output",
+        "sub_agent_tool_call_start",
+        "sub_agent_tool_call_end",
+        "sub_agent_step_complete",
+    }
 
     async def event_generator():
         async for event in sse_manager.connect(task_id):
-            yield event
+            if is_internal:
+                yield event
+                continue
+            should_block = False
+            for line in event.splitlines():
+                if line.startswith("data: "):
+                    try:
+                        should_block = json.loads(line[6:]).get("type") in blocked_events
+                    except Exception:
+                        should_block = False
+                    break
+            if not should_block:
+                yield event
 
     return StreamingResponse(
         event_generator(),

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue'
-import { reviewApi } from '@/api/client'
+import { duplicateApi, reviewApi } from '@/api/client'
 
 const props = defineProps<{
   totalSteps: number
@@ -12,6 +12,7 @@ const props = defineProps<{
   durationSeconds?: number | null
   projectId?: string
   taskId?: string
+  mode?: 'review' | 'duplicate'
 }>()
 
 const emit = defineEmits<{
@@ -70,7 +71,7 @@ function formatRuntime(seconds: number): string {
 const statusText = computed(() => {
   switch (props.phase) {
     case 'pending': return '等待开始'
-    case 'running': return '审查中'
+    case 'running': return props.mode === 'duplicate' ? '查重中' : '审查中'
     case 'completed': return '已完成'
     case 'failed': return '失败'
     default: return '未知'
@@ -83,10 +84,11 @@ async function abandonReview() {
   isAbandoning.value = true
   cancelError.value = null
   try {
-    await reviewApi.cancel(props.projectId, props.taskId)
+    const api = props.mode === 'duplicate' ? duplicateApi : reviewApi
+    await api.cancel(props.projectId, props.taskId)
     emit('cancelled')
   } catch (error) {
-    console.error('放弃审查失败:', error)
+    console.error('放弃任务失败:', error)
     cancelError.value = '放弃检查失败，请稍后重试'
   } finally {
     isAbandoning.value = false
@@ -106,7 +108,7 @@ function viewResults() {
   <div class="right-sidebar">
     <!-- 状态指示 -->
     <div class="sidebar-section">
-      <div class="section-title">审查状态</div>
+      <div class="section-title">{{ mode === 'duplicate' ? '查重状态' : '审查状态' }}</div>
       <div :class="['status-indicator', `status-${phase}`]">
         <div class="status-dot"></div>
         <span class="status-text">{{ statusText }}</span>
@@ -142,7 +144,7 @@ function viewResults() {
         </div>
         <div class="stat-box">
           <div class="stat-val sv-amber">{{ findingsCount }}</div>
-          <div class="stat-lbl">发现问题</div>
+          <div class="stat-lbl">{{ mode === 'duplicate' ? '查重结果' : '发现问题' }}</div>
         </div>
         <div class="stat-box stat-box-wide">
           <div class="stat-val sv-blue">{{ formatRuntime(totalRuntime) }}</div>
@@ -168,7 +170,7 @@ function viewResults() {
           :disabled="isAbandoning || phase === 'completed' || phase === 'failed'"
           @click="abandonReview"
         >
-          {{ isAbandoning ? '放弃中...' : '放弃检查' }}
+          {{ isAbandoning ? '放弃中...' : (mode === 'duplicate' ? '放弃查重' : '放弃检查') }}
         </button>
         <div v-if="cancelError" class="cancel-error">{{ cancelError }}</div>
       </div>

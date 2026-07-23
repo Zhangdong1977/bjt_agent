@@ -311,7 +311,11 @@ def _persist_step_fallback(task_id: str, data: dict) -> None:
     t.start()
 
 
-async def _progress_watchdog(task_id: str, cancel_event: asyncio.Event):
+async def _progress_watchdog(
+    task_id: str,
+    cancel_event: asyncio.Event,
+    operation_name: str = "审查",
+):
     """Monitor task progress and trigger cancellation if no events for too long.
 
     Checks every 30s whether a new SSE event has been published for this task.
@@ -332,7 +336,7 @@ async def _progress_watchdog(task_id: str, cancel_event: asyncio.Event):
                 f"no event for {elapsed:.0f}s (limit {settings.agent_progress_timeout}s)"
             )
             _publish_event(task_id, "error", {
-                "message": f"审查已超过 {elapsed:.0f} 秒没有进展，系统已自动停止任务"
+                "message": f"{operation_name}已超过 {elapsed:.0f} 秒没有进展，系统已自动停止任务"
             })
             cancel_event.set()
             break
@@ -384,6 +388,8 @@ def run_review(self, task_id: str) -> dict:
 
                 if not task:
                     return {"status": "error", "message": ERROR_TASK_NOT_FOUND}
+                if task.task_type != "review":
+                    return {"status": "error", "message": "Task type is not review"}
 
                 now = utc_now()
                 task.status = "running"

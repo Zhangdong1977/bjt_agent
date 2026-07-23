@@ -41,6 +41,12 @@ const router = createRouter({
           meta: { title: "标书检查" },
         },
         {
+          path: "duplicate-check",
+          name: "duplicate-check",
+          component: () => import("@/views/DuplicateCheckView.vue"),
+          meta: { title: "标书查重" },
+        },
+        {
           path: "history",
           name: "history",
           component: () => import("@/views/HistoryView.vue"),
@@ -71,6 +77,12 @@ const router = createRouter({
           meta: { hideBreadcrumb: true },
         },
         {
+          path: "projects/:id/duplicate-execution",
+          name: "duplicate-execution",
+          component: () => import("@/views/ReviewExecutionView.vue"),
+          meta: { hideBreadcrumb: true, taskType: "duplicate" },
+        },
+        {
           path: "projects/:id/results",
           name: "review-results",
           component: () => import("@/views/ResultsView.vue"),
@@ -79,6 +91,12 @@ const router = createRouter({
             resolveParentName: (to) =>
               to.query.from === "experience" ? "experience-dashboard" : "history",
           },
+        },
+        {
+          path: "projects/:id/duplicate-results",
+          name: "duplicate-results",
+          component: () => import("@/views/DuplicateResultsView.vue"),
+          meta: { title: "查重结果", parentName: "history" },
         },
         {
           path: "experience",
