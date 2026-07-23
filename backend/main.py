@@ -16,7 +16,7 @@ from starlette import status
 
 from backend.config import get_settings
 from backend.models import init_db, close_db
-from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, review_sessions_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, profile_router, billing_router, announcements_router, system_status_router, duplicate_check_router
+from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, review_sessions_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, profile_router, billing_router, announcements_router, system_status_router
 from backend.api.events import router as events_router
 from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
@@ -193,7 +193,6 @@ app.include_router(profile_router, prefix=settings.api_prefix)
 app.include_router(billing_router, prefix=settings.api_prefix)
 app.include_router(announcements_router, prefix=settings.api_prefix)
 app.include_router(system_status_router, prefix=settings.api_prefix)
-app.include_router(duplicate_check_router, prefix=settings.api_prefix)
 app.include_router(events_router)
 
 # Mount workspace directory as static files for image access

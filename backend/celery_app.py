@@ -22,7 +22,7 @@ celery_app = Celery(
     "bid_review_agent",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["backend.tasks.review_tasks", "backend.tasks.duplicate_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks"],
+    include=["backend.tasks.review_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks"],
 )
 
 # Ensure celery.current_app points to our app, so @shared_task binds correctly
@@ -58,13 +58,12 @@ celery_app.conf.update(
     broker_transport_options={
         "socket_keepalive": True,
         "health_check_interval": 30,
-        "visibility_timeout": 14400,
+        "visibility_timeout": 3600,
         "retry_on_timeout": True,
     },
     task_routes={
         "backend.tasks.review_tasks.run_review": {"queue": "review"},
         "backend.tasks.review_tasks.merge_review_results": {"queue": "review"},
-        "backend.tasks.duplicate_tasks.run_duplicate_check": {"queue": "review"},
         "backend.tasks.document_parser.parse_document": {"queue": "parser"},
         "backend.tasks.feedback_tasks.process_feedback": {"queue": "review"},
         "backend.tasks.feedback_tasks.process_batch_feedback": {"queue": "review"},
@@ -92,10 +91,6 @@ celery_app.conf.update(
         "backend.tasks.review_tasks.merge_review_results": {
             "time_limit": 600,
             "soft_time_limit": 480,
-        },
-        "backend.tasks.duplicate_tasks.run_duplicate_check": {
-            "time_limit": 11400,
-            "soft_time_limit": 11100,
         },
         "backend.tasks.document_parser.parse_document": {
             "time_limit": None,

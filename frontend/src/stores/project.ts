@@ -57,19 +57,19 @@ export const useProjectStore = defineStore("project", () => {
   // Document parse SSE connections
   const docParseSSEConnections = ref<Record<string, EventSource>>({});
 
-  async function fetchProjects(projectType: "review" | "duplicate" = "review") {
+  async function fetchProjects() {
     loading.value = true;
     try {
-      projects.value = await projectsApi.list(projectType);
+      projects.value = await projectsApi.list();
     } finally {
       loading.value = false;
     }
   }
 
-  async function createProject(name: string, description?: string, projectType: "review" | "duplicate" = "review") {
+  async function createProject(name: string, description?: string) {
     loading.value = true;
     try {
-      const project = await projectsApi.create({ name, description, project_type: projectType });
+      const project = await projectsApi.create({ name, description });
       projects.value.unshift(project);
       return project;
     } finally {
@@ -113,7 +113,7 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   async function uploadDocument(
-    docType: "tender" | "bid" | "duplicate_bid",
+    docType: "tender" | "bid",
     file: File,
     onProgress?: (progress: UploadProgress) => void,
   ) {
@@ -641,14 +641,7 @@ export const useProjectStore = defineStore("project", () => {
   //    并在后台静默删除，使上传卡片回到初始状态、避免数据库累积脏数据。
   async function loadDraftDocuments() {
     try {
-      // Review and duplicate-check drafts must never mix. In particular, the
-      // legacy review page silently cleans up finished review drafts; loading
-      // duplicate_bid here would delete a user's in-progress duplicate project.
-      const [tenderDrafts, bidDrafts] = await Promise.all([
-        documentsApi.listDrafts("tender"),
-        documentsApi.listDrafts("bid"),
-      ]);
-      const drafts = [...tenderDrafts, ...bidDrafts];
+      const drafts = await documentsApi.listDrafts();
       // 合并：替换掉旧的草稿条目，保留项目文档
       documents.value = documents.value.filter((d) => d.project_id !== null);
 
@@ -687,9 +680,7 @@ export const useProjectStore = defineStore("project", () => {
 
   // 把所有草稿文档关联到指定项目（点「开始检查」创建项目后调用）
   async function attachDraftDocuments(projectId: string) {
-    const drafts = documents.value.filter(
-      (d) => d.project_id === null && (d.doc_type === "tender" || d.doc_type === "bid"),
-    );
+    const drafts = documents.value.filter((d) => d.project_id === null);
     for (const doc of drafts) {
       try {
         const updated = await documentsApi.attach(doc.id, projectId);

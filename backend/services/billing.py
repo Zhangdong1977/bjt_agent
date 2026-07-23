@@ -294,7 +294,7 @@ async def settle_review_consumption(task_id: str) -> ConsumptionRecord | None:
 
         task_result = await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
         task = task_result.scalar_one_or_none()
-        if not task or task.status not in ("completed", "completed_with_warnings", "failed", "cancelled"):
+        if not task or task.status != "completed":
             return None
 
         project_result = await db.execute(select(Project).where(Project.id == task.project_id))
@@ -310,8 +310,6 @@ async def settle_review_consumption(task_id: str) -> ConsumptionRecord | None:
         # 内部用户与外部用户走统一计费流程，不再豁免（便于内部测试计费/积分）。
 
         consumed_wen = cost_to_wen(summary.cost_cny if summary else None)
-        if consumed_wen <= 0:
-            return None
 
         wallet_result = await db.execute(
             select(UserWallet)
@@ -342,18 +340,17 @@ async def settle_review_consumption(task_id: str) -> ConsumptionRecord | None:
             balance_after_wen=wallet.balance_wen,
         )
         db.add(record)
-        is_duplicate = getattr(task, "task_type", "review") == "duplicate"
         db.add(
             WalletTransaction(
                 user_id=project.user_id,
-                transaction_type="ai_duplicate" if is_duplicate else "ai_check",
+                transaction_type="ai_check",
                 balance_delta_wen=-consumed_wen,
                 balance_after_wen=wallet.balance_wen,
                 points_delta=earned_points,
                 points_after=wallet.points,
-                reference_type="agent_task",
+                reference_type="review_task",
                 reference_id=task_id,
-                description=f"{project.name} {'AI查重' if is_duplicate else 'AI检查'}",
+                description=f"{project.name} AI检查",
             )
         )
         await db.commit()

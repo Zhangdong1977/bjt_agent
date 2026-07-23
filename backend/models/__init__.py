@@ -15,7 +15,6 @@ from .ai_usage_task_summary import AiUsageTaskSummary
 from .billing import BillingOrder, ConsumptionRecord, UserWallet, WalletTransaction
 from .announcement import SystemAnnouncement, SystemAnnouncementRead
 from .system_maintenance import SystemMaintenance, MAINTENANCE_ROW_ID
-from .duplicate_pair_result import DuplicatePairResult
 from backend.experience.models import ExperienceFeedback, ExperienceCase, ExperienceSkill, ExperienceClusterMembership
 
 __all__ = [
@@ -45,7 +44,6 @@ __all__ = [
     "SystemAnnouncementRead",
     "SystemMaintenance",
     "MAINTENANCE_ROW_ID",
-    "DuplicatePairResult",
     "ExperienceFeedback",
     "ExperienceCase",
     "ExperienceSkill",

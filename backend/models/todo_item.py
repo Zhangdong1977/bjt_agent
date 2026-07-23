@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, Text, Integer, Float, DateTime, JSON, UniqueConstraint
+from sqlalchemy import String, Text, Integer, Float, DateTime, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -13,22 +13,11 @@ class TodoItem(Base):
     """待办任务 - 对应一个规则文档的检查任务."""
 
     __tablename__ = "todo_items"
-    __table_args__ = (
-        UniqueConstraint(
-            "session_id", "document_a_id", "document_b_id",
-            name="uq_todo_items_session_document_pair",
-        ),
-    )
 
     project_id: Mapped[str] = mapped_column(String(36), index=True)
     session_id: Mapped[str] = mapped_column(String(36), index=True)
     rule_doc_path: Mapped[str] = mapped_column(String(500))
     rule_doc_name: Mapped[str] = mapped_column(String(255))
-    todo_type: Mapped[str] = mapped_column(String(20), default="review_rule", server_default="review_rule", nullable=False, index=True)
-    display_name: Mapped[Optional[str]] = mapped_column(String(511), nullable=True)
-    document_a_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
-    document_b_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
-    execution_mode: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     check_items: Mapped[Optional[list]] = mapped_column(JSON, default=None, nullable=True)  # 检查项列表
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)  # pending/running/completed/failed
     result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
@@ -50,11 +39,6 @@ class TodoItem(Base):
             "session_id": self.session_id,
             "rule_doc_path": self.rule_doc_path,
             "rule_doc_name": self.rule_doc_name,
-            "todo_type": self.todo_type,
-            "display_name": self.display_name,
-            "document_a_id": self.document_a_id,
-            "document_b_id": self.document_b_id,
-            "execution_mode": self.execution_mode,
             "check_items": self.check_items or [],
             "status": self.status,
             "result": self.result,

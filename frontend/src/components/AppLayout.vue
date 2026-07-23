@@ -10,7 +10,6 @@ import PurchaseModal from './billing/PurchaseModal.vue'
 import AnnouncementPopup from './announcement/AnnouncementPopup.vue'
 import AnnouncementInbox from './announcement/AnnouncementInbox.vue'
 import AnnouncementMarquee from './announcement/AnnouncementMarquee.vue'
-import { getOfficialSiteUrl } from '@/utils/externalLinks'
 import logoUrl from '@/assets/images/ui/common-logo-black.png'
 import iconWallet from '@/assets/images/ui/common-icon-wallet.png'
 import iconPoints from '@/assets/images/ui/common-icon-points.png'
@@ -26,6 +25,7 @@ const rechargeOpen = ref(false)
 const contactOpen = ref(false)
 const inboxOpen = ref(false)
 const marqueeVisible = ref(false)
+const officialSiteUrl = 'https://aibjt.com/'
 
 onMounted(() => {
   void billingStore.fetchWallet()
@@ -45,7 +45,7 @@ function goProfile() {
 }
 
 function goOfficialSite() {
-  window.open(getOfficialSiteUrl(), '_blank', 'noopener')
+  window.open(officialSiteUrl, '_blank', 'noopener')
 }
 </script>
 

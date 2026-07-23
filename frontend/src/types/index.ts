@@ -130,7 +130,6 @@ export interface Project {
   id: string;
   name: string;
   description: string | null;
-  project_type: "review" | "duplicate";
   user_id: string;
   status: string;
   is_deleted: boolean;
@@ -143,7 +142,6 @@ export interface Project {
 export interface CreateProjectRequest {
   name: string;
   description?: string;
-  project_type?: "review" | "duplicate";
 }
 
 // Document parse progress (from SSE events)
@@ -159,7 +157,7 @@ export interface Document {
   id: string;
   project_id: string | null;
   owner_user_id: string | null;
-  doc_type: "tender" | "bid" | "duplicate_bid";
+  doc_type: "tender" | "bid";
   original_filename: string;
   file_path: string;
   parsed_md_path: string | null;
@@ -168,8 +166,6 @@ export interface Document {
   word_count: number | null;
   status: "pending" | "parsing" | "parsed" | "failed";
   parse_error: string | null;
-  structure_quality?: "reliable" | "weak" | "none" | "unknown" | null;
-  structure_analysis?: Record<string, any> | null;
   parse_progress?: ParseProgress;
   created_at: string;
 }
@@ -184,8 +180,7 @@ export interface DocumentContent {
 export interface ReviewTask {
   id: string;
   project_id: string;
-  status: "pending" | "running" | "completed" | "completed_with_warnings" | "failed" | "cancelled";
-  task_type?: "review" | "duplicate";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   started_at: string | null;
   completed_at: string | null;
   duration_seconds: number | null;
@@ -196,8 +191,7 @@ export interface ReviewTask {
 export interface ReviewTaskListItem {
   id: string;
   project_id: string;
-  status: "pending" | "running" | "completed" | "completed_with_warnings" | "failed" | "cancelled";
-  task_type?: "review" | "duplicate";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   started_at: string | null;
   completed_at: string | null;
   duration_seconds: number | null;
@@ -252,11 +246,6 @@ export interface TodoItem {
   session_id: string;
   rule_doc_path: string;
   rule_doc_name: string;
-  todo_type?: "review_rule" | "duplicate_pair";
-  display_name?: string | null;
-  document_a_id?: string | null;
-  document_b_id?: string | null;
-  execution_mode?: "structured" | "retrieval" | null;
   check_items: Array<{ id: string; title: string }> | null;
   status: "pending" | "running" | "completed" | "failed";
   result: { findings: ReviewResult[] } | null;
@@ -268,53 +257,6 @@ export interface TodoItem {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
-}
-
-export interface DuplicateEvidence {
-  section_id?: string | null;
-  section_title?: string | null;
-  page_start?: number | null;
-  page_end?: number | null;
-  excerpt: string;
-}
-
-export interface DuplicateMatch {
-  title: string;
-  duplicate_type: "exact" | "near_duplicate" | "semantic_duplicate";
-  document_a_evidence: DuplicateEvidence;
-  document_b_evidence: DuplicateEvidence;
-  analysis: string;
-}
-
-export interface DuplicatePairResult {
-  id: string;
-  todo_id: string;
-  document_a_id: string;
-  document_b_id: string;
-  document_a_name?: string | null;
-  document_b_name?: string | null;
-  execution_mode: "structured" | "retrieval";
-  conclusion: "suspicious_duplicate" | "no_suspicious_duplicate" | "manual_review_required";
-  summary?: string | null;
-  suspicious_count: number;
-  excluded_count: number;
-  matches: DuplicateMatch[];
-  rule_name: string;
-  rule_version?: string | null;
-  rule_hash: string;
-  created_at: string;
-}
-
-export interface DuplicateResults {
-  summary: {
-    document_count: number;
-    pair_count: number;
-    completed_pair_count: number;
-    failed_pair_count: number;
-    suspicious_pair_count: number;
-    suspicious_item_count: number;
-  };
-  pairs: DuplicatePairResult[];
 }
 
 // Tool Result type

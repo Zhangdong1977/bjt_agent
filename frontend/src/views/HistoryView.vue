@@ -3,19 +3,15 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { message } from 'ant-design-vue'
-import { projectsApi } from '@/api/client'
 
 const router = useRouter()
 const projectStore = useProjectStore()
 
 const searchText = ref('')
-const projectType = ref<'review' | 'duplicate'>('review')
 
-async function loadProjects() {
-  projectStore.projects = await projectsApi.list(projectType.value)
-}
-
-onMounted(loadProjects)
+onMounted(() => {
+  projectStore.fetchProjects()
+})
 
 const filteredProjects = computed(() => {
   let projects = projectStore.projects
@@ -31,10 +27,7 @@ const filteredProjects = computed(() => {
 })
 
 function goToResults(projectId: string) {
-  router.push({
-    name: projectType.value === 'duplicate' ? 'duplicate-results' : 'review-results',
-    params: { id: projectId },
-  })
+  router.push({ name: 'review-results', params: { id: projectId } })
 }
 
 async function deleteProject(projectId: string) {
@@ -47,14 +40,6 @@ async function deleteProject(projectId: string) {
   <div class="history-view">
     <a-card class="filter-card" :bordered="false">
       <div class="filters">
-        <a-segmented
-          v-model:value="projectType"
-          :options="[
-            { label: '标书检查', value: 'review' },
-            { label: '标书查重', value: 'duplicate' }
-          ]"
-          @change="loadProjects"
-        />
         <a-input-search
           v-model:value="searchText"
           placeholder="搜索项目名称"
@@ -90,7 +75,7 @@ async function deleteProject(projectId: string) {
           </template>
           <template v-else-if="column.key === 'action'">
             <a-space>
-              <a @click="goToResults(record.id)">{{ projectType === 'duplicate' ? '查重结果' : '审查结果' }}</a>
+              <a @click="goToResults(record.id)">审查结果</a>
               <a-divider type="vertical" />
               <a-popconfirm
                 title="确定要删除此项目吗？"

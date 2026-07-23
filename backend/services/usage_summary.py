@@ -39,12 +39,12 @@ INSERT INTO ai_usage_task_summary (
 )
 SELECT
     MIN(task_id),
-    COUNT(*) FILTER (WHERE usage_type IN ('llm', 'embedding')),
+    COUNT(*) FILTER (WHERE usage_type = 'llm'),
     COUNT(*) FILTER (WHERE usage_type = 'ocr'),
     COUNT(*) FILTER (WHERE status <> 'success'),
-    COALESCE(SUM(prompt_tokens)  FILTER (WHERE usage_type IN ('llm', 'embedding')), 0),
-    COALESCE(SUM(completion_tokens) FILTER (WHERE usage_type IN ('llm', 'embedding')), 0),
-    COALESCE(SUM(total_tokens)   FILTER (WHERE usage_type IN ('llm', 'embedding')),  0),
+    COALESCE(SUM(prompt_tokens)  FILTER (WHERE usage_type = 'llm'), 0),
+    COALESCE(SUM(completion_tokens) FILTER (WHERE usage_type = 'llm'), 0),
+    COALESCE(SUM(total_tokens)   FILTER (WHERE usage_type = 'llm'),  0),
     COALESCE(SUM(prompt_cache_hit_tokens),  0),
     COALESCE(SUM(prompt_cache_miss_tokens), 0),
     COALESCE(SUM(ocr_images)         FILTER (WHERE usage_type = 'ocr'), 0),
@@ -93,7 +93,6 @@ _MERGE_STATUS_SQL = text("""
 UPDATE ai_usage_task_summary s
 SET
     task_status      = r.status,
-    task_type        = r.task_type,
     started_at       = r.started_at,
     completed_at     = r.completed_at,
     duration_seconds = r.duration_seconds,

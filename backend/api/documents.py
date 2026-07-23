@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, status, Query
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from backend.api.deps import DBSession, CurrentUser, is_interior_user
 from backend.config import get_settings
@@ -88,20 +88,13 @@ async def upload_document(
     """
     project = await verify_project_ownership(project_id, current_user, db)
 
-    if doc_type not in ("tender", "bid", "duplicate_bid"):
+    if doc_type not in ("tender", "bid"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="文档类型不正确",
+            detail="文档类型不正确，请选择招标文件或投标文件",
         )
 
-    expected_project_type = "duplicate" if doc_type == "duplicate_bid" else "review"
-    if project.project_type != expected_project_type:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="文档类型与项目类型不匹配",
-        )
-
-    # Check document count limit per type — duplicate check is strictly capped at five.
+    # Check document count limit per type (max 10) — query directly to avoid lazy load
     count_result = await db.execute(
         select(Document).where(
             Document.project_id == project_id,
@@ -109,11 +102,10 @@ async def upload_document(
         )
     )
     existing_count = len(count_result.scalars().all())
-    max_count = settings.duplicate_check_max_documents if doc_type == "duplicate_bid" else 10
-    if existing_count >= max_count:
+    if existing_count >= 10:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"该类型文档已达上限（{max_count}个），请先删除后再上传",
+            detail=f"该类型文档已达上限（10个），请先删除后再上传",
         )
 
     # Validate file extension
@@ -148,7 +140,7 @@ async def upload_document(
     project_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine subdirectory based on doc_type
-    subdir = doc_type
+    subdir = "tender" if doc_type == "tender" else "bid"
     doc_dir = project_dir / subdir
     doc_dir.mkdir(exist_ok=True)
 
@@ -402,27 +394,13 @@ async def upload_draft_document(
     用户在标书检查页选文件时立即调用此接口；点「开始检查」创建项目后，
     再通过 /documents/{doc_id}/attach 把草稿文档关联到项目。
     """
-    if doc_type not in ("tender", "bid", "duplicate_bid"):
+    if doc_type not in ("tender", "bid"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="文档类型不正确",
+            detail="文档类型不正确，请选择招标文件或投标文件",
         )
 
     _validate_upload_file(file)
-
-    if doc_type == "duplicate_bid":
-        count = await db.scalar(
-            select(func.count(Document.id)).where(
-                Document.owner_user_id == current_user.id,
-                Document.project_id.is_(None),
-                Document.doc_type == "duplicate_bid",
-            )
-        )
-        if (count or 0) >= settings.duplicate_check_max_documents:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"待查重标书最多上传 {settings.duplicate_check_max_documents} 份",
-            )
 
     # 草稿文档落盘到 workspace/{user_id}/_drafts/{tender|bid}/
     draft_dir = settings.workspace_path / str(current_user.id) / "_drafts" / doc_type
@@ -451,17 +429,13 @@ async def upload_draft_document(
 async def list_draft_documents(
     db: DBSession,
     current_user: CurrentUser,
-    doc_type: str | None = Query(None),
 ) -> DocumentListResponse:
     """列出当前用户的所有草稿文档（project_id IS NULL）。"""
-    stmt = select(Document).where(
-        Document.owner_user_id == current_user.id, Document.project_id.is_(None)
+    result = await db.execute(
+        select(Document)
+        .where(Document.owner_user_id == current_user.id, Document.project_id.is_(None))
+        .order_by(Document.created_at.desc())
     )
-    if doc_type:
-        if doc_type not in ("tender", "bid", "duplicate_bid"):
-            raise HTTPException(status_code=400, detail="文档类型不正确")
-        stmt = stmt.where(Document.doc_type == doc_type)
-    result = await db.execute(stmt.order_by(Document.created_at.desc()))
     documents = result.scalars().all()
     return DocumentListResponse(documents=documents)
 
@@ -501,42 +475,9 @@ async def attach_draft_document(
             detail="该文档不可关联（非草稿或不属于当前用户）",
         )
 
-    expected_project_type = "duplicate" if document.doc_type == "duplicate_bid" else "review"
-    if project.project_type != expected_project_type:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="文档类型与项目类型不匹配",
-        )
-
-    if document.doc_type == "duplicate_bid":
-        count = await db.scalar(
-            select(func.count(Document.id)).where(
-                Document.project_id == project_id,
-                Document.doc_type == "duplicate_bid",
-            )
-        )
-        if (count or 0) >= settings.duplicate_check_max_documents:
-            raise HTTPException(status_code=400, detail="待查重标书已达 5 份上限")
-
     document.project_id = project_id
     await db.commit()
     await db.refresh(document)
-    return document
-
-
-@drafts_router.get("/{document_id}", response_model=DocumentResponse)
-async def get_draft_document(
-    document_id: str,
-    db: DBSession,
-    current_user: CurrentUser,
-) -> Document:
-    document = (await db.execute(select(Document).where(
-        Document.id == document_id,
-        Document.owner_user_id == current_user.id,
-        Document.project_id.is_(None),
-    ))).scalar_one_or_none()
-    if not document:
-        raise HTTPException(status_code=404, detail=DOCUMENT_NOT_FOUND)
     return document
 
 

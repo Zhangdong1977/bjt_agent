@@ -9,7 +9,6 @@ class ProjectCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
-    project_type: str = Field("review", pattern="^(review|duplicate)$")
 
 
 class ProjectUpdate(BaseModel):
@@ -26,7 +25,6 @@ class ProjectResponse(BaseModel):
     user_id: str
     name: str
     description: str | None
-    project_type: str = "review"
     status: str
     is_deleted: bool = False
     deleted_at: datetime | None = None

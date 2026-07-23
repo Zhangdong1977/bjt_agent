@@ -14,7 +14,6 @@ from .profile import router as profile_router
 from .billing import router as billing_router
 from .announcements import router as announcements_router
 from .system_status import router as system_status_router
-from .duplicate_check import router as duplicate_check_router
 
 __all__ = [
     "auth_router",
@@ -32,5 +31,4 @@ __all__ = [
     "billing_router",
     "announcements_router",
     "system_status_router",
-    "duplicate_check_router",
 ]
