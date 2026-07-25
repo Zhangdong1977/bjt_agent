@@ -8,7 +8,7 @@ import { message } from 'ant-design-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
-import { isLegacyDocFile, legacyDocWarning } from '@/utils/uploadValidation'
+import { isLegacyDocFile, legacyDocWarning, uploadSizeWarning } from '@/utils/uploadValidation'
 
 // Configure DOMPurify to allow base64 images and table tags
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -67,6 +67,11 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
     // .doc 旧版格式后端无法解析，提前拦截并给出友好提示
     if (isLegacyDocFile(file)) {
       message.warning(legacyDocWarning(file.name))
+      continue
+    }
+    const sizeWarning = uploadSizeWarning(file)
+    if (sizeWarning) {
+      message.warning(sizeWarning)
       continue
     }
     try {

@@ -17,7 +17,17 @@ export function isLegacyDocFile(file: File): boolean {
   return getFileExtension(file.name) === 'doc'
 }
 
+/** 单文件上限：1 GiB。与后端 Settings.max_upload_size_bytes 保持一致。 */
+export const MAX_UPLOAD_SIZE_BYTES = 1024 * 1024 * 1024
+
 /** 生成 .doc 旧格式被拦截时的友好提示文案 */
 export function legacyDocWarning(filename: string): string {
   return `「${filename}」是 .doc（Word 97-2003）旧版格式，暂不支持解析。请用 Word「另存为 .docx」或「导出为 PDF」后重新上传。`
+}
+
+/** 超过 1 GiB 时返回友好提示；大小合法时返回 null。 */
+export function uploadSizeWarning(file: File): string | null {
+  if (file.size <= MAX_UPLOAD_SIZE_BYTES) return null
+  const sizeGiB = file.size / MAX_UPLOAD_SIZE_BYTES
+  return `「${file.name}」大小为 ${sizeGiB.toFixed(2)} GB，单个文件最大支持 1 GB。请压缩或拆分后重新上传。`
 }

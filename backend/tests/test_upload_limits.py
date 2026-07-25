@@ -13,9 +13,25 @@ import io
 import pytest
 from httpx import AsyncClient
 
+from backend.config import Settings, get_settings
+
 
 # Default max file size in settings (10MB)
 DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@pytest.fixture(autouse=True)
+def use_small_upload_limit_for_tests(monkeypatch):
+    """Keep boundary tests fast while production defaults to 1 GiB."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "max_upload_size_mb", 10)
+    monkeypatch.setattr(settings, "max_upload_size_bytes", DEFAULT_MAX_FILE_SIZE)
+
+
+def test_production_default_upload_limit_is_one_gib():
+    """The shipped defaults must accept a file up to exactly 1 GiB."""
+    assert Settings.model_fields["max_upload_size_mb"].default == 1024
+    assert Settings.model_fields["max_upload_size_bytes"].default == 1024**3
 
 
 def create_test_file(size_bytes: int, content: bytes = b"x") -> io.BytesIO:
@@ -95,7 +111,7 @@ class TestFileUploadSizeLimit:
         )
 
         assert response.status_code == 413
-        assert "size" in response.json()["detail"].lower() or "large" in response.json()["detail"].lower()
+        assert "最大支持" in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_upload_file_at_limit(

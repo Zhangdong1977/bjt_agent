@@ -69,6 +69,20 @@ async def upload_document(
     current_user: User = Depends(get_current_user)
 ):
     """上传知识库文档"""
+    file.file.seek(0, 2)
+    file_size = file.file.tell()
+    file.file.seek(0)
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="文件内容为空，请重新选择文件")
+    if file_size > settings.max_upload_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"文件过大（{file_size / (1024 * 1024):.2f} MB），"
+                f"最大支持 {settings.max_upload_size_mb} MB"
+            ),
+        )
+
     user_dir = os.path.join(settings.knowledge_base_path, current_user.id)
     os.makedirs(user_dir, exist_ok=True)
 

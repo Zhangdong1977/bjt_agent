@@ -122,15 +122,6 @@ async def upload_document(
             detail=f"该类型文档已达上限（{max_count}个），请先删除后再上传",
         )
 
-    # Validate file extension
-    supported_extensions = {"pdf", "docx", "doc"}
-    file_ext = Path(file.filename).suffix.lower().lstrip(".")
-    if file_ext not in supported_extensions:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"暂不支持 {file_ext or '未知'} 格式，请上传 PDF、DOCX 或 DOC 文件",
-        )
-
     # Validate file size - check content length without reading into memory
     file.file.seek(0, 2)  # Seek to end
     file_size = file.file.tell()
@@ -147,6 +138,15 @@ async def upload_document(
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"文件过大（{file_size / (1024*1024):.2f} MB），最大支持 {max_mb} MB",
+        )
+
+    # Validate file extension after size so oversized files consistently return 413.
+    supported_extensions = {"pdf", "docx", "doc"}
+    file_ext = Path(file.filename).suffix.lower().lstrip(".")
+    if file_ext not in supported_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"暂不支持 {file_ext or '未知'} 格式，请上传 PDF、DOCX 或 DOC 文件",
         )
 
     # Create project directory
@@ -362,14 +362,7 @@ SUPPORTED_EXTENSIONS = {"pdf", "docx", "doc"}
 
 
 def _validate_upload_file(file: UploadFile) -> None:
-    """上传文件的通用校验：扩展名 + 大小。供项目文档上传和草稿上传复用。"""
-    file_ext = Path(file.filename).suffix.lower().lstrip(".")
-    if file_ext not in SUPPORTED_EXTENSIONS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"暂不支持 {file_ext or '未知'} 格式，请上传 PDF、DOCX 或 DOC 文件",
-        )
-
+    """上传文件的通用校验：先大小、后扩展名。"""
     file.file.seek(0, 2)
     file_size = file.file.tell()
     file.file.seek(0)
@@ -384,6 +377,13 @@ def _validate_upload_file(file: UploadFile) -> None:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"文件过大（{file_size / (1024*1024):.2f} MB），最大支持 {max_mb} MB",
+        )
+
+    file_ext = Path(file.filename).suffix.lower().lstrip(".")
+    if file_ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"暂不支持 {file_ext or '未知'} 格式，请上传 PDF、DOCX 或 DOC 文件",
         )
 
 

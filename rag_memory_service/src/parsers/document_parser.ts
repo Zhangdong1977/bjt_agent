@@ -71,8 +71,8 @@ async function parsePdfFile(filePath: string): Promise<{ content: string; pageCo
  * Requires mammoth package
  *
  * Large file handling (210MB+):
- * - Hard limit at 500MB to prevent memory exhaustion
- * - Timeout scaling: 2min (<50MB) up to 15min (200MB+)
+ * - Hard limit at 1GiB to match the platform upload limit
+ * - Timeout scaling: 2min (<50MB) up to 30min (500MB+)
  * - Uses path-based extraction (not buffer) to avoid double memory usage
  * - Detailed error context for debugging
  */
@@ -81,13 +81,14 @@ async function parseDocxFile(filePath: string): Promise<{ content: string }> {
   const LARGE_FILE_THRESHOLD = 50;  // Start warning at 50MB
   const VERY_LARGE_THRESHOLD = 150; // Enable extended timeout at 150MB+
   const HUGE_THRESHOLD = 200;       // Extra protection at 200MB+
-  const MAX_FILE_SIZE = 500;        // Hard reject limit
+  const EXTREME_THRESHOLD = 500;    // Extended timeout for 500MB+
+  const MAX_FILE_SIZE = 1024;       // Hard reject limit: 1GiB
 
   // Check file size first
   const stats = await fs.promises.stat(filePath);
   const fileSizeMB = stats.size / (1024 * 1024);
 
-  // Hard reject for files over 500MB
+  // Hard reject for files over 1GiB
   if (fileSizeMB > MAX_FILE_SIZE) {
     throw new Error(
       `DOCX file too large (${fileSizeMB.toFixed(2)}MB). ` +
@@ -98,7 +99,10 @@ async function parseDocxFile(filePath: string): Promise<{ content: string }> {
 
   // Calculate appropriate timeout based on file size
   let timeoutMs: number;
-  if (fileSizeMB >= HUGE_THRESHOLD) {
+  if (fileSizeMB >= EXTREME_THRESHOLD) {
+    timeoutMs = 30 * 60 * 1000; // 30 minutes for files up to 1GiB
+    console.warn(`[DOCX Parser] Extreme file (${fileSizeMB.toFixed(2)}MB) - 30min timeout`);
+  } else if (fileSizeMB >= HUGE_THRESHOLD) {
     timeoutMs = 15 * 60 * 1000; // 15 minutes for huge files
     console.warn(`[DOCX Parser] Huge file (${fileSizeMB.toFixed(2)}MB) - 15min timeout`);
   } else if (fileSizeMB >= VERY_LARGE_THRESHOLD) {
