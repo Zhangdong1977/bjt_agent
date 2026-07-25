@@ -5,7 +5,7 @@ import { message } from 'ant-design-vue'
 import type { UploadFile } from 'ant-design-vue'
 import { UploadOutlined, FileTextOutlined, PlusOutlined, SyncOutlined, CheckCircleOutlined, ExclamationCircleOutlined } from '@ant-design/icons-vue'
 import KnowledgeDocDetail from '@/components/KnowledgeDocDetail.vue'
-import { isLegacyDocFile, legacyDocWarning } from '@/utils/uploadValidation'
+import { isLegacyDocFile, legacyDocWarning, uploadSizeWarning } from '@/utils/uploadValidation'
 
 interface KnowledgeDoc {
   id: string
@@ -95,6 +95,12 @@ async function handleUpload(info: { file: UploadFile }) {
   // .doc 旧版格式后端无法解析，提前拦截并给出友好提示
   if (isLegacyDocFile(file)) {
     message.warning(legacyDocWarning(file.name))
+    return
+  }
+
+  const sizeWarning = uploadSizeWarning(file)
+  if (sizeWarning) {
+    message.warning(sizeWarning)
     return
   }
 

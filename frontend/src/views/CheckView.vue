@@ -8,7 +8,7 @@ import { message } from 'ant-design-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
-import { isLegacyDocFile, legacyDocWarning } from '@/utils/uploadValidation'
+import { isLegacyDocFile, legacyDocWarning, uploadSizeWarning } from '@/utils/uploadValidation'
 import illustration from '@/assets/images/ui/home-illustration.png'
 import iconFileTheme from '@/assets/images/ui/common-icon-file-theme.png'
 import iconSearch from '@/assets/images/ui/common-icon-search.png'
@@ -135,6 +135,11 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
   for (const file of files) {
     if (isLegacyDocFile(file)) {
       message.warning(legacyDocWarning(file.name))
+      continue
+    }
+    const sizeWarning = uploadSizeWarning(file)
+    if (sizeWarning) {
+      message.warning(sizeWarning)
       continue
     }
     validFiles.push(file)
@@ -535,7 +540,7 @@ function getStatusClass(status: string) {
         </div>
       </div>
 
-      <p class="upload-note">支持 PDF、Docx 格式，单个文件不超过 500MB；上传后立即开始解析</p>
+      <p class="upload-note">支持 PDF、Docx 格式，单个文件不超过 1GB；上传后立即开始解析</p>
     </section>
 
     <!-- 开始检查按钮：条件具备时启用 -->
