@@ -40,6 +40,9 @@ async def create_project(
         name=project_data.name,
         description=project_data.description,
         project_type=project_data.project_type,
+        duplicate_mode=(
+            project_data.duplicate_mode if project_data.project_type == "duplicate" else "pair"
+        ),
     )
     db.add(project)
     await db.flush()

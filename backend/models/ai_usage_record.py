@@ -30,7 +30,7 @@ class AiUsageRecord(Base):
     todo_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
 
     # —— 调用类型 ——
-    usage_type: Mapped[str] = mapped_column(String(20), nullable=False)   # llm / ocr
+    usage_type: Mapped[str] = mapped_column(String(20), nullable=False)   # llm / ocr / embedding / vision
     provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)  # deepseek/minimax/volcengine/baidu_ocr/...
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)  # success/error/timeout
@@ -49,6 +49,15 @@ class AiUsageRecord(Base):
     ocr_images: Mapped[int] = mapped_column(Integer, default=0)
     ocr_words_result_num: Mapped[int] = mapped_column(Integer, default=0)
     image_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    # —— Embedding / VLM 指标 ——
+    embedding_calls: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_inputs: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_input_chars: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_cache_hits: Mapped[int] = mapped_column(Integer, default=0)
+    vision_calls: Mapped[int] = mapped_column(Integer, default=0)
+    vision_images: Mapped[int] = mapped_column(Integer, default=0)
 
     # —— 通用 ——
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)

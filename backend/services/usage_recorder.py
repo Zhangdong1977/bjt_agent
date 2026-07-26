@@ -122,6 +122,101 @@ def record_ocr_usage(
     _spawn(_write_one(record))
 
 
+def record_embedding_usage(
+    *,
+    provider: str,
+    model: str,
+    status: str,
+    latency_ms: Optional[int],
+    input_count: int,
+    input_chars: int,
+    cache_hits: int = 0,
+    error_message: Optional[str] = None,
+) -> None:
+    """Record one batch-level embedding call/cache event."""
+
+    ctx = get_usage_context()
+    if ctx is None:
+        return
+    input_tokens = max(0, (int(input_chars) + 3) // 4)
+    cost = (
+        estimate_cost(
+            provider=provider,
+            model=model,
+            embedding_input_tokens=input_tokens,
+            status=status,
+        )
+        if status == "success"
+        else None
+    )
+    record = AiUsageRecord(
+        usage_type="embedding",
+        provider=provider,
+        model=model,
+        embedding_calls=1 if input_count > 0 else 0,
+        embedding_inputs=max(0, int(input_count)),
+        embedding_input_chars=max(0, int(input_chars)),
+        embedding_input_tokens=input_tokens,
+        embedding_cache_hits=max(0, int(cache_hits)),
+        latency_ms=latency_ms,
+        status=status,
+        error_message=error_message,
+        raw_usage={
+            "input_count": input_count,
+            "input_chars": input_chars,
+            "cache_hits": cache_hits,
+        },
+        cost_cny=cost,
+        external_user_id=ctx.external_user_id,
+        local_user_id=ctx.local_user_id,
+        user_name=ctx.user_name,
+        enterprise_name=ctx.enterprise_name,
+        interior_user=ctx.interior_user,
+        project_id=ctx.project_id,
+        task_id=ctx.task_id,
+        todo_id=ctx.todo_id,
+        usage_date=datetime.now(timezone.utc).date(),
+    )
+    _spawn(_write_one(record))
+
+
+def record_vision_usage(
+    *,
+    provider: str,
+    model: str | None,
+    status: str,
+    latency_ms: Optional[int],
+    image_size_bytes: int | None = None,
+    error_message: Optional[str] = None,
+) -> None:
+    """Record a bounded VLM image call separately from text LLM calls."""
+
+    ctx = get_usage_context()
+    if ctx is None:
+        return
+    record = AiUsageRecord(
+        usage_type="vision",
+        provider=provider,
+        model=model,
+        vision_calls=1,
+        vision_images=1,
+        image_size_bytes=image_size_bytes,
+        latency_ms=latency_ms,
+        status=status,
+        error_message=error_message,
+        external_user_id=ctx.external_user_id,
+        local_user_id=ctx.local_user_id,
+        user_name=ctx.user_name,
+        enterprise_name=ctx.enterprise_name,
+        interior_user=ctx.interior_user,
+        project_id=ctx.project_id,
+        task_id=ctx.task_id,
+        todo_id=ctx.todo_id,
+        usage_date=datetime.now(timezone.utc).date(),
+    )
+    _spawn(_write_one(record))
+
+
 def _spawn(coro) -> None:
     """在当前事件循环上 fire-and-forget；异常吞掉，绝不影响业务。"""
     try:

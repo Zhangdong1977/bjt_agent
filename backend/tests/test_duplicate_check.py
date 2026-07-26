@@ -242,6 +242,49 @@ async def test_duplicate_pair_is_attached_atomically_after_role_validation():
 
 
 @pytest.mark.asyncio
+async def test_identical_uploads_short_circuit_before_billing_or_queue(tmp_path):
+    content = b"same technical bid content"
+    left_path = tmp_path / "left.docx"
+    right_path = tmp_path / "right.docx"
+    left_path.write_bytes(content)
+    right_path.write_bytes(content)
+    user = SimpleNamespace(id="user-1")
+    project = SimpleNamespace(
+        id="project-1", user_id=user.id, project_type="duplicate", is_deleted=False
+    )
+    left = SimpleNamespace(
+        id="left-1",
+        project_id=project.id,
+        doc_type="duplicate_left",
+        status="parsed",
+        file_path=str(left_path),
+        parsed_markdown_path=None,
+        parsed_html_path=None,
+    )
+    right = SimpleNamespace(
+        id="right-1",
+        project_id=project.id,
+        doc_type="duplicate_right",
+        status="parsed",
+        file_path=str(right_path),
+        parsed_markdown_path=None,
+        parsed_html_path=None,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await duplicate_api.start_duplicate_check(
+            request=SimpleNamespace(),
+            project_id=project.id,
+            db=_SequenceDB(_Result(one=project), _Result(scalar_rows=[left, right])),
+            current_user=user,
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "IDENTICAL_DOCUMENTS"
+    assert "无需发起 AI 查重" in exc.value.detail["message"]
+
+
+@pytest.mark.asyncio
 async def test_duplicate_results_are_grouped_and_do_not_expose_rule_paths():
     now = datetime.now(timezone.utc)
     user = SimpleNamespace(id="user-1")
@@ -287,11 +330,16 @@ async def test_duplicate_results_are_grouped_and_do_not_expose_rule_paths():
         evidence={"candidate_id": "candidate-1"},
         created_at=now,
     )
+    unknown_finding = SimpleNamespace(**finding.__dict__)
+    unknown_finding.id = "finding-2"
+    unknown_finding.verdict = "unknown"
+    unknown_finding.source_basis = "unknown"
+    unknown_finding.explanation = "缺少招标文件来源证据，暂无法确认。"
     db = _SequenceDB(
         _Result(one=project),
         _Result(one=task),
         _Result(scalar_rows=[todo]),
-        _Result(scalar_rows=[finding]),
+        _Result(scalar_rows=[finding, unknown_finding]),
         _Result(rows=[("left-1", "A.docx"), ("right-1", "B.docx")]),
     )
 
@@ -302,9 +350,84 @@ async def test_duplicate_results_are_grouped_and_do_not_expose_rule_paths():
     assert response.summary.rule_count == 1
     assert response.summary.completed_rule_count == 1
     assert response.summary.suspicious_count == 1
+    assert response.summary.unknown_count == 1
     assert response.findings[0].similarity_score == pytest.approx(0.9876)
     assert response.findings[0].left_filename == "A.docx"
     assert "rule_doc_path" not in response.todos[0].model_dump()
+
+
+@pytest.mark.asyncio
+async def test_legacy_complete_default_is_downgraded_when_documents_have_no_coverage():
+    now = datetime.now(timezone.utc)
+    user = SimpleNamespace(id="user-1")
+    project = SimpleNamespace(
+        id="project-legacy", user_id=user.id, project_type="duplicate", is_deleted=False
+    )
+    task = SimpleNamespace(id="task-legacy", project_id=project.id, task_type="duplicate")
+    todo = SimpleNamespace(
+        id="todo-legacy",
+        project_id=project.id,
+        session_id=task.id,
+        rule_doc_path="/srv/private/rules/D001.md",
+        rule_doc_name="D001.md",
+        check_items=None,
+        status="completed",
+        result=None,
+        error_message=None,
+        retry_count=0,
+        max_retries=1,
+        max_steps=2,
+        brain_capacity=1.0,
+        started_at=now,
+        completed_at=now,
+        created_at=now,
+    )
+    finding = SimpleNamespace(
+        id="finding-legacy",
+        task_id=task.id,
+        todo_id=todo.id,
+        rule_doc_name=todo.rule_doc_name,
+        check_item_name="重复段落",
+        verdict="suspicious",
+        source_basis="unknown",
+        similarity_score=Decimal("0.9000"),
+        confidence=None,
+        coverage_status="complete",  # migration's former unsafe default
+        channel_scores=None,
+        match_type="near_exact",
+        left_document_id="left-legacy",
+        left_excerpt="相同内容",
+        left_location={},
+        right_document_id="right-legacy",
+        right_excerpt="相同内容",
+        right_location={},
+        explanation="历史结果没有解析覆盖记录。",
+        suggestion=None,
+        evidence=None,
+        created_at=now,
+    )
+    left_doc = SimpleNamespace(
+        id="left-legacy", doc_type="duplicate_left", coverage_summary=None
+    )
+    right_doc = SimpleNamespace(
+        id="right-legacy", doc_type="duplicate_right", coverage_summary=None
+    )
+    db = _SequenceDB(
+        _Result(one=project),
+        _Result(one=task),
+        _Result(scalar_rows=[todo]),
+        _Result(scalar_rows=[finding]),
+        _Result(scalar_rows=[left_doc, right_doc]),
+        _Result(rows=[("left-legacy", "A.docx"), ("right-legacy", "B.docx")]),
+    )
+
+    response = await duplicate_api.get_duplicate_results(
+        project.id, task.id, db, user
+    )
+
+    assert response.summary.coverage_status == "partial"
+    assert response.summary.coverage_warnings == ["旧任务未记录解析覆盖度"]
+    assert response.findings[0].coverage_status == "partial"
 
 
 def test_partial_and_all_failed_sub_agent_summaries():
@@ -350,3 +473,25 @@ def test_migration_has_concurrent_single_side_guards():
     ).read_text(encoding="utf-8")
     assert "ux_documents_duplicate_draft_side" in migration
     assert "ux_documents_duplicate_project_side" in migration
+
+
+def test_duplicate_hardening_migration_adds_unknown_and_source_basis():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "025_harden_duplicate_results.sql"
+    ).read_text(encoding="utf-8")
+    assert "'unknown'" in migration
+    assert "source_basis" in migration
+    assert "ck_duplicate_results_source_basis" in migration
+
+
+def test_artifact_migration_fails_closed_for_legacy_coverage():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "026_add_document_artifacts.sql"
+    ).read_text(encoding="utf-8")
+    assert "DEFAULT 'insufficient'" in migration
+    assert "SET coverage_status = 'insufficient'" in migration
+    assert "coverage_summary IS NOT NULL" in migration

@@ -18,12 +18,24 @@ class DuplicateResult(Base):
     __tablename__ = "duplicate_results"
     __table_args__ = (
         CheckConstraint(
-            "verdict IN ('reasonable', 'suspicious')",
+            "verdict IN ('reasonable', 'suspicious', 'unknown')",
             name="ck_duplicate_results_verdict",
+        ),
+        CheckConstraint(
+            "source_basis IN ('tender', 'public', 'bidder_authored', 'unknown')",
+            name="ck_duplicate_results_source_basis",
         ),
         CheckConstraint(
             "similarity_score >= 0 AND similarity_score <= 1",
             name="ck_duplicate_results_similarity",
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
+            name="ck_duplicate_results_confidence",
+        ),
+        CheckConstraint(
+            "coverage_status IN ('complete', 'partial', 'insufficient')",
+            name="ck_duplicate_results_coverage_status",
         ),
     )
 
@@ -36,7 +48,20 @@ class DuplicateResult(Base):
     rule_doc_name: Mapped[str] = mapped_column(String(255), nullable=False)
     check_item_name: Mapped[str] = mapped_column(String(255), nullable=False)
     verdict: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    # 证据来源边界：没有招标文件/公开来源证据时，不能把推断写成外部强制要求。
+    source_basis: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="unknown", server_default="unknown", index=True
+    )
     similarity_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    coverage_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="insufficient",
+        server_default="insufficient",
+        index=True,
+    )
+    channel_scores: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     match_type: Mapped[str] = mapped_column(String(30), nullable=False)
 
     left_document_id: Mapped[str] = mapped_column(

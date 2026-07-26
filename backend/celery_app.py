@@ -22,7 +22,7 @@ celery_app = Celery(
     "bid_review_agent",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["backend.tasks.review_tasks", "backend.tasks.duplicate_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks"],
+    include=["backend.tasks.review_tasks", "backend.tasks.duplicate_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks", "backend.tasks.blind_check_tasks"],
 )
 
 # Ensure celery.current_app points to our app, so @shared_task binds correctly
@@ -71,6 +71,7 @@ celery_app.conf.update(
         "backend.tasks.feedback_tasks.rewrite_skill_from_feedback": {"queue": "review"},
         "backend.tasks.experience_tasks.extract_experience": {"queue": "review"},
         "backend.tasks.experience_tasks.process_skill_extraction": {"queue": "review"},
+        "backend.tasks.blind_check_tasks.run_blind_check": {"queue": "review"},
         "backend.tasks.billing_tasks.poll_pending_recharge_orders": {"queue": "review"},
     },
     # 定时任务调度。beat 进程在 prod 单例跑（bjt-proc.sh start_celery_beat），
@@ -104,6 +105,10 @@ celery_app.conf.update(
         "backend.tasks.experience_tasks.extract_experience": {
             "time_limit": 600,
             "soft_time_limit": 480,
+        },
+        "backend.tasks.blind_check_tasks.run_blind_check": {
+            "time_limit": 1800,
+            "soft_time_limit": 1740,
         },
         # 充值轮询：扫一批 pending 订单 + 每条调一次交行查单（最多 ~10 条 × 5s 超时），
         # 给 90s 软超时 / 120s 硬超时兜底。

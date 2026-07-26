@@ -48,6 +48,12 @@ _OCR_PER_CALL = {
     "baidu_ocr": 0.028,
 }
 
+# Embedding 按估算输入 token 计价（元/token）；缓存命中不产生输入 token。
+_EMBEDDING_PER_TOKEN = {
+    "volcengine_embedding": 0.50 / 1_000_000,
+    "minimax_embedding": 0.50 / 1_000_000,
+}
+
 
 def _llm_cost(
     rates: dict,
@@ -103,5 +109,9 @@ def estimate_cost(
     # OCR
     if provider in _OCR_PER_CALL:
         return round(_OCR_PER_CALL[provider], 6)
+
+    if provider in _EMBEDDING_PER_TOKEN:
+        input_tokens = int(_.get("embedding_input_tokens", 0) or 0)
+        return round(input_tokens * _EMBEDDING_PER_TOKEN[provider], 6)
 
     return None

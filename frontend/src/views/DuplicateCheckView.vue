@@ -8,17 +8,22 @@ import DOMPurify from 'dompurify'
 import { documentsApi, duplicateApi } from '@/api/client'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
 import { useProjectStore } from '@/stores/project'
+import { useAuthStore } from '@/stores/auth'
 import type { Document, DocumentContent } from '@/types'
 import { isLegacyDocFile, legacyDocWarning } from '@/utils/uploadValidation'
 import illustration from '@/assets/images/ui/home-illustration.png'
 import iconFileTheme from '@/assets/images/ui/common-icon-file-theme.png'
 
 type DuplicateSide = 'duplicate_left' | 'duplicate_right'
+type DuplicateBatchRole = 'duplicate_bid'
+type DuplicateSourceRole = 'duplicate_tender' | 'duplicate_public_reference'
+type DuplicateUploadRole = DuplicateSide | DuplicateBatchRole | DuplicateSourceRole
 
 interface SideConfig {
-  role: DuplicateSide
+  role: DuplicateUploadRole
   title: string
   hint: string
+  multiple?: boolean
 }
 
 interface UploadState {
@@ -34,43 +39,85 @@ const sides: SideConfig[] = [
   { role: 'duplicate_left', title: 'A 方技术应标书', hint: '上传一份 A 方技术应标书' },
   { role: 'duplicate_right', title: 'B 方技术应标书', hint: '上传一份 B 方技术应标书' },
 ]
+const batchSide: SideConfig = {
+  role: 'duplicate_bid',
+  title: '批量应标书',
+  hint: '添加一份应标书（3-10 份）',
+  multiple: true,
+}
+const sourceRoles: SideConfig[] = [
+  {
+    role: 'duplicate_tender',
+    title: '招标文件（可选）',
+    hint: '添加本项目招标文件',
+    multiple: true,
+  },
+  {
+    role: 'duplicate_public_reference',
+    title: '公共参考资料（可选）',
+    hint: '添加说明书、标准或公共模板',
+    multiple: true,
+  },
+]
+const uploadRoles = [...sides, batchSide, ...sourceRoles]
 
 const router = useRouter()
 const projectStore = useProjectStore()
+const authStore = useAuthStore()
 const projectName = ref('')
 const projectDesc = ref('')
+const duplicateMode = ref<'pair' | 'batch'>('pair')
+const batchModeEnabled = import.meta.env.VITE_DUPLICATE_BATCH_ENABLED === 'true'
 const submitting = ref(false)
-const inputs = new Map<DuplicateSide, HTMLInputElement>()
-const uploads = reactive<Partial<Record<DuplicateSide, UploadState>>>({})
+const inputs = new Map<DuplicateUploadRole, HTMLInputElement>()
+const uploads = reactive<Partial<Record<DuplicateUploadRole, UploadState>>>({})
 
 const viewerOpen = ref(false)
 const viewerLoading = ref(false)
 const viewerTitle = ref('')
 const viewerContent = ref<DocumentContent | null>(null)
 
-function setInput(role: DuplicateSide, element: any) {
+function setInput(role: DuplicateUploadRole, element: any) {
   if (element) inputs.set(role, element as HTMLInputElement)
 }
 
-function draftFor(role: DuplicateSide): Document | undefined {
+function draftsFor(role: DuplicateUploadRole): Document[] {
+  return projectStore.documents.filter((doc) => doc.project_id === null && doc.doc_type === role)
+}
+
+function draftFor(role: DuplicateUploadRole): Document | undefined {
   return projectStore.documents.find((doc) => doc.project_id === null && doc.doc_type === role)
 }
 
-const canStart = computed(() =>
-  sides.every(({ role }) => draftFor(role)?.status === 'parsed') &&
-  sides.every(({ role }) => !uploads[role])
-)
-
-onMounted(() => {
-  void projectStore.loadDraftDocuments(['duplicate_left', 'duplicate_right'], true)
+const canStart = computed(() => {
+  const uploadsFinished = uploadRoles.every(({ role }) => !uploads[role])
+  const sourcesReady = sourceRoles.every(({ role }) =>
+    draftsFor(role).every((doc) => doc.status === 'parsed'),
+  )
+  if (duplicateMode.value === 'batch') {
+    const members = draftsFor('duplicate_bid')
+    return members.length >= 3 && members.length <= 10 &&
+      members.every((doc) => ['parsed', 'failed'].includes(doc.status)) &&
+      uploadsFinished && sourcesReady
+  }
+  return sides.every(({ role }) => draftFor(role)?.status === 'parsed') &&
+    uploadsFinished && sourcesReady
 })
 
-function pick(role: DuplicateSide) {
-  if (draftFor(role) || uploads[role]) return
+onMounted(() => {
+  void projectStore.loadDraftDocuments(
+    ['duplicate_left', 'duplicate_right', 'duplicate_bid', 'duplicate_tender', 'duplicate_public_reference'],
+    true,
+  )
+})
+
+function pick(role: DuplicateUploadRole) {
+  const config = uploadRoles.find((item) => item.role === role)
+  if ((!config?.multiple && draftsFor(role).length > 0) || uploads[role]) return
   inputs.get(role)?.click()
 }
 
-async function chooseFile(event: Event, role: DuplicateSide) {
+async function chooseFile(event: Event, role: DuplicateUploadRole) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
@@ -89,7 +136,7 @@ async function chooseFile(event: Event, role: DuplicateSide) {
   await upload(role)
 }
 
-async function upload(role: DuplicateSide) {
+async function upload(role: DuplicateUploadRole) {
   const state = uploads[role]
   if (!state) return
   state.status = 'uploading'
@@ -110,15 +157,28 @@ async function upload(role: DuplicateSide) {
   }
 }
 
-function clearUpload(role: DuplicateSide) {
+function clearUpload(role: DuplicateUploadRole) {
   delete uploads[role]
 }
 
-async function remove(role: DuplicateSide) {
+function openArtifacts(documentId: string) {
+  void router.push({ name: 'draft-document-artifacts', params: { documentId } })
+}
+
+async function remove(role: DuplicateUploadRole) {
   const draft = draftFor(role)
   if (!draft) return
   try {
     await projectStore.deleteDraftDocument(draft.id)
+    message.success('文档已删除')
+  } catch {
+    message.error('删除文档失败')
+  }
+}
+
+async function removeDocument(document: Document) {
+  try {
+    await projectStore.deleteDraftDocument(document.id)
     message.success('文档已删除')
   } catch {
     message.error('删除文档失败')
@@ -157,22 +217,40 @@ async function startDuplicateCheck() {
     return
   }
   if (!canStart.value) {
-    message.warning('请确保 A、B 两份技术应标书均已解析完成')
+    message.warning(
+      duplicateMode.value === 'batch'
+        ? '请准备 3-10 份应标书并等待解析完成'
+        : '请确保 A、B 两份技术应标书均已解析完成',
+    )
     return
   }
   submitting.value = true
   let createdProjectId: string | null = null
   let documentsAttached = false
   try {
-    const left = draftFor('duplicate_left')!
-    const right = draftFor('duplicate_right')!
+    const sourceDocumentIds = sourceRoles.flatMap(({ role }) =>
+      draftsFor(role).map((document) => document.id),
+    )
     const project = await projectStore.createProject(
       projectName.value.trim(),
       projectDesc.value.trim() || undefined,
       'duplicate',
+      duplicateMode.value,
     )
     createdProjectId = project.id
-    await duplicateApi.attachDuplicatePair(project.id, left.id, right.id)
+    if (duplicateMode.value === 'batch') {
+      const members = draftsFor('duplicate_bid').map((document, index) => ({
+        document_id: document.id,
+        party_key: document.duplicate_party_key || `party-${index + 1}`,
+        display_name: document.duplicate_display_name || document.original_filename,
+        ordinal: document.duplicate_ordinal ?? index,
+      }))
+      await duplicateApi.attachDuplicateBatch(project.id, members, sourceDocumentIds)
+    } else {
+      const left = draftFor('duplicate_left')!
+      const right = draftFor('duplicate_right')!
+      await duplicateApi.attachDuplicatePair(project.id, left.id, right.id, sourceDocumentIds)
+    }
     documentsAttached = true
     await projectStore.selectProject(project.id)
     projectStore.currentTask = await duplicateApi.start(project.id)
@@ -198,7 +276,7 @@ function formatBytes(value: number): string {
 <template>
   <div class="duplicate-check-view">
     <input
-      v-for="side in sides"
+      v-for="side in uploadRoles"
       :key="side.role"
       :ref="(el) => setInput(side.role, el)"
       type="file"
@@ -228,7 +306,19 @@ function formatBytes(value: number): string {
         </div>
       </header>
 
-      <div class="side-grid">
+      <div class="mode-switch">
+        <label>查重模式</label>
+        <label class="mode-option">
+          <input v-model="duplicateMode" type="radio" value="pair" />
+          A/B 对照
+        </label>
+        <label class="mode-option">
+          <input v-model="duplicateMode" type="radio" value="batch" :disabled="!batchModeEnabled" />
+          多文件矩阵（3-10 份）{{ batchModeEnabled ? '' : '（灰度关闭）' }}
+        </label>
+      </div>
+
+      <div v-if="duplicateMode === 'pair'" class="side-grid">
         <article v-for="side in sides" :key="side.role" class="side-card">
           <h3>{{ side.title }}</h3>
 
@@ -266,6 +356,10 @@ function formatBytes(value: number): string {
             <p v-else class="success">解析完成</p>
             <div class="actions">
               <button v-if="draftFor(side.role)!.status === 'parsed'" @click="preview(draftFor(side.role)!)">查看内容</button>
+              <button
+                v-if="draftFor(side.role)!.status === 'parsed' && authStore.isInteriorUser"
+                @click="openArtifacts(draftFor(side.role)!.id)"
+              >解析诊断</button>
               <button class="danger" @click="remove(side.role)">删除</button>
             </div>
           </div>
@@ -274,8 +368,105 @@ function formatBytes(value: number): string {
         </article>
       </div>
 
+      <div v-else class="batch-members">
+        <div class="batch-heading">
+          <div>
+            <h3>批量应标书</h3>
+            <p>每份文档可填写投标人标签或使用匿名编号；解析失败的文档会保留并降级覆盖度。</p>
+          </div>
+          <span>{{ draftsFor('duplicate_bid').length }} / 10 份</span>
+        </div>
+        <div v-for="(document, index) in draftsFor('duplicate_bid')" :key="document.id" class="batch-member document-item">
+          <div class="batch-member-head">
+            <strong>{{ document.duplicate_display_name || document.original_filename }}</strong>
+            <span>编号 {{ document.duplicate_party_key || `party-${index + 1}` }}</span>
+          </div>
+          <DocumentParseProgress
+            v-if="['pending', 'parsing'].includes(document.status)"
+            :document-id="document.id"
+            :stage="document.parse_progress?.stage || 'extracting_text'"
+            :processed="document.parse_progress?.processed || 0"
+            :total="document.parse_progress?.total || 1"
+            :eta-seconds="document.parse_progress?.etaSeconds || 0"
+          />
+          <p v-else-if="document.status === 'failed'" class="error">解析失败：{{ document.parse_error || '该文档将按覆盖不足处理' }}</p>
+          <p v-else class="success">解析完成</p>
+          <div class="actions">
+            <button v-if="document.status === 'parsed'" @click="preview(document)">查看内容</button>
+            <button v-if="document.status === 'parsed' && authStore.isInteriorUser" @click="openArtifacts(document.id)">解析诊断</button>
+            <button class="danger" @click="removeDocument(document)">删除</button>
+          </div>
+        </div>
+        <div v-if="uploads.duplicate_bid" class="document-item">
+          <strong>{{ uploads.duplicate_bid.file.name }}</strong>
+          <a-progress :percent="uploads.duplicate_bid.percent" :show-info="true" />
+        </div>
+        <button v-if="!uploads.duplicate_bid && draftsFor('duplicate_bid').length < 10" class="upload-button compact" @click="pick('duplicate_bid')">
+          + 添加应标书
+        </button>
+      </div>
+
+      <div class="source-heading">
+        <h3>判定依据（可选）</h3>
+        <p>来源文件会保存不可变快照、版本和 hash；没有具体来源证据时，系统不会把结论标成“招标要求”或“公共规范”。</p>
+      </div>
+      <div class="side-grid source-grid">
+        <article v-for="source in sourceRoles" :key="source.role" class="side-card source-card">
+          <h3>{{ source.title }}</h3>
+          <div
+            v-for="document in draftsFor(source.role)"
+            :key="document.id"
+            class="document-item source-document"
+          >
+            <strong>{{ document.original_filename }}</strong>
+            <DocumentParseProgress
+              v-if="['pending', 'parsing'].includes(document.status)"
+              :document-id="document.id"
+              :stage="document.parse_progress?.stage || 'extracting_text'"
+              :processed="document.parse_progress?.processed || 0"
+              :total="document.parse_progress?.total || 1"
+              :eta-seconds="document.parse_progress?.etaSeconds || 0"
+            />
+            <p v-else-if="document.status === 'failed'" class="error">
+              解析失败：{{ document.parse_error || '请删除后重新上传' }}
+            </p>
+            <p v-else class="success">
+              已固化 · {{ document.source_snapshot_hash ? document.source_snapshot_hash.slice(0, 12) : '等待生成 hash' }}
+            </p>
+            <div class="actions">
+              <button v-if="document.status === 'parsed'" @click="preview(document)">查看内容</button>
+              <button
+                v-if="document.status === 'parsed' && authStore.isInteriorUser"
+                @click="openArtifacts(document.id)"
+              >解析诊断</button>
+              <button class="danger" @click="removeDocument(document)">删除</button>
+            </div>
+          </div>
+          <div v-if="uploads[source.role]" class="document-item">
+            <strong>{{ uploads[source.role]!.file.name }}</strong>
+            <a-progress
+              v-if="uploads[source.role]!.status === 'uploading'"
+              :percent="uploads[source.role]!.percent"
+              :show-info="true"
+            />
+            <div v-else class="actions">
+              <span class="error">{{ uploads[source.role]!.error }}</span>
+              <button @click="upload(source.role)">重试</button>
+              <button @click="clearUpload(source.role)">移除</button>
+            </div>
+          </div>
+          <button
+            v-if="!uploads[source.role]"
+            class="upload-button compact"
+            @click="pick(source.role)"
+          >+ {{ source.hint }}</button>
+        </article>
+      </div>
+
       <div class="start-area">
-        <span v-if="!canStart">两份文件均解析完成后可开始查重</span>
+        <span v-if="!canStart">
+          {{ duplicateMode === 'batch' ? '请准备 3-10 份已解析（或解析失败可降级）的应标书' : '两份文件均解析完成后可开始查重' }}
+        </span>
         <button :disabled="!canStart || submitting" @click="startDuplicateCheck">
           {{ submitting ? '正在启动…' : '开始查重' }}
         </button>
@@ -305,10 +496,26 @@ input, textarea { width: 100%; box-sizing: border-box; border: 1px solid #dfe2ea
 .documents-card > header { display: flex; gap: 12px; align-items: center; margin-bottom: 22px; }
 .documents-card > header img { width: 38px; }
 .documents-card header p { margin: 0; }
+.mode-switch { display: flex; align-items: center; gap: 16px; margin-bottom: 18px; padding: 12px 14px; background: #f8f9fb; border-radius: 7px; }
+.mode-switch > label:first-child { margin: 0; font-weight: 600; }
+.mode-option { display: inline-flex; align-items: center; gap: 5px; margin: 0; font-weight: 400; }
+.mode-option input { width: auto; }
 .side-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.batch-members { display: flex; flex-direction: column; gap: 10px; }
+.batch-heading { display: flex; justify-content: space-between; align-items: flex-start; }
+.batch-heading h3 { margin: 0; }
+.batch-heading p { margin: 5px 0 0; }
+.batch-member { margin: 0; }
+.batch-member-head { display: flex; justify-content: space-between; gap: 12px; }
+.source-heading { margin-top: 24px; border-top: 1px solid #eceef3; padding-top: 20px; }
+.source-heading h3 { margin: 0; }
+.source-heading p { margin: 6px 0 14px; }
+.source-grid .side-card { min-height: 180px; }
+.source-document { margin-bottom: 10px; }
 .side-card { min-height: 230px; border: 1px solid #e1e4eb; border-radius: 8px; padding: 18px; }
 .side-card h3 { margin: 0 0 16px; }
 .upload-button { width: 100%; min-height: 150px; border: 1px dashed #d7041a; background: #fff8f8; color: #d7041a; border-radius: 8px; cursor: pointer; }
+.upload-button.compact { min-height: 70px; }
 .document-item { border: 1px solid #eceef3; background: #fafbfc; border-radius: 8px; padding: 16px; }
 .document-item strong { display: block; margin-bottom: 12px; word-break: break-all; }
 .progress-meta { display: flex; justify-content: space-between; color: #777; font-size: 12px; }

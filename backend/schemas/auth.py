@@ -17,6 +17,12 @@ class LoginRequest(BaseModel):
     captcha_code: str = Field(..., min_length=1)
 
 
+class VstoSsoRequest(BaseModel):
+    """VSTO 插件通过 WebView2 安全消息桥传入的 opaque SSO 票据。"""
+
+    ticket: str = Field(..., min_length=32, max_length=128)
+
+
 class SendSmsRequest(BaseModel):
     """站内注册·下发短信验证码请求。
 

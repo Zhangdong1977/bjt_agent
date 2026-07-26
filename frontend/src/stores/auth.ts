@@ -50,6 +50,18 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function loginWithVstoTicket(ticket: string) {
+    loading.value = true
+    try {
+      await authApi.vstoSso(ticket)
+      user.value = await authApi.getMe()
+      _restoreClaims()
+      initialized.value = true
+    } finally {
+      loading.value = false
+    }
+  }
+
   function logout() {
     authApi.logout()
     user.value = null
@@ -66,6 +78,7 @@ export const useAuthStore = defineStore('auth', () => {
     concurrency,
     initialize,
     login,
+    loginWithVstoTicket,
     logout,
   }
 })

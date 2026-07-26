@@ -92,7 +92,7 @@ const subAgents = computed(() => {
       })) || [],
       status: mapSubAgentStatus(todo.status),
       findings: (todo.result?.findings?.filter((f: any) => props.mode === 'duplicate' || !f.is_compliant) || []).map((f: any) => ({
-        type: f.verdict === 'suspicious' ? 'crit' as const : f.verdict === 'reasonable' ? 'pass' as const : f.severity === 'critical' ? 'crit' as const : f.severity === 'major' ? 'major' as const : f.severity === 'minor' ? 'minor' as const : 'pass' as const,
+        type: f.verdict === 'suspicious' ? 'crit' as const : f.verdict === 'unknown' ? 'major' as const : f.verdict === 'reasonable' ? 'pass' as const : f.severity === 'critical' ? 'crit' as const : f.severity === 'major' ? 'major' as const : f.severity === 'minor' ? 'minor' as const : 'pass' as const,
         text: f.explanation || f.message || ''
       })),
       steps: []  // 内部时间线数据

@@ -78,6 +78,43 @@ class Settings(BaseSettings):
     baidu_ocr_secret_key: str = ""  # env: BAIDU_OCR_SECRET_KEY
     baidu_ocr_endpoint: str = "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic"
 
+    # Duplicate S2 selective image/OCR channel.  Hashing is always local;
+    # OCR/VLM calls are separately switchable and bounded so an upload never
+    # fans out into unmetered paid calls.
+    duplicate_ocr_enabled: bool = True
+    duplicate_remote_ocr_enabled: bool = False
+    duplicate_vision_enabled: bool = False
+    duplicate_ocr_max_images: int = 24
+    duplicate_remote_ocr_max_calls: int = 4
+    duplicate_vision_max_calls: int = 2
+    duplicate_ocr_min_local_confidence: float = 0.72
+    duplicate_scan_text_threshold: int = 30
+
+    # S2-4 release switches and calibrated thresholds.  Batch mode remains
+    # opt-in until the pre-release acceptance gate is signed off.
+    duplicate_batch_enabled: bool = False
+    duplicate_algorithm_version: str = "duplicate-s2-4.1"
+    duplicate_candidate_min_score: float = 0.45
+    duplicate_lexical_min_score: float = 0.16
+    duplicate_structure_min_score: float = 0.50
+    duplicate_near_exact_min_score: float = 0.72
+    duplicate_image_min_score: float = 0.78
+    duplicate_pair_max_candidates: int = 400
+    duplicate_batch_max_candidates: int = 1200
+
+    # S2-2B semantic recall is opt-in until S2-4 calibration approves the
+    # thresholds.  Turning it off leaves the deterministic S2-1 channels in
+    # place and performs zero embedding-provider calls.
+    duplicate_semantic_enabled: bool = False
+    duplicate_embedding_batch_size: int = 32
+    duplicate_embedding_timeout_seconds: float = 45.0
+    duplicate_embedding_max_blocks: int = 400
+    duplicate_embedding_max_input_chars: int = 500_000
+    duplicate_embedding_min_chars: int = 24
+    duplicate_semantic_min_score: float = 0.72
+    duplicate_embedding_breaker_failures: int = 3
+    duplicate_embedding_breaker_cooldown_seconds: int = 120
+
     # LLM Provider: "minimax", "volcengine", or "deepseek"
     llm_provider: str = "minimax"
 

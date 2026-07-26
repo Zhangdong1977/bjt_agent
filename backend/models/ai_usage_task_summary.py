@@ -43,6 +43,8 @@ class AiUsageTaskSummary(Base):
     # —— 调用次数 ——
     llm_calls: Mapped[int] = mapped_column(Integer, default=0)
     ocr_calls: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_calls: Mapped[int] = mapped_column(Integer, default=0)
+    vision_calls: Mapped[int] = mapped_column(Integer, default=0)
     failed_calls: Mapped[int] = mapped_column(Integer, default=0)
 
     # —— LLM token（含 DeepSeek 缓存拆分）——
@@ -55,6 +57,11 @@ class AiUsageTaskSummary(Base):
     # —— OCR 指标 ——
     ocr_images: Mapped[int] = mapped_column(Integer, default=0)
     ocr_words_result_num: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_inputs: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_input_chars: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_cache_hits: Mapped[int] = mapped_column(Integer, default=0)
+    vision_images: Mapped[int] = mapped_column(Integer, default=0)
 
     # —— 费用（写入时已按 cache 三档计好，直接 SUM）——
     cost_cny: Mapped[Optional[float]] = mapped_column(Numeric(12, 6), nullable=True)

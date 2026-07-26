@@ -10,8 +10,11 @@ from typing import Callable
 from sqlalchemy import update
 
 from backend.agent.duplicate_check_agent import DuplicateCheckAgent
-from backend.models import DuplicateResult, TodoItem
+from backend.models import DuplicateOccurrence, DuplicateResult, TodoItem
 from backend.services.duplicate_candidates import DuplicateCandidateService
+from backend.services.duplicate_rules import RuleValidationError, load_duplicate_rules
+from backend.services.duplicate_sources import DuplicateSourceIndex
+from backend.services.duplicate_result_grouper import group_duplicate_findings
 from backend.services.todo_service import TodoService
 from backend.utils.time_utils import utc_now
 
@@ -50,11 +53,13 @@ class DuplicateMasterAgent:
         left_document_id: str,
         right_document_id: str,
         candidate_service: DuplicateCandidateService,
+        source_index: DuplicateSourceIndex | None = None,
         session_factory,
         max_concurrency: int,
         event_callback: Callable[[str, dict], None] | None = None,
         cancel_event: asyncio.Event | None = None,
         max_retries: int = 1,
+        coverage_status: str = "insufficient",
     ):
         self.project_id = project_id
         self.task_id = task_id
@@ -63,11 +68,17 @@ class DuplicateMasterAgent:
         self.left_document_id = left_document_id
         self.right_document_id = right_document_id
         self.candidate_service = candidate_service
+        self.source_index = source_index
         self.session_factory = session_factory
         self.max_concurrency = max(1, max_concurrency)
         self.event_callback = event_callback
         self.cancel_event = cancel_event or asyncio.Event()
         self.max_retries = max_retries
+        self.coverage_status = (
+            coverage_status
+            if coverage_status in {"complete", "partial", "insufficient"}
+            else "insufficient"
+        )
 
     def _event(self, event_type: str, data: dict) -> None:
         if self.event_callback:
@@ -85,13 +96,23 @@ class DuplicateMasterAgent:
         )
         if not self.rule_library_path.is_dir():
             return {"success": False, "error": "查重规则目录不存在"}
+        try:
+            rule_specs = load_duplicate_rules(self.rule_library_path)
+        except RuleValidationError as exc:
+            logger.error("Duplicate rule library validation failed: %s", exc)
+            self._event("error", {"message": "查重规则库校验失败", "detail": str(exc)})
+            return {"success": False, "error": f"查重规则库校验失败：{exc}"}
         rules = sorted(self.rule_library_path.glob("*.md"), key=lambda path: path.name)
-        if not rules:
-            return {"success": False, "error": "查重规则目录中没有规则文件"}
 
         self._event(
             "master_scan_completed",
-            {"total_docs": len(rules), "rule_docs": [path.name for path in rules]},
+            {
+                "total_docs": len(rules),
+                "rule_docs": [path.name for path in rules],
+                "rule_versions": {
+                    rule.rule_id: rule.version for rule in rule_specs
+                },
+            },
         )
 
         async with self.session_factory() as db:
@@ -176,6 +197,7 @@ class DuplicateMasterAgent:
                 agent = DuplicateCheckAgent(
                     rule_doc_path=todo.rule_doc_path,
                     candidate_service=self.candidate_service,
+                    source_index=self.source_index,
                     task_id=self.task_id,
                     todo_id=todo.id,
                     project_id=self.project_id,
@@ -187,20 +209,132 @@ class DuplicateMasterAgent:
                 findings, check_items = await agent.run()
                 if self.cancel_event.is_set():
                     raise asyncio.CancelledError()
+                raw_finding_count = len(findings)
+                findings = group_duplicate_findings(findings)
                 reasonable = sum(item.verdict == "reasonable" for item in findings)
                 suspicious = sum(item.verdict == "suspicious" for item in findings)
+                unknown = sum(item.verdict == "unknown" for item in findings)
                 async with self.session_factory() as db:
                     for payload in findings:
-                        db.add(
-                            DuplicateResult(
+                        payload_data = payload.model_dump()
+                        evidence = payload_data.get("evidence") or {}
+                        left_document_id = str(
+                            evidence.get("left_document_id") or self.left_document_id
+                        )
+                        right_document_id = str(
+                            evidence.get("right_document_id") or self.right_document_id
+                        )
+                        channel_scores = {
+                            key: evidence.get(key)
+                            for key in (
+                                "lexical_score",
+                                "semantic_score",
+                                "structure_score",
+                                "image_score",
+                            )
+                            if evidence.get(key) is not None
+                        }
+                        confidence = evidence.get("evidence_strength")
+                        if confidence is not None:
+                            try:
+                                confidence = min(1.0, max(0.0, float(confidence)))
+                            except (TypeError, ValueError):
+                                confidence = None
+                        for key in ("confidence", "coverage_status", "channel_scores"):
+                            payload_data.pop(key, None)
+                        finding_row = DuplicateResult(
                                 task_id=self.task_id,
                                 todo_id=todo.id,
                                 rule_doc_name=todo.rule_doc_name,
-                                left_document_id=self.left_document_id,
-                                right_document_id=self.right_document_id,
-                                **payload.model_dump(),
+                                left_document_id=left_document_id,
+                                right_document_id=right_document_id,
+                                confidence=confidence,
+                                coverage_status=self.coverage_status,
+                                channel_scores=channel_scores or None,
+                                **payload_data,
+                            )
+                        db.add(finding_row)
+                        await db.flush()
+                        channel = (
+                            "image"
+                            if payload.match_type in {"ocr_error"}
+                            or (evidence.get("image_score") or 0) > 0
+                            else (
+                                "semantic"
+                                if payload.match_type == "semantic"
+                                else (
+                                    "structure"
+                                    if payload.match_type == "structural"
+                                    else "lexical"
+                                )
                             )
                         )
+                        occurrence_payloads = evidence.get("occurrences")
+                        if not isinstance(occurrence_payloads, list) or not occurrence_payloads:
+                            occurrence_payloads = [
+                                {
+                                    "left_document_id": left_document_id,
+                                    "right_document_id": right_document_id,
+                                    "left_block_id": evidence.get("left_block_id"),
+                                    "right_block_id": evidence.get("right_block_id"),
+                                    "left_excerpt": payload.left_excerpt,
+                                    "right_excerpt": payload.right_excerpt,
+                                    "left_location": payload.left_location,
+                                    "right_location": payload.right_location,
+                                }
+                            ]
+                        occurrence_rows = []
+                        seen_occurrences: set[tuple] = set()
+                        for occurrence in occurrence_payloads:
+                            if not isinstance(occurrence, dict):
+                                continue
+                            for side, fallback_document_id, fallback_excerpt, fallback_location in (
+                                (
+                                    "left",
+                                    left_document_id,
+                                    payload.left_excerpt,
+                                    payload.left_location,
+                                ),
+                                (
+                                    "right",
+                                    right_document_id,
+                                    payload.right_excerpt,
+                                    payload.right_location,
+                                ),
+                            ):
+                                document_id = str(
+                                    occurrence.get(f"{side}_document_id")
+                                    or fallback_document_id
+                                )
+                                block_id = occurrence.get(f"{side}_block_id")
+                                excerpt = str(
+                                    occurrence.get(f"{side}_excerpt")
+                                    or fallback_excerpt
+                                )
+                                location = occurrence.get(f"{side}_location")
+                                if not isinstance(location, dict):
+                                    location = fallback_location
+                                occurrence_key = (
+                                    document_id,
+                                    block_id,
+                                    excerpt,
+                                    str(sorted(location.items())),
+                                )
+                                if occurrence_key in seen_occurrences:
+                                    continue
+                                seen_occurrences.add(occurrence_key)
+                                occurrence_rows.append(
+                                    DuplicateOccurrence(
+                                        task_id=self.task_id,
+                                        finding_id=finding_row.id,
+                                        document_id=document_id,
+                                        block_id=block_id,
+                                        excerpt=excerpt,
+                                        location=location,
+                                        channel=channel,
+                                    )
+                                )
+                        db.add_all(occurrence_rows)
                     # Findings and their Todo summary must become visible in one
                     # transaction; otherwise a retry after a partial commit can
                     # insert duplicate result rows.
@@ -212,8 +346,10 @@ class DuplicateMasterAgent:
                             status="completed",
                             result={
                                 "finding_count": len(findings),
+                                "raw_finding_count": raw_finding_count,
                                 "reasonable_count": reasonable,
                                 "suspicious_count": suspicious,
+                                "unknown_count": unknown,
                                 "findings": [item.model_dump() for item in findings],
                             },
                             brain_capacity=1.0,
@@ -228,6 +364,7 @@ class DuplicateMasterAgent:
                     {
                         "todo_id": todo.id,
                         "findings_count": len(findings),
+                        "raw_findings_count": raw_finding_count,
                         "findings": [item.model_dump() for item in findings],
                         "brain_capacity": 1.0,
                     },

@@ -1,0 +1,1 @@
+{"case_id":"phase1-baseline","left_path":"a_bid.md","right_path":"b_bid.md","expected_pairs":[{"left_contains":"智慧园区平台建设","right_contains":"智慧园区平台建设"},{"left_contains":"AB12B0345","right_contains":"AB12B0345"}]}

@@ -1,84 +1,312 @@
-"""Embedding service for semantic similarity using Mini-Max API."""
+"""Batched, cached and fail-safe embedding service.
 
+Embeddings supplement candidate recall only.  Callers receive ``None`` for a
+failed/budget-excluded input and can continue with deterministic channels.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
 import logging
 import math
-from typing import Literal
+import os
+import tempfile
+import time
+from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path
+from typing import Any, Iterable
 
 from openai import AsyncOpenAI
 
 from backend.config import get_settings
+from backend.services.document_artifacts import normalize_text
 
 logger = logging.getLogger(__name__)
 
-# Severity ordering for merge priority
-SEVERITY_ORDER: dict[str, int] = {
-    "critical": 3,
-    "major": 2,
-    "minor": 1,
-}
+SEVERITY_ORDER: dict[str, int] = {"critical": 3, "major": 2, "minor": 1}
+
+
+def cosine_similarity(left: list[float] | None, right: list[float] | None) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    magnitude_left = math.sqrt(sum(value * value for value in left))
+    magnitude_right = math.sqrt(sum(value * value for value in right))
+    if magnitude_left == 0 or magnitude_right == 0:
+        return 0.0
+    return max(-1.0, min(1.0, dot / (magnitude_left * magnitude_right)))
+
+
+@dataclass(slots=True)
+class EmbeddingBatchStats:
+    requested_inputs: int = 0
+    unique_inputs: int = 0
+    external_inputs: int = 0
+    cache_hits: int = 0
+    skipped_inputs: int = 0
+    failed_batches: int = 0
+    input_chars: int = 0
+    latency_ms: int = 0
+    degraded_reason: str | None = None
+
+
+def _atomic_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
 
 
 class EmbeddingService:
-    """Service for computing text embeddings via Mini-Max API."""
+    """Provider-neutral batch embeddings with normalized-hash disk cache."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        client: Any | None = None,
+        cache_dir: Path | None = None,
+        enabled: bool = True,
+        batch_size: int | None = None,
+        timeout_seconds: float | None = None,
+        max_input_chars: int | None = None,
+        breaker_failures: int | None = None,
+        breaker_cooldown_seconds: int | None = None,
+    ):
         settings = get_settings()
         if settings.llm_provider == "volcengine":
-            base_url = settings.volcengine_api_base.rstrip('/')
+            base_url = settings.volcengine_api_base.rstrip("/")
             api_key = settings.volcengine_api_key
             self.model = settings.volcengine_embedding_model
+            self.provider = "volcengine_embedding"
         else:
-            base_url = settings.mini_agent_api_base.rstrip('/')
-            if not base_url.endswith('/v1'):
-                base_url = base_url + '/v1'
+            base_url = settings.mini_agent_api_base.rstrip("/")
+            if not base_url.endswith("/v1"):
+                base_url += "/v1"
             api_key = settings.mini_agent_api_key
             self.model = "embeddings"
-        self.client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url,
+            self.provider = "minimax_embedding"
+        self.enabled = bool(enabled)
+        self._initialization_error: str | None = None
+        if client is not None:
+            self.client = client
+        elif self.enabled:
+            try:
+                self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            except Exception as exc:
+                self.client = None
+                self.enabled = False
+                self._initialization_error = f"embedding_unconfigured:{type(exc).__name__}"
+        else:
+            self.client = None
+        self.batch_size = max(1, int(batch_size or settings.duplicate_embedding_batch_size))
+        self.timeout_seconds = max(
+            1.0,
+            float(timeout_seconds or settings.duplicate_embedding_timeout_seconds),
         )
+        self.max_input_chars = max(
+            1,
+            int(max_input_chars or settings.duplicate_embedding_max_input_chars),
+        )
+        self.breaker_failures = max(
+            1,
+            int(breaker_failures or settings.duplicate_embedding_breaker_failures),
+        )
+        self.breaker_cooldown_seconds = max(
+            1,
+            int(
+                breaker_cooldown_seconds
+                or settings.duplicate_embedding_breaker_cooldown_seconds
+            ),
+        )
+        self.cache_dir = cache_dir or (
+            settings.workspace_path / ".duplicate_cache" / "embeddings"
+        )
+        self._memory_cache: dict[str, list[float]] = {}
+        self._consecutive_failures = 0
+        self._breaker_opened_at: float | None = None
+        self.last_stats = EmbeddingBatchStats()
+
+    @property
+    def breaker_open(self) -> bool:
+        if self._breaker_opened_at is None:
+            return False
+        if time.monotonic() - self._breaker_opened_at >= self.breaker_cooldown_seconds:
+            self._breaker_opened_at = None
+            self._consecutive_failures = 0
+            return False
+        return True
+
+    def _key(self, normalized: str) -> str:
+        return sha256(
+            f"embedding/v2\0{self.provider}\0{self.model}\0{normalized}".encode("utf-8")
+        ).hexdigest()
+
+    def _cache_path(self, key: str) -> Path:
+        return self.cache_dir / self.provider / self.model.replace("/", "_") / key[:2] / f"{key}.json"
+
+    def _load_cache(self, key: str) -> list[float] | None:
+        if key in self._memory_cache:
+            return self._memory_cache[key]
+        path = self._cache_path(key)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            vector = [float(value) for value in payload["embedding"]]
+            self._memory_cache[key] = vector
+            return vector
+        except Exception:
+            logger.warning("Invalid embedding cache ignored: %s", path, exc_info=True)
+            return None
+
+    def _save_cache(self, key: str, vector: list[float]) -> None:
+        self._memory_cache[key] = vector
+        try:
+            _atomic_json(
+                self._cache_path(key),
+                {
+                    "schema_version": "duplicate-embedding-cache/v2",
+                    "provider": self.provider,
+                    "model": self.model,
+                    "embedding": vector,
+                },
+            )
+        except Exception:
+            logger.warning("Unable to write embedding cache", exc_info=True)
+
+    async def embed_batch(self, texts: Iterable[str]) -> list[list[float] | None]:
+        requested = list(texts)
+        stats = EmbeddingBatchStats(requested_inputs=len(requested))
+        self.last_stats = stats
+        if not requested:
+            return []
+        if not self.enabled:
+            stats.skipped_inputs = len(requested)
+            stats.degraded_reason = self._initialization_error or "embedding_disabled"
+            return [None] * len(requested)
+        if self.breaker_open:
+            stats.skipped_inputs = len(requested)
+            stats.degraded_reason = "embedding_circuit_open"
+            return [None] * len(requested)
+
+        normalized = [normalize_text(text) for text in requested]
+        unique: dict[str, str] = {}
+        keys: list[str | None] = []
+        consumed_chars = 0
+        for raw_text, value in zip(requested, normalized):
+            if not value:
+                keys.append(None)
+                stats.skipped_inputs += 1
+                continue
+            key = self._key(value)
+            keys.append(key)
+            if key not in unique:
+                if consumed_chars + len(value) > self.max_input_chars:
+                    stats.skipped_inputs += 1
+                    continue
+                # Use the original text for provider quality while the cache
+                # key remains based on normalized text.
+                unique[key] = str(raw_text)
+                consumed_chars += len(value)
+        stats.unique_inputs = len(unique)
+        stats.input_chars = consumed_chars
+
+        vectors: dict[str, list[float]] = {}
+        missing: list[tuple[str, str]] = []
+        for key, value in unique.items():
+            cached = self._load_cache(key)
+            if cached is not None:
+                vectors[key] = cached
+                stats.cache_hits += 1
+            else:
+                missing.append((key, value))
+        # Charge/audit only provider-bound input; cached text is represented by
+        # cache_hits and must not be billed again.
+        stats.input_chars = sum(len(value) for _, value in missing)
+
+        started = time.perf_counter()
+        for offset in range(0, len(missing), self.batch_size):
+            batch = missing[offset : offset + self.batch_size]
+            try:
+                response = await asyncio.wait_for(
+                    self.client.embeddings.create(  # type: ignore[union-attr]
+                        model=self.model,
+                        input=[value for _, value in batch],
+                    ),
+                    timeout=self.timeout_seconds,
+                )
+                returned = sorted(response.data, key=lambda item: getattr(item, "index", 0))
+                if len(returned) != len(batch):
+                    raise ValueError("embedding provider returned unexpected vector count")
+                for (key, _), item in zip(batch, returned):
+                    vector = [float(value) for value in item.embedding]
+                    vectors[key] = vector
+                    self._save_cache(key, vector)
+                stats.external_inputs += len(batch)
+                self._consecutive_failures = 0
+            except Exception as exc:
+                stats.failed_batches += 1
+                self._consecutive_failures += 1
+                logger.warning("Embedding batch failed; deterministic fallback remains active: %s", exc)
+                if self._consecutive_failures >= self.breaker_failures:
+                    self._breaker_opened_at = time.monotonic()
+                    stats.degraded_reason = "embedding_circuit_open"
+                    break
+        stats.latency_ms = int((time.perf_counter() - started) * 1000)
+        if stats.failed_batches and stats.degraded_reason is None:
+            stats.degraded_reason = "embedding_partial_failure"
+        self._record_usage(stats)
+        return [vectors.get(key) if key is not None else None for key in keys]
+
+    def _record_usage(self, stats: EmbeddingBatchStats) -> None:
+        if (
+            stats.external_inputs == 0
+            and stats.failed_batches == 0
+            and stats.cache_hits == 0
+        ):
+            return
+        try:
+            from backend.services.usage_recorder import record_embedding_usage
+
+            record_embedding_usage(
+                provider=self.provider,
+                model=self.model,
+                status="success" if stats.failed_batches == 0 else "error",
+                latency_ms=stats.latency_ms,
+                input_count=stats.external_inputs,
+                input_chars=stats.input_chars,
+                cache_hits=stats.cache_hits,
+                error_message=stats.degraded_reason,
+            )
+        except Exception:
+            logger.warning("Embedding usage recording failed", exc_info=True)
 
     async def get_embedding(self, text: str) -> list[float]:
-        """Get embedding vector for a single text.
+        vectors = await self.embed_batch([text])
+        if not vectors or vectors[0] is None:
+            raise RuntimeError(self.last_stats.degraded_reason or "embedding unavailable")
+        return vectors[0]
 
-        Args:
-            text: Text to embed
-
-        Returns:
-            Embedding vector as list of floats
-        """
-        try:
-            response = await self.client.embeddings.create(
-                model=self.model,
-                input=text,
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            logger.error(f"Embedding API error: {e}")
-            raise
+    async def embed(self, text: str) -> list[float]:
+        return await self.get_embedding(text)
 
     async def compute_similarity(self, text1: str, text2: str) -> float:
-        """Compute cosine similarity between two texts.
-
-        Args:
-            text1: First text
-            text2: Second text
-
-        Returns:
-            Similarity score between 0.0 and 1.0
-        """
-        embedding1 = await self.get_embedding(text1)
-        embedding2 = await self.get_embedding(text2)
-
-        # Cosine similarity
-        dot_product = sum(a * b for a, b in zip(embedding1, embedding2))
-        magnitude1 = math.sqrt(sum(a * a for a in embedding1))
-        magnitude2 = math.sqrt(sum(b * b for b in embedding2))
-
-        if magnitude1 == 0 or magnitude2 == 0:
-            return 0.0
-
-        return dot_product / (magnitude1 * magnitude2)
+        left, right = await self.embed_batch([text1, text2])
+        return cosine_similarity(left, right)
 
     def merge_candidates(
         self,
@@ -86,46 +314,34 @@ class EmbeddingService:
         new: dict,
         similarity_threshold: float = 0.85,
     ) -> tuple[dict | None, bool]:
-        """Determine if new result should merge with existing.
+        """Legacy synchronous merge helper retained for compatibility."""
 
-        Compares requirement_content + bid_content + explanation + suggestion
-        and returns the better record based on severity.
-
-        Args:
-            existing: Existing ProjectReviewResult dict
-            new: New ReviewResult dict
-            similarity_threshold: Minimum similarity to consider as duplicate
-
-        Returns:
-            Tuple of (merged_record, is_duplicate)
-            - merged_record: The record to store (existing if severity higher, else new)
-            - is_duplicate: True if texts are semantically similar
-        """
-        # Build comparison text
         existing_text = self._build_comparison_text(existing)
         new_text = self._build_comparison_text(new)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            similarity = asyncio.run(self.compute_similarity(existing_text, new_text))
+        else:
+            raise RuntimeError("merge_candidates cannot block inside an active event loop")
+        if similarity < similarity_threshold:
+            return None, False
+        existing_rank = SEVERITY_ORDER.get(existing.get("severity", "minor"), 0)
+        new_rank = SEVERITY_ORDER.get(new.get("severity", "minor"), 0)
+        return (new if new_rank >= existing_rank else existing), True
 
-        # Compute similarity synchronously (will be called from async context)
-        import asyncio
-        loop = asyncio.get_event_loop()
-        similarity = loop.run_until_complete(self.compute_similarity(existing_text, new_text))
+    @staticmethod
+    def _build_comparison_text(record: dict) -> str:
+        return " ".join(
+            str(record[field])
+            for field in ("requirement_content", "bid_content", "explanation", "suggestion")
+            if record.get(field)
+        )
 
-        if similarity >= similarity_threshold:
-            # Determine which to keep based on severity
-            existing_severity_rank = SEVERITY_ORDER.get(existing.get("severity", "minor"), 0)
-            new_severity_rank = SEVERITY_ORDER.get(new.get("severity", "minor"), 0)
 
-            if new_severity_rank >= existing_severity_rank:
-                return new, True
-            else:
-                return existing, True
-
-        return None, False
-
-    def _build_comparison_text(self, record: dict) -> str:
-        """Build text for similarity comparison from record fields."""
-        parts = []
-        for field in ["requirement_content", "bid_content", "explanation", "suggestion"]:
-            if record.get(field):
-                parts.append(str(record[field]))
-        return " ".join(parts)
+__all__ = [
+    "EmbeddingBatchStats",
+    "EmbeddingService",
+    "SEVERITY_ORDER",
+    "cosine_similarity",
+]

@@ -72,6 +72,7 @@ export const useProjectStore = defineStore("project", () => {
     name: string,
     description?: string,
     projectType: "review" | "duplicate" = "review",
+    duplicateMode: "pair" | "batch" = "pair",
   ) {
     loading.value = true;
     try {
@@ -79,6 +80,7 @@ export const useProjectStore = defineStore("project", () => {
         name,
         description,
         project_type: projectType,
+        duplicate_mode: duplicateMode,
       });
       projects.value.unshift(project);
       return project;

@@ -15,6 +15,8 @@ from .profile import router as profile_router
 from .billing import router as billing_router
 from .announcements import router as announcements_router
 from .system_status import router as system_status_router
+from .blind_check import router as blind_check_router
+from .vsto_tools import router as vsto_tools_router
 
 __all__ = [
     "auth_router",
@@ -33,4 +35,6 @@ __all__ = [
     "billing_router",
     "announcements_router",
     "system_status_router",
+    "blind_check_router",
+    "vsto_tools_router",
 ]

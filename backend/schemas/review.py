@@ -57,6 +57,9 @@ class ReviewTaskResponse(BaseModel):
     id: str
     project_id: str
     task_type: str = "review"
+    duplicate_mode: str = "pair"
+    duplicate_algorithm_version: str | None = None
+    duplicate_feature_snapshot: dict | None = None
     status: str
     celery_task_id: str | None
     started_at: datetime | None
@@ -90,6 +93,8 @@ class ReviewTaskListItem(BaseModel):
     id: str
     project_id: str
     task_type: str = "review"
+    duplicate_mode: str = "pair"
+    duplicate_algorithm_version: str | None = None
     status: str
     started_at: datetime | None
     completed_at: datetime | None

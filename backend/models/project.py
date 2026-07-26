@@ -26,6 +26,9 @@ class Project(Base):
     project_type: Mapped[str] = mapped_column(
         String(20), default="review", server_default="review", nullable=False, index=True
     )
+    duplicate_mode: Mapped[str] = mapped_column(
+        String(10), default="pair", server_default="pair", nullable=False, index=True
+    )
     status: Mapped[str] = mapped_column(String(50), default="draft", index=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False, index=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

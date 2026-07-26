@@ -10,6 +10,7 @@ import type {
   Project,
   CreateProjectRequest,
   Document,
+  DocumentArtifactsResponse,
   DocumentContent,
   ReviewTask,
   ReviewTaskListItem,
@@ -49,6 +50,9 @@ import type {
   DocumentType,
   DuplicateResultsResponse,
   DuplicateTodoItem,
+  DuplicateMatrixResponse,
+  DuplicateEvidenceCluster,
+  DuplicateEvidenceOccurrence,
 } from "@/types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
@@ -156,7 +160,8 @@ apiClient.interceptors.response.use(
     const originalRequest = error.config;
 
     // Skip token refresh for login requests (they return 401 for invalid creds)
-    const isLoginRequest = originalRequest.url?.includes("/auth/login");
+    const isLoginRequest = originalRequest.url?.includes("/auth/login")
+      || originalRequest.url?.includes("/auth/vsto-sso");
 
     // Handle 401 - try token refresh (skip for login requests)
     if (
@@ -219,6 +224,16 @@ export const authApi = {
       captcha_id: captchaId,
       captcha_code: captchaCode,
     });
+    const token = response.data as Token;
+    setAccessToken(token.access_token);
+    if (token.refresh_token) {
+      setRefreshToken(token.refresh_token);
+    }
+    return token;
+  },
+
+  async vstoSso(ticket: string): Promise<Token> {
+    const response = await apiClient.post("/auth/vsto-sso", { ticket });
     const token = response.data as Token;
     setAccessToken(token.access_token);
     if (token.refresh_token) {
@@ -509,6 +524,19 @@ export const documentsApi = {
     return response.data;
   },
 
+  async getArtifacts(
+    projectId: string,
+    documentId: string,
+    includeBlocks = false,
+    limit = 200,
+  ): Promise<DocumentArtifactsResponse> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/documents/${documentId}/artifacts`,
+      { params: { include_blocks: includeBlocks, limit } },
+    );
+    return response.data;
+  },
+
   async delete(projectId: string, documentId: string): Promise<void> {
     await apiClient.delete(`/projects/${projectId}/documents/${documentId}`);
   },
@@ -589,6 +617,17 @@ export const documentsApi = {
 
   async getDraftContent(documentId: string): Promise<DocumentContent> {
     const response = await apiClient.get(`/documents/${documentId}/content`);
+    return response.data;
+  },
+
+  async getDraftArtifacts(
+    documentId: string,
+    includeBlocks = false,
+    limit = 200,
+  ): Promise<DocumentArtifactsResponse> {
+    const response = await apiClient.get(`/documents/${documentId}/artifacts`, {
+      params: { include_blocks: includeBlocks, limit },
+    });
     return response.data;
   },
 };
@@ -672,6 +711,13 @@ export const reviewApi = {
 };
 
 export const duplicateApi = {
+  async getCapabilities(projectId: string): Promise<any> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/capabilities`,
+    );
+    return response.data;
+  },
+
   async start(projectId: string): Promise<ReviewTask> {
     const response = await apiClient.post(`/projects/${projectId}/duplicate-check`);
     return response.data;
@@ -681,15 +727,29 @@ export const duplicateApi = {
     projectId: string,
     leftDocumentId: string,
     rightDocumentId: string,
+    sourceDocumentIds: string[] = [],
   ): Promise<Document[]> {
     const response = await apiClient.post(
       `/projects/${projectId}/documents/attach-duplicate-pair`,
       {
         left_document_id: leftDocumentId,
         right_document_id: rightDocumentId,
+        source_document_ids: sourceDocumentIds,
       },
     );
     return response.data;
+  },
+
+  async attachDuplicateBatch(
+    projectId: string,
+    members: Array<{ document_id: string; party_key?: string; display_name?: string; ordinal?: number }>,
+    sourceDocumentIds: string[] = [],
+  ): Promise<Document[]> {
+    const response = await apiClient.post(
+      `/projects/${projectId}/documents/attach-duplicate-batch`,
+      { members, source_document_ids: sourceDocumentIds },
+    )
+    return response.data
   },
 
   async getTasks(projectId: string): Promise<ReviewTaskListItem[]> {
@@ -741,6 +801,70 @@ export const duplicateApi = {
   ): Promise<DuplicateResultsResponse> {
     const response = await apiClient.get(
       `/projects/${projectId}/duplicate-check/tasks/${taskId}/results`,
+    );
+    return response.data;
+  },
+
+  async getSources(projectId: string): Promise<any[]> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/sources`,
+    );
+    return response.data.sources;
+  },
+
+  async searchSources(
+    projectId: string,
+    taskId: string,
+    query: string,
+    sourceBasis?: 'tender' | 'public',
+  ): Promise<any> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/sources/search`,
+      { params: { query, source_basis: sourceBasis } },
+    );
+    return response.data;
+  },
+
+  async getTableComparisons(projectId: string, taskId: string): Promise<any> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/tables`,
+    );
+    return response.data;
+  },
+
+  async getCoverage(projectId: string, taskId: string): Promise<any> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/coverage`,
+    );
+    return response.data;
+  },
+
+  async getMatrix(projectId: string, taskId: string): Promise<DuplicateMatrixResponse> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/matrix`,
+    );
+    return response.data;
+  },
+
+  async getClusters(
+    projectId: string,
+    taskId: string,
+    includeOccurrences = true,
+  ): Promise<DuplicateEvidenceCluster[]> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/clusters`,
+      { params: { include_occurrences: includeOccurrences } },
+    );
+    return response.data;
+  },
+
+  async getFindingOccurrences(
+    projectId: string,
+    taskId: string,
+    findingId: string,
+  ): Promise<DuplicateEvidenceOccurrence[]> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/duplicate-check/tasks/${taskId}/findings/${findingId}/occurrences`,
     );
     return response.data;
   },

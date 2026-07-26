@@ -11,6 +11,17 @@ const router = createRouter({
       meta: { guest: true },
     },
     {
+      path: "/vsto/blind-check",
+      name: "vsto-blind-check-sso",
+      component: () => import("@/views/VstoSsoView.vue"),
+      meta: { title: "暗标合规检查" },
+    },
+    {
+      // 兼容早期测试地址，但始终脱离 AppLayout，浏览器访问也不会显示站内导航。
+      path: "/home/blind-check",
+      redirect: "/vsto/blind-check",
+    },
+    {
       // 分享结果查看页：仍要求登录（meta.requiresAuth 由守卫处理）。
       // 未登录会被守卫带上 redirect 跳到登录页，登录后自动回到本页。
       path: "/shared/:token",
@@ -97,6 +108,18 @@ const router = createRouter({
           name: "duplicate-results",
           component: () => import("@/views/DuplicateResultsView.vue"),
           meta: { title: "查重结果", parentName: "history" },
+        },
+        {
+          path: "projects/:id/documents/:documentId/artifacts",
+          name: "document-artifacts",
+          component: () => import("@/views/DocumentArtifactsView.vue"),
+          meta: { title: "文档解析诊断", parentName: "history", interiorOnly: true },
+        },
+        {
+          path: "document-artifacts/:documentId",
+          name: "draft-document-artifacts",
+          component: () => import("@/views/DocumentArtifactsView.vue"),
+          meta: { title: "文档解析诊断", parentName: "history", interiorOnly: true },
         },
         {
           path: "experience",

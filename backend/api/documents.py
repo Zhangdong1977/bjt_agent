@@ -12,10 +12,16 @@ from backend.config import get_settings
 from backend.middleware.upload_throttle import throttled_save
 from backend.models import Document, Project
 from backend.schemas.document import (
+    DocumentArtifactsResponse,
+    DuplicateBatchAttachRequest,
     DocumentContentResponse,
     DocumentListResponse,
     DocumentResponse,
     DuplicatePairAttachRequest,
+)
+from backend.services.document_artifacts import (
+    load_artifact_manifest,
+    load_evidence_blocks,
 )
 
 settings = get_settings()
@@ -26,12 +32,80 @@ drafts_router = APIRouter(prefix="/documents", tags=["Documents"])
 
 DOCUMENT_NOT_FOUND = "文档不存在或已被删除"
 REVIEW_DOC_TYPES = {"tender", "bid"}
-DUPLICATE_DOC_TYPES = {"duplicate_left", "duplicate_right"}
+DUPLICATE_BID_TYPES = {"duplicate_left", "duplicate_right", "duplicate_bid"}
+DUPLICATE_SOURCE_TYPES = {"duplicate_tender", "duplicate_public_reference"}
+DUPLICATE_DOC_TYPES = DUPLICATE_BID_TYPES | DUPLICATE_SOURCE_TYPES
 ALL_DOC_TYPES = REVIEW_DOC_TYPES | DUPLICATE_DOC_TYPES
 
 
-def _allowed_doc_types(project_type: str) -> set[str]:
-    return DUPLICATE_DOC_TYPES if project_type == "duplicate" else REVIEW_DOC_TYPES
+def _document_artifacts_response(
+    document: Document,
+    *,
+    include_blocks: bool,
+    limit: int,
+) -> DocumentArtifactsResponse:
+    """Load the persisted S2-0 manifest without exposing filesystem paths."""
+
+    manifest = load_artifact_manifest(document.artifact_manifest_path)
+    if manifest is None:
+        # Legacy parsed documents may predate S2-0.  Return the persisted
+        # coverage summary when available instead of pretending coverage is
+        # complete or returning a 500 from a diagnostic endpoint.
+        coverage = None
+        if document.coverage_summary:
+            try:
+                from backend.schemas.document_artifacts import CoverageSummary
+
+                coverage = CoverageSummary.model_validate(document.coverage_summary)
+            except Exception:
+                coverage = None
+        return DocumentArtifactsResponse(
+            document_id=document.id,
+            manifest=None,
+            coverage=coverage,
+            blocks=[],
+            block_count=0,
+            truncated=False,
+        )
+
+    block_count = manifest.evidence_block_count
+    blocks = (
+        load_evidence_blocks(document.evidence_blocks_path, limit=limit)
+        if include_blocks
+        else []
+    )
+    return DocumentArtifactsResponse(
+        document_id=document.id,
+        manifest=manifest,
+        coverage=manifest.coverage,
+        blocks=blocks,
+        block_count=block_count,
+        truncated=include_blocks and len(blocks) < block_count,
+    )
+
+
+def _allowed_doc_types(project_type: str, duplicate_mode: str = "pair") -> set[str]:
+    if project_type != "duplicate":
+        return REVIEW_DOC_TYPES
+    if duplicate_mode == "batch":
+        return {"duplicate_bid", *DUPLICATE_SOURCE_TYPES}
+    return {"duplicate_left", "duplicate_right", *DUPLICATE_SOURCE_TYPES}
+
+
+def _document_role_limit(project_type: str, doc_type: str) -> int:
+    """Return a fail-closed per-project/draft limit for one document role."""
+
+    if project_type != "duplicate":
+        return 10
+    if doc_type in {"duplicate_left", "duplicate_right"}:
+        return 1
+    if doc_type == "duplicate_bid":
+        return 10
+    if doc_type == "duplicate_tender":
+        return 3
+    if doc_type == "duplicate_public_reference":
+        return 10
+    return 0
 
 
 async def verify_project_ownership(
@@ -101,7 +175,7 @@ async def upload_document(
     """
     project = await verify_project_ownership(project_id, current_user, db)
 
-    if doc_type not in _allowed_doc_types(project.project_type):
+    if doc_type not in _allowed_doc_types(project.project_type, project.duplicate_mode):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="文档类型与项目类型不匹配",
@@ -115,7 +189,7 @@ async def upload_document(
         )
     )
     existing_count = len(count_result.scalars().all())
-    max_count = 1 if project.project_type == "duplicate" else 10
+    max_count = _document_role_limit(project.project_type, doc_type)
     if existing_count >= max_count:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -177,7 +251,7 @@ async def upload_document(
     except IntegrityError as exc:
         await db.rollback()
         file_path.unlink(missing_ok=True)
-        if project.project_type == "duplicate":
+        if project.project_type == "duplicate" and doc_type in {"duplicate_left", "duplicate_right"}:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="查重项目每侧仅允许上传一份文件",
@@ -411,7 +485,10 @@ async def upload_draft_document(
     db: DBSession,
     doc_type: str = Query(
         ...,
-        description="文档类型：tender、bid、duplicate_left 或 duplicate_right",
+        description=(
+            "文档类型：tender、bid、duplicate_left、duplicate_right、"
+            "duplicate_bid、duplicate_tender 或 duplicate_public_reference"
+        ),
     ),
     file: UploadFile = File(...),
     current_user: CurrentUser = None,
@@ -427,7 +504,7 @@ async def upload_draft_document(
             detail="文档类型不正确",
         )
 
-    if doc_type in DUPLICATE_DOC_TYPES:
+    if doc_type in {"duplicate_left", "duplicate_right"}:
         existing_result = await db.execute(
             select(Document).where(
                 Document.owner_user_id == current_user.id,
@@ -440,6 +517,20 @@ async def upload_draft_document(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{side}仅允许上传一份文件，请先删除原文件",
+            )
+
+    if doc_type in {"duplicate_bid", "duplicate_tender", "duplicate_public_reference"}:
+        existing_result = await db.execute(
+            select(Document).where(
+                Document.owner_user_id == current_user.id,
+                Document.project_id.is_(None),
+                Document.doc_type == doc_type,
+            )
+        )
+        if len(existing_result.scalars().all()) >= _document_role_limit("duplicate", doc_type):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="该查重文档类型已达到草稿上限，请先删除后再上传",
             )
 
     _validate_upload_file(file)
@@ -462,7 +553,7 @@ async def upload_draft_document(
     except IntegrityError as exc:
         await db.rollback()
         Path(file_path).unlink(missing_ok=True)
-        if doc_type in DUPLICATE_DOC_TYPES:
+        if doc_type in {"duplicate_left", "duplicate_right"}:
             side = "A方" if doc_type == "duplicate_left" else "B方"
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -514,7 +605,7 @@ async def attach_draft_document(
             detail="项目不存在或无权访问",
         )
 
-    allowed_types = _allowed_doc_types(project.project_type)
+    allowed_types = _allowed_doc_types(project.project_type, project.duplicate_mode)
 
     result = await db.execute(select(Document).where(Document.id == document_id))
     document = result.scalar_one_or_none()
@@ -541,10 +632,12 @@ async def attach_draft_document(
                 Document.doc_type == document.doc_type,
             )
         )
-        if existing_result.scalars().first() is not None:
+        existing_count = len(existing_result.scalars().all())
+        role_limit = _document_role_limit(project.project_type, document.doc_type)
+        if existing_count >= role_limit:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="查重项目每侧仅允许关联一份文件",
+                detail=f"该查重文档角色已达上限（{role_limit} 份）",
             )
 
     document.project_id = project_id
@@ -554,10 +647,35 @@ async def attach_draft_document(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="查重项目每侧仅允许关联一份文件",
+            detail="查重文档关联冲突，请刷新后重试",
         ) from exc
     await db.refresh(document)
     return document
+
+
+@router.get("/{document_id}/artifacts", response_model=DocumentArtifactsResponse)
+async def get_document_artifacts(
+    project_id: str,
+    document_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+    include_blocks: bool = Query(False, description="是否返回证据块明细"),
+    limit: int = Query(200, ge=1, le=2000, description="证据块返回上限"),
+) -> DocumentArtifactsResponse:
+    """Return parser coverage and deterministic evidence artifacts.
+
+    This endpoint is readable by the document owner and internal users.  The
+    response contains hashes and filenames, never absolute workspace paths.
+    """
+
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
+    result = await db.execute(
+        select(Document).where(Document.id == document_id, Document.project_id == project_id)
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=DOCUMENT_NOT_FOUND)
+    return _document_artifacts_response(document, include_blocks=include_blocks, limit=limit)
 
 
 @router.post("/attach-duplicate-pair", response_model=list[DocumentResponse])
@@ -580,7 +698,16 @@ async def attach_duplicate_pair(
             detail="A 方和 B 方必须是两份不同文档",
         )
 
-    requested_ids = {payload.left_document_id, payload.right_document_id}
+    requested_ids = {
+        payload.left_document_id,
+        payload.right_document_id,
+        *payload.source_document_ids,
+    }
+    if len(requested_ids) != 2 + len(payload.source_document_ids):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="关联文档列表中存在重复文档",
+        )
     rows = await db.execute(
         select(Document).where(Document.id.in_(requested_ids)).with_for_update()
     )
@@ -606,10 +733,36 @@ async def attach_duplicate_pair(
                 detail=f"{side_name}文档尚未解析完成",
             )
 
+    sources = [by_id.get(document_id) for document_id in payload.source_document_ids]
+    source_counts = {"duplicate_tender": 0, "duplicate_public_reference": 0}
+    for document in sources:
+        if (
+            document is None
+            or document.owner_user_id != current_user.id
+            or document.project_id is not None
+            or document.doc_type not in DUPLICATE_SOURCE_TYPES
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="来源文档不可关联或文档角色不正确",
+            )
+        if document.status != "parsed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"来源文档 {document.original_filename} 尚未解析完成",
+            )
+        source_counts[document.doc_type] += 1
+        if source_counts[document.doc_type] > _document_role_limit(
+            project.project_type, document.doc_type
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="来源文档数量超过上限",
+            )
     existing = await db.execute(
         select(Document).where(
             Document.project_id == project_id,
-            Document.doc_type.in_(DUPLICATE_DOC_TYPES),
+            Document.doc_type.in_({"duplicate_left", "duplicate_right"}),
         )
     )
     if existing.scalars().first() is not None:
@@ -620,6 +773,8 @@ async def attach_duplicate_pair(
 
     left.project_id = project_id
     right.project_id = project_id
+    for source in sources:
+        source.project_id = project_id
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -630,7 +785,104 @@ async def attach_duplicate_pair(
         ) from exc
     await db.refresh(left)
     await db.refresh(right)
-    return [left, right]
+    for source in sources:
+        await db.refresh(source)
+    return [left, right, *sources]
+
+
+@router.post("/attach-duplicate-batch", response_model=list[DocumentResponse])
+async def attach_duplicate_batch(
+    payload: DuplicateBatchAttachRequest,
+    project_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> list[Document]:
+    """Atomically attach 3–10 parsed duplicate_bid drafts and optional sources."""
+
+    project = await verify_project_ownership(project_id, current_user, db)
+    if not settings.duplicate_batch_enabled:
+        raise HTTPException(status_code=403, detail="batch duplicate mode is disabled")
+    if project.project_type != "duplicate" or project.duplicate_mode != "batch":
+        raise HTTPException(status_code=400, detail="当前项目不是批量查重模式")
+    member_ids = [item.document_id for item in payload.members]
+    if len(set(member_ids)) != len(member_ids):
+        raise HTTPException(status_code=400, detail="批量文档列表中存在重复文档")
+    source_ids = list(payload.source_document_ids)
+    if len(set(source_ids)) != len(source_ids):
+        raise HTTPException(status_code=400, detail="批量来源文档列表中存在重复文档")
+    if set(member_ids) & set(source_ids):
+        raise HTTPException(status_code=400, detail="投标文档和来源文档不能重复")
+    requested_ids = set(member_ids) | set(source_ids)
+    rows = await db.execute(
+        select(Document).where(Document.id.in_(requested_ids)).with_for_update()
+    )
+    by_id = {document.id: document for document in rows.scalars().all()}
+    members: list[Document] = []
+    ordinals: set[int] = set()
+    party_keys: set[str] = set()
+    for index, item in enumerate(payload.members):
+        document = by_id.get(item.document_id)
+        ordinal = item.ordinal if item.ordinal is not None else index
+        if ordinal in ordinals:
+            raise HTTPException(status_code=400, detail="批量文档顺序不能重复")
+        ordinals.add(ordinal)
+        if (
+            document is None
+            or document.owner_user_id != current_user.id
+            or document.project_id is not None
+            or document.doc_type != "duplicate_bid"
+            or document.status not in {"parsed", "failed"}
+        ):
+            raise HTTPException(status_code=400, detail="批量投标文档不可关联或尚未解析完成")
+        party_key = (item.party_key or f"party-{ordinal + 1}").strip()
+        if not party_key or party_key in party_keys:
+            raise HTTPException(status_code=400, detail="批量文档投标人标签不能为空或重复")
+        party_keys.add(party_key)
+        document.duplicate_party_key = party_key
+        document.duplicate_display_name = (
+            item.display_name or document.original_filename
+        ).strip()
+        document.duplicate_ordinal = ordinal
+        members.append(document)
+
+    sources: list[Document] = []
+    source_counts = {"duplicate_tender": 0, "duplicate_public_reference": 0}
+    for source_id in source_ids:
+        document = by_id.get(source_id)
+        if (
+            document is None
+            or document.owner_user_id != current_user.id
+            or document.project_id is not None
+            or document.doc_type not in DUPLICATE_SOURCE_TYPES
+            or document.status != "parsed"
+        ):
+            raise HTTPException(status_code=400, detail="批量来源文档不可关联或尚未解析完成")
+        source_counts[document.doc_type] += 1
+        if source_counts[document.doc_type] > _document_role_limit(
+            project.project_type, document.doc_type
+        ):
+            raise HTTPException(status_code=400, detail="批量来源文档数量超过上限")
+        sources.append(document)
+
+    existing = await db.execute(
+        select(Document).where(
+            Document.project_id == project_id,
+            Document.doc_type.in_({"duplicate_bid", "duplicate_left", "duplicate_right"}),
+        )
+    )
+    if existing.scalars().first() is not None:
+        raise HTTPException(status_code=400, detail="查重项目已经关联投标文档")
+
+    for document in [*members, *sources]:
+        document.project_id = project_id
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="批量文档关联冲突，请刷新后重试") from exc
+    for document in [*members, *sources]:
+        await db.refresh(document)
+    return [*members, *sources]
 
 
 @drafts_router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -727,3 +979,26 @@ async def get_draft_document_content(
                     images.append(f"/files/{rel_path}")
 
     return DocumentContentResponse(content=content, images=images, format=content_format)
+
+
+@drafts_router.get("/{document_id}/artifacts", response_model=DocumentArtifactsResponse)
+async def get_draft_document_artifacts(
+    document_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+    include_blocks: bool = Query(False, description="是否返回证据块明细"),
+    limit: int = Query(200, ge=1, le=2000, description="证据块返回上限"),
+) -> DocumentArtifactsResponse:
+    """Return S2-0 artifacts for an owned, project-less draft document."""
+
+    result = await db.execute(
+        select(Document).where(
+            Document.id == document_id,
+            Document.owner_user_id == current_user.id,
+            Document.project_id.is_(None),
+        )
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=DOCUMENT_NOT_FOUND)
+    return _document_artifacts_response(document, include_blocks=include_blocks, limit=limit)
