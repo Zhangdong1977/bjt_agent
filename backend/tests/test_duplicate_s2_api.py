@@ -125,6 +125,22 @@ def _document(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_release_capabilities_follow_runtime_batch_flag(monkeypatch, enabled):
+    monkeypatch.setattr(
+        duplicate_api,
+        "get_settings",
+        lambda: SimpleNamespace(duplicate_batch_enabled=enabled),
+    )
+
+    payload = await duplicate_api.get_duplicate_release_capabilities(
+        SimpleNamespace(id="user-1")
+    )
+
+    assert payload["features"]["batch"] is enabled
+
+
 def _batch_payload(*ids, party_keys=None, source_ids=None):
     party_keys = party_keys or [None] * len(ids)
     return DuplicateBatchAttachRequest(

@@ -711,6 +711,11 @@ export const reviewApi = {
 };
 
 export const duplicateApi = {
+  async getReleaseCapabilities(): Promise<{ features: { batch: boolean } }> {
+    const response = await apiClient.get("/duplicate-check/capabilities");
+    return response.data;
+  },
+
   async getCapabilities(projectId: string): Promise<any> {
     const response = await apiClient.get(
       `/projects/${projectId}/duplicate-check/capabilities`,

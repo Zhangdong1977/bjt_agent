@@ -67,7 +67,7 @@ const authStore = useAuthStore()
 const projectName = ref('')
 const projectDesc = ref('')
 const duplicateMode = ref<'pair' | 'batch'>('pair')
-const batchModeEnabled = import.meta.env.VITE_DUPLICATE_BATCH_ENABLED === 'true'
+const batchModeEnabled = ref(false)
 const submitting = ref(false)
 const inputs = new Map<DuplicateUploadRole, HTMLInputElement>()
 const uploads = reactive<Partial<Record<DuplicateUploadRole, UploadState>>>({})
@@ -105,6 +105,13 @@ const canStart = computed(() => {
 })
 
 onMounted(() => {
+  void duplicateApi.getReleaseCapabilities()
+    .then((capabilities) => {
+      batchModeEnabled.value = capabilities.features.batch === true
+    })
+    .catch(() => {
+      batchModeEnabled.value = false
+    })
   void projectStore.loadDraftDocuments(
     ['duplicate_left', 'duplicate_right', 'duplicate_bid', 'duplicate_tender', 'duplicate_public_reference'],
     true,
@@ -306,15 +313,15 @@ function formatBytes(value: number): string {
         </div>
       </header>
 
-      <div class="mode-switch">
+      <div v-if="batchModeEnabled" class="mode-switch">
         <label>查重模式</label>
         <label class="mode-option">
           <input v-model="duplicateMode" type="radio" value="pair" />
           A/B 对照
         </label>
         <label class="mode-option">
-          <input v-model="duplicateMode" type="radio" value="batch" :disabled="!batchModeEnabled" />
-          多文件矩阵（3-10 份）{{ batchModeEnabled ? '' : '（灰度关闭）' }}
+          <input v-model="duplicateMode" type="radio" value="batch" />
+          多文件矩阵（3-10 份）
         </label>
       </div>
 

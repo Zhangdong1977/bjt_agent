@@ -52,6 +52,9 @@ from backend.utils.time_utils import utc_now
 router = APIRouter(
     prefix="/projects/{project_id}/duplicate-check", tags=["Duplicate Check"]
 )
+capabilities_router = APIRouter(
+    prefix="/duplicate-check", tags=["Duplicate Check"]
+)
 
 BLOCKED_EXTERNAL_EVENTS = {
     "step",
@@ -65,6 +68,17 @@ BLOCKED_EXTERNAL_EVENTS = {
 
 _DUPLICATE_DOCUMENT_TYPES = {"duplicate_left", "duplicate_right", "duplicate_bid"}
 _DUPLICATE_SOURCE_TYPES = {"duplicate_tender", "duplicate_public_reference"}
+
+
+@capabilities_router.get("/capabilities")
+async def get_duplicate_release_capabilities(current_user: CurrentUser) -> dict:
+    """Expose customer-visible duplicate modes from the runtime release flags."""
+
+    snapshot = build_duplicate_feature_snapshot(get_settings())
+    return {
+        "algorithm_version": snapshot["algorithm_version"],
+        "features": snapshot["features"],
+    }
 
 
 def _duplicate_mode(project: Project) -> str:
