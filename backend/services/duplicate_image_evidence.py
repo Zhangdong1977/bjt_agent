@@ -13,6 +13,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from backend.services.ocr_image_normalizer import (
+    OcrImageNormalizationError,
+    normalize_image_for_ocr,
+)
+
 logger = logging.getLogger(__name__)
 
 OcrCallable = Callable[[Path], Awaitable[tuple[str, float | None, str]]]
@@ -79,6 +84,11 @@ class ImageEvidence:
     perceptual_hash: str | None
     width: int | None
     height: int | None
+    source_format: str | None = None
+    normalized_format: str | None = None
+    normalized_sha256: str | None = None
+    image_normalized: bool = False
+    normalization_cache_hit: bool = False
     page_number: int | None = None
     bbox: dict[str, float] | None = None
     ocr_text: str = ""
@@ -191,6 +201,7 @@ class SelectiveImageEvidenceService:
         max_remote_calls: int = 4,
         max_vision_calls: int = 2,
         min_local_confidence: float = 0.72,
+        normalization_cache_dir: Path | None = None,
         local_ocr: OcrCallable | None = None,
         remote_ocr: OcrCallable | None = None,
         vision: VisionCallable | None = None,
@@ -203,6 +214,7 @@ class SelectiveImageEvidenceService:
         self.max_remote_calls = max(0, int(max_remote_calls))
         self.max_vision_calls = max(0, int(max_vision_calls))
         self.min_local_confidence = min(1.0, max(0.0, float(min_local_confidence)))
+        self.normalization_cache_dir = normalization_cache_dir or (cache_dir / "normalized")
         self.local_ocr = local_ocr or self._rapidocr
         self.remote_ocr = remote_ocr or self._baidu_ocr
         self.vision = vision or (self._configured_vision if vision_enabled else None)
@@ -232,10 +244,34 @@ class SelectiveImageEvidenceService:
         bbox: dict[str, float] | None = None,
     ) -> ImageEvidence:
         digest = await asyncio.to_thread(sha256_image, path)
+        try:
+            normalized = await asyncio.to_thread(
+                normalize_image_for_ocr,
+                path,
+                cache_dir=self.normalization_cache_dir,
+                source_sha256=digest,
+            )
+        except OcrImageNormalizationError as exc:
+            evidence = ImageEvidence(
+                image_path=str(path),
+                image_sha256=digest,
+                perceptual_hash=None,
+                width=None,
+                height=None,
+                ocr_error="image_normalization_failed",
+                warnings=[f"image_normalization_failed:{type(exc).__name__}"],
+                page_number=page_number,
+                bbox=bbox,
+            )
+            logger.warning("Unable to normalize OCR image %s: %s", path, exc)
+            return evidence
+
         cache_path = self._cache_path(digest)
         if cache_path.is_file():
             try:
                 payload = json.loads(cache_path.read_text(encoding="utf-8"))
+                if normalized.converted and not payload.get("normalized_format"):
+                    raise ValueError("legacy cache predates OCR image normalization")
                 payload["image_path"] = str(path)
                 payload["page_number"] = page_number or payload.get("page_number")
                 payload["bbox"] = bbox or payload.get("bbox")
@@ -244,19 +280,24 @@ class SelectiveImageEvidenceService:
             except Exception:
                 logger.warning("Invalid OCR cache ignored: %s", cache_path, exc_info=True)
 
-        width, height = await asyncio.to_thread(image_dimensions, path)
-        perceptual = await asyncio.to_thread(perceptual_dhash, path)
+        width, height = normalized.width, normalized.height
+        perceptual = await asyncio.to_thread(perceptual_dhash, normalized.path)
         evidence = ImageEvidence(
             image_path=str(path),
             image_sha256=digest,
             perceptual_hash=perceptual,
             width=width,
             height=height,
+            source_format=normalized.source_format,
+            normalized_format=normalized.output_format,
+            normalized_sha256=normalized.normalized_sha256,
+            image_normalized=normalized.converted,
+            normalization_cache_hit=normalized.cache_hit,
             page_number=page_number,
             bbox=bbox,
         )
         selected = self.should_ocr(
-            path,
+            normalized.path,
             force=force_ocr,
             width=width,
             height=height,
@@ -274,7 +315,7 @@ class SelectiveImageEvidenceService:
 
         self.ocr_attempts += 1
         try:
-            text, confidence, provider = await self.local_ocr(path)
+            text, confidence, provider = await self.local_ocr(normalized.path)
             evidence.ocr_text = text.strip()
             evidence.ocr_confidence = confidence
             evidence.ocr_provider = provider
@@ -293,7 +334,7 @@ class SelectiveImageEvidenceService:
             else:
                 self.remote_calls += 1
                 try:
-                    text, confidence, provider = await self.remote_ocr(path)
+                    text, confidence, provider = await self.remote_ocr(normalized.path)
                     if text.strip():
                         evidence.ocr_text = text.strip()
                         evidence.ocr_confidence = confidence
@@ -313,7 +354,9 @@ class SelectiveImageEvidenceService:
             else:
                 self.vision_calls += 1
                 try:
-                    evidence.vision_description = (await self.vision(path)).strip() or None
+                    evidence.vision_description = (
+                        await self.vision(normalized.path)
+                    ).strip() or None
                 except Exception as exc:
                     evidence.warnings.append(f"vision_failed:{type(exc).__name__}")
 

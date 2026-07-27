@@ -20,6 +20,7 @@ from typing import Optional
 import httpx
 
 from backend.agent.tools.base import ToolResult
+from backend.services.ocr_image_normalizer import normalize_image_for_ocr
 from mini_agent.tools.base import Tool as BaseTool
 
 logger = logging.getLogger(__name__)
@@ -651,22 +652,35 @@ class ImageOcrTool(BaseTool):
                         error=f"图片文件不存在: {image_path}",
                     )
 
+            normalized = await asyncio.to_thread(normalize_image_for_ocr, full_path)
+            ocr_path = normalized.path
             if self._ocr_service_url:
-                ocr_text = await self._remote_ocr(full_path)
+                ocr_text = await self._remote_ocr(ocr_path)
             else:
-                ocr_text = await asyncio.to_thread(self._run_ocr_local, full_path)
+                ocr_text = await asyncio.to_thread(self._run_ocr_local, ocr_path)
+
+            image_data = {
+                "image_path": image_path,
+                "source_doc": matched_name,
+                "source_format": normalized.source_format,
+                "normalized_format": normalized.output_format,
+                "image_converted": normalized.converted,
+                "normalization_cache_hit": normalized.cache_hit,
+            }
 
             if not ocr_text.strip():
+                image_data["ocr_text"] = ""
                 return ToolResult(
                     success=True,
                     content=f"图片 [{matched_name}] {image_path} 中未识别到文字内容",
-                    data={"image_path": image_path, "ocr_text": "", "source_doc": matched_name},
+                    data=image_data,
                 )
 
+            image_data["ocr_text"] = ocr_text
             return ToolResult(
                 success=True,
                 content=f"图片 [{matched_name}] {image_path} OCR识别结果：\n\n{ocr_text}",
-                data={"image_path": image_path, "ocr_text": ocr_text, "source_doc": matched_name},
+                data=image_data,
             )
 
         except Exception as e:

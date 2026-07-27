@@ -175,7 +175,22 @@ def _insert_missing_img_tags(html_content: str, images_dir: Path) -> str:
         return html_content
 
     # Find all image files in the directory
-    image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
+    image_extensions = {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".svg",
+        ".bmp",
+        ".tif",
+        ".tiff",
+        ".jp2",
+        ".jpx",
+        ".j2k",
+        ".j2c",
+        ".jpc",
+    }
     image_files = []
     for ext in image_extensions:
         image_files.extend(images_dir.glob(f"*{ext}"))
@@ -516,6 +531,7 @@ async def _augment_duplicate_image_evidence(
         max_remote_calls=settings.duplicate_remote_ocr_max_calls,
         max_vision_calls=settings.duplicate_vision_max_calls,
         min_local_confidence=settings.duplicate_ocr_min_local_confidence,
+        normalization_cache_dir=settings.workspace_path / ".ocr_image_cache",
     )
     evidence_by_name: dict[str, dict] = {}
     scan_paths: dict[int, Path] = {}

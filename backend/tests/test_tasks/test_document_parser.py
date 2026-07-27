@@ -8,6 +8,18 @@ from unittest.mock import MagicMock, patch
 from backend.parsers.markitdown_converter import ImageInfo
 
 
+def test_insert_missing_img_tags_includes_jpx(tmp_path):
+    from backend.tasks.document_parser import _insert_missing_img_tags
+
+    images_dir = tmp_path / "document_images"
+    images_dir.mkdir()
+    (images_dir / "certificate.jpx").write_bytes(b"jpeg-2000-source")
+
+    html = _insert_missing_img_tags("<html><body><p>正文</p></body></html>", images_dir)
+
+    assert "document_images/certificate.jpx" in html
+
+
 class TestParseDocx:
 
     def test_parse_docx_function_exists(self):

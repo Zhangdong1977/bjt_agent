@@ -119,3 +119,18 @@ class TestDirectFileImageHandler:
         assert "data:" not in result["src"]
         assert "base64" not in result["src"]
         assert result["src"] == "my_doc_images/image_1.png"
+
+    def test_handler_preserves_jpx_for_later_ocr_normalization(self, tmp_path):
+        images_dir = tmp_path / "doc_images"
+        handler = DirectFileImageHandler(images_dir, "doc_images")
+        mock_image = MagicMock()
+        mock_image.content_type = "image/jpx"
+        mock_image.open.return_value.__enter__ = lambda s: MagicMock(
+            read=lambda: b"jpeg-2000-source"
+        )
+        mock_image.open.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = handler(mock_image)
+
+        assert result == {"src": "doc_images/image_1.jpx"}
+        assert (images_dir / "image_1.jpx").read_bytes() == b"jpeg-2000-source"

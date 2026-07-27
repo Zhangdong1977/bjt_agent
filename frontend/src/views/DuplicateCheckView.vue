@@ -10,7 +10,7 @@ import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
 import type { Document, DocumentContent } from '@/types'
-import { isLegacyDocFile, legacyDocWarning } from '@/utils/uploadValidation'
+import { isLegacyDocFile, legacyDocWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
 import illustration from '@/assets/images/ui/home-illustration.png'
 import iconFileTheme from '@/assets/images/ui/common-icon-file-theme.png'
 
@@ -131,6 +131,11 @@ async function chooseFile(event: Event, role: DuplicateUploadRole) {
   if (!file) return
   if (isLegacyDocFile(file)) {
     message.warning(legacyDocWarning(file.name))
+    return
+  }
+  const uploadWarning = uploadDocumentWarning(file)
+  if (uploadWarning) {
+    message.warning(uploadWarning)
     return
   }
   uploads[role] = {

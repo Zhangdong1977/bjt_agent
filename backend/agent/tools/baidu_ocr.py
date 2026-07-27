@@ -16,13 +16,16 @@ from httpx import AsyncClient, ConnectError, HTTPStatusError, RequestError, Time
 
 from backend.agent.tools.base import ToolResult
 from backend.config import get_settings
+from backend.services.ocr_image_normalizer import (
+    OcrImageNormalizationError,
+    normalize_image_for_ocr,
+)
 from mini_agent.tools.base import Tool as BaseTool
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 # 百度 accurate_basic 要求 base64 编码后大小不超 ~10MB；源图按 4MB 卡控更稳，
-# 超限则尝试 Pillow 压缩。
+# 非 JPEG/PNG、超限或需要纠正方向的图片会先统一规范化。
 MAX_IMAGE_SIZE_BYTES = 4 * 1024 * 1024
 TOKEN_URL = "https://aip.baidubce.com/oauth/2.0/token"
 # access_token 提前刷新余量（秒）
@@ -50,6 +53,7 @@ class BaiduOcrTool(BaseTool):
         self._secret_key = settings.baidu_ocr_secret_key.strip()
         self._app_id = settings.baidu_ocr_app_id.strip()  # accurate_basic 不强依赖，保留备用
         self._endpoint = settings.baidu_ocr_endpoint.rstrip("/")
+        self._normalization_cache_dir = settings.workspace_path / ".ocr_image_cache"
 
     @property
     def name(self) -> str:
@@ -64,7 +68,7 @@ class BaiduOcrTool(BaseTool):
 
 参数：
 - 'prompt': 审查关注点（informational，OCR 不会据此改变识别结果，仅记录审查意图）（必填）
-- 'image_source': 本地图片文件路径（必填，支持 png/jpg/jpeg/webp/bmp/tiff）
+- 'image_source': 本地图片文件路径（必填；JPEG 2000 等格式会自动转换）
 
 返回：图片中识别到的文字内容（按行拼接）。"""
 
@@ -104,34 +108,33 @@ class BaiduOcrTool(BaseTool):
         if not image_path.exists():
             return ToolResult(success=False, error=f"图片文件不存在: {image_path}")
 
-        ext = image_path.suffix.lower()
-        if ext not in SUPPORTED_EXTENSIONS:
-            return ToolResult(
-                success=False,
-                error=f"不支持的图片格式: {ext}。支持: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
-            )
-
         file_size = image_path.stat().st_size
-        image_bytes = image_path.read_bytes()
+        try:
+            normalized = await asyncio.to_thread(
+                normalize_image_for_ocr,
+                image_path,
+                cache_dir=self._normalization_cache_dir,
+                max_output_bytes=MAX_IMAGE_SIZE_BYTES,
+            )
+            image_bytes = normalized.path.read_bytes()
+        except OcrImageNormalizationError as exc:
+            err = f"图片格式转换失败: {exc}"
+            logger.error("[BaiduOcrTool] %s", err)
+            try:
+                from backend.services.usage_recorder import record_ocr_usage
 
-        # 超限尝试压缩（Pillow 为可选依赖）
-        if len(image_bytes) > MAX_IMAGE_SIZE_BYTES:
-            compressed = _maybe_compress(image_bytes)
-            if compressed is not None:
-                logger.info(
-                    f"[BaiduOcrTool] 图片过大({file_size / 1024:.0f}KB)，已压缩至 "
-                    f"{len(compressed) / 1024:.0f}KB"
+                record_ocr_usage(
+                    provider="baidu_ocr",
+                    endpoint=self._endpoint,
+                    status="error",
+                    latency_ms=int((time.perf_counter() - call_start) * 1000),
+                    image_size_bytes=file_size,
+                    error_code="image_normalization_failed",
+                    error_message=str(exc),
                 )
-                image_bytes = compressed
-            else:
-                size_mb = len(image_bytes) / (1024 * 1024)
-                return ToolResult(
-                    success=False,
-                    error=(
-                        f"图片过大: {size_mb:.1f}MB，超过百度OCR上限(约{MAX_IMAGE_SIZE_BYTES // (1024 * 1024)}MB)。"
-                        "请缩小图片或安装 Pillow 以自动压缩。"
-                    ),
-                )
+            except Exception:
+                pass
+            return ToolResult(success=False, error=err)
 
         try:
             b64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -143,6 +146,25 @@ class BaiduOcrTool(BaseTool):
                 "probability": "false",
             }
             result = await self._request_ocr_with_retry(data)
+
+            # 百度偶发把合法图片判为格式错误。强制转成 RGB JPEG 后仅补发一次，
+            # 避免把确定性的格式错误放进网络指数退避重试。
+            if str(result.get("error_code") or "") == "216201":
+                fallback = await asyncio.to_thread(
+                    normalize_image_for_ocr,
+                    image_path,
+                    cache_dir=self._normalization_cache_dir,
+                    max_output_bytes=MAX_IMAGE_SIZE_BYTES,
+                    force_reencode=True,
+                    prefer_jpeg=True,
+                    source_sha256=normalized.source_sha256,
+                )
+                fallback_bytes = fallback.path.read_bytes()
+                if fallback_bytes != image_bytes:
+                    image_bytes = fallback_bytes
+                    data["image"] = base64.b64encode(image_bytes).decode("utf-8")
+                    result = await self._request_ocr_with_retry(data)
+                    normalized = fallback
 
             # 百度错误响应含 error_code（成功时无此字段或为 0）
             if result.get("error_code"):
@@ -184,6 +206,11 @@ class BaiduOcrTool(BaseTool):
                     "ocr_text": ocr_text,
                     "words_result_num": words_num,
                     "provider": "baidu",
+                    "source_format": normalized.source_format,
+                    "normalized_format": normalized.output_format,
+                    "image_converted": normalized.converted,
+                    "normalization_cache_hit": normalized.cache_hit,
+                    "ocr_image_size_bytes": normalized.output_size_bytes,
                 },
             )
 

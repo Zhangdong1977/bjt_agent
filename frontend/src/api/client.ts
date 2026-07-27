@@ -1,4 +1,7 @@
-import { uploadSizeWarning } from "@/utils/uploadValidation";
+import {
+  uploadDocumentWarning,
+  uploadSizeWarning,
+} from "@/utils/uploadValidation";
 import axios, {
   type AxiosInstance,
   type InternalAxiosRequestConfig,
@@ -451,8 +454,8 @@ export const documentsApi = {
     file: File,
     onProgress?: (progress: UploadProgress) => void,
   ): Promise<Document> {
-    const sizeWarning = uploadSizeWarning(file);
-    if (sizeWarning) throw new Error(sizeWarning);
+    const uploadWarning = uploadDocumentWarning(file);
+    if (uploadWarning) throw new Error(uploadWarning);
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const formData = new FormData();
@@ -548,8 +551,8 @@ export const documentsApi = {
     file: File,
     onProgress?: (progress: UploadProgress) => void,
   ): Promise<Document> {
-    const sizeWarning = uploadSizeWarning(file);
-    if (sizeWarning) throw new Error(sizeWarning);
+    const uploadWarning = uploadDocumentWarning(file);
+    if (uploadWarning) throw new Error(uploadWarning);
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const formData = new FormData();

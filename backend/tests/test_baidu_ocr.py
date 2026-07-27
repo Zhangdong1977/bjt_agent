@@ -165,7 +165,9 @@ async def test_ocr_timeout_retries_three_times_then_succeeds(monkeypatch, tmp_pa
     monkeypatch.setattr(baidu_ocr, "AsyncClient", _RetryClient)
     monkeypatch.setattr(baidu_ocr.asyncio, "sleep", sleep)
 
-    result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+    tool = BaiduOcrTool()
+    tool._normalization_cache_dir = tmp_path / "cache"
+    result = await tool.execute(prompt="p", image_source=str(img))
 
     assert result.success is True
     assert result.content == "ok"
@@ -174,7 +176,7 @@ async def test_ocr_timeout_retries_three_times_then_succeeds(monkeypatch, tmp_pa
 
 
 @pytest.mark.unit
-async def test_ocr_permanent_api_error_is_not_retried(monkeypatch, tmp_path):
+async def test_ocr_format_error_gets_one_forced_jpeg_retry(monkeypatch, tmp_path):
     img = _make_png(tmp_path / "a.png")
     recorder: list[str] = []
     monkeypatch.setattr(
@@ -187,10 +189,12 @@ async def test_ocr_permanent_api_error_is_not_retried(monkeypatch, tmp_path):
         ),
     )
 
-    result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+    tool = BaiduOcrTool()
+    tool._normalization_cache_dir = tmp_path / "cache"
+    result = await tool.execute(prompt="p", image_source=str(img))
 
     assert result.success is False
-    assert len([url for url in recorder if "accurate_basic" in url]) == 1
+    assert len([url for url in recorder if "accurate_basic" in url]) == 2
 
 
 @pytest.mark.unit
@@ -237,6 +241,47 @@ async def test_unsupported_format(tmp_path):
 
     assert result.success is False
     assert "格式" in result.error
+
+
+@pytest.mark.unit
+async def test_jpx_is_converted_before_baidu_upload(monkeypatch, tmp_path):
+    from PIL import Image, features
+
+    if not features.check("jpg_2000"):
+        pytest.skip("Pillow was built without JPEG 2000 support")
+    image = tmp_path / "certificate.jpx"
+    Image.new("RGB", (320, 180), "white").save(image, format="JPEG2000")
+    request_images: list[bytes] = []
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            if "oauth/2.0/token" in url:
+                return _FakeResp({"access_token": "tok", "expires_in": 2592000})
+            import base64
+
+            request_images.append(base64.b64decode(kwargs["data"]["image"]))
+            return _FakeResp({"words_result": [{"words": "证书"}], "words_result_num": 1})
+
+    monkeypatch.setattr(baidu_ocr, "AsyncClient", _Client)
+    tool = BaiduOcrTool()
+    tool._normalization_cache_dir = tmp_path / "cache"
+
+    result = await tool.execute(prompt="识别文字", image_source=str(image))
+
+    assert result.success is True
+    assert result.data["source_format"] == "JPEG2000"
+    assert result.data["normalized_format"] in {"PNG", "JPEG"}
+    assert request_images
+    assert request_images[0].startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff"))
 
 
 @pytest.mark.unit
@@ -302,7 +347,9 @@ async def test_large_image_compressed_then_recognized(monkeypatch, tmp_path):
         baidu_ocr, "AsyncClient", _make_fake_client(token_payload, ocr_payload, recorder)
     )
 
-    result = await BaiduOcrTool().execute(prompt="p", image_source=str(img_path))
+    tool = BaiduOcrTool()
+    tool._normalization_cache_dir = tmp_path / "cache"
+    result = await tool.execute(prompt="p", image_source=str(img_path))
 
     # compression kicked in (otherwise we'd get the "图片过大" error)
     assert result.success is True

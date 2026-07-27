@@ -91,6 +91,38 @@ async def test_remote_ocr_is_bounded_and_only_fallbacks_low_confidence(tmp_path:
     assert "remote_ocr_budget_exhausted" in second.warnings
 
 
+@pytest.mark.asyncio
+async def test_jpx_is_normalized_before_selective_ocr(tmp_path: Path):
+    from PIL import Image, features
+
+    if not features.check("jpg_2000"):
+        pytest.skip("Pillow was built without JPEG 2000 support")
+    source = tmp_path / "certificate.jpx"
+    Image.new("RGB", (640, 360), "white").save(source, format="JPEG2000")
+    received_paths: list[Path] = []
+
+    async def local_ocr(path: Path):
+        received_paths.append(path)
+        with Image.open(path) as normalized:
+            assert normalized.format in {"PNG", "JPEG"}
+        return "证书编号 JPX-001", 0.95, "fake-local"
+
+    service = SelectiveImageEvidenceService(
+        cache_dir=tmp_path / "evidence-cache",
+        normalization_cache_dir=tmp_path / "image-cache",
+        local_ocr=local_ocr,
+    )
+
+    evidence = await service.analyze(source, force_ocr=True)
+
+    assert received_paths and received_paths[0] != source
+    assert evidence.image_sha256
+    assert evidence.source_format == "JPEG2000"
+    assert evidence.normalized_format in {"PNG", "JPEG"}
+    assert evidence.image_normalized is True
+    assert evidence.ocr_text == "证书编号 JPX-001"
+
+
 def test_artifact_contains_image_and_linked_ocr_block(tmp_path: Path):
     source = tmp_path / "source.docx"
     source.write_bytes(b"source")

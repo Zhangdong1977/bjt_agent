@@ -1,5 +1,6 @@
 """Documents API routes."""
 
+import errno
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +37,74 @@ DUPLICATE_BID_TYPES = {"duplicate_left", "duplicate_right", "duplicate_bid"}
 DUPLICATE_SOURCE_TYPES = {"duplicate_tender", "duplicate_public_reference"}
 DUPLICATE_DOC_TYPES = DUPLICATE_BID_TYPES | DUPLICATE_SOURCE_TYPES
 ALL_DOC_TYPES = REVIEW_DOC_TYPES | DUPLICATE_DOC_TYPES
+# Production Linux/NFS limits each UTF-8 path component to 255 bytes.
+MAX_STORAGE_FILENAME_BYTES = 255
+INVALID_FILENAME_CHARS = frozenset('<>:"/\\|?*')
+WINDOWS_RESERVED_FILENAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+FILENAME_TOO_LONG_DETAIL = "文件名过长，请缩短文件名后重新上传"
+FILENAME_INVALID_DETAIL = "文件名包含系统不支持的特殊字符，请修改文件名后重新上传"
+
+
+def _validate_upload_filename(filename: str | None) -> str:
+    """Reject names that cannot be stored reliably across supported filesystems."""
+    if not filename or filename in {".", ".."}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=FILENAME_INVALID_DETAIL,
+        )
+
+    if any(
+        char in INVALID_FILENAME_CHARS or ord(char) < 32 or ord(char) == 127
+        for char in filename
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=FILENAME_INVALID_DETAIL,
+        )
+
+    stem = Path(filename).stem
+    if (
+        stem.upper() in WINDOWS_RESERVED_FILENAMES
+        or filename.endswith((" ", "."))
+        or stem.endswith((" ", "."))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=FILENAME_INVALID_DETAIL,
+        )
+    return filename
+
+
+def _build_storage_filename(filename: str | None, *, timestamp: str | None = None) -> str:
+    """Build a readable, filesystem-safe storage name from the original name."""
+    filename = _validate_upload_filename(filename)
+
+    source = Path(filename)
+    storage_name = (
+        f"{source.stem}_{timestamp or datetime.now().strftime('%Y%m%d%H%M%S')}"
+        f"{source.suffix}"
+    )
+    try:
+        storage_name_bytes = len(storage_name.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=FILENAME_INVALID_DETAIL,
+        ) from exc
+
+    if storage_name_bytes > MAX_STORAGE_FILENAME_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=FILENAME_TOO_LONG_DETAIL,
+        )
+    return storage_name
 
 
 def _document_artifacts_response(
@@ -196,32 +265,7 @@ async def upload_document(
             detail=f"该类型文档已达上限（{max_count}个），请先删除后再上传",
         )
 
-    # Validate file size - check content length without reading into memory
-    file.file.seek(0, 2)  # Seek to end
-    file_size = file.file.tell()
-    file.file.seek(0)  # Reset to beginning
-
-    if file_size == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="文件内容为空，请重新选择文件",
-        )
-
-    if file_size > settings.max_upload_size_bytes:
-        max_mb = settings.max_upload_size_mb
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"文件过大（{file_size / (1024*1024):.2f} MB），最大支持 {max_mb} MB",
-        )
-
-    # Validate file extension after size so oversized files consistently return 413.
-    supported_extensions = {"pdf", "docx", "doc"}
-    file_ext = Path(file.filename).suffix.lower().lstrip(".")
-    if file_ext not in supported_extensions:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"暂不支持 {file_ext or '未知'} 格式，请上传 PDF、DOCX 或 DOC 文件",
-        )
+    _validate_upload_file(file)
 
     # Create project directory
     project_dir = settings.workspace_path / str(current_user.id) / project_id
@@ -232,10 +276,7 @@ async def upload_document(
     doc_dir = project_dir / subdir
     doc_dir.mkdir(exist_ok=True)
 
-    # Save file with unique name to avoid conflicts
-    unique_filename = f"{Path(file.filename).stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{Path(file.filename).suffix}"
-    file_path = doc_dir / unique_filename
-    await throttled_save(file, file_path, bytes_per_sec=settings.upload_bytes_per_sec)
+    file_path = Path(await _save_upload_file(file, doc_dir, fsync=False))
 
     # Create document record
     document = Document(
@@ -436,7 +477,7 @@ SUPPORTED_EXTENSIONS = {"pdf", "docx", "doc"}
 
 
 def _validate_upload_file(file: UploadFile) -> None:
-    """上传文件的通用校验：先大小、后扩展名。"""
+    """上传文件的通用校验：先大小，再校验文件名和扩展名。"""
     file.file.seek(0, 2)
     file_size = file.file.tell()
     file.file.seek(0)
@@ -453,6 +494,7 @@ def _validate_upload_file(file: UploadFile) -> None:
             detail=f"文件过大（{file_size / (1024*1024):.2f} MB），最大支持 {max_mb} MB",
         )
 
+    _validate_upload_filename(file.filename)
     file_ext = Path(file.filename).suffix.lower().lstrip(".")
     if file_ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
@@ -461,7 +503,12 @@ def _validate_upload_file(file: UploadFile) -> None:
         )
 
 
-async def _save_upload_file(file: UploadFile, doc_dir: Path) -> str:
+async def _save_upload_file(
+    file: UploadFile,
+    doc_dir: Path,
+    *,
+    fsync: bool = True,
+) -> str:
     """把上传文件保存到指定目录，返回绝对路径。
 
     写完后 fsync 强制把数据刷到磁盘（NFS 场景下确保写已传播到 server，
@@ -469,14 +516,27 @@ async def _save_upload_file(file: UploadFile, doc_dir: Path) -> str:
     通过 throttled_save 实现单连接上传限速（见 settings.upload_bytes_per_sec）。
     """
     doc_dir.mkdir(parents=True, exist_ok=True)
-    unique_filename = (
-        f"{Path(file.filename).stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        f"{Path(file.filename).suffix}"
-    )
+    unique_filename = _build_storage_filename(file.filename)
     file_path = doc_dir / unique_filename
-    await throttled_save(
-        file, file_path, bytes_per_sec=settings.upload_bytes_per_sec, fsync=True
-    )
+    try:
+        await throttled_save(
+            file,
+            file_path,
+            bytes_per_sec=settings.upload_bytes_per_sec,
+            fsync=fsync,
+        )
+    except OSError as exc:
+        if exc.errno == errno.ENAMETOOLONG or getattr(exc, "winerror", None) == 206:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=FILENAME_TOO_LONG_DETAIL,
+            ) from exc
+        if getattr(exc, "winerror", None) == 123:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=FILENAME_INVALID_DETAIL,
+            ) from exc
+        raise
     return str(file_path)
 
 
