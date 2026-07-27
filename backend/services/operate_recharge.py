@@ -1,6 +1,6 @@
 """Operate-platform real-payment (交行聚合支付) bridge client.
 
-bjt-agent 的"文"充值借 operate-two 的内部接口走真实交行聚合支付：
+bjt-agent 的“点”充值借 operate-two 的内部接口走真实交行聚合支付：
 - create_recharge_order：调 /bank/pay/bjtCreateOrder 下真实交行单，拿二维码文本 + payMerTranNo。
 - query_order_status：调 /bank/pay/bjtOrderStatus（内部主动查交行网关 MPNG020702）取支付状态。
 

@@ -1,14 +1,14 @@
 """Celery tasks for billing: pending recharge order polling.
 
 定时扫所有 pending 状态的真实交行订单，主动调交行查单接口同步状态：
-- SUCCESS → complete_order(allow_expired_if_paid=True) 入账（钱已收就必须给文）
+- SUCCESS → complete_order(allow_expired_if_paid=True) 入账（钱已收就必须给点）
 - failure → status='cancelled'，日志告警
 - pending → expires_at 过期则置 cancelled
 
 为什么需要这个任务：
 - 交行异步 notify 打到 operate-two，但 bjt-agent 链路不接收（设计如此）。
 - API 端点 get_order_status 是被动触发（用户在前端点"我已支付"才会查交行）。
-  若用户离开页面、网络异常或回调晚到，订单会永远停在 pending——用户付了钱却拿不到文。
+  若用户离开页面、网络异常或回调晚到，订单会永远停在 pending——用户付了钱却拿不到点。
 - 这个 beat 任务是兜底：不依赖用户在线，每 60s 主动扫一次。
 
 事故触发：订单 BJT202607210252559C0165（basic 90 元）用户付款成功但前端轮询已停止，
@@ -111,7 +111,7 @@ async def _poll_async(session_factory) -> dict:
                         user,
                         order,
                         wallet=wallet,
-                        allow_expired_if_paid=True,  # 交行收了钱就必须给文
+                        allow_expired_if_paid=True,  # 交行收了钱就必须给点
                     )
                     await db.flush()
                     processed["completed"] += 1

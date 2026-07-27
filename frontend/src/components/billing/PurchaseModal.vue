@@ -314,7 +314,7 @@ watch(
                 class="package-divider"
                 :style="{ backgroundImage: `url(${dividerUrl})` }"
               ></span>
-              <span class="package-balance">{{ item.balance_wen }}文</span>
+              <span class="package-balance">{{ item.balance_wen }}点</span>
               <span class="package-price">{{ formatYuan(item.amount_cents) }}</span>
               <span v-if="item.caution" class="package-caution">{{ item.caution }}</span>
             </button>
@@ -333,7 +333,7 @@ watch(
               class="balance-item balance-item--pill"
               :style="{ backgroundImage: `url(${iconWallet})` }"
             >
-              <span>{{ preview?.current_balance_wen ?? 0 }}文</span>
+              <span>{{ preview?.current_balance_wen ?? 0 }}点</span>
             </span>
             <span
               class="balance-item balance-item--pill"

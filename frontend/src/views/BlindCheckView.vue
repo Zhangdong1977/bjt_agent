@@ -388,7 +388,7 @@ onUnmounted(() => {
       <img :src="logoUrl" alt="标书审查智能体" class="panel-logo">
       <div class="account-strip" aria-label="账户余额">
         <span class="metric-pill" :style="{ backgroundImage: `url(${iconWallet})` }">
-          <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.balanceWen) }}文</span>
+          <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.balanceWen) }}点</span>
         </span>
         <span class="metric-pill" :style="{ backgroundImage: `url(${iconPoints})` }">
           <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.points) }}积分</span>

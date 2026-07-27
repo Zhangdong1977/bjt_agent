@@ -68,7 +68,7 @@ function goOfficialSite() {
             :style="{ backgroundImage: `url(${iconWallet})` }"
             @click="rechargeOpen = true"
           >
-            <span class="metric-value">{{ billingStore.balanceWen }}文</span>
+            <span class="metric-value">{{ billingStore.balanceWen }}点</span>
           </span>
           <span
             class="metric metric--pill metric--points"

@@ -45,8 +45,8 @@ def _settings(**overrides) -> Settings:
 def test_mock_pay_endpoint_removed():
     """mock-pay 后门必须从路由表彻底移除（fb51261 已删，本测试防回归）。
 
-    历史背景：该端点曾被外部用户利用，对任意套餐订单（含豪华 15000 文）直接
-    调用 complete_order 凭空加文，造成 ~1.5 万元损失（见运维事故记录）。
+    历史背景：该端点曾被外部用户利用，对任意套餐订单（含豪华 15000 点）直接
+    调用 complete_order 凭空加点，造成 ~1.5 万元损失（见运维事故记录）。
     """
     paths = {route.path for route in billing_api.router.routes}
     mockpay_routes = [p for p in paths if "mock-pay" in p]
@@ -137,7 +137,7 @@ async def test_complete_order_rejects_expired_by_default():
 async def test_complete_order_allows_expired_when_paid():
     """allow_expired_if_paid=True：即使过期也能入账（定时任务用，杜绝吞钱）。
 
-    场景：交行真实付款回调晚于订单 30 分钟过期——钱已收就必须给文。
+    场景：交行真实付款回调晚于订单 30 分钟过期——钱已收就必须给点。
     本次故障订单 BJT202607210252559C0165 即为此场景（已手工补单，本测试固化逻辑）。
     """
     settings = _settings()
@@ -168,7 +168,7 @@ async def test_complete_order_allows_expired_when_paid():
 
     # 入账成功
     assert result.status == "completed"
-    assert wallet.balance_wen == 1200  # 加了 1200 文
+    assert wallet.balance_wen == 1200  # 加了 1200 点
     assert result.paid_at is not None
     db.flush.assert_awaited()
 

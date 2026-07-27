@@ -328,7 +328,7 @@ onMounted(() => {
                     {{ formatDateTime(record.expires_at) }}
                   </template>
                   <template v-else-if="column.dataIndex === 'current_balance_wen'">
-                    {{ record.current_balance_wen != null ? `${record.current_balance_wen}文` : "-" }}
+                    {{ record.current_balance_wen != null ? `${record.current_balance_wen}点` : "-" }}
                   </template>
                 </template>
               </a-table>
@@ -357,7 +357,7 @@ onMounted(() => {
                     {{ formatDateTime(record.consumed_at) }}
                   </template>
                   <template v-else-if="column.dataIndex === 'consumed_wen'">
-                    {{ record.consumed_wen }}文
+                    {{ record.consumed_wen }}点
                   </template>
                   <template v-else-if="column.dataIndex === 'earned_points'">
                     {{ record.earned_points }}分

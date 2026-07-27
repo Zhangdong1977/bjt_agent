@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI):
             )
         if "test" in visible_codes:
             logger.warning(
-                "[startup][billing] 测试套餐（1 分钱 / 200 文）当前对用户可见——"
+                "[startup][billing] 测试套餐（1 分钱 / 200 点）当前对用户可见——"
                 "生产应保持 BILLING_TEST_PACKAGE_ENABLED=false"
             )
         logger.info(f"[startup][billing] visible_packages={visible_codes}")

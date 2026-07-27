@@ -41,7 +41,7 @@ class RechargePackage:
 
 
 PACKAGES: dict[str, RechargePackage] = {
-    # 测试套餐：1 分钱 / 200 文，仍走真实交行；prod 由 billing_hidden_package_codes 隐藏
+    # 测试套餐：1 分钱 / 200 点，仍走真实交行；prod 由 billing_hidden_package_codes 隐藏
     "test": RechargePackage("test", "测试套餐", 1, 200, "真实交行支付·0.01元"),
     "experience": RechargePackage("experience", "体验套餐", 3000, 350, "500页以上标书谨慎使用"),
     "basic": RechargePackage("basic", "基础套餐", 10000, 1200),
@@ -126,7 +126,7 @@ async def preview_order(
 ) -> OrderPreviewResponse:
     package = get_package(package_code)
     # 安全：与 list_packages() 用同一个 _is_package_visible 闸门。
-    # 否则隐藏的 test 套餐（1 分钱 / 200 文）能被知道 code 的用户绕过前端直接 preview / 下单。
+    # 否则隐藏的 test 套餐（1 分钱 / 200 点）能被知道 code 的用户绕过前端直接 preview / 下单。
     if not _is_package_visible(package.code, get_settings()):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="套餐不存在")
     wallet = await ensure_wallet(db, current_user.id)
@@ -219,12 +219,12 @@ async def complete_order(
     wallet: UserWallet | None = None,
     allow_expired_if_paid: bool = False,
 ) -> BillingOrder:
-    """Complete a recharge order: deduct points, add wen, write wallet transaction.
+    """Complete a recharge order: deduct loyalty points, add balance units, write the wallet transaction.
 
     Args:
         allow_expired_if_paid: 设为 True 时跳过 expires_at 过期校验。
             场景：交行真实付款回调晚于订单 30 分钟过期（用户离开页面、回调未及时接收等），
-            定时任务扫到交行 SUCCESS 后必须强制入账——钱已收就必须给文，否则吞钱。
+            定时任务扫到交行 SUCCESS 后必须强制入账——钱已收就必须给点，否则吞钱。
             默认 False 保持 API 端点（get_order_status 等）的原有行为：过期即拒绝。
     """
     if order.user_id != current_user.id:
@@ -283,7 +283,7 @@ async def complete_order(
 async def settle_review_consumption(task_id: str) -> ConsumptionRecord | None:
     """Settle a completed review task exactly once.
 
-    Billing rule: consumed wen = ceil(cost_cny * 4 * 10) = ceil(cost_cny * 40).
+    Billing rule: consumed balance units = ceil(cost_cny * 4 * 10) = ceil(cost_cny * 40).
     If the balance is insufficient, the wallet may become negative so the
     already completed AI review is still represented honestly in the ledger.
     """
@@ -323,7 +323,7 @@ async def settle_review_consumption(task_id: str) -> ConsumptionRecord | None:
             await db.flush()
 
         wallet.balance_wen -= consumed_wen
-        earned_points = consumed_wen  # 每消费 1 文返 1 积分
+        earned_points = consumed_wen  # 每消费 1 点返 1 积分；wen 为兼容既有数据库/API 的历史字段名
         wallet.points += earned_points
 
         used_by = user.username if user else project.user_id
@@ -354,5 +354,10 @@ async def settle_review_consumption(task_id: str) -> ConsumptionRecord | None:
             )
         )
         await db.commit()
-        logger.info("[billing] settled task %s: cost=%s, wen=%s", task_id, record.cost_cny, consumed_wen)
+        logger.info(
+            "[billing] settled task %s: cost=%s, balance_units=%s",
+            task_id,
+            record.cost_cny,
+            consumed_wen,
+        )
         return record

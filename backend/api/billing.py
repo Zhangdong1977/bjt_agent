@@ -228,7 +228,7 @@ async def get_order_status(
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
 
-    # 真实交行支付：订单仍 pending 时主动查交行网关，SUCCESS 即出账加文；过期则置 cancelled
+    # 真实交行支付：订单仍 pending 时主动查交行网关，SUCCESS 即出账加点；过期则置 cancelled
     if (
         order.status == "pending"
         and order.external_order_no
