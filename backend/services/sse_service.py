@@ -5,6 +5,7 @@ import json
 import logging
 from typing import AsyncGenerator, Optional
 
+import anyio
 import redis.asyncio as redis
 
 from backend.config import get_settings
@@ -112,7 +113,12 @@ class SSEConnectionManager:
             raise
         finally:
             if client is not None:
-                await client.aclose()
+                # Starlette disconnects run inside an AnyIO cancellation scope.
+                # Once that scope is cancelled, every await remains cancellable;
+                # shield cleanup so the Redis pool is actually closed instead of
+                # stopping halfway through ``aclose``.
+                with anyio.CancelScope(shield=True):
+                    await client.aclose()
             logger.info(
                 "[SSE.connect] Connection closed: stream=%s, events=%s",
                 stream_key,

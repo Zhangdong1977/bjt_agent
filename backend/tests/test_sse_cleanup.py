@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 
+import anyio
 import pytest
 
 from backend.services import sse_service
@@ -77,16 +78,20 @@ async def test_sse_cancellation_closes_blocked_redis_reader(monkeypatch):
                 read_cancelled.set()
                 raise
 
+        async def aclose(self):
+            # AnyIO uses level cancellation: without a shield this checkpoint
+            # is cancelled again and the client never reaches the close.
+            await anyio.sleep(0)
+            self.closed = True
+
     fake = BlockingRedis()
     monkeypatch.setattr(sse_service.redis, "from_url", lambda *_a, **_kw: fake)
 
     stream = SSEConnectionManager().connect("task-blocked")
-    next_event = asyncio.create_task(anext(stream))
-    await asyncio.wait_for(read_started.wait(), timeout=1)
-    next_event.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
-        await next_event
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(anext, stream)
+        await asyncio.wait_for(read_started.wait(), timeout=1)
+        task_group.cancel_scope.cancel()
 
     assert read_cancelled.is_set()
     assert fake.closed
@@ -98,3 +103,4 @@ def test_sse_does_not_use_unbounded_background_threads():
     assert "asyncio.to_thread(" not in source
     assert "await client.xread" in source
     assert "await client.aclose()" in source
+    assert "CancelScope(shield=True)" in source
