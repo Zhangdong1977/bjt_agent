@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
+import { useAuthStore } from '@/stores/auth'
 import { duplicateApi, reviewApi } from '@/api/client'
 import ExecutionStepper from '@/components/execution/ExecutionStepper.vue'
 import LeftPane from '@/components/execution/LeftPane.vue'
@@ -11,6 +12,7 @@ import { useSSE } from '@/composables/useSSE'
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
+const authStore = useAuthStore()
 
 const projectId = computed(() => route.params.id as string)
 const isDuplicate = computed(() => route.meta.taskType === 'duplicate')
@@ -86,6 +88,11 @@ const findingsCount = computed(() => {
 async function handleSSEEvent(event: any) {
   // 详细日志，方便调试 SSE 数据
   console.log('[ReviewExecutionView] SSE event received:', event)
+
+  // 只有收到真实 SSE 数据才认为实时链路恢复。单纯 onopen/HTTP 200
+  // 可能是后端 Redis reader 未启动的假活连接。
+  if (statusPollTimer) stopStatusPolling()
+  if (event.type === 'sse_heartbeat') return
 
   switch (event.type) {
     case 'status':
@@ -509,6 +516,8 @@ async function loadHistoricalTodos(projectId: string, taskId: string) {
 // 外部用户时间线本来就以 todos 块为主，不依赖 steps。
 async function loadHistoricalStepsAndTodos(taskId: string) {
   await loadHistoricalTodos(projectId.value, taskId)
+  // 外部用户的执行页只展示主/子代理状态块，不请求受限的内部步骤接口。
+  if (!authStore.isInteriorUser) return
   try {
     const historicalSteps = await taskApi.value.getSteps(projectId.value, taskId)
     if (historicalSteps.length > 0) {
@@ -592,9 +601,12 @@ async function refreshTaskSnapshot(taskId: string) {
   }
 }
 
-function startStatusPolling(taskId: string) {
+function startStatusPolling(
+  taskId: string,
+  notice = '实时连接已断开，正在轮询任务状态',
+) {
+  realtimeNotice.value = notice
   if (statusPollTimer) return
-  realtimeNotice.value = '实时连接已断开，正在轮询任务状态'
   refreshTaskSnapshot(taskId).catch(err => {
     console.error('[ReviewExecutionView] Initial polling refresh failed:', err)
   })
@@ -610,21 +622,23 @@ function stopStatusPolling() {
     clearInterval(statusPollTimer)
     statusPollTimer = null
   }
-  if (realtimeNotice.value === '实时连接已断开，正在轮询任务状态') {
-    realtimeNotice.value = null
-  }
+  realtimeNotice.value = null
 }
 
 // 使用统一的 SSE composable（支持指数退避重连 + Last-Event-ID + RAF 批量处理）
 const { connect: sseConnect, disconnect: sseDisconnect } = useSSE({
   onEvent: handleSSEEvent,
   onOpen: () => {
-    stopStatusPolling()
-    realtimeNotice.value = null
+    // 等第一条有效事件再停止轮询；HTTP 200 本身不足以证明 SSE 健康。
+    if (!statusPollTimer) realtimeNotice.value = null
+  },
+  onStale: (taskId) => {
+    startStatusPolling(taskId, '实时连接暂未收到进度，正在同步任务状态')
   },
   onPermanentFailure: (taskId) => {
     startStatusPolling(taskId)
   },
+  staleTimeoutMs: 30000,
   enableBatching: true,  // 保持 RAF 批量处理
   shouldStop: () => {
     return phase.value === 'completed' || phase.value === 'failed'
