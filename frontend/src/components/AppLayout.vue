@@ -11,7 +11,6 @@ import AnnouncementPopup from './announcement/AnnouncementPopup.vue'
 import AnnouncementInbox from './announcement/AnnouncementInbox.vue'
 import AnnouncementMarquee from './announcement/AnnouncementMarquee.vue'
 import logoUrl from '@/assets/images/ui/common-logo-black.png'
-import iconWallet from '@/assets/images/ui/common-icon-wallet.png'
 import iconPoints from '@/assets/images/ui/common-icon-points.png'
 import iconCart from '@/assets/images/ui/common-icon-cart-full.png'
 import iconUser from '@/assets/images/ui/common-icon-user.png'
@@ -63,13 +62,6 @@ function goOfficialSite() {
 
       <div class="header-right">
         <div class="account-strip">
-          <span
-            class="metric metric--pill metric--wallet"
-            :style="{ backgroundImage: `url(${iconWallet})` }"
-            @click="rechargeOpen = true"
-          >
-            <span class="metric-value">充值 {{ billingStore.rechargeBalance.toFixed(2) }} / 赠送 {{ billingStore.giftBalance.toFixed(2) }}点</span>
-          </span>
           <span
             class="metric metric--pill metric--points"
             :style="{ backgroundImage: `url(${iconPoints})` }"
@@ -227,15 +219,6 @@ function goOfficialSite() {
   align-items: center;
   white-space: nowrap;
   cursor: default;
-}
-
-.metric--wallet {
-  cursor: pointer;
-  transition: filter 0.2s ease;
-}
-
-.metric--wallet:hover {
-  filter: brightness(1.04);
 }
 
 .metric--cart {

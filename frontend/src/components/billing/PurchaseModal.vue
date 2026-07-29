@@ -11,8 +11,6 @@ import type {
 } from "@/types";
 import iconSelect from "@/assets/images/ui/plan-icon-select.png";
 import iconOrder from "@/assets/images/ui/common-icon-order.png";
-import iconWallet from "@/assets/images/ui/common-icon-wallet.png";
-import iconPoints from "@/assets/images/ui/common-icon-points.png";
 import iconCart from "@/assets/images/ui/common-icon-cart-full.png";
 import dividerUrl from "@/assets/images/ui/plan-divider.png";
 import pkgTrial from "@/assets/images/ui/plan-icon-trial.png";
@@ -332,21 +330,6 @@ watch(
             <span>订单详情</span>
           </div>
 
-          <div class="balance-row">
-            <span
-              class="balance-item balance-item--pill"
-              :style="{ backgroundImage: `url(${iconWallet})` }"
-            >
-              <span>充值 {{ preview?.current_recharge_points ?? 0 }} / 赠送 {{ preview?.current_gift_points ?? 0 }}点</span>
-            </span>
-            <span
-              class="balance-item balance-item--pill"
-              :style="{ backgroundImage: `url(${iconPoints})` }"
-            >
-              <span>{{ preview?.current_points ?? 0 }}积分</span>
-            </span>
-          </div>
-
           <div class="summary-row">
             <span>已选套餐</span>
             <strong>{{ selectedPackage?.name || "-" }}</strong>
@@ -589,40 +572,6 @@ watch(
   border: 1px solid #eef0f5;
   border-radius: 10px;
   padding: 18px 18px 20px;
-}
-
-.balance-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 12px;
-  background: #fff;
-  border-radius: 8px;
-  border: 1px solid #eef0f5;
-}
-
-.balance-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #555;
-  font-weight: 500;
-}
-
-/* 仅使用图片绘制背景；容器随文字变宽，背景图同步拉伸。 */
-.balance-item--pill {
-  height: 26px;
-  min-width: 78px;
-  box-sizing: border-box;
-  padding: 0 10px 0 32px;
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 100% 100%;
-  align-items: center;
-  white-space: nowrap;
-  color: #333;
-  font-weight: 600;
 }
 
 .summary-row {
