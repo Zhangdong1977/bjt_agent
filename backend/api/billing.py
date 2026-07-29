@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import and_, case, func, select
 
 from backend.api.deps import DBSession, CurrentUser, is_interior_user
 from backend.models import BillingOrder, ConsumptionAllocation, ConsumptionRecord, CreditLot, User
@@ -44,6 +44,10 @@ def _order_response(
     *,
     username: str | None = None,
     enterprise_name: str | None = None,
+    consumed_points: float = 0,
+    remaining_points: float = 0,
+    raw_remaining_points: float = 0,
+    points_expires_at: datetime | None = None,
 ) -> OrderResponse:
     # 仅已完成订单有余额快照（balance_after_wen）；未付费/已取消订单未发生余额变动 → None（前端显示 "-"）
     return OrderResponse(
@@ -72,7 +76,32 @@ def _order_response(
         validity_months=order.validity_months,
         coupon_benefit_type=order.coupon_benefit_type,
         coupon_gift_points=float(order.coupon_gift_points or 0),
+        consumed_points=float(consumed_points or 0),
+        remaining_points=float(remaining_points or 0),
+        points_expires_at=points_expires_at,
+        points_status=_order_points_status(
+            order,
+            remaining_points=float(remaining_points or 0),
+            raw_remaining_points=float(raw_remaining_points or 0),
+            points_expires_at=points_expires_at,
+        ),
     )
+
+
+def _order_points_status(
+    order: BillingOrder,
+    *,
+    remaining_points: float,
+    raw_remaining_points: float,
+    points_expires_at: datetime | None,
+) -> str:
+    if order.status != "completed":
+        return "not_credited"
+    if remaining_points > 0 and (points_expires_at is None or points_expires_at > utc_now()):
+        return "active"
+    if raw_remaining_points > 0 and points_expires_at is not None and points_expires_at <= utc_now():
+        return "expired"
+    return "exhausted"
 
 
 @router.get("/wallet", response_model=WalletResponse)
@@ -175,9 +204,47 @@ async def list_orders(
     enterprise_name: str | None = Query(None),
 ) -> OrderListResponse:
     interior = is_interior_user(current_user)
+    now = utc_now()
+    lot_summary = (
+        select(
+            CreditLot.source_id.label("order_id"),
+            func.coalesce(func.sum(CreditLot.initial_points - CreditLot.remaining_points), 0).label("consumed_points"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                CreditLot.status == "active",
+                                CreditLot.expires_at > now,
+                                CreditLot.remaining_points > 0,
+                            ),
+                            CreditLot.remaining_points,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("remaining_points"),
+            func.coalesce(func.sum(CreditLot.remaining_points), 0).label("raw_remaining_points"),
+            func.max(CreditLot.expires_at).label("points_expires_at"),
+        )
+        .where(CreditLot.source_type == "billing_order")
+        .group_by(CreditLot.source_id)
+        .subquery()
+    )
     # 内部用户看全站（JOIN users 取归属）；外部用户只看自己的（归属恒为本人，但同样 JOIN 以统一返回结构）
-    stmt = select(BillingOrder, User.username, User.enterprise_name).join(
-        User, User.id == BillingOrder.user_id, isouter=True
+    stmt = (
+        select(
+            BillingOrder,
+            User.username,
+            User.enterprise_name,
+            lot_summary.c.consumed_points,
+            lot_summary.c.remaining_points,
+            lot_summary.c.raw_remaining_points,
+            lot_summary.c.points_expires_at,
+        )
+        .join(User, User.id == BillingOrder.user_id, isouter=True)
+        .outerjoin(lot_summary, lot_summary.c.order_id == BillingOrder.id)
     )
     if not interior:
         stmt = stmt.where(BillingOrder.user_id == current_user.id)
@@ -192,13 +259,31 @@ async def list_orders(
         stmt = stmt.where(User.username.ilike(f"%{username}%"))
     if interior and enterprise_name:
         stmt = stmt.where(User.enterprise_name.ilike(f"%{enterprise_name}%"))
-    stmt = stmt.order_by(BillingOrder.created_at.desc())
+    available_first = case(
+        (
+            and_(
+                BillingOrder.status == "completed",
+                func.coalesce(lot_summary.c.remaining_points, 0) > 0,
+            ),
+            0,
+        ),
+        else_=1,
+    )
+    stmt = stmt.order_by(available_first, BillingOrder.created_at.desc())
 
     rows = (await db.execute(stmt)).all()
     return OrderListResponse(
         orders=[
-            _order_response(order, username=u_name, enterprise_name=ent_name)
-            for order, u_name, ent_name in rows
+            _order_response(
+                order,
+                username=u_name,
+                enterprise_name=ent_name,
+                consumed_points=consumed,
+                remaining_points=remaining,
+                raw_remaining_points=raw_remaining,
+                points_expires_at=point_expiry,
+            )
+            for order, u_name, ent_name, consumed, remaining, raw_remaining, point_expiry in rows
         ]
     )
 

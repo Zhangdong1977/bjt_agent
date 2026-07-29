@@ -111,6 +111,10 @@ class OrderResponse(BaseModel):
     validity_months: int = 12
     coupon_benefit_type: str | None = None
     coupon_gift_points: float = 0
+    consumed_points: float = 0
+    remaining_points: float = 0
+    points_expires_at: datetime | None = None
+    points_status: str = "not_credited"
 
 
 class OrderListResponse(BaseModel):

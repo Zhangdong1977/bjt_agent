@@ -1,6 +1,6 @@
 """Unit tests for split recharge/gift point accounting."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -9,6 +9,7 @@ import pytest
 
 from backend.models import ConsumptionAllocation, PointLedgerEntry
 from backend.api.admin_sales import list_grants
+from backend.api.billing import _order_points_status
 from backend.scripts.reconstruct_sales_balances import _split_historical_points
 from backend.services.billing import cost_to_points, sales_points_for
 from backend.services.sales import allocate_consumption, expire_user_lots
@@ -45,6 +46,37 @@ def test_historical_package_split_preserves_actual_total_at_current_ratio():
     assert recharge == Decimal("833.33")
     assert gift == Decimal("166.67")
     assert recharge + gift == Decimal("1000.00")
+
+
+def test_order_point_status_distinguishes_usable_expired_and_exhausted_lots():
+    completed = SimpleNamespace(status="completed")
+    future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    past = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+    assert _order_points_status(
+        completed,
+        remaining_points=10,
+        raw_remaining_points=10,
+        points_expires_at=future,
+    ) == "active"
+    assert _order_points_status(
+        completed,
+        remaining_points=0,
+        raw_remaining_points=10,
+        points_expires_at=past,
+    ) == "expired"
+    assert _order_points_status(
+        completed,
+        remaining_points=0,
+        raw_remaining_points=0,
+        points_expires_at=future,
+    ) == "exhausted"
+    assert _order_points_status(
+        SimpleNamespace(status="pending"),
+        remaining_points=0,
+        raw_remaining_points=0,
+        points_expires_at=None,
+    ) == "not_credited"
 
 
 @pytest.mark.asyncio

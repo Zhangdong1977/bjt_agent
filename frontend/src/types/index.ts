@@ -121,6 +121,10 @@ export interface BillingOrder {
   validity_months: number;
   coupon_benefit_type?: "cash" | "gift" | null;
   coupon_gift_points: number;
+  consumed_points: number;
+  remaining_points: number;
+  points_expires_at?: string | null;
+  points_status: "active" | "expired" | "exhausted" | "not_credited";
 }
 
 export interface ConsumptionRecord {

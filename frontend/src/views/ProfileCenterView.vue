@@ -68,7 +68,10 @@ const orderColumns = computed(() => [
   { title: "优惠券", dataIndex: "coupon_amount_cents" },
   { title: "充值点数", dataIndex: "recharge_points" },
   { title: "赠送点数", dataIndex: "gift_points" },
-  { title: "订单有效期", dataIndex: "expires_at" },
+  { title: "已使用点数", dataIndex: "consumed_points" },
+  { title: "剩余点数", dataIndex: "remaining_points" },
+  { title: "点数状态", dataIndex: "points_status" },
+  { title: "点数到期时间", dataIndex: "points_expires_at" },
   { title: "充值后余额", dataIndex: "current_balance_wen" },
 ]);
 
@@ -126,6 +129,20 @@ function orderStatusText(status: string) {
   if (status === "pending") return "未付费";
   if (status === "cancelled") return "已取消";
   return status;
+}
+
+function orderPointsStatusText(status: BillingOrder["points_status"]) {
+  if (status === "active") return "可使用";
+  if (status === "expired") return "已过期";
+  if (status === "exhausted") return "已用完";
+  return "未生效";
+}
+
+function orderPointsStatusClass(status: BillingOrder["points_status"]) {
+  if (status === "active") return "badge-success";
+  if (status === "expired") return "badge-warning";
+  if (status === "exhausted") return "badge-info";
+  return "badge-error";
 }
 
 function couponStatusClass(status: string) {
@@ -313,7 +330,7 @@ onMounted(() => {
                 </template>
                 <a-button type="primary" @click="loadOrders">查询</a-button>
               </div>
-              <a-table :columns="orderColumns" :data-source="orderRows" row-key="id" size="middle" :scroll="{ x: 1120 }">
+              <a-table :columns="orderColumns" :data-source="orderRows" row-key="id" size="middle" :scroll="{ x: 1520 }">
                 <template #bodyCell="{ column, record }">
                   <template v-if="column.dataIndex === 'username'">
                     {{ record.username || "-" }}
@@ -338,8 +355,16 @@ onMounted(() => {
                   <template v-else-if="column.dataIndex === 'coupon_amount_cents'">
                     {{ record.coupon_amount_cents ? formatCents(record.coupon_amount_cents) : "-" }}
                   </template>
-                  <template v-else-if="column.dataIndex === 'expires_at'">
-                    {{ formatDateTime(record.expires_at) }}
+                  <template v-else-if="column.dataIndex === 'consumed_points' || column.dataIndex === 'remaining_points'">
+                    {{ Number(record[column.dataIndex] || 0).toFixed(2) }}点
+                  </template>
+                  <template v-else-if="column.dataIndex === 'points_status'">
+                    <span :class="['badge', orderPointsStatusClass(record.points_status)]">
+                      {{ orderPointsStatusText(record.points_status) }}
+                    </span>
+                  </template>
+                  <template v-else-if="column.dataIndex === 'points_expires_at'">
+                    {{ formatDateTime(record.points_expires_at) }}
                   </template>
                   <template v-else-if="column.dataIndex === 'current_balance_wen'">
                     {{ record.current_balance_wen != null ? `${record.current_balance_wen}点` : "-" }}
