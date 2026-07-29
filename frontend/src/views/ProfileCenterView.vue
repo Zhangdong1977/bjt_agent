@@ -100,6 +100,11 @@ const couponColumns = [
 const orderRows = computed(() =>
   orders.value.map((item, index) => ({ ...item, index: index + 1 })),
 );
+const activeOrderCards = computed(() =>
+  orders.value.filter(
+    (item) => item.points_status === "active" && Number(item.remaining_points) > 0,
+  ),
+);
 const consumptionRows = computed(() =>
   consumptions.value.map((item, index) => ({ ...item, index: index + 1 })),
 );
@@ -122,6 +127,17 @@ function formatDateTime(value?: string | null) {
 
 function formatDate(value?: string | null) {
   return value ? new Date(value).toLocaleDateString() : "-";
+}
+
+function formatPoints(value?: number | null) {
+  const points = Number(value || 0);
+  return Number.isInteger(points) ? String(points) : points.toFixed(2);
+}
+
+function remainingPointsPercent(order: BillingOrder) {
+  const totalPoints = Number(order.total_points || 0);
+  if (totalPoints <= 0) return 0;
+  return Math.min(100, Math.max(0, Number(order.remaining_points || 0) / totalPoints * 100));
 }
 
 function orderStatusText(status: string) {
@@ -295,6 +311,41 @@ onMounted(() => {
               </a-form>
             </section>
           </div>
+        </a-tab-pane>
+
+        <a-tab-pane key="active-orders" tab="当前扣费订单">
+          <div v-if="activeOrderCards.length" class="active-order-grid">
+            <article v-for="order in activeOrderCards" :key="order.id" class="active-order-card">
+              <div class="active-order-card__header">
+                <h2>{{ order.product_name || "未命名订单" }}</h2>
+                <span class="badge badge-success">使用中</span>
+              </div>
+              <dl class="active-order-card__dates">
+                <div>
+                  <dt>创建时间</dt>
+                  <dd>{{ formatDateTime(order.created_at) }}</dd>
+                </div>
+                <div>
+                  <dt>到期时间</dt>
+                  <dd>{{ formatDateTime(order.points_expires_at) }}</dd>
+                </div>
+              </dl>
+              <div class="active-order-card__balance">
+                <div class="active-order-card__balance-label">
+                  <span>剩余点数</span>
+                  <strong>
+                    {{ formatPoints(order.remaining_points) }} / {{ formatPoints(order.total_points) }} 点
+                  </strong>
+                </div>
+                <a-progress
+                  :percent="remainingPointsPercent(order)"
+                  :show-info="false"
+                  stroke-color="#1677ff"
+                />
+              </div>
+            </article>
+          </div>
+          <a-empty v-else description="暂无可用订单" class="active-order-empty" />
         </a-tab-pane>
 
         <a-tab-pane key="password" tab="修改密码">
@@ -481,6 +532,78 @@ onMounted(() => {
   max-width: 480px;
 }
 
+.active-order-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.active-order-card {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg1);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 4%);
+}
+
+.active-order-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.active-order-card__header h2 {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: 1.05rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.active-order-card__dates {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 20px;
+}
+
+.active-order-card__dates > div,
+.active-order-card__balance-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.active-order-card__dates dt,
+.active-order-card__balance-label span {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.active-order-card__dates dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  text-align: right;
+}
+
+.active-order-card__balance-label {
+  margin-bottom: 6px;
+}
+
+.active-order-card__balance-label strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.active-order-empty {
+  padding: 48px 0 36px;
+}
+
 .panel {
   border: 1px solid var(--line);
   border-radius: var(--r);
@@ -526,6 +649,26 @@ onMounted(() => {
 .coupon-code-input {
   width: 320px;
   max-width: 100%;
+}
+
+@media (max-width: 576px) {
+  .active-order-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .active-order-card {
+    padding: 16px;
+  }
+
+  .active-order-card__dates > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .active-order-card__dates dd {
+    text-align: left;
+  }
 }
 
 </style>
