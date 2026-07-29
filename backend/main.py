@@ -17,7 +17,7 @@ from starlette import status
 
 from backend.config import get_settings
 from backend.models import init_db, close_db
-from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, duplicate_check_router, duplicate_check_capabilities_router, review_sessions_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, profile_router, billing_router, announcements_router, system_status_router, blind_check_router, vsto_tools_router
+from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, duplicate_check_router, duplicate_check_capabilities_router, review_sessions_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, admin_sales_router, profile_router, billing_router, announcements_router, system_status_router, blind_check_router, vsto_tools_router
 from backend.api.events import router as events_router
 from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
@@ -95,12 +95,14 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
 
-    # 充值配置审计：fb51261 之后所有套餐默认走真实交行支付，唯一可控开关是套餐可见性
-    # （billing_test_package_enabled / billing_hidden_package_codes）。启动时记录当前生效
-    # 的可见套餐 + 校验真实支付依赖（operate_internal_token），帮运维尽早发现配置问题。
+    # 充值配置审计：套餐上下线由运营平台同步的 sales_packages 控制。
+    # 启动时记录当前生效套餐并校验真实支付依赖，帮助运维尽早发现配置问题。
     try:
-        from backend.services.billing import list_packages
-        visible_codes = [p.code for p in list_packages()]
+        from backend.models import async_session_factory
+        from backend.services.billing import list_runtime_packages
+        async with async_session_factory() as billing_db:
+            visible_codes = [p.code for p in await list_runtime_packages(billing_db)]
+            await billing_db.commit()
         if not settings.operate_internal_token:
             logger.warning(
                 "[startup][billing] OPERATE_INTERNAL_TOKEN 为空——真实交行支付不可用，"
@@ -109,7 +111,7 @@ async def lifespan(app: FastAPI):
         if "test" in visible_codes:
             logger.warning(
                 "[startup][billing] 测试套餐（1 分钱 / 200 点）当前对用户可见——"
-                "生产应保持 BILLING_TEST_PACKAGE_ENABLED=false"
+                "生产应在运营平台将其下线"
             )
         logger.info(f"[startup][billing] visible_packages={visible_codes}")
     except Exception as e:
@@ -192,6 +194,7 @@ app.include_router(knowledge_router, prefix=settings.api_prefix)
 app.include_router(feedback_router, prefix=settings.api_prefix)
 app.include_router(experience_router, prefix=settings.api_prefix)
 app.include_router(admin_router, prefix=settings.api_prefix)
+app.include_router(admin_sales_router, prefix=settings.api_prefix)
 app.include_router(profile_router, prefix=settings.api_prefix)
 app.include_router(billing_router, prefix=settings.api_prefix)
 app.include_router(announcements_router, prefix=settings.api_prefix)

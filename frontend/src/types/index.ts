@@ -27,6 +27,11 @@ export interface Captcha {
 export interface Wallet {
   balance_wen: number;
   points: number;
+  recharge_balance_points: number;
+  gift_balance_points: number;
+  total_balance_points: number;
+  low_balance_threshold: number;
+  low_balance: boolean;
 }
 
 export interface RechargePackage {
@@ -35,6 +40,12 @@ export interface RechargePackage {
   amount_cents: number;
   balance_wen: number;
   caution?: string | null;
+  icon_url?: string | null;
+  recharge_points: number;
+  gift_points: number;
+  total_points: number;
+  validity_months: number;
+  loyalty_deduction_limit?: number | null;
 }
 
 export interface Coupon {
@@ -45,6 +56,10 @@ export interface Coupon {
   valid_until?: string | null;
   status: string;
   raw_status?: number | null;
+  product_type: "plugin" | "check" | "generate";
+  benefit_type: "cash" | "gift";
+  threshold_amount_cents: number;
+  gift_points: number;
 }
 
 export interface CouponRedeemResponse {
@@ -69,6 +84,15 @@ export interface OrderPreview {
   package_balance_wen: number;
   current_balance_wen: number;
   current_points: number;
+  recharge_points: number;
+  gift_points: number;
+  total_points: number;
+  validity_months: number;
+  loyalty_deduction_limit?: number | null;
+  current_recharge_points: number;
+  current_gift_points: number;
+  coupon_benefit_type?: "cash" | "gift" | null;
+  coupon_gift_points: number;
 }
 
 export interface BillingOrder {
@@ -88,6 +112,15 @@ export interface BillingOrder {
   current_balance_wen?: number | null;
   username?: string | null;
   enterprise_name?: string | null;
+  recharge_points: number;
+  gift_points: number;
+  total_points: number;
+  recharge_balance_after?: number | null;
+  gift_balance_after?: number | null;
+  unit_value_yuan?: number | null;
+  validity_months: number;
+  coupon_benefit_type?: "cash" | "gift" | null;
+  coupon_gift_points: number;
 }
 
 export interface ConsumptionRecord {
@@ -100,6 +133,29 @@ export interface ConsumptionRecord {
   cost_cny?: number | null;
   username?: string | null;
   enterprise_name?: string | null;
+  cost_points?: number | null;
+  sales_multiplier?: number | null;
+  sales_points?: number | null;
+  gift_points_used: number;
+  recharge_points_used: number;
+  recharge_balance_after?: number | null;
+  gift_balance_after?: number | null;
+  weighted_unit_value_yuan?: number | null;
+  folded_income_yuan?: number | null;
+  profit_yuan?: number | null;
+  profit_margin?: number | null;
+}
+
+export interface ConsumptionAllocation {
+  id: string;
+  lot_id?: string | null;
+  lot_type: "recharge" | "gift";
+  source_type?: string | null;
+  source_id?: string | null;
+  points: number;
+  unit_value_yuan: number;
+  folded_income_yuan: number;
+  expires_at?: string | null;
 }
 
 export interface PaymentQr {

@@ -93,6 +93,10 @@ def _normalize_coupon(row: dict[str, Any]) -> CouponResponse | None:
         valid_until=valid_until,
         status=_status_label(raw_status, valid_until),
         raw_status=raw_status,
+        product_type=row.get("productType") or row.get("product_type") or "plugin",
+        benefit_type=row.get("benefitType") or row.get("benefit_type") or "cash",
+        threshold_amount_cents=_amount_to_cents(row.get("thresholdAmount") or row.get("threshold_amount")),
+        gift_points=float(row.get("giftPoints") or row.get("gift_points") or 0),
     )
 
 
@@ -133,7 +137,8 @@ async def list_user_coupons(customer_account: str, *, include_all: bool = True) 
         if isinstance(row, dict):
             normalized = _normalize_coupon(row)
             if normalized:
-                coupons.append(normalized)
+                if normalized.product_type == "check":
+                    coupons.append(normalized)
     return coupons
 
 
@@ -154,6 +159,7 @@ async def bind_coupon_by_code(customer_account: str, customer_name: str, code: s
                     "code": normalized_code,
                     "customerName": customer_name,
                     "customerAccount": customer_account,
+                    "productType": "check",
                 },
             )
             response.raise_for_status()
@@ -182,12 +188,124 @@ async def bind_coupon_by_code(customer_account: str, customer_name: str, code: s
         )
 
 
-async def find_available_coupon(customer_account: str, coupon_id: int) -> CouponResponse | None:
-    coupons = await list_user_coupons(customer_account, include_all=True)
-    for coupon in coupons:
-        if coupon.id == coupon_id and coupon.status == "未使用" and coupon.amount_cents > 0:
-            return coupon
-    return None
+async def _internal_coupon_request(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    settings = get_settings()
+    base_url = settings.operate_api_base_url.rstrip("/")
+    if not base_url or not settings.operate_internal_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "COUPON_SERVICE_UNAVAILABLE", "message": "优惠券服务暂不可用，请稍后重试"},
+        )
+    try:
+        async with httpx.AsyncClient(timeout=settings.operate_api_timeout_seconds, trust_env=False) as client:
+            response = await client.post(
+                f"{base_url}/system/coupon/internal/{path}",
+                headers={"X-Internal-Token": settings.operate_internal_token},
+                json=payload,
+            )
+            response.raise_for_status()
+            raw = response.json()
+    except Exception as exc:
+        logger.warning("[operate-coupons] internal %s failed: %s", path, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "COUPON_SERVICE_UNAVAILABLE", "message": "优惠券服务暂不可用，请稍后重试"},
+        ) from exc
+    data = raw.get("data") if isinstance(raw, dict) else None
+    if not isinstance(data, dict):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "COUPON_SERVICE_INVALID_RESPONSE", "message": "优惠券服务返回异常"},
+        )
+    return data
+
+
+def _coupon_from_internal(data: dict[str, Any]) -> CouponResponse:
+    valid_until = _parse_date(data.get("valid_until"))
+    return CouponResponse(
+        id=int(data["coupon_id"]),
+        code=data.get("coupon_code"),
+        amount_cents=int(data.get("amount_cents") or 0),
+        amount_yuan=int(data.get("amount_cents") or 0) / 100,
+        valid_until=valid_until,
+        status="未使用",
+        raw_status=1,
+        product_type=data.get("product_type") or "check",
+        benefit_type=data.get("benefit_type") or "cash",
+        threshold_amount_cents=int(data.get("threshold_amount_cents") or 0),
+        gift_points=float(data.get("gift_points") or 0),
+    )
+
+
+async def validate_coupon(
+    customer_account: str,
+    coupon_id: int,
+    *,
+    order_amount_cents: int,
+    order_no: str | None = None,
+) -> CouponResponse:
+    data = await _internal_coupon_request(
+        "validate",
+        {
+            "coupon_id": coupon_id,
+            "customer_account": customer_account,
+            "product_type": "check",
+            "order_amount_cents": order_amount_cents,
+            "order_no": order_no,
+        },
+    )
+    if not data.get("available"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": data.get("code") or "COUPON_UNAVAILABLE",
+                "message": data.get("message") or "优惠券不可用，请更换优惠券后重试",
+            },
+        )
+    return _coupon_from_internal(data)
+
+
+async def reserve_coupon(customer_account: str, coupon_id: int, *, order_amount_cents: int, order_no: str) -> CouponResponse:
+    data = await _internal_coupon_request(
+        "reserve",
+        {
+            "coupon_id": coupon_id,
+            "customer_account": customer_account,
+            "product_type": "check",
+            "order_amount_cents": order_amount_cents,
+            "order_no": order_no,
+        },
+    )
+    if not data.get("available"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": data.get("code") or "COUPON_UNAVAILABLE", "message": data.get("message") or "优惠券不可用"},
+        )
+    return _coupon_from_internal(data)
+
+
+async def release_coupon(coupon_id: int, order_no: str) -> bool:
+    data = await _internal_coupon_request("release", {"coupon_id": coupon_id, "order_no": order_no})
+    return bool(data.get("released"))
+
+
+async def consume_coupon(coupon_id: int, order_no: str) -> bool:
+    data = await _internal_coupon_request("consume", {"coupon_id": coupon_id, "order_no": order_no})
+    if not data.get("consumed"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": data.get("code") or "COUPON_CONSUME_FAILED", "message": data.get("message") or "优惠券核销失败"},
+        )
+    return True
+
+
+async def find_available_coupon(customer_account: str, coupon_id: int, order_amount_cents: int) -> CouponResponse | None:
+    try:
+        return await validate_coupon(customer_account, coupon_id, order_amount_cents=order_amount_cents)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_400_BAD_REQUEST:
+            return None
+        raise
 
 
 async def mark_coupon_used(coupon_id: int) -> bool:

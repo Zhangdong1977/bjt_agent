@@ -28,7 +28,7 @@ const marqueeVisible = ref(false)
 const officialSiteUrl = 'https://aibjt.com/'
 
 onMounted(() => {
-  void billingStore.fetchWallet()
+  void billingStore.remindLowBalance('login')
   // 拉取未读公告：驱动顶栏角标 + 自动弹窗
   void announcementStore.initialize()
 })
@@ -68,7 +68,7 @@ function goOfficialSite() {
             :style="{ backgroundImage: `url(${iconWallet})` }"
             @click="rechargeOpen = true"
           >
-            <span class="metric-value">{{ billingStore.balanceWen }}点</span>
+            <span class="metric-value">充值 {{ billingStore.rechargeBalance.toFixed(2) }} / 赠送 {{ billingStore.giftBalance.toFixed(2) }}点</span>
           </span>
           <span
             class="metric metric--pill metric--points"

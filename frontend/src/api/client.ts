@@ -35,6 +35,7 @@ import type {
   OrderPreview,
   BillingOrder,
   ConsumptionRecord,
+  ConsumptionAllocation,
   PaymentQr,
   OrderStatus,
   ProfileUpdateRequest,
@@ -390,6 +391,11 @@ export const billingApi = {
   }): Promise<ConsumptionRecord[]> {
     const response = await apiClient.get("/billing/consumptions", { params });
     return response.data.consumptions;
+  },
+
+  async getConsumptionAllocations(consumptionId: string): Promise<ConsumptionAllocation[]> {
+    const response = await apiClient.get(`/billing/consumptions/${consumptionId}/allocations`);
+    return response.data.allocations;
   },
 };
 

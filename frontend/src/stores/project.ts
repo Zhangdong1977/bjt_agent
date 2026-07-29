@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
+import { useBillingStore } from "@/stores/billing";
 import {
   projectsApi,
   documentsApi,
@@ -375,6 +376,7 @@ export const useProjectStore = defineStore("project", () => {
 
   async function startReview() {
     if (!currentProject.value) return;
+    await useBillingStore().remindLowBalance("task", true);
     reviewLoading.value = true;
     resetAgentSteps();
     try {

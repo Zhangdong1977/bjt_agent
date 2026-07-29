@@ -57,9 +57,10 @@ async def _poll_async(session_factory) -> dict:
     - 单条订单异常不中断整批——一条出错不影响其它订单的入账。
     - complete_order 内部 status='completed' 提前返回 + with_for_update 钱包行锁，幂等可重入。
     """
-    from backend.models import BillingOrder, User, UserWallet
+    from backend.models import BillingOrder, User
     from backend.services import operate_recharge
-    from backend.services.billing import complete_order, ensure_wallet
+    from backend.services.billing import complete_order
+    from backend.services.operate_coupons import release_coupon
     from backend.utils.time_utils import utc_now
 
     processed = {"completed": 0, "cancelled": 0, "skipped": 0, "errors": 0}
@@ -67,18 +68,26 @@ async def _poll_async(session_factory) -> dict:
 
     async with session_factory() as db:
         result = await db.execute(
-            select(BillingOrder).where(
+            select(BillingOrder.id).where(
                 BillingOrder.status == "pending",
                 BillingOrder.external_order_no.is_not(None),
                 BillingOrder.created_at >= cutoff,
             )
         )
-        orders = result.scalars().all()
+        order_ids = result.scalars().all()
 
-        if not orders:
+        if not order_ids:
             return processed
 
-        for order in orders:
+        for order_id in order_ids:
+            order = (
+                await db.execute(select(BillingOrder).where(BillingOrder.id == order_id))
+            ).scalar_one_or_none()
+            if order is None or order.status != "pending":
+                processed["skipped"] += 1
+                await db.rollback()
+                continue
+            order_no = order.order_no
             try:
                 pay_status = await operate_recharge.query_order_status(order.external_order_no)
 
@@ -94,23 +103,14 @@ async def _poll_async(session_factory) -> dict:
                             order.order_no, order.user_id,
                         )
                         processed["skipped"] += 1
+                        await db.rollback()
                         continue
-
-                    wallet_result = await db.execute(
-                        select(UserWallet)
-                        .where(UserWallet.user_id == order.user_id)
-                        .with_for_update()
-                    )
-                    wallet = wallet_result.scalar_one_or_none()
-                    if wallet is None:
-                        wallet = await ensure_wallet(db, order.user_id)
 
                     was_expired = order.expires_at < utc_now()
                     await complete_order(
                         db,
                         user,
                         order,
-                        wallet=wallet,
                         allow_expired_if_paid=True,  # 交行收了钱就必须给点
                     )
                     await db.flush()
@@ -123,6 +123,8 @@ async def _poll_async(session_factory) -> dict:
 
                 elif pay_status == "failure":
                     order.status = "cancelled"
+                    if order.coupon_id is not None:
+                        await release_coupon(order.coupon_id, order.order_no)
                     await db.flush()
                     processed["cancelled"] += 1
                     logger.warning(
@@ -133,21 +135,51 @@ async def _poll_async(session_factory) -> dict:
                     # 交行还没收到付款，订单过期则置 cancelled（清理未付过期单）
                     if order.expires_at < utc_now():
                         order.status = "cancelled"
+                        if order.coupon_id is not None:
+                            await release_coupon(order.coupon_id, order.order_no)
                         await db.flush()
                         processed["cancelled"] += 1
                     else:
                         processed["skipped"] += 1
 
+                # Commit each order independently. One database or network
+                # failure must not poison the session for the remaining batch,
+                # and row locks should not be held across later gateway calls.
+                await db.commit()
+
             except Exception as e:
                 processed["errors"] += 1
+                await db.rollback()
                 # 单条出错不影响其它订单；下一轮 beat 再扫这条
                 logger.exception(
-                    "[billing-poll] order %s sync failed: %s", order.order_no, e
+                    "[billing-poll] order %s sync failed: %s", order_no, e
                 )
 
-        await db.commit()
-
     logger.info(
-        "[billing-poll] scanned %d orders: %s", len(orders), processed
+        "[billing-poll] scanned %d orders: %s", len(order_ids), processed
     )
     return processed
+
+
+@celery_app.task(bind=True, name="backend.tasks.billing_tasks.expire_credit_lots")
+def expire_credit_lots(self) -> dict:
+    """Expire independently dated recharge/gift lots and update wallet totals."""
+    return asyncio.run(_run_with_session(_expire_credit_lots_async))
+
+
+async def _expire_credit_lots_async(session_factory) -> dict:
+    from backend.services.sales import expire_all_due_lots
+
+    totals = {"users": 0, "lots": 0}
+    # Drain bounded batches. A normal hourly run should complete in one pass;
+    # the loop also handles a large first cutover without one unbounded query.
+    while True:
+        async with session_factory() as db:
+            batch = await expire_all_due_lots(db, user_limit=500)
+            await db.commit()
+        totals["users"] += batch["users"]
+        totals["lots"] += batch["lots"]
+        if batch["users"] < 500:
+            break
+    logger.info("[billing-expiry] expired lots: %s", totals)
+    return totals

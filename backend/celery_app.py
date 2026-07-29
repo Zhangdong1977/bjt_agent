@@ -73,6 +73,7 @@ celery_app.conf.update(
         "backend.tasks.experience_tasks.process_skill_extraction": {"queue": "review"},
         "backend.tasks.blind_check_tasks.run_blind_check": {"queue": "review"},
         "backend.tasks.billing_tasks.poll_pending_recharge_orders": {"queue": "review"},
+        "backend.tasks.billing_tasks.expire_credit_lots": {"queue": "review"},
     },
     # 定时任务调度。beat 进程在 prod 单例跑（bjt-proc.sh start_celery_beat），
     # 派发的任务路由到 review 队列由 3 节点 celery worker 消费。
@@ -89,6 +90,10 @@ celery_app.conf.update(
             # Celery a worker-level graceful window; time_limit is the hard backstop.
             "time_limit": 6000,
             "soft_time_limit": 5700,
+        },
+        "expire-credit-lots": {
+            "task": "backend.tasks.billing_tasks.expire_credit_lots",
+            "schedule": 3600.0,
         },
         "backend.tasks.duplicate_tasks.run_duplicate_check": {
             "time_limit": 6000,
@@ -115,6 +120,10 @@ celery_app.conf.update(
         "backend.tasks.billing_tasks.poll_pending_recharge_orders": {
             "time_limit": 120,
             "soft_time_limit": 90,
+        },
+        "backend.tasks.billing_tasks.expire_credit_lots": {
+            "time_limit": 600,
+            "soft_time_limit": 540,
         },
     },
 )

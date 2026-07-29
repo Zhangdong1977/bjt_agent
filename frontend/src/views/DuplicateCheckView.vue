@@ -9,6 +9,7 @@ import { documentsApi, duplicateApi } from '@/api/client'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
 import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
+import { useBillingStore } from '@/stores/billing'
 import type { Document, DocumentContent } from '@/types'
 import { isLegacyDocFile, legacyDocWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
 import illustration from '@/assets/images/ui/home-illustration.png'
@@ -63,6 +64,7 @@ const uploadRoles = [...sides, batchSide, ...sourceRoles]
 
 const router = useRouter()
 const projectStore = useProjectStore()
+const billingStore = useBillingStore()
 const authStore = useAuthStore()
 const projectName = ref('')
 const projectDesc = ref('')
@@ -236,6 +238,7 @@ async function startDuplicateCheck() {
     )
     return
   }
+  await billingStore.remindLowBalance('task', true)
   submitting.value = true
   let createdProjectId: string | null = null
   let documentsAttached = false

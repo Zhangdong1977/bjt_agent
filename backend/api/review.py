@@ -100,15 +100,19 @@ async def start_review(
     await verify_project_ownership(project_id, current_user, db)
     # 内部用户与外部用户统一走余额校验（便于内部测试计费/积分）。
     from backend.services.billing import ensure_wallet
+    from backend.services.sales import decimal_value, expire_user_lots, get_sales_config
 
-    wallet = await ensure_wallet(db, current_user.id)
-    if wallet.balance_wen <= 0:
+    wallet = await ensure_wallet(db, current_user.id, for_update=True)
+    await expire_user_lots(db, wallet)
+    available_points = decimal_value(wallet.recharge_balance_points) + decimal_value(wallet.gift_balance_points)
+    if available_points <= 0:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={
                 "code": "INSUFFICIENT_BALANCE",
                 "message": "余额不足，请先充值后再发起 AI 检查",
                 "balance_wen": wallet.balance_wen,
+                "available_points": float(available_points),
             },
         )
 
@@ -137,11 +141,13 @@ async def start_review(
         await db.flush()
 
     # Create new review task
+    sales_config = await get_sales_config(db)
     task = ReviewTask(
         project_id=project_id,
         task_type="review",
         status="pending",
         max_concurrency=concurrency,
+        billing_multiplier=sales_config.sales_multiplier,
     )
     db.add(task)
     await db.flush()

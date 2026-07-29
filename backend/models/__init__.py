@@ -18,6 +18,14 @@ from .review_session import ReviewSession
 from .ai_usage_record import AiUsageRecord
 from .ai_usage_task_summary import AiUsageTaskSummary
 from .billing import BillingOrder, ConsumptionRecord, UserWallet, WalletTransaction
+from .sales import (
+    SalesConfig,
+    SalesPackage,
+    GrantBatch,
+    CreditLot,
+    PointLedgerEntry,
+    ConsumptionAllocation,
+)
 from .announcement import SystemAnnouncement, SystemAnnouncementRead
 from .system_maintenance import SystemMaintenance, MAINTENANCE_ROW_ID
 from .blind_check_task import BlindCheckTask
@@ -54,6 +62,12 @@ __all__ = [
     "ConsumptionRecord",
     "UserWallet",
     "WalletTransaction",
+    "SalesConfig",
+    "SalesPackage",
+    "GrantBatch",
+    "CreditLot",
+    "PointLedgerEntry",
+    "ConsumptionAllocation",
     "SystemAnnouncement",
     "SystemAnnouncementRead",
     "SystemMaintenance",

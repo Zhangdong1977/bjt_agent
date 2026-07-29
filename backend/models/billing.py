@@ -26,6 +26,12 @@ class UserWallet(Base):
     )
     balance_wen: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     points: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    recharge_balance_points: Mapped[float] = mapped_column(
+        Numeric(16, 2), nullable=False, default=0, server_default="0"
+    )
+    gift_balance_points: Mapped[float] = mapped_column(
+        Numeric(16, 2), nullable=False, default=0, server_default="0"
+    )
 
     user: Mapped["User"] = relationship("User")
 
@@ -60,10 +66,21 @@ class BillingOrder(Base):
     order_amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     actual_payment_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     package_balance_wen: Mapped[int] = mapped_column(Integer, nullable=False)
+    recharge_points: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False, default=0, server_default="0")
+    gift_points: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False, default=0, server_default="0")
+    total_points: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False, default=0, server_default="0")
+    validity_months: Mapped[int] = mapped_column(Integer, nullable=False, default=12, server_default="12")
+    unit_value_yuan: Mapped[float | None] = mapped_column(Numeric(16, 8), nullable=True)
+    recharge_balance_before: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
+    gift_balance_before: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
+    recharge_balance_after: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
+    gift_balance_after: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
 
     coupon_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     coupon_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     coupon_amount_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    coupon_benefit_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    coupon_gift_points: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False, default=0, server_default="0")
     points_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     points_amount_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
@@ -93,3 +110,16 @@ class ConsumptionRecord(Base):
     cost_cny: Mapped[float | None] = mapped_column(Numeric(12, 6), nullable=True)
     balance_after_wen: Mapped[int] = mapped_column(Integer, nullable=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cost_points: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    sales_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    sales_points: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
+    gift_points_used: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False, default=0, server_default="0")
+    recharge_points_used: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False, default=0, server_default="0")
+    recharge_balance_before: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
+    gift_balance_before: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
+    recharge_balance_after: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
+    gift_balance_after: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
+    weighted_unit_value_yuan: Mapped[float | None] = mapped_column(Numeric(16, 8), nullable=True)
+    folded_income_yuan: Mapped[float | None] = mapped_column(Numeric(16, 6), nullable=True)
+    profit_yuan: Mapped[float | None] = mapped_column(Numeric(16, 6), nullable=True)
+    profit_margin: Mapped[float | None] = mapped_column(Numeric(12, 6), nullable=True)

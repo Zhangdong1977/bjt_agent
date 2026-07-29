@@ -852,15 +852,19 @@ async def start_duplicate_check(
         )
 
     from backend.services.billing import ensure_wallet
+    from backend.services.sales import decimal_value, expire_user_lots, get_sales_config
 
-    wallet = await ensure_wallet(db, current_user.id)
-    if wallet.balance_wen <= 0:
+    wallet = await ensure_wallet(db, current_user.id, for_update=True)
+    await expire_user_lots(db, wallet)
+    available_points = decimal_value(wallet.recharge_balance_points) + decimal_value(wallet.gift_balance_points)
+    if available_points <= 0:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={
                 "code": "INSUFFICIENT_BALANCE",
                 "message": "余额不足，请先充值后再发起 AI 查重",
                 "balance_wen": wallet.balance_wen,
+                "available_points": float(available_points),
             },
         )
 
@@ -888,6 +892,7 @@ async def start_duplicate_check(
         claims.get("concurrency") or get_settings().max_sub_agent_concurrency
     )
     feature_snapshot = build_duplicate_feature_snapshot(settings)
+    sales_config = await get_sales_config(db)
     task = ReviewTask(
         project_id=project.id,
         task_type="duplicate",
@@ -896,6 +901,7 @@ async def start_duplicate_check(
         duplicate_algorithm_version=feature_snapshot.get("algorithm_version"),
         status="pending",
         max_concurrency=max(1, int(concurrency)),
+        billing_multiplier=sales_config.sales_multiplier,
     )
     db.add(task)
     await db.commit()

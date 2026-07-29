@@ -29,7 +29,8 @@ const PACKAGE_ICONS: Array<{ keys: string[]; icon: string }> = [
 ];
 
 function iconFor(pkg: RechargePackage): string {
-  const haystack = `${pkg.code || ""} ${pkg.name || ""}`.toLowerCase();
+  if (pkg.icon_url && /^(https?:|data:|\/)/.test(pkg.icon_url)) return pkg.icon_url;
+  const haystack = `${pkg.code || ""} ${pkg.name || ""} ${pkg.icon_url || ""}`.toLowerCase();
   for (const entry of PACKAGE_ICONS) {
     if (entry.keys.some((k) => haystack.includes(k.toLowerCase()))) {
       return entry.icon;
@@ -69,13 +70,13 @@ const selectedPackage = computed(() =>
 
 const availableCoupons = computed(() =>
   coupons.value
-    .filter((coupon) => coupon.status === "未使用" && coupon.amount_cents > 0)
+    .filter((coupon) => coupon.status === "未使用" && (coupon.amount_cents > 0 || coupon.gift_points > 0))
     .sort((a, b) => couponExpireTime(a) - couponExpireTime(b)),
 );
 
 const couponOptions = computed(() =>
   availableCoupons.value.map((coupon) => ({
-    label: `${formatYuan(coupon.amount_cents)} 优惠券（有效期至 ${formatDate(coupon.valid_until)}）`,
+    label: `${coupon.benefit_type === "gift" ? `赠送${coupon.gift_points}点` : `${formatYuan(coupon.amount_cents)}优惠`}（门槛${formatYuan(coupon.threshold_amount_cents)}，有效期至 ${formatDate(coupon.valid_until)}）`,
     value: coupon.id,
   })),
 );
@@ -98,8 +99,9 @@ function couponExpireTime(coupon: Coupon) {
 }
 
 function getApiErrorMessage(err: unknown, fallback: string) {
-  const error = err as { response?: { data?: { detail?: string } } };
-  return error.response?.data?.detail || fallback;
+  const error = err as { response?: { data?: { detail?: string | { message?: string } } } };
+  const detail = error.response?.data?.detail;
+  return typeof detail === "string" ? detail : detail?.message || fallback;
 }
 
 function normalizeUsePoints(value: number | null | undefined) {
@@ -145,7 +147,7 @@ async function importCoupon() {
     const redeemed =
       result.coupon ??
       result.coupons.find((coupon) => (coupon.code || "").trim().toLowerCase() === code.toLowerCase());
-    const canUseRedeemed = redeemed?.status === "未使用" && redeemed.amount_cents > 0;
+    const canUseRedeemed = redeemed?.status === "未使用" && (redeemed.amount_cents > 0 || redeemed.gift_points > 0);
     if (canUseRedeemed) {
       selectedCouponId.value = redeemed.id;
     } else if (
@@ -175,7 +177,8 @@ async function refreshPreview() {
       use_points: requestedPoints,
     });
     usePoints.value = preview.value.points_used;
-  } catch {
+  } catch (err) {
+    if (selectedCouponId.value) message.warning(getApiErrorMessage(err, "该优惠券暂不可用，已为你取消选择"));
     selectedCouponId.value = null;
     preview.value = await billingApi.previewOrder({
       package_code: selectedPackageCode.value,
@@ -314,7 +317,8 @@ watch(
                 class="package-divider"
                 :style="{ backgroundImage: `url(${dividerUrl})` }"
               ></span>
-              <span class="package-balance">{{ item.balance_wen }}点</span>
+              <span class="package-balance">{{ item.total_points }}点</span>
+              <span class="package-breakdown">充值{{ item.recharge_points }} + 赠送{{ item.gift_points }}</span>
               <span class="package-price">{{ formatYuan(item.amount_cents) }}</span>
               <span v-if="item.caution" class="package-caution">{{ item.caution }}</span>
             </button>
@@ -333,7 +337,7 @@ watch(
               class="balance-item balance-item--pill"
               :style="{ backgroundImage: `url(${iconWallet})` }"
             >
-              <span>{{ preview?.current_balance_wen ?? 0 }}点</span>
+              <span>充值 {{ preview?.current_recharge_points ?? 0 }} / 赠送 {{ preview?.current_gift_points ?? 0 }}点</span>
             </span>
             <span
               class="balance-item balance-item--pill"
@@ -350,6 +354,13 @@ watch(
           <div class="summary-row">
             <span>套餐价格</span>
             <strong>{{ preview ? formatYuan(preview.order_amount_cents) : "-" }}</strong>
+          </div>
+          <div class="summary-row">
+            <span>到账点数</span>
+            <strong>{{ preview?.total_points ?? selectedPackage?.total_points ?? 0 }}点</strong>
+          </div>
+          <div v-if="preview?.coupon_gift_points" class="summary-row">
+            <span>赠送券额外点数</span><strong>+{{ preview.coupon_gift_points }}点</strong>
           </div>
 
           <label class="field-label">导入优惠券</label>
@@ -538,6 +549,12 @@ watch(
   font-weight: 700;
   color: #D7041A;
   letter-spacing: 0.5px;
+}
+
+.package-breakdown {
+  margin-top: -4px;
+  color: #8a8f99;
+  font-size: 11px;
 }
 
 .package-price {

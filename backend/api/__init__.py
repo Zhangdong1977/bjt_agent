@@ -18,6 +18,7 @@ from .announcements import router as announcements_router
 from .system_status import router as system_status_router
 from .blind_check import router as blind_check_router
 from .vsto_tools import router as vsto_tools_router
+from .admin_sales import router as admin_sales_router
 
 __all__ = [
     "auth_router",
@@ -39,4 +40,5 @@ __all__ = [
     "system_status_router",
     "blind_check_router",
     "vsto_tools_router",
+    "admin_sales_router",
 ]

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Integer, String, ForeignKey
+from sqlalchemy import DateTime, Integer, Numeric, String, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -42,6 +42,7 @@ class ReviewTask(Base):
     error_message: Mapped[str | None] = mapped_column(nullable=True)
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)  # Track frontend heartbeat - if no heartbeat for 20+ seconds, agent will cancel
     max_concurrency: Mapped[int] = mapped_column(Integer, default=2, server_default="2", nullable=False)
+    billing_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
 
     # Relationships
     project: Mapped["Project"] = relationship("Project", back_populates="review_tasks")

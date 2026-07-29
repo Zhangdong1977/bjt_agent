@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { message } from "ant-design-vue";
 import { billingApi, profileApi } from "@/api/client";
 import { useAuthStore } from "@/stores/auth";
-import type { BillingOrder, ConsumptionRecord, Coupon, User } from "@/types";
+import type { BillingOrder, ConsumptionAllocation, ConsumptionRecord, Coupon, User } from "@/types";
 
 const authStore = useAuthStore();
 const isInterior = computed(() => authStore.isInteriorUser);
@@ -30,6 +30,8 @@ const coupons = ref<Coupon[]>([]);
 const loading = ref(false);
 const couponCode = ref("");
 const couponImporting = ref(false);
+const allocationOpen = ref(false);
+const allocations = ref<ConsumptionAllocation[]>([]);
 
 const orderFilters = reactive({
   start_date: "",
@@ -64,6 +66,8 @@ const orderColumns = computed(() => [
   { title: "订单金额", dataIndex: "order_amount_cents" },
   { title: "实际付款金额", dataIndex: "actual_payment_cents" },
   { title: "优惠券", dataIndex: "coupon_amount_cents" },
+  { title: "充值点数", dataIndex: "recharge_points" },
+  { title: "赠送点数", dataIndex: "gift_points" },
   { title: "订单有效期", dataIndex: "expires_at" },
   { title: "充值后余额", dataIndex: "current_balance_wen" },
 ]);
@@ -73,15 +77,19 @@ const consumptionColumns = computed(() => [
   ...ownershipColumns,
   { title: "消费时间", dataIndex: "consumed_at" },
   { title: "项目名称", dataIndex: "project_name" },
-  { title: "消耗点数", dataIndex: "consumed_wen" },
+  { title: "销售点数", dataIndex: "sales_points" },
+  { title: "赠送点数扣除", dataIndex: "gift_points_used" },
+  { title: "充值点数扣除", dataIndex: "recharge_points_used" },
   { title: "获得积分", dataIndex: "earned_points" },
   { title: "使用人", dataIndex: "used_by" },
+  { title: "扣点详情", dataIndex: "actions", width: 100 },
 ]);
 
 const couponColumns = [
   { title: "序号", dataIndex: "index", width: 70 },
   { title: "兑换码", dataIndex: "code" },
   { title: "优惠券金额", dataIndex: "amount_cents" },
+  { title: "赠送点数", dataIndex: "gift_points" },
   { title: "有效期", dataIndex: "valid_until" },
   { title: "状态", dataIndex: "status" },
 ];
@@ -128,8 +136,9 @@ function couponStatusClass(status: string) {
 }
 
 function getApiErrorMessage(err: unknown, fallback: string) {
-  const error = err as { response?: { data?: { detail?: string } } };
-  return error.response?.data?.detail || fallback;
+  const error = err as { response?: { data?: { detail?: string | { message?: string } } } };
+  const detail = error.response?.data?.detail;
+  return typeof detail === "string" ? detail : detail?.message || fallback;
 }
 
 async function loadProfile() {
@@ -210,7 +219,7 @@ async function importCoupon() {
     const result = await billingApi.redeemCoupon(code);
     coupons.value = result.coupons;
     couponCode.value = "";
-    if (result.coupon?.status === "未使用" && result.coupon.amount_cents > 0) {
+    if (result.coupon?.status === "未使用" && (result.coupon.amount_cents > 0 || result.coupon.gift_points > 0)) {
       message.success("优惠券已导入，可在充值时使用");
     } else {
       message.success(`优惠券已导入，当前状态：${result.coupon?.status ?? "未知"}`);
@@ -220,6 +229,11 @@ async function importCoupon() {
   } finally {
     couponImporting.value = false;
   }
+}
+
+async function showAllocations(record: ConsumptionRecord) {
+  allocations.value = await billingApi.getConsumptionAllocations(record.id);
+  allocationOpen.value = true;
 }
 
 async function loadAll() {
@@ -356,11 +370,14 @@ onMounted(() => {
                   <template v-else-if="column.dataIndex === 'consumed_at'">
                     {{ formatDateTime(record.consumed_at) }}
                   </template>
-                  <template v-else-if="column.dataIndex === 'consumed_wen'">
-                    {{ record.consumed_wen }}点
+                  <template v-else-if="column.dataIndex === 'sales_points' || column.dataIndex === 'gift_points_used' || column.dataIndex === 'recharge_points_used'">
+                    {{ Number(record[column.dataIndex] || 0).toFixed(2) }}点
                   </template>
                   <template v-else-if="column.dataIndex === 'earned_points'">
                     {{ record.earned_points }}分
+                  </template>
+                  <template v-else-if="column.dataIndex === 'actions'">
+                    <a-button type="link" size="small" @click="showAllocations(record)">查看</a-button>
                   </template>
                 </template>
               </a-table>
@@ -393,7 +410,10 @@ onMounted(() => {
                 {{ record.code || "-" }}
               </template>
               <template v-if="column.dataIndex === 'amount_cents'">
-                {{ formatCents(record.amount_cents) }}
+                {{ record.benefit_type === 'cash' ? formatCents(record.amount_cents) : '-' }}
+              </template>
+              <template v-else-if="column.dataIndex === 'gift_points'">
+                {{ record.benefit_type === 'gift' ? `${record.gift_points}点` : '-' }}
               </template>
               <template v-else-if="column.dataIndex === 'valid_until'">
                 {{ formatDate(record.valid_until) }}
@@ -407,6 +427,15 @@ onMounted(() => {
           </a-table>
         </a-tab-pane>
       </a-tabs>
+      <a-modal v-model:open="allocationOpen" title="本次消费扣点明细" :footer="null" width="760px">
+        <a-table :data-source="allocations" row-key="id" size="small" :pagination="false">
+          <a-table-column title="点数类型" data-index="lot_type"><template #default="{ text }">{{ text === 'gift' ? '赠送点数' : '充值点数' }}</template></a-table-column>
+          <a-table-column title="扣除点数" data-index="points" />
+          <a-table-column title="每点折合价值" data-index="unit_value_yuan"><template #default="{ text }">￥{{ Number(text || 0).toFixed(6) }}</template></a-table-column>
+          <a-table-column title="折合收入" data-index="folded_income_yuan"><template #default="{ text }">￥{{ Number(text || 0).toFixed(2) }}</template></a-table-column>
+          <a-table-column title="该批次到期时间" data-index="expires_at"><template #default="{ text }">{{ formatDateTime(text) }}</template></a-table-column>
+        </a-table>
+      </a-modal>
     </a-spin>
   </div>
 </template>
