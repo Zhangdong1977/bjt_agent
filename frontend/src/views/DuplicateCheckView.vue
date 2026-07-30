@@ -37,13 +37,13 @@ interface UploadState {
 }
 
 const sides: SideConfig[] = [
-  { role: 'duplicate_left', title: 'A 方技术应标书', hint: '上传一份 A 方技术应标书' },
-  { role: 'duplicate_right', title: 'B 方技术应标书', hint: '上传一份 B 方技术应标书' },
+  { role: 'duplicate_left', title: 'A 方技术投标文件', hint: '上传一份 A 方技术投标文件' },
+  { role: 'duplicate_right', title: 'B 方技术投标文件', hint: '上传一份 B 方技术投标文件' },
 ]
 const batchSide: SideConfig = {
   role: 'duplicate_bid',
-  title: '批量应标书',
-  hint: '添加一份应标书（3-10 份）',
+  title: '批量投标文件',
+  hint: '添加一份投标文件（3-10 份）',
   multiple: true,
 }
 const sourceRoles: SideConfig[] = [
@@ -233,8 +233,8 @@ async function startDuplicateCheck() {
   if (!canStart.value) {
     message.warning(
       duplicateMode.value === 'batch'
-        ? '请准备 3-10 份应标书并等待解析完成'
-        : '请确保 A、B 两份技术应标书均已解析完成',
+        ? '请准备 3-10 份投标文件并等待解析完成'
+        : '请确保 A、B 两份技术投标文件均已解析完成',
     )
     return
   }
@@ -303,7 +303,7 @@ function formatBytes(value: number): string {
     <section class="card project-card">
       <div class="project-main">
         <h2>创建查重项目</h2>
-        <p>上传 A、B 两份技术应标书，由规则子代理并行检查重复内容。</p>
+        <p>上传 A、B 两份技术投标文件，由规则子代理并行检查重复内容。</p>
         <label>项目名称<span>*</span></label>
         <input v-model="projectName" maxlength="60" placeholder="请输入项目名称" />
         <label>项目描述<small>（可选）</small></label>
@@ -316,7 +316,7 @@ function formatBytes(value: number): string {
       <header>
         <img :src="iconFileTheme" alt="" />
         <div>
-          <h2>技术应标书查重</h2>
+          <h2>技术投标文件查重</h2>
           <p>每侧仅支持一份 PDF 或 Word（.docx），上传后自动解析。</p>
         </div>
       </header>
@@ -386,7 +386,7 @@ function formatBytes(value: number): string {
       <div v-else class="batch-members">
         <div class="batch-heading">
           <div>
-            <h3>批量应标书</h3>
+            <h3>批量投标文件</h3>
             <p>每份文档可填写投标人标签或使用匿名编号；解析失败的文档会保留并降级覆盖度。</p>
           </div>
           <span>{{ draftsFor('duplicate_bid').length }} / 10 份</span>
@@ -417,7 +417,7 @@ function formatBytes(value: number): string {
           <a-progress :percent="uploads.duplicate_bid.percent" :show-info="true" />
         </div>
         <button v-if="!uploads.duplicate_bid && draftsFor('duplicate_bid').length < 10" class="upload-button compact" @click="pick('duplicate_bid')">
-          + 添加应标书
+          + 添加投标文件
         </button>
       </div>
 
@@ -480,7 +480,7 @@ function formatBytes(value: number): string {
 
       <div class="start-area">
         <span v-if="!canStart">
-          {{ duplicateMode === 'batch' ? '请准备 3-10 份已解析（或解析失败可降级）的应标书' : '两份文件均解析完成后可开始查重' }}
+          {{ duplicateMode === 'batch' ? '请准备 3-10 份已解析（或解析失败可降级）的投标文件' : '两份文件均解析完成后可开始查重' }}
         </span>
         <button :disabled="!canStart || submitting" @click="startDuplicateCheck">
           {{ submitting ? '正在启动…' : '开始查重' }}

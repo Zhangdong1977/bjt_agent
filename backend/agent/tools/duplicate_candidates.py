@@ -15,7 +15,7 @@ from backend.services.duplicate_sources import DuplicateSourceIndex
 
 class DuplicateCandidateSearchTool(BaseTool):
     name = "search_duplicate_candidates"
-    description = "检索 A/B 技术应标书中相似的段落、表格或数字结构候选对"
+    description = "检索 A/B 技术投标文件中相似的段落、表格或数字结构候选对"
 
     def __init__(self, service: DuplicateCandidateService):
         self.service = service

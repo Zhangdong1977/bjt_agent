@@ -1,4 +1,4 @@
-"""比对工具，用于将应标书内容与招标书要求进行比对。"""
+"""比对工具，用于将投标文件内容与招标书要求进行比对。"""
 
 import json
 import re
@@ -13,12 +13,12 @@ from backend.services.llm_factory import create_llm_client
 # 比对提示词 - 增强版，支持位置提取
 COMPARISON_PROMPT = """你是一位专业的招投标合规分析师。
 
-请将以下招标要求与应标书内容进行比对，判断是否满足要求。
+请将以下招标要求与投标文件内容进行比对，判断是否满足要求。
 
 ## 招标要求：
 {requirement}
 
-## 应标书内容：
+## 投标文件内容：
 {bid_content}
 
 ## 严重程度定义（必须严格遵循）：
@@ -31,13 +31,13 @@ COMPARISON_PROMPT = """你是一位专业的招投标合规分析师。
 
 ## 可选要求的特殊处理：
 - 如果招标文件中使用"可"（可以）、"可选"（optional）、"可给予补充说明"等表述，说明该要求为可选
-- 对于可选要求：如果应标书未提供，评级为**次要**
+- 对于可选要求：如果投标文件未提供，评级为**次要**
 - 但如果可选要求引用了强制性标准（如"可补充说明行业/强制性标准"），则根据相关标准的严重程度评级
 - 如果招标文件中使用"必须"（must）、"应当"（shall）、"以...为准"（shall prevail）或"强制"（mandatory）等表述，则为强制性要求
 
 ## 你的任务：
-分析应标书内容是否满足招标要求。请考虑：
-1. 应标书是否明确回应了该要求？
+分析投标文件内容是否满足招标要求。请考虑：
+1. 投标文件是否明确回应了该要求？
 2. 回应是否完整详细？
 3. 是否存在遗漏或缺失信息？
 4. 根据招标文件措辞，这是强制性要求还是可选要求？
@@ -61,7 +61,7 @@ COMPARISON_PROMPT = """你是一位专业的招投标合规分析师。
 
 
 class ComparatorTool(BaseTool):
-    """使用LLM将应标书内容与招标要求进行比对的工具。"""
+    """使用LLM将投标文件内容与招标要求进行比对的工具。"""
 
     def __init__(self):
         """初始化比对工具。"""
@@ -97,7 +97,7 @@ class ComparatorTool(BaseTool):
                 },
                 "bid_content": {
                     "type": "string",
-                    "description": "相关的应标书内容（可包含行号提示）",
+                    "description": "相关的投标文件内容（可包含行号提示）",
                 },
                 "severity": {
                     "type": "string",
@@ -110,7 +110,7 @@ class ComparatorTool(BaseTool):
         }
 
     def _extract_location_from_content(self, bid_content: str) -> tuple[Optional[int], Optional[int]]:
-        """从应标书内容中提取页码和行号。
+        """从投标文件内容中提取页码和行号。
 
         查找以下模式：
         - "Line 23: content"
@@ -137,7 +137,7 @@ class ComparatorTool(BaseTool):
 
         Args:
             requirement: 招标要求
-            bid_content: 要比对的应标书内容
+            bid_content: 要比对的投标文件内容
             severity: 默认严重程度
 
         Returns:
@@ -147,13 +147,13 @@ class ComparatorTool(BaseTool):
             # 处理前从 bid_content 中提取位置提示
             hint_page, hint_line = self._extract_location_from_content(bid_content)
 
-            # 如果应标书内容为空，自动判定为不合规
+            # 如果投标文件内容为空，自动判定为不合规
             if not bid_content or bid_content == "N/A":
                 result = {
                     "is_compliant": False,
                     "severity": "critical",
-                    "explanation": "未提供该要求的应标书内容。",
-                    "suggestion": "请提供针对该要求的应标书相关内容。",
+                    "explanation": "未提供该要求的投标文件内容。",
+                    "suggestion": "请提供针对该要求的投标文件相关内容。",
                     "location_page": None,
                     "location_line": None,
                 }
@@ -262,7 +262,7 @@ class ComparatorTool(BaseTool):
             "is_compliant": False,
             "severity": default_severity,
             "explanation": f"无法解析 LLM 响应：{content[:200]}",
-            "suggestion": "请人工审核应标书内容。",
+            "suggestion": "请人工审核投标文件内容。",
             "location_page": None,
             "location_line": None,
         }

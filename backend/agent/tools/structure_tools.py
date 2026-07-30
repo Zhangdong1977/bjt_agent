@@ -202,7 +202,7 @@ def _create_shared_loaders(
 
 
 class DocumentTocTool(BaseTool):
-    """获取招标书或应标书的章节目录结构。"""
+    """获取招标书或投标文件的章节目录结构。"""
 
     def __init__(self, loaders: dict[str, dict[str, StructureDataLoader]]):
         self._loaders = loaders
@@ -213,12 +213,12 @@ class DocumentTocTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return """【文档目录工具】获取招标书或应标书的章节目录结构，返回所有标题及其层级关系。
+        return """【文档目录工具】获取招标书或投标文件的章节目录结构，返回所有标题及其层级关系。
 
 建议审核流程的第一步先调用此工具了解文档结构，然后再按章节逐步审查。
 
 参数说明：
-- "doc_type": "tender"（招标书）或 "bid"（应标书），必填
+- "doc_type": "tender"（招标书）或 "bid"（投标文件），必填
 - "doc_name": 可选，指定某个文件的目录。不指定则显示该类型所有文件的目录
 
 返回：章节列表，包含章节ID、标题、层级、子章节数量。"""
@@ -231,7 +231,7 @@ class DocumentTocTool(BaseTool):
                 "doc_type": {
                     "type": "string",
                     "enum": ["tender", "bid"],
-                    "description": "文档类型：tender=招标书，bid=应标书",
+                    "description": "文档类型：tender=招标书，bid=投标文件",
                 },
                 "doc_name": {
                     "type": "string",
@@ -258,7 +258,7 @@ class DocumentTocTool(BaseTool):
             else:
                 targets = doc_loaders
 
-            doc_label = "招标书" if doc_type == "tender" else "应标书"
+            doc_label = "招标书" if doc_type == "tender" else "投标文件"
             all_sections_data = []
             toc_lines = []
 
@@ -325,7 +325,7 @@ class SectionContentTool(BaseTool):
 使用 get_document_toc 获取章节ID后，用此工具读取具体章节内容进行审查。
 
 参数说明：
-- "doc_type": "tender"（招标书）或 "bid"（应标书），必填
+- "doc_type": "tender"（招标书）或 "bid"（投标文件），必填
 - "section_id": 章节ID（从 get_document_toc 获取），必填
 - "doc_name": 可选，指定某个文件。不指定则从该类型所有文件中查找
 - "include_subsections": 是否包含子章节内容，默认true
@@ -340,7 +340,7 @@ class SectionContentTool(BaseTool):
                 "doc_type": {
                     "type": "string",
                     "enum": ["tender", "bid"],
-                    "description": "文档类型：tender=招标书，bid=应标书",
+                    "description": "文档类型：tender=招标书，bid=投标文件",
                 },
                 "section_id": {
                     "type": "string",
@@ -406,7 +406,7 @@ class SectionContentTool(BaseTool):
             if not results:
                 return ToolResult(success=False, content="", error=f"未找到章节: {section_id}")
 
-            doc_label = "招标书" if doc_type == "tender" else "应标书"
+            doc_label = "招标书" if doc_type == "tender" else "投标文件"
 
             # 单文档：保持原行为（向后兼容，data 字段用 source_doc 单数）
             if len(results) == 1:
@@ -474,7 +474,7 @@ class SectionImagesTool(BaseTool):
 可使用 get_image_ocr 工具对具体图片进行OCR文字识别。
 
 参数说明：
-- "doc_type": "tender"（招标书）或 "bid"（应标书），必填
+- "doc_type": "tender"（招标书）或 "bid"（投标文件），必填
 - "section_id": 章节ID（从 get_document_toc 获取），必填
 - "doc_name": 可选，指定某个文件。不指定则从该类型所有文件中查找
 
@@ -488,7 +488,7 @@ class SectionImagesTool(BaseTool):
                 "doc_type": {
                     "type": "string",
                     "enum": ["tender", "bid"],
-                    "description": "文档类型：tender=招标书，bid=应标书",
+                    "description": "文档类型：tender=招标书，bid=投标文件",
                 },
                 "section_id": {
                     "type": "string",
@@ -520,7 +520,7 @@ class SectionImagesTool(BaseTool):
 
             all_images = []
             result_lines = []
-            doc_label = "招标书" if doc_type == "tender" else "应标书"
+            doc_label = "招标书" if doc_type == "tender" else "投标文件"
 
             for name, loader in targets.items():
                 images = loader.get_section_images(section_id)
@@ -567,10 +567,10 @@ class ImageOcrTool(BaseTool):
     def description(self) -> str:
         return """【图片OCR工具】对文档中的指定图片进行OCR文字识别，提取图片中的文字内容。
 
-当需要验证应标书中证明材料的文字内容时使用（如资质证书、业绩证明等）。
+当需要验证投标文件中证明材料的文字内容时使用（如资质证书、业绩证明等）。
 
 参数说明：
-- "doc_type": "tender"（招标书）或 "bid"（应标书），必填
+- "doc_type": "tender"（招标书）或 "bid"（投标文件），必填
 - "image_path": 图片文件路径（从 get_section_images 返回的 path 字段获取），必填
 
 返回：图片中识别到的文字内容。"""
@@ -583,7 +583,7 @@ class ImageOcrTool(BaseTool):
                 "doc_type": {
                     "type": "string",
                     "enum": ["tender", "bid"],
-                    "description": "文档类型：tender=招标书，bid=应标书",
+                    "description": "文档类型：tender=招标书，bid=投标文件",
                 },
                 "image_path": {
                     "type": "string",

@@ -829,9 +829,9 @@ async def start_duplicate_check(
         left = [d for d in documents if d.doc_type == "duplicate_left"]
         right = [d for d in documents if d.doc_type == "duplicate_right"]
     if len(left) != 1 or len(right) != 1:
-        raise HTTPException(status_code=400, detail="请分别上传一份 A 方和 B 方技术应标书")
+        raise HTTPException(status_code=400, detail="请分别上传一份 A 方和 B 方技术投标文件")
     if any(document.status != "parsed" for document in (left[0], right[0])):
-        raise HTTPException(status_code=400, detail="两份技术应标书必须全部解析完成")
+        raise HTTPException(status_code=400, detail="两份技术投标文件必须全部解析完成")
 
     identical = await asyncio.to_thread(
         find_identical_content_hash,
@@ -847,7 +847,7 @@ async def start_duplicate_check(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "code": "IDENTICAL_DOCUMENTS",
-                "message": f"两份技术应标书的{basis_text}内容完全相同，无需发起 AI 查重",
+                "message": f"两份技术投标文件的{basis_text}内容完全相同，无需发起 AI 查重",
             },
         )
 

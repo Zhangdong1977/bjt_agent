@@ -28,7 +28,7 @@ class Document(Base):
     )
     # owner_user_id：草稿文档（project_id IS NULL）的归属用户；关联项目后仍保留以备审计。
     owner_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    doc_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'tender' (招标书) or 'bid' (应标书)
+    doc_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'tender' (招标书) or 'bid' (投标文件)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_path: Mapped[str] = mapped_column(String(500), nullable=False)
     parsed_html_path: Mapped[str | None] = mapped_column(String(500), nullable=True)

@@ -2063,7 +2063,7 @@ class BidReviewAgent(BaseAgent):
             # Extract fields from section
             rule_desc = self._extract_field(section, '规则项')
             tender_req = self._extract_field(section, '招标书要求')
-            bid_content = self._extract_field(section, '应标书内容')
+            bid_content = self._extract_field(section, '投标文件内容')
             explanation = self._extract_field(section, '不符合项说明')
             severity = self._extract_severity_from_section(section)
 
@@ -2145,7 +2145,7 @@ class BidReviewAgent(BaseAgent):
   {{
     "requirement_key": "检查项编号",
     "requirement_content": "招标书要求",
-    "bid_content": "应标书内容",
+    "bid_content": "投标文件内容",
     "is_compliant": false,
     "severity": "critical/major/minor",
     "explanation": "不符合项说明"

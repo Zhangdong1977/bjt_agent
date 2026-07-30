@@ -101,7 +101,7 @@ function sourceBasisLabel(sourceBasis: string): string {
   const labels: Record<string, string> = {
     tender: '招标文件证据',
     public: '公开来源证据',
-    bidder_authored: '应标书原文证据',
+    bidder_authored: '投标文件原文证据',
     unknown: '来源待确认',
   }
   return labels[sourceBasis] || '来源待确认'

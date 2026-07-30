@@ -91,7 +91,7 @@ class DuplicateMasterAgent:
             {
                 "step_number": 1,
                 "step_type": "observation",
-                "content": "扫描技术应标书查重规则目录",
+                "content": "扫描技术投标文件查重规则目录",
             },
         )
         if not self.rule_library_path.is_dir():
