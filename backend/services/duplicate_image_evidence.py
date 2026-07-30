@@ -430,10 +430,7 @@ class SelectiveImageEvidenceService:
     @staticmethod
     async def _configured_vision(path: Path) -> str:
         from backend.config import get_settings
-        from backend.services.usage_recorder import record_vision_usage
-
         settings = get_settings()
-        started = time.perf_counter()
         provider = settings.image_understanding_provider
         try:
             if provider != "volcengine" and settings.llm_provider != "volcengine":
@@ -451,23 +448,8 @@ class SelectiveImageEvidenceService:
             )
             if not result.success:
                 raise RuntimeError(result.error or "vision failed")
-            record_vision_usage(
-                provider="volcengine_vision",
-                model=settings.volcengine_model,
-                status="success",
-                latency_ms=int((time.perf_counter() - started) * 1000),
-                image_size_bytes=path.stat().st_size,
-            )
             return result.content or ""
         except Exception as exc:
-            record_vision_usage(
-                provider=f"{provider}_vision",
-                model=(settings.volcengine_model if provider == "volcengine" else None),
-                status="error",
-                latency_ms=int((time.perf_counter() - started) * 1000),
-                image_size_bytes=path.stat().st_size,
-                error_message=str(exc),
-            )
             raise
 
 

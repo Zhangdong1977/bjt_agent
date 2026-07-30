@@ -74,6 +74,9 @@ celery_app.conf.update(
         "backend.tasks.blind_check_tasks.run_blind_check": {"queue": "review"},
         "backend.tasks.billing_tasks.poll_pending_recharge_orders": {"queue": "review"},
         "backend.tasks.billing_tasks.expire_credit_lots": {"queue": "review"},
+        "backend.tasks.billing_tasks.settle_task_billing": {"queue": "review"},
+        "backend.tasks.billing_tasks.dispatch_pending_task_outbox": {"queue": "review"},
+        "backend.tasks.billing_tasks.reconcile_task_billing": {"queue": "review"},
     },
     # 定时任务调度。beat 进程在 prod 单例跑（bjt-proc.sh start_celery_beat），
     # 派发的任务路由到 review 队列由 3 节点 celery worker 消费。
@@ -81,6 +84,18 @@ celery_app.conf.update(
         "poll-pending-recharge-orders": {
             "task": "backend.tasks.billing_tasks.poll_pending_recharge_orders",
             "schedule": 60.0,  # 每 60 秒扫一次 pending 真实交行订单
+        },
+        "expire-credit-lots": {
+            "task": "backend.tasks.billing_tasks.expire_credit_lots",
+            "schedule": 3600.0,
+        },
+        "dispatch-pending-task-outbox": {
+            "task": "backend.tasks.billing_tasks.dispatch_pending_task_outbox",
+            "schedule": 10.0,
+        },
+        "reconcile-task-billing": {
+            "task": "backend.tasks.billing_tasks.reconcile_task_billing",
+            "schedule": 120.0,
         },
     },
     task_annotations={
@@ -90,10 +105,6 @@ celery_app.conf.update(
             # Celery a worker-level graceful window; time_limit is the hard backstop.
             "time_limit": 6000,
             "soft_time_limit": 5700,
-        },
-        "expire-credit-lots": {
-            "task": "backend.tasks.billing_tasks.expire_credit_lots",
-            "schedule": 3600.0,
         },
         "backend.tasks.duplicate_tasks.run_duplicate_check": {
             "time_limit": 6000,
@@ -124,6 +135,18 @@ celery_app.conf.update(
         "backend.tasks.billing_tasks.expire_credit_lots": {
             "time_limit": 600,
             "soft_time_limit": 540,
+        },
+        "backend.tasks.billing_tasks.settle_task_billing": {
+            "time_limit": 180,
+            "soft_time_limit": 150,
+        },
+        "backend.tasks.billing_tasks.dispatch_pending_task_outbox": {
+            "time_limit": 120,
+            "soft_time_limit": 90,
+        },
+        "backend.tasks.billing_tasks.reconcile_task_billing": {
+            "time_limit": 300,
+            "soft_time_limit": 240,
         },
     },
 )

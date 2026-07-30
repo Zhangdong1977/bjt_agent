@@ -187,7 +187,12 @@ check("_spawn 存在", "_spawn" in rr_funcs)
 src_rr = open(os.path.join(_ROOT, "backend", "services", "usage_recorder.py"), encoding="utf-8").read()
 check("recorder 引用 get_usage_context", "get_usage_context" in src_rr)
 check("recorder 引用 estimate_cost", "estimate_cost" in src_rr)
-check("recorder fire-and-forget 吞异常", "no running loop" in src_rr and "ignored" in src_rr.lower())
+check(
+    "recorder 支持终态确认刷新且失败不静默",
+    "flush_task_usage" in rr_funcs
+    and "_pending_writes" in src_rr
+    and "failed after retries" in src_rr,
+)
 
 # B4. admin.py 路由
 tree_adm = _parse(os.path.join(_ROOT, "backend", "api", "admin.py"))

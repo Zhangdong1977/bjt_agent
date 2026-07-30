@@ -96,7 +96,8 @@ def estimate_cost(
         return None
 
     # LLM
-    rates = _LLM_RATES.get(provider)
+    normalized_provider = provider[:-7] if provider.endswith("_vision") else provider
+    rates = _LLM_RATES.get(normalized_provider)
     if rates is not None:
         return _llm_cost(
             rates, model,

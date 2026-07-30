@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     # 测试套餐（code="test"）显式开关。默认 False——fail-closed：即使漏配
     # BILLING_HIDDEN_PACKAGE_CODES，prod 也不会暴露 1 分钱测试套餐。dev 在 .env 设 true 开启。
     billing_test_package_enabled: bool = False  # env: BILLING_TEST_PACKAGE_ENABLED
+    # A user may run only this many billable top-level tasks at once.  This is
+    # separate from the sub-agent concurrency inside one task.
+    billing_max_active_tasks_per_user: int = 1
+    # Terminal tasks whose worker disappeared are finalized by reconciliation
+    # after this grace period, allowing late usage writes to land first.
+    billing_orphan_finalize_grace_seconds: int = 300
 
     # Database
     database_url: str = ""  # Must be set via environment variable

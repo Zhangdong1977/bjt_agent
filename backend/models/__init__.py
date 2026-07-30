@@ -17,7 +17,7 @@ from .review_share import ReviewShareToken
 from .review_session import ReviewSession
 from .ai_usage_record import AiUsageRecord
 from .ai_usage_task_summary import AiUsageTaskSummary
-from .billing import BillingOrder, ConsumptionRecord, UserWallet, WalletTransaction
+from .billing import BillingOrder, ConsumptionRecord, TaskDispatchOutbox, UserWallet, WalletTransaction
 from .sales import (
     SalesConfig,
     SalesPackage,
@@ -60,6 +60,7 @@ __all__ = [
     "AiUsageTaskSummary",
     "BillingOrder",
     "ConsumptionRecord",
+    "TaskDispatchOutbox",
     "UserWallet",
     "WalletTransaction",
     "SalesConfig",

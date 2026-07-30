@@ -6,7 +6,6 @@ from .documents import drafts_router as documents_drafts_router
 from .review import router as review_router
 from .duplicate_check import router as duplicate_check_router
 from .duplicate_check import capabilities_router as duplicate_check_capabilities_router
-from .review_sessions import router as review_sessions_router
 from .share import router as share_router
 from .knowledge import router as knowledge_router
 from .feedback import router as feedback_router
@@ -28,7 +27,6 @@ __all__ = [
     "review_router",
     "duplicate_check_router",
     "duplicate_check_capabilities_router",
-    "review_sessions_router",
     "share_router",
     "knowledge_router",
     "feedback_router",

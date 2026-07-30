@@ -297,11 +297,13 @@ def run_duplicate_check(self, task_id: str) -> dict:
         candidate_service = None
         try:
             async with session_factory() as db:
-                task = (
-                    await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
-                ).scalar_one_or_none()
-                if task is None or task.task_type != "duplicate":
-                    return {"status": "error", "message": "duplicate task not found"}
+                from backend.services.task_lifecycle import claim_task_for_execution
+
+                task = await claim_task_for_execution(
+                    db, task_kind="duplicate", task_id=task_id
+                )
+                if task is None:
+                    return {"status": "ignored", "message": "duplicate task already claimed or terminal"}
                 project = (
                     await db.execute(select(Project).where(Project.id == task.project_id))
                 ).scalar_one_or_none()
@@ -331,9 +333,6 @@ def run_duplicate_check(self, task_id: str) -> dict:
                         f"identical bidder documents detected ({basis}): {', '.join(ids)}"
                     )
 
-                task.status = "running"
-                task.started_at = utc_now()
-                task.last_heartbeat = utc_now()
                 task.duplicate_mode = prepared.mode
                 task.duplicate_feature_snapshot = snapshot
                 task.duplicate_algorithm_version = snapshot.get("algorithm_version")
@@ -529,11 +528,9 @@ def run_duplicate_check(self, task_id: str) -> dict:
                 task.duration_seconds = utc_seconds_between(task.started_at, task.completed_at)
                 await db.commit()
 
-            from backend.services.billing import settle_review_consumption
             from backend.services.usage_summary import refresh_task_summary
 
             await refresh_task_summary(task_id)
-            await settle_review_consumption(task_id)
             finding_count = int(result.get("stats", {}).get("finding_count", 0))
             _publish_event(
                 task_id,
@@ -579,7 +576,16 @@ def run_duplicate_check(self, task_id: str) -> dict:
             _publish_event(task_id, "error", {"message": str(exc)})
             return {"status": "error", "message": str(exc)}
         finally:
-            clear_task_cancelled(task_id)
+            from backend.services.task_lifecycle import finalize_task_usage
+
+            try:
+                await finalize_task_usage("duplicate", task_id)
+            except Exception:
+                logger.exception("Could not finalize duplicate usage: task=%s", task_id)
+            try:
+                clear_task_cancelled(task_id)
+            except Exception:
+                logger.exception("Could not clear duplicate cancellation flag: task=%s", task_id)
             await engine.dispose()
 
     return run_async(_run())

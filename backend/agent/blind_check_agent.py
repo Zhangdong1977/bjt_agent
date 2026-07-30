@@ -167,8 +167,10 @@ class BlindCheckAgent(BaseAgent):
             VstoRemoteTool(tool_name="word_check_objects", broker=broker),
             VstoRemoteTool(tool_name="word_check_signatures", broker=broker),
         ]
+        from backend.services.usage_recorder import instrument_llm_client
+
         super().__init__(
-            llm_client=create_llm_client(timeout=120.0),
+            llm_client=instrument_llm_client(create_llm_client(timeout=120.0)),
             system_prompt=BLIND_CHECK_SYSTEM_PROMPT,
             tools=tools,
             workspace_dir=str(get_settings().workspace_path / "blind-check" / task_id),

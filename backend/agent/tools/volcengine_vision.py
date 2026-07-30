@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +106,7 @@ Returns the AI's analysis of the image based on the prompt."""
                 error=f"Image file too large: {size_mb:.1f}MB. Maximum: 10MB",
             )
 
+        started = time.perf_counter()
         try:
             image_bytes = image_path.read_bytes()
             b64_data = base64.b64encode(image_bytes).decode("utf-8")
@@ -132,9 +134,41 @@ Returns the AI's analysis of the image based on the prompt."""
                 f"({file_size / 1024:.1f}KB), response length: {len(content)}"
             )
 
-            return ToolResult(success=True, content=content)
+            usage = getattr(response, "usage", None)
+            usage_data = {
+                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+            }
+            try:
+                from backend.services.usage_recorder import record_vision_usage
+
+                record_vision_usage(
+                    provider="volcengine_vision",
+                    model=self._model,
+                    status="success",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    image_size_bytes=file_size,
+                    **usage_data,
+                )
+            except Exception:
+                logger.exception("[VolcengineVisionTool] failed to schedule usage record")
+            return ToolResult(success=True, content=content, data=usage_data)
 
         except Exception as e:
             error_msg = f"Volcengine vision API error: {e}"
             logger.error(f"[VolcengineVisionTool] {error_msg}")
+            try:
+                from backend.services.usage_recorder import record_vision_usage
+
+                record_vision_usage(
+                    provider="volcengine_vision",
+                    model=self._model,
+                    status="error",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    image_size_bytes=file_size,
+                    error_message=str(e),
+                )
+            except Exception:
+                logger.exception("[VolcengineVisionTool] failed to schedule failed usage record")
             return ToolResult(success=False, error=error_msg)

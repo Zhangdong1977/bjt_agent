@@ -1,7 +1,7 @@
-"""用量记录器 — 组装一行 ai_usage_records + 异步落库 + 绝不影响业务。
+"""用量记录器 — 组装一行 ai_usage_records + 可确认刷新的异步落库。
 
-设计原则：fire-and-forget。任何异常都吞掉（仅 warning 日志），绝不阻塞或打断
-审查主流程。参考现有 `_write_llm_metrics` 的 `except: pass` 写法。
+正常调用不阻塞审查主流程；任务终态必须调用 ``flush_task_usage``，确认所有
+流水已持久化后才允许计费。写入失败会重试，并使结算保持 retry。
 
 调用方：
 - LLM：bid_review_agent.wrapped_generate 的 success/error/timeout 出口
@@ -10,7 +10,9 @@
 """
 
 import asyncio
+import functools
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -22,6 +24,9 @@ from backend.services.cost_calculator import estimate_cost
 from backend.services.usage_summary import refresh_task_summary
 
 logger = logging.getLogger(__name__)
+
+_pending_writes: dict[str, set[asyncio.Task]] = {}
+_write_failures: dict[str, list[BaseException]] = {}
 
 
 def _resolve_llm_model(settings, provider: str) -> Optional[str]:
@@ -87,7 +92,7 @@ def record_llm_usage(
         task_id=ctx.task_id, todo_id=ctx.todo_id,
         usage_date=datetime.now(timezone.utc).date(),
     )
-    _spawn(_write_one(record))
+    _spawn(record)
 
 
 def record_ocr_usage(
@@ -119,7 +124,7 @@ def record_ocr_usage(
         task_id=ctx.task_id, todo_id=ctx.todo_id,
         usage_date=datetime.now(timezone.utc).date(),
     )
-    _spawn(_write_one(record))
+    _spawn(record)
 
 
 def record_embedding_usage(
@@ -177,7 +182,7 @@ def record_embedding_usage(
         todo_id=ctx.todo_id,
         usage_date=datetime.now(timezone.utc).date(),
     )
-    _spawn(_write_one(record))
+    _spawn(record)
 
 
 def record_vision_usage(
@@ -187,6 +192,9 @@ def record_vision_usage(
     status: str,
     latency_ms: Optional[int],
     image_size_bytes: int | None = None,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    total_tokens: int = 0,
     error_message: Optional[str] = None,
 ) -> None:
     """Record a bounded VLM image call separately from text LLM calls."""
@@ -194,16 +202,27 @@ def record_vision_usage(
     ctx = get_usage_context()
     if ctx is None:
         return
+    cost = estimate_cost(
+        provider=provider,
+        model=model,
+        prompt_tokens=max(0, int(prompt_tokens)),
+        completion_tokens=max(0, int(completion_tokens)),
+        status=status,
+    ) if status == "success" else None
     record = AiUsageRecord(
         usage_type="vision",
         provider=provider,
         model=model,
         vision_calls=1,
         vision_images=1,
+        prompt_tokens=max(0, int(prompt_tokens)),
+        completion_tokens=max(0, int(completion_tokens)),
+        total_tokens=max(0, int(total_tokens)),
         image_size_bytes=image_size_bytes,
         latency_ms=latency_ms,
         status=status,
         error_message=error_message,
+        cost_cny=cost,
         external_user_id=ctx.external_user_id,
         local_user_id=ctx.local_user_id,
         user_name=ctx.user_name,
@@ -214,27 +233,117 @@ def record_vision_usage(
         todo_id=ctx.todo_id,
         usage_date=datetime.now(timezone.utc).date(),
     )
-    _spawn(_write_one(record))
+    _spawn(record)
 
 
-def _spawn(coro) -> None:
-    """在当前事件循环上 fire-and-forget；异常吞掉，绝不影响业务。"""
+def instrument_llm_client(client):
+    """Wrap a Mini-Agent LLM client with task-scoped durable usage metering."""
+    if getattr(client, "_bjt_usage_instrumented", False):
+        return client
+    original = client.generate
+
+    @functools.wraps(original)
+    async def wrapped(*args, **kwargs):
+        started = time.perf_counter()
+        try:
+            response = await original(*args, **kwargs)
+        except asyncio.TimeoutError:
+            record_llm_usage(
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                status="timeout",
+                error_message="LLM request timed out",
+            )
+            raise
+        except Exception as exc:
+            record_llm_usage(
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                status="error",
+                error_message=str(exc),
+            )
+            raise
+        record_llm_usage(
+            response=response,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            status="success",
+        )
+        return response
+
+    client.generate = wrapped
+    client._bjt_usage_instrumented = True
+    return client
+
+
+def _spawn(record: AiUsageRecord) -> None:
+    """Schedule one durable write and track it until task finalization."""
     try:
         loop = asyncio.get_running_loop()
-        t = loop.create_task(coro)
-        t.add_done_callback(lambda x: x.exception() if not x.cancelled() else None)
+        task = loop.create_task(_write_one(record))
+        task_id = record.task_id
+        if task_id:
+            _pending_writes.setdefault(task_id, set()).add(task)
+
+        def _done(done: asyncio.Task) -> None:
+            if task_id:
+                pending = _pending_writes.get(task_id)
+                if pending is not None:
+                    pending.discard(done)
+                    if not pending:
+                        _pending_writes.pop(task_id, None)
+            if done.cancelled():
+                if task_id:
+                    _write_failures.setdefault(task_id, []).append(
+                        RuntimeError("usage write was cancelled")
+                    )
+                return
+            exc = done.exception()
+            if exc is not None:
+                logger.error("[usage] durable write failed: task=%s error=%s", task_id, exc)
+                if task_id:
+                    _write_failures.setdefault(task_id, []).append(exc)
+
+        task.add_done_callback(_done)
     except RuntimeError:
-        logger.warning("[usage] no running loop, usage record dropped")
+        logger.error("[usage] no running loop, usage record cannot be scheduled")
+        if record.task_id:
+            _write_failures.setdefault(record.task_id, []).append(
+                RuntimeError("no running event loop for usage write")
+            )
 
 
 async def _write_one(record: AiUsageRecord) -> None:
-    try:
-        async with async_session_factory() as db:
-            db.add(record)
-            await db.commit()
-        # 流水落库成功后，刷新该 task 的用量汇总行（fire-and-forget，非任务场景跳过）。
-        # 幂等：refresh 内部用 ON CONFLICT DO UPDATE 绝对值覆盖，重复刷新无副作用。
-        if record.task_id:
-            _spawn(refresh_task_summary(record.task_id))
-    except Exception as e:
-        logger.warning(f"[usage] write failed (ignored): {e}")
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            async with async_session_factory() as db:
+                db.add(record)
+                await db.commit()
+            if record.task_id:
+                await refresh_task_summary(record.task_id)
+            return
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "[usage] write failed: task=%s attempt=%s/3 error=%s",
+                record.task_id,
+                attempt,
+                exc,
+            )
+            if attempt < 3:
+                await asyncio.sleep(0.25 * (2 ** (attempt - 1)))
+    raise RuntimeError(f"usage record failed after retries: {last_error}") from last_error
+
+
+async def flush_task_usage(task_id: str) -> None:
+    """Wait for every local write and surface failures to billing."""
+    if not task_id:
+        return
+    while True:
+        pending = list(_pending_writes.get(task_id, ()))
+        if not pending:
+            break
+        await asyncio.gather(*pending, return_exceptions=True)
+    failures = _write_failures.pop(task_id, [])
+    if failures:
+        raise RuntimeError(
+            f"{len(failures)} usage write(s) failed; first error: {failures[0]}"
+        )

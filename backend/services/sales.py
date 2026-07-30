@@ -338,6 +338,7 @@ async def allocate_consumption(
     sales_points: Decimal,
     cost_yuan: Decimal,
     task_id: str,
+    task_kind: str = "review",
 ) -> dict[str, Decimal | int]:
     """Deduct gift-first/FIFO-expiry and return auditable totals."""
     sales_points = point_value(sales_points)
@@ -435,9 +436,9 @@ async def allocate_consumption(
             gift_delta=-points if kind == "gift" else Decimal("0"),
             loyalty_delta=loyalty_delta,
             lot_id=lot.id if lot else None,
-            reference_type="review_task",
+            reference_type=f"{task_kind}_task",
             reference_id=task_id,
-            description="AI检查消费",
+            description=f"{task_kind} AI检查消费",
         )
 
     return {

@@ -7,13 +7,14 @@ from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import get_settings
 from backend.models import (
-    AiUsageTaskSummary,
+    AiUsageRecord,
     BillingOrder,
+    BlindCheckTask,
     ConsumptionRecord,
     Project,
     ReviewTask,
@@ -472,112 +473,197 @@ async def complete_order(
     return order
 
 
-async def settle_review_consumption(task_id: str) -> ConsumptionRecord | None:
-    """Settle a completed task once using gift-first lot allocation."""
+class BillingNotReady(RuntimeError):
+    """The task is not yet safe to settle from its durable usage ledger."""
+
+
+async def _mark_settlement_retry(task_kind: str, task_id: str, exc: Exception) -> None:
+    model = BlindCheckTask if task_kind == "blind_check" else ReviewTask
     async with async_session_factory() as db:
-        existing = await db.execute(select(ConsumptionRecord).where(ConsumptionRecord.task_id == task_id))
-        if existing.scalar_one_or_none():
-            return None
-
-        task_result = await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
-        task = task_result.scalar_one_or_none()
-        if not task or task.status != "completed":
-            return None
-
-        project_result = await db.execute(select(Project).where(Project.id == task.project_id))
-        project = project_result.scalar_one_or_none()
-        if not project:
-            return None
-
-        summary_result = await db.execute(select(AiUsageTaskSummary).where(AiUsageTaskSummary.id == task_id))
-        summary = summary_result.scalar_one_or_none()
-
-        user_result = await db.execute(select(User).where(User.id == project.user_id))
-        user = user_result.scalar_one_or_none()
-        # 内部用户与外部用户走统一计费流程，不再豁免（便于内部测试计费/积分）。
-
-        config = await get_sales_config(db)
-        multiplier = decimal_value(task.billing_multiplier or config.sales_multiplier)
-        cost_yuan = decimal_value(summary.cost_cny if summary else None)
-        cost_points = cost_to_points(cost_yuan)
-        sales_points = sales_points_for(cost_yuan, multiplier)
-
-        wallet_result = await db.execute(
-            select(UserWallet)
-            .where(UserWallet.user_id == project.user_id)
-            .with_for_update()
-        )
-        wallet = wallet_result.scalar_one_or_none()
-        if wallet is None:
-            wallet = UserWallet(
-                user_id=project.user_id,
-                balance_wen=0,
-                points=0,
-                recharge_balance_points=Decimal("0"),
-                gift_balance_points=Decimal("0"),
-            )
-            db.add(wallet)
-            await db.flush()
-
-        used_by = user.username if user else project.user_id
-
-        record = ConsumptionRecord(
-            user_id=project.user_id,
-            task_id=task_id,
-            project_id=project.id,
-            project_name=project.name,
-            consumed_wen=int(sales_points.to_integral_value(rounding=ROUND_HALF_UP)),
-            earned_points=0,
-            used_by=used_by,
-            cost_cny=summary.cost_cny if summary else None,
-            balance_after_wen=wallet.balance_wen,
-            cost_points=cost_points,
-            sales_multiplier=multiplier,
-            sales_points=sales_points,
-        )
-        db.add(record)
-        await db.flush()
-        allocation = await allocate_consumption(
-            db,
-            wallet,
-            consumption_id=record.id,
-            sales_points=sales_points,
-            cost_yuan=cost_yuan,
-            task_id=task_id,
-        )
-        income = decimal_value(allocation["folded_income"])
-        profit = (income - cost_yuan).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
-        margin = (profit / income).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP) if income > 0 else None
-        record.earned_points = int(allocation["earned_loyalty"])
-        record.gift_points_used = allocation["gift_used"]
-        record.recharge_points_used = allocation["recharge_used"]
-        record.recharge_balance_before = allocation["before_recharge"]
-        record.gift_balance_before = allocation["before_gift"]
-        record.recharge_balance_after = allocation["after_recharge"]
-        record.gift_balance_after = allocation["after_gift"]
-        record.weighted_unit_value_yuan = allocation["weighted_unit_value"]
-        record.folded_income_yuan = income
-        record.profit_yuan = profit
-        record.profit_margin = margin
-        record.balance_after_wen = wallet.balance_wen
-        db.add(
-            WalletTransaction(
-                user_id=project.user_id,
-                transaction_type="ai_check",
-                balance_delta_wen=-int(sales_points.to_integral_value(rounding=ROUND_HALF_UP)),
-                balance_after_wen=wallet.balance_wen,
-                points_delta=record.earned_points,
-                points_after=wallet.points,
-                reference_type="review_task",
-                reference_id=task_id,
-                description=f"{project.name} AI检查",
-            )
-        )
+        task = (
+            await db.execute(select(model).where(model.id == task_id).with_for_update())
+        ).scalar_one_or_none()
+        if task is None or task.billing_status in {"legacy", "settled"}:
+            return
+        task.billing_attempts += 1
+        task.billing_status = "retry"
+        task.billing_error = str(exc)[:2_000]
         await db.commit()
-        logger.info(
-            "[billing] settled task %s: cost=%s, balance_units=%s",
-            task_id,
-            record.cost_cny,
-            sales_points,
-        )
-        return record
+
+
+async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRecord | None:
+    """Settle any terminal billable task exactly once from durable usage rows.
+
+    Failed and cancelled tasks are intentionally billable: provider cost may
+    have been incurred before the terminal business status was reached.
+    """
+
+    if task_kind not in {"review", "duplicate", "blind_check"}:
+        raise ValueError(f"unsupported task kind: {task_kind}")
+    model = BlindCheckTask if task_kind == "blind_check" else ReviewTask
+    try:
+        async with async_session_factory() as db:
+            task = (
+                await db.execute(select(model).where(model.id == task_id).with_for_update())
+            ).scalar_one_or_none()
+            if task is None:
+                return None
+            if task_kind != "blind_check" and task.task_type != task_kind:
+                return None
+            if task.billing_status == "legacy":
+                return None
+
+            existing = (
+                await db.execute(
+                    select(ConsumptionRecord).where(ConsumptionRecord.task_id == task_id)
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                task.billing_status = "settled"
+                task.billing_error = None
+                task.billing_settled_at = task.billing_settled_at or utc_now()
+                await db.commit()
+                return existing
+            if task.status not in {"completed", "failed", "cancelled"}:
+                return None
+            if task.usage_finalized_at is None:
+                raise BillingNotReady("任务用量尚未完成持久化，暂不结算")
+
+            task.billing_status = "processing"
+            task.billing_attempts += 1
+
+            if task_kind == "blind_check":
+                project = None
+                user_id = task.user_id
+                project_id = None
+                project_name = task.document_name or "暗标检查"
+            else:
+                project = (
+                    await db.execute(select(Project).where(Project.id == task.project_id))
+                ).scalar_one_or_none()
+                if project is None:
+                    raise BillingNotReady("计费任务关联项目不存在")
+                user_id = project.user_id
+                project_id = project.id
+                project_name = project.name
+
+            user = (
+                await db.execute(select(User).where(User.id == user_id))
+            ).scalar_one_or_none()
+            config = await get_sales_config(db)
+            multiplier = decimal_value(task.billing_multiplier or config.sales_multiplier)
+            cost_yuan = decimal_value(
+                (
+                    await db.execute(
+                        select(func.coalesce(func.sum(AiUsageRecord.cost_cny), 0)).where(
+                            AiUsageRecord.task_id == task_id
+                        )
+                    )
+                ).scalar_one()
+            )
+            cost_points = cost_to_points(cost_yuan)
+            sales_points = sales_points_for(cost_yuan, multiplier)
+
+            wallet = (
+                await db.execute(
+                    select(UserWallet).where(UserWallet.user_id == user_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if wallet is None:
+                wallet = UserWallet(
+                    user_id=user_id,
+                    balance_wen=0,
+                    points=0,
+                    recharge_balance_points=Decimal("0"),
+                    gift_balance_points=Decimal("0"),
+                )
+                db.add(wallet)
+                await db.flush()
+
+            record = ConsumptionRecord(
+                user_id=user_id,
+                task_id=task_id,
+                task_type=task_kind,
+                task_status=task.status,
+                project_id=project_id,
+                project_name=project_name,
+                consumed_wen=int(sales_points.to_integral_value(rounding=ROUND_HALF_UP)),
+                earned_points=0,
+                used_by=user.username if user else user_id,
+                cost_cny=cost_yuan,
+                balance_after_wen=wallet.balance_wen,
+                cost_points=cost_points,
+                sales_multiplier=multiplier,
+                sales_points=sales_points,
+            )
+            db.add(record)
+            await db.flush()
+            allocation = await allocate_consumption(
+                db,
+                wallet,
+                consumption_id=record.id,
+                sales_points=sales_points,
+                cost_yuan=cost_yuan,
+                task_id=task_id,
+                task_kind=task_kind,
+            )
+            income = decimal_value(allocation["folded_income"])
+            profit = (income - cost_yuan).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+            margin = (
+                (profit / income).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+                if income > 0
+                else None
+            )
+            record.earned_points = int(allocation["earned_loyalty"])
+            record.gift_points_used = allocation["gift_used"]
+            record.recharge_points_used = allocation["recharge_used"]
+            record.recharge_balance_before = allocation["before_recharge"]
+            record.gift_balance_before = allocation["before_gift"]
+            record.recharge_balance_after = allocation["after_recharge"]
+            record.gift_balance_after = allocation["after_gift"]
+            record.weighted_unit_value_yuan = allocation["weighted_unit_value"]
+            record.folded_income_yuan = income
+            record.profit_yuan = profit
+            record.profit_margin = margin
+            record.balance_after_wen = wallet.balance_wen
+            db.add(
+                WalletTransaction(
+                    user_id=user_id,
+                    transaction_type="ai_check",
+                    balance_delta_wen=-int(sales_points.to_integral_value(rounding=ROUND_HALF_UP)),
+                    balance_after_wen=wallet.balance_wen,
+                    points_delta=record.earned_points,
+                    points_after=wallet.points,
+                    reference_type=f"{task_kind}_task",
+                    reference_id=task_id,
+                    description=f"{project_name} AI检查",
+                )
+            )
+            task.billing_status = "settled"
+            task.billing_error = None
+            task.billing_settled_at = utc_now()
+            await db.commit()
+            logger.info(
+                "[billing] settled %s task %s: status=%s cost=%s sales_points=%s",
+                task_kind,
+                task_id,
+                task.status,
+                cost_yuan,
+                sales_points,
+            )
+            return record
+    except Exception as exc:
+        await _mark_settlement_retry(task_kind, task_id, exc)
+        raise
+
+
+async def settle_review_consumption(task_id: str) -> ConsumptionRecord | None:
+    """Compatibility wrapper for existing callers."""
+
+    async with async_session_factory() as db:
+        task_type = (
+            await db.execute(select(ReviewTask.task_type).where(ReviewTask.id == task_id))
+        ).scalar_one_or_none()
+    if task_type not in {"review", "duplicate"}:
+        return None
+    return await settle_task_consumption(task_type, task_id)

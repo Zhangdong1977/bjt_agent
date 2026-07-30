@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Integer, Numeric, String, ForeignKey
+from sqlalchemy import DateTime, Integer, Numeric, String, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -43,6 +43,16 @@ class ReviewTask(Base):
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)  # Track frontend heartbeat - if no heartbeat for 20+ seconds, agent will cancel
     max_concurrency: Mapped[int] = mapped_column(Integer, default=2, server_default="2", nullable=False)
     billing_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # Business lifecycle and billing lifecycle are deliberately independent.
+    # A failed/cancelled task may still have incurred provider cost and must be
+    # settled after its usage writes have been durably flushed.
+    billing_status: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default="pending", nullable=False, index=True
+    )
+    billing_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    billing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage_finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    billing_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     project: Mapped["Project"] = relationship("Project", back_populates="review_tasks")

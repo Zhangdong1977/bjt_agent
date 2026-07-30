@@ -400,6 +400,8 @@ async def list_consumptions(
                 id=row.id,
                 consumed_at=row.created_at,
                 project_name=row.project_name,
+                task_type=row.task_type,
+                task_status=row.task_status,
                 consumed_wen=row.consumed_wen,
                 earned_points=row.earned_points,
                 used_by=row.used_by,

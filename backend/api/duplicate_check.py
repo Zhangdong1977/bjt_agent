@@ -851,38 +851,15 @@ async def start_duplicate_check(
             },
         )
 
-    from backend.services.billing import ensure_wallet
-    from backend.services.sales import decimal_value, expire_user_lots, get_sales_config
-
-    wallet = await ensure_wallet(db, current_user.id, for_update=True)
-    await expire_user_lots(db, wallet)
-    available_points = decimal_value(wallet.recharge_balance_points) + decimal_value(wallet.gift_balance_points)
-    if available_points <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={
-                "code": "INSUFFICIENT_BALANCE",
-                "message": "余额不足，请先充值后再发起 AI 查重",
-                "balance_wen": wallet.balance_wen,
-                "available_points": float(available_points),
-            },
-        )
-
-    running = list(
-        (
-            await db.execute(
-                select(ReviewTask).where(
-                    ReviewTask.project_id == project_id,
-                    ReviewTask.task_type == "duplicate",
-                    ReviewTask.status.in_(["pending", "running"]),
-                )
-            )
-        ).scalars().all()
+    from backend.services.task_lifecycle import (
+        add_task_dispatch,
+        authorize_billable_task_start,
+        dispatch_task_outbox,
     )
-    for stale in running:
-        stale.status = "failed"
-        stale.error_message = "上次异常中断的查重任务已自动结束，请重新发起"
-        stale.completed_at = utc_now()
+
+    sales_config = await authorize_billable_task_start(
+        db, user_id=current_user.id, operation_name=" AI 查重"
+    )
 
     from backend.api.deps import get_token_claims, oauth2_scheme
 
@@ -892,7 +869,6 @@ async def start_duplicate_check(
         claims.get("concurrency") or get_settings().max_sub_agent_concurrency
     )
     feature_snapshot = build_duplicate_feature_snapshot(settings)
-    sales_config = await get_sales_config(db)
     task = ReviewTask(
         project_id=project.id,
         task_type="duplicate",
@@ -902,23 +878,16 @@ async def start_duplicate_check(
         status="pending",
         max_concurrency=max(1, int(concurrency)),
         billing_multiplier=sales_config.sales_multiplier,
+        billing_status="pending",
     )
     db.add(task)
+    await db.flush()
+    outbox = add_task_dispatch(db, task_kind="duplicate", task_id=task.id)
+    await db.flush()
+    task.celery_task_id = outbox.celery_task_id
     await db.commit()
     await db.refresh(task)
-
-    from backend.tasks.duplicate_tasks import run_duplicate_check
-
-    try:
-        celery_result = run_duplicate_check.delay(task.id)
-    except Exception as exc:
-        task.status = "failed"
-        task.error_message = "任务队列暂不可用，请稍后重试"
-        task.completed_at = utc_now()
-        await db.commit()
-        raise HTTPException(status_code=503, detail=task.error_message) from exc
-    task.celery_task_id = celery_result.id
-    await db.flush()
+    await dispatch_task_outbox(outbox.id)
     return task
 
 
@@ -957,20 +926,44 @@ async def cancel_duplicate_task(
     task = await _task(project_id, task_id, db)
     if task.status not in {"pending", "running"}:
         raise HTTPException(status_code=400, detail="当前任务状态不可取消")
-    if task.celery_task_id:
+    from backend.services.task_lifecycle import (
+        cancel_pending_dispatch,
+        enqueue_billing_settlement,
+        finalize_task_usage,
+    )
+
+    cancelled_before_dispatch = await cancel_pending_dispatch(
+        db, task_kind="duplicate", task_id=task_id
+    )
+    if task.celery_task_id and not cancelled_before_dispatch:
         from backend.celery_app import celery_app
 
         try:
-            celery_app.control.revoke(task.celery_task_id, terminate=True)
+            celery_app.control.revoke(task.celery_task_id, terminate=False)
         except Exception:
             pass
     from backend.tasks.review_tasks import set_task_cancelled
 
-    set_task_cancelled(task_id)
+    try:
+        set_task_cancelled(task_id)
+    except Exception:
+        # The duplicate worker also polls the durable task status.
+        pass
     task.status = "cancelled"
     task.completed_at = utc_now()
+    task.billing_status = "pending"
+    if cancelled_before_dispatch:
+        task.usage_finalized_at = task.completed_at
     await db.commit()
     await db.refresh(task)
+    if cancelled_before_dispatch:
+        await finalize_task_usage("duplicate", task_id)
+    else:
+        enqueue_billing_settlement(
+            "duplicate",
+            task_id,
+            countdown=get_settings().billing_orphan_finalize_grace_seconds,
+        )
     return task
 
 

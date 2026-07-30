@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from backend.models import ConsumptionAllocation, PointLedgerEntry
-from backend.api.admin_sales import list_grants
+from backend.api.admin_sales import consumption_details, list_grants
 from backend.api.billing import _order_points_status
 from backend.scripts.reconstruct_sales_balances import _split_historical_points
 from backend.services.billing import cost_to_points, sales_points_for
@@ -212,7 +212,16 @@ async def test_grant_list_reads_expanded_subquery_columns_by_position():
     count_result.scalar_one.return_value = 1
     rows_result = MagicMock()
     rows_result.all.return_value = [
-        (batch, "batch-1", 1, 0, 2, expires_at, Decimal("1.25"))
+        (
+            batch,
+            "batch-1",
+            1,
+            0,
+            2,
+            ["13900000002", "13900000001"],
+            expires_at,
+            Decimal("1.25"),
+        )
     ]
     db = MagicMock()
     db.execute = AsyncMock(side_effect=[count_result, rows_result])
@@ -228,4 +237,52 @@ async def test_grant_list_reads_expanded_subquery_columns_by_position():
 
     assert response["total"] == 1
     assert response["items"][0]["termination_status"] == "部分终止"
+    assert response["items"][0]["account_usernames"] == [
+        "13900000001",
+        "13900000002",
+    ]
     assert response["items"][0]["generated_cost_yuan"] == 1.25
+
+
+@pytest.mark.asyncio
+async def test_consumption_details_exposes_reliable_task_identity_and_status():
+    record = SimpleNamespace(
+        id="consumption-1",
+        created_at=utc_now(),
+        task_id="task-failed",
+        task_type="duplicate",
+        task_status="failed",
+        project_name="QA查重",
+        recharge_balance_before=Decimal("100"),
+        gift_balance_before=Decimal("30"),
+        cost_points=Decimal("15"),
+        sales_multiplier=Decimal("4"),
+        sales_points=Decimal("60"),
+        gift_points_used=Decimal("30"),
+        recharge_points_used=Decimal("30"),
+        recharge_balance_after=Decimal("70"),
+        gift_balance_after=Decimal("0"),
+        weighted_unit_value_yuan=Decimal("0.05"),
+        folded_income_yuan=Decimal("3"),
+        cost_cny=Decimal("1.5"),
+        profit_yuan=Decimal("1.5"),
+        profit_margin=Decimal("0.5"),
+    )
+    user = SimpleNamespace(
+        external_user_id=6671,
+        username="19900000102",
+        nickname="QA用户",
+    )
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = 1
+    rows_result = MagicMock()
+    rows_result.all.return_value = [(record, user)]
+    db = MagicMock()
+    db.execute = AsyncMock(side_effect=[count_result, rows_result])
+
+    response = await consumption_details(db=db, limit=20, offset=0)
+
+    item = response["items"][0]
+    assert item["task_id"] == "task-failed"
+    assert item["task_type"] == "duplicate"
+    assert item["task_status"] == "failed"

@@ -12,7 +12,7 @@ from sqlalchemy import select
 from backend.agent.blind_check_agent import BlindCheckAgent
 from backend.celery_app import celery_app
 from backend.config import get_settings
-from backend.models import BlindCheckFinding, BlindCheckTask, VstoToolSession
+from backend.models import BlindCheckFinding, BlindCheckTask, User, VstoToolSession
 from backend.utils.time_utils import utc_now, utc_seconds_between
 
 logger = logging.getLogger(__name__)
@@ -190,15 +190,13 @@ async def _run_blind_check(task_id: str) -> dict[str, Any]:
     watcher = asyncio.create_task(_cancel_watcher(task_id, cancel_event))
     try:
         async with session_factory() as db:
-            task = (
-                await db.execute(select(BlindCheckTask).where(BlindCheckTask.id == task_id))
-            ).scalar_one_or_none()
+            from backend.services.task_lifecycle import claim_task_for_execution
+
+            task = await claim_task_for_execution(
+                db, task_kind="blind_check", task_id=task_id
+            )
             if task is None:
-                return {"status": "error", "message": "暗标检查任务不存在"}
-            if task.status == "cancelled":
-                return {"status": "cancelled", "message": "任务已取消"}
-            if task.status not in {"created", "waiting_for_document"}:
-                return {"status": task.status, "message": "任务已由其他执行流程结束"}
+                return {"status": "ignored", "message": "任务不存在、已结束或已由其他 worker 认领"}
             session = (
                 await db.execute(
                     select(VstoToolSession).where(VstoToolSession.id == task.tool_session_id)
@@ -224,10 +222,16 @@ async def _run_blind_check(task_id: str) -> dict[str, Any]:
                 await db.commit()
                 _publish(task_id, "status", {"status": "failed", "message": task.error_message})
                 return {"status": "error", "message": task.error_message}
-            now = utc_now()
-            task.status = "running"
-            task.started_at = task.started_at or now
-            await db.commit()
+            user = (
+                await db.execute(select(User).where(User.id == task.user_id))
+            ).scalar_one_or_none()
+            usage_identity = {
+                "external_user_id": user.external_user_id if user else None,
+                "local_user_id": task.user_id,
+                "user_name": (user.username if user else task.user_id) or task.user_id,
+                "enterprise_name": user.enterprise_name if user else None,
+                "interior_user": bool(user.interior_user) if user else False,
+            }
 
         _publish(task_id, "status", {"status": "running", "phase": "agent_started"})
 
@@ -253,16 +257,33 @@ async def _run_blind_check(task_id: str) -> dict[str, Any]:
                 scope=task.scope,
             )
 
-        try:
-            result = await asyncio.wait_for(
-                agent.run_blind_check(),
-                timeout=min(
-                    get_settings().agent_total_timeout,
-                    BLIND_CHECK_MAX_RUNTIME_SECONDS,
-                ),
+        from backend.services.usage_context import (
+            UsageContext,
+            reset_usage_context,
+            set_usage_context,
+        )
+
+        usage_token = set_usage_context(
+            UsageContext(
+                **usage_identity,
+                project_id=None,
+                task_id=task_id,
+                todo_id=None,
             )
-        except asyncio.TimeoutError as exc:
-            raise RuntimeError("暗标检查超过系统允许的最长执行时间") from exc
+        )
+        try:
+            try:
+                result = await asyncio.wait_for(
+                    agent.run_blind_check(),
+                    timeout=min(
+                        get_settings().agent_total_timeout,
+                        BLIND_CHECK_MAX_RUNTIME_SECONDS,
+                    ),
+                )
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("暗标检查超过系统允许的最长执行时间") from exc
+        finally:
+            reset_usage_context(usage_token)
 
         if cancel_event.is_set() or is_blind_check_cancelled(task_id):
             async with session_factory() as db:
@@ -321,7 +342,16 @@ async def _run_blind_check(task_id: str) -> dict[str, Any]:
             await watcher
         except asyncio.CancelledError:
             pass
-        clear_blind_check_cancelled(task_id)
+        from backend.services.task_lifecycle import finalize_task_usage
+
+        try:
+            await finalize_task_usage("blind_check", task_id)
+        except Exception:
+            logger.exception("Could not finalize blind-check usage: task=%s", task_id)
+        try:
+            clear_blind_check_cancelled(task_id)
+        except Exception:
+            logger.exception("Could not clear blind-check cancellation flag: task=%s", task_id)
         await engine.dispose()
 
 

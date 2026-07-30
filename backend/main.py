@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import asyncio
+import hmac
 import json
 import logging
 import logging.config
@@ -9,7 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +18,7 @@ from starlette import status
 
 from backend.config import get_settings
 from backend.models import init_db, close_db
-from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, duplicate_check_router, duplicate_check_capabilities_router, review_sessions_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, admin_sales_router, profile_router, billing_router, announcements_router, system_status_router, blind_check_router, vsto_tools_router
+from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, duplicate_check_router, duplicate_check_capabilities_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, admin_sales_router, profile_router, billing_router, announcements_router, system_status_router, blind_check_router, vsto_tools_router
 from backend.api.events import router as events_router
 from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
@@ -188,7 +189,6 @@ app.include_router(documents_drafts_router, prefix=settings.api_prefix)
 app.include_router(review_router, prefix=settings.api_prefix)
 app.include_router(duplicate_check_router, prefix=settings.api_prefix)
 app.include_router(duplicate_check_capabilities_router, prefix=settings.api_prefix)
-app.include_router(review_sessions_router, prefix=settings.api_prefix)
 app.include_router(share_router, prefix=settings.api_prefix)
 app.include_router(knowledge_router, prefix=settings.api_prefix)
 app.include_router(feedback_router, prefix=settings.api_prefix)
@@ -341,14 +341,21 @@ async def stream_task_events(task_id: str, token: str):
 
 
 @app.post("/api/tasks/cleanup-on-restart")
-async def cleanup_tasks_on_restart():
+async def cleanup_tasks_on_restart(
+    x_internal_key: str | None = Header(default=None, alias="X-Internal-Key"),
+):
     """Cleanup all pending/running tasks before service restart.
 
     This endpoint is called by the bjt.sh script before restarting services.
     It terminates all Celery tasks and marks them as failed.
     """
+    if not settings.usage_sync_api_key or not x_internal_key or not hmac.compare_digest(
+        x_internal_key, settings.usage_sync_api_key
+    ):
+        raise HTTPException(status_code=401, detail="无效的内部服务凭证")
+
     from backend.celery_app import celery_app
-    from backend.models import async_session_factory, ReviewTask
+    from backend.models import async_session_factory, BlindCheckTask, ReviewTask
     from sqlalchemy import select
 
     cleaned_count = 0
@@ -358,7 +365,13 @@ async def cleanup_tasks_on_restart():
         result = await db.execute(
             select(ReviewTask).where(ReviewTask.status.in_(["pending", "running"]))
         )
-        tasks = result.scalars().all()
+        tasks = list(result.scalars().all())
+        blind_result = await db.execute(
+            select(BlindCheckTask).where(
+                BlindCheckTask.status.in_(["created", "waiting_for_document", "running"])
+            )
+        )
+        tasks.extend(blind_result.scalars().all())
 
         for task in tasks:
             if task.celery_task_id:
@@ -371,10 +384,23 @@ async def cleanup_tasks_on_restart():
             task.status = "failed"
             task.error_message = "服务正在重启，任务已自动结束，请重新发起"
             task.completed_at = datetime.now(timezone.utc)
+            if getattr(task, "billing_status", "legacy") != "legacy":
+                task.billing_status = "pending"
             cleaned_count += 1
 
         await db.commit()
 
+    if cleaned_count:
+        from backend.tasks.billing_tasks import reconcile_task_billing
+
+        try:
+            reconcile_task_billing.apply_async(
+                countdown=settings.billing_orphan_finalize_grace_seconds
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Could not enqueue restart billing reconciliation; beat will retry"
+            )
     return {"cleaned_tasks": cleaned_count}
 
 

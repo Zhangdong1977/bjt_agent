@@ -71,9 +71,11 @@ async def list_grants(
             func.count(func.distinct(case((CreditLot.status == "stopped", CreditLot.id), else_=None))).label("stopped_count"),
             func.count(func.distinct(case((CreditLot.status == "expired", CreditLot.id), else_=None))).label("expired_count"),
             func.count(func.distinct(CreditLot.id)).label("lot_count"),
+            func.array_agg(func.distinct(User.username)).label("account_usernames"),
             func.max(CreditLot.expires_at).label("expires_at"),
             func.coalesce(func.sum(ConsumptionAllocation.allocated_cost_yuan), 0).label("cost_yuan"),
         )
+        .outerjoin(User, User.id == CreditLot.user_id)
         .outerjoin(ConsumptionAllocation, ConsumptionAllocation.lot_id == CreditLot.id)
         .where(CreditLot.source_type == "grant_batch")
         .group_by(CreditLot.batch_id)
@@ -95,6 +97,7 @@ async def list_grants(
         stopped_count_raw,
         _expired_count,
         lot_count_raw,
+        account_usernames_raw,
         expires_at,
         generated_cost,
     ) in rows:
@@ -107,6 +110,11 @@ async def list_grants(
                 "name": batch.name,
                 "created_at": batch.created_at,
                 "account_count": batch.account_count,
+                "account_usernames": sorted(
+                    str(username)
+                    for username in (account_usernames_raw or [])
+                    if username
+                ),
                 "points_per_account": number(batch.points_per_account),
                 "folded_value_per_account_yuan": number(batch.points_per_account) / 10,
                 "total_points": number(batch.total_points),
@@ -405,6 +413,7 @@ async def consumption_details(
             {
                 "id": record.id, "consumed_at": record.created_at, "external_user_id": user.external_user_id,
                 "username": user.username, "nickname": user.nickname, "project_name": record.project_name,
+                "task_id": record.task_id, "task_type": record.task_type, "task_status": record.task_status,
                 "recharge_balance_before": number(record.recharge_balance_before), "gift_balance_before": number(record.gift_balance_before),
                 "cost_points": number(record.cost_points), "sales_multiplier": number(record.sales_multiplier),
                 "sales_points": number(record.sales_points), "gift_points_used": number(record.gift_points_used),

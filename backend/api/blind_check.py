@@ -65,45 +65,16 @@ async def create_task(
     if body.document_revision and body.document_revision != session.document_revision:
         raise HTTPException(status_code=409, detail="Word 文档已修改，请重新建立检查任务")
 
-    # One active check per Word tool session avoids two agents competing for the
-    # same COM document and makes page refresh behavior deterministic.
-    active = (
-        await db.execute(
-            select(BlindCheckTask).where(
-                BlindCheckTask.tool_session_id == session.id,
-                BlindCheckTask.status.in_(["created", "waiting_for_document", "running"]),
-            )
-        )
-    ).scalars().all()
-    now = utc_now()
-    cancelled_task_ids: list[str] = []
-    cancelled_calls: list[VstoToolCall] = []
-    for previous in active:
-        previous.status = "cancelled"
-        previous.error_message = "同一 Word 文档已开始新的暗标检查"
-        previous.completed_at = now
-        cancelled_task_ids.append(previous.id)
-    if cancelled_task_ids:
-        pending_calls = (
-            await db.execute(
-                select(VstoToolCall).where(
-                    VstoToolCall.task_id.in_(cancelled_task_ids),
-                    VstoToolCall.status == "pending",
-                )
-            )
-        ).scalars().all()
-        for call in pending_calls:
-            call.status = "failed"
-            call.error_message = "同一 Word 文档已开始新的暗标检查"
-            call.result = {
-                "success": False,
-                "data": {},
-                "content": "",
-                "error": call.error_message,
-            }
-            call.answered_at = now
-            cancelled_calls.append(call)
+    from backend.services.task_lifecycle import (
+        add_task_dispatch,
+        authorize_billable_task_start,
+        dispatch_task_outbox,
+    )
 
+    sales_config = await authorize_billable_task_start(
+        db, user_id=current_user.id, operation_name="暗标检查"
+    )
+    now = utc_now()
     task = BlindCheckTask(
         user_id=current_user.id,
         tool_session_id=session.id,
@@ -114,46 +85,18 @@ async def create_task(
         snapshot_id=session.snapshot_id,
         scope=body.scope.model_dump(mode="json") if body.scope is not None else None,
         status="waiting_for_document",
+        billing_multiplier=sales_config.sales_multiplier,
+        billing_status="pending",
     )
     session.last_seen_at = now
     db.add(task)
+    await db.flush()
+    outbox = add_task_dispatch(db, task_kind="blind_check", task_id=task.id)
+    await db.flush()
+    task.celery_task_id = outbox.celery_task_id
     await db.commit()
     await db.refresh(task)
-
-    if cancelled_task_ids:
-        try:
-            from backend.tasks.blind_check_tasks import set_blind_check_cancelled
-
-            for previous_task_id in cancelled_task_ids:
-                set_blind_check_cancelled(previous_task_id)
-        except Exception:
-            # The database status remains authoritative if Redis is temporarily
-            # unavailable; the worker also checks task status before new calls.
-            pass
-    if cancelled_calls:
-        try:
-            from backend.services.vsto_tool_broker import discard_tool_result, publish_tool_result
-
-            for call in cancelled_calls:
-                discard_tool_result(call.call_id)
-                publish_tool_result(call.call_id, call.result)
-        except Exception:
-            # The persisted call state is authoritative if Redis is unavailable.
-            pass
-
-    try:
-        from backend.tasks.blind_check_tasks import run_blind_check
-
-        result = run_blind_check.delay(task.id)
-        task.celery_task_id = result.id
-        await db.commit()
-        await db.refresh(task)
-    except Exception as exc:
-        task.status = "failed"
-        task.error_message = "任务队列暂不可用，请稍后重试"
-        task.completed_at = utc_now()
-        await db.commit()
-        raise HTTPException(status_code=503, detail=task.error_message) from exc
+    await dispatch_task_outbox(outbox.id)
     return task
 
 
@@ -187,11 +130,20 @@ async def cancel_task(task_id: str, db: DBSession, current_user: CurrentUser) ->
     task = await _owned_task(task_id, current_user, db)
     if task.status in {"completed", "failed", "cancelled"}:
         return task
-    if task.celery_task_id:
+    from backend.services.task_lifecycle import (
+        cancel_pending_dispatch,
+        enqueue_billing_settlement,
+        finalize_task_usage,
+    )
+
+    cancelled_before_dispatch = await cancel_pending_dispatch(
+        db, task_kind="blind_check", task_id=task_id
+    )
+    if task.celery_task_id and not cancelled_before_dispatch:
         try:
             from backend.celery_app import celery_app
 
-            celery_app.control.revoke(task.celery_task_id, terminate=True)
+            celery_app.control.revoke(task.celery_task_id, terminate=False)
         except Exception:
             # The durable status/cancel flag below is authoritative; revoke is
             # only a best-effort optimization.
@@ -220,10 +172,16 @@ async def cancel_task(task_id: str, db: DBSession, current_user: CurrentUser) ->
 
         set_blind_check_cancelled(task.id)
     except Exception:
-        pass
+        if task.celery_task_id and not cancelled_before_dispatch:
+            from backend.celery_app import celery_app
+
+            celery_app.control.revoke(task.celery_task_id, terminate=True)
     task.status = "cancelled"
     task.error_message = "用户取消了暗标检查"
     task.completed_at = now
+    task.billing_status = "pending"
+    if cancelled_before_dispatch:
+        task.usage_finalized_at = now
     await db.commit()
     try:
         from backend.services.vsto_tool_broker import discard_tool_result, publish_tool_result
@@ -236,6 +194,16 @@ async def cancel_task(task_id: str, db: DBSession, current_user: CurrentUser) ->
         # Redis publication is only a latency optimization.
         pass
     await db.refresh(task)
+    if cancelled_before_dispatch:
+        await finalize_task_usage("blind_check", task_id)
+    else:
+        from backend.config import get_settings
+
+        enqueue_billing_settlement(
+            "blind_check",
+            task_id,
+            countdown=get_settings().billing_orphan_finalize_grace_seconds,
+        )
     return task
 
 

@@ -125,6 +125,8 @@ class ConsumptionResponse(BaseModel):
     id: str
     consumed_at: datetime
     project_name: str
+    task_type: str = "review"
+    task_status: str | None = None
     consumed_wen: int
     earned_points: int
     used_by: str
