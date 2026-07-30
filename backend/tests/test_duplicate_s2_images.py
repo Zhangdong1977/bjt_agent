@@ -237,6 +237,47 @@ async def test_exact_image_hash_enters_candidate_channel(tmp_path: Path):
     assert image_candidate.to_agent_dict()["image_comparison"]["left_image_sha256"]
 
 
+@pytest.mark.asyncio
+async def test_legacy_data_uri_image_is_never_an_exact_text_candidate(tmp_path: Path):
+    data_uri = "data:image/png;base64," + ("A" * 256)
+
+    def artifact(document_id: str) -> dict:
+        source = tmp_path / f"{document_id}.docx"
+        source.write_bytes(document_id.encode())
+        markdown = tmp_path / f"{document_id}_parsed.md"
+        markdown.write_text(f"![]({data_uri})", encoding="utf-8")
+        return build_document_artifacts(
+            document_id=document_id,
+            document_role=f"duplicate_{document_id}",
+            original_filename=source.name,
+            source_path=source,
+            markdown_path=markdown,
+            images_dir=None,
+            parsed_data={"text": markdown.read_text(encoding="utf-8"), "images": []},
+        )
+
+    left = artifact("left-placeholder")
+    right = artifact("right-placeholder")
+    service = DuplicateCandidateService(
+        DocumentDescriptor(
+            id="left-placeholder",
+            filename="A.docx",
+            path=str(tmp_path / "left-placeholder_parsed.md"),
+            evidence_blocks_path=left["evidence_blocks_path"],
+        ),
+        DocumentDescriptor(
+            id="right-placeholder",
+            filename="B.docx",
+            path=str(tmp_path / "right-placeholder_parsed.md"),
+            evidence_blocks_path=right["evidence_blocks_path"],
+        ),
+    )
+
+    candidates = await service.build()
+
+    assert candidates == []
+
+
 def test_failed_scan_ocr_forces_partial_coverage(tmp_path: Path):
     source = tmp_path / "scan.pdf"
     source.write_bytes(b"source")

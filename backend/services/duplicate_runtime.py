@@ -14,14 +14,14 @@ from typing import Any
 from backend.config import Settings
 
 
-DUPLICATE_ALGORITHM_VERSION = "duplicate-s2-4.1"
+DUPLICATE_ALGORITHM_VERSION = "duplicate-s2-4.2"
 
 
 def build_duplicate_feature_snapshot(settings: Settings) -> dict[str, Any]:
     """Return a JSON-serialisable snapshot of all duplicate runtime inputs."""
 
     return {
-        "schema_version": "duplicate-runtime/v1",
+        "schema_version": "duplicate-runtime/v2",
         "algorithm_version": str(
             getattr(settings, "duplicate_algorithm_version", None)
             or DUPLICATE_ALGORITHM_VERSION
@@ -32,6 +32,9 @@ def build_duplicate_feature_snapshot(settings: Settings) -> dict[str, Any]:
             "ocr": bool(getattr(settings, "duplicate_ocr_enabled", True)),
             "remote_ocr": bool(getattr(settings, "duplicate_remote_ocr_enabled", False)),
             "vision": bool(getattr(settings, "duplicate_vision_enabled", False)),
+        },
+        "providers": {
+            "semantic": str(getattr(settings, "duplicate_semantic_provider", "llm")),
         },
         "thresholds": {
             "semantic_min_score": float(getattr(settings, "duplicate_semantic_min_score", 0.72)),
@@ -111,6 +114,11 @@ def decimal_budget(snapshot: dict[str, Any], name: str, default: float) -> float
         return max(0.1, float(default))
 
 
+def provider(snapshot: dict[str, Any], name: str, default: str) -> str:
+    value = (snapshot.get("providers") or {}).get(name, default)
+    return str(value or default)
+
+
 __all__ = [
     "DUPLICATE_ALGORITHM_VERSION",
     "build_duplicate_feature_snapshot",
@@ -119,4 +127,5 @@ __all__ = [
     "threshold",
     "budget",
     "decimal_budget",
+    "provider",
 ]

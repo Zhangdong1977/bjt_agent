@@ -265,7 +265,7 @@ def _build_candidate_service(
         structure_min_score=threshold(snapshot, "structure_min_score", 0.50),
         near_exact_min_score=threshold(snapshot, "near_exact_min_score", 0.72),
         image_min_score=threshold(snapshot, "image_min_score", 0.78),
-        algorithm_version=str(snapshot.get("algorithm_version") or "duplicate-s2-4.1"),
+        algorithm_version=str(snapshot.get("algorithm_version") or "duplicate-s2-4.2"),
     )
     if prepared.mode == "batch":
         return MultiDocumentCandidateService(
@@ -365,6 +365,7 @@ def run_duplicate_check(self, task_id: str) -> dict:
             )
 
             from backend.services.embedding_service import EmbeddingService
+            from backend.services.duplicate_runtime import provider
             from backend.services.usage_context import (
                 UsageContext,
                 reset_usage_context,
@@ -373,6 +374,11 @@ def run_duplicate_check(self, task_id: str) -> dict:
 
             embedding_service = EmbeddingService(
                 enabled=feature(snapshot, "semantic"),
+                provider_mode=provider(
+                    snapshot,
+                    "semantic",
+                    settings.duplicate_semantic_provider,
+                ),
                 batch_size=budget(
                     snapshot, "embedding_batch_size", settings.duplicate_embedding_batch_size
                 ),

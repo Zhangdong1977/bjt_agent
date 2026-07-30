@@ -41,27 +41,27 @@ class AiUsageTaskSummary(Base):
     project_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
 
     # —— 调用次数 ——
-    llm_calls: Mapped[int] = mapped_column(Integer, default=0)
-    ocr_calls: Mapped[int] = mapped_column(Integer, default=0)
-    embedding_calls: Mapped[int] = mapped_column(Integer, default=0)
-    vision_calls: Mapped[int] = mapped_column(Integer, default=0)
-    failed_calls: Mapped[int] = mapped_column(Integer, default=0)
+    llm_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    ocr_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    embedding_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    vision_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    failed_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
 
     # —— LLM token（含 DeepSeek 缓存拆分）——
-    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    prompt_cache_hit_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    prompt_cache_miss_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    prompt_cache_hit_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    prompt_cache_miss_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
 
     # —— OCR 指标 ——
-    ocr_images: Mapped[int] = mapped_column(Integer, default=0)
-    ocr_words_result_num: Mapped[int] = mapped_column(Integer, default=0)
-    embedding_inputs: Mapped[int] = mapped_column(Integer, default=0)
-    embedding_input_chars: Mapped[int] = mapped_column(Integer, default=0)
-    embedding_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    embedding_cache_hits: Mapped[int] = mapped_column(Integer, default=0)
-    vision_images: Mapped[int] = mapped_column(Integer, default=0)
+    ocr_images: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    ocr_words_result_num: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    embedding_inputs: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    embedding_input_chars: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    embedding_input_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    embedding_cache_hits: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    vision_images: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
 
     # —— 费用（写入时已按 cache 三档计好，直接 SUM）——
     cost_cny: Mapped[Optional[float]] = mapped_column(Numeric(12, 6), nullable=True)

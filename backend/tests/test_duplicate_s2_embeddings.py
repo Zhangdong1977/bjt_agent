@@ -33,6 +33,16 @@ class _FakeClient:
         self.embeddings = _FakeEmbeddings(vectors, calls, fail=fail)
 
 
+class _FakeClusterLLM:
+    def __init__(self, content: str):
+        self.content = content
+        self.calls = 0
+
+    async def generate(self, *, messages):
+        self.calls += 1
+        return SimpleNamespace(content=self.content, usage=None)
+
+
 @pytest.mark.asyncio
 async def test_batch_deduplicates_and_cache_avoids_second_external_call(tmp_path: Path):
     calls: list[list[str]] = []
@@ -153,6 +163,45 @@ def test_cosine_similarity_is_bounded_and_handles_missing_vectors():
     assert cosine_similarity(None, [1.0]) == 0.0
 
 
+@pytest.mark.asyncio
+async def test_llm_semantic_provider_clusters_paraphrases_without_embedding_endpoint(
+    tmp_path: Path,
+):
+    llm = _FakeClusterLLM(
+        '{"pairs":[{"left_id":0,"right_id":1,"score":0.93}]}'
+    )
+    service = EmbeddingService(
+        provider_mode="llm",
+        llm_client=llm,
+        cache_dir=tmp_path / "cache",
+    )
+
+    vectors = await service.embed_batch(
+        [
+            "系统提前预测压力并把流量切换到备用链路。",
+            "平台预估负荷后自动迁往冗余通路。",
+            "设备包装采用防潮木箱。",
+        ]
+    )
+
+    assert llm.calls == 1
+    assert service.semantic_similarity(
+        "系统提前预测压力并把流量切换到备用链路。",
+        "平台预估负荷后自动迁往冗余通路。",
+        vectors[0],
+        vectors[1],
+    ) == pytest.approx(0.93)
+    assert service.semantic_similarity(
+        "系统提前预测压力并把流量切换到备用链路。",
+        "设备包装采用防潮木箱。",
+        vectors[0],
+        vectors[2],
+    ) == pytest.approx(0.0)
+    assert service.last_stats.external_inputs == 3
+    assert service.last_stats.failed_batches == 0
+    assert service.last_stats.mode == "llm"
+
+
 def test_embedding_usage_migration_and_summary_fields_exist():
     root = Path(__file__).resolve().parents[1]
     migration = (root / "migrations" / "028_add_embedding_usage.sql").read_text(
@@ -163,3 +212,23 @@ def test_embedding_usage_migration_and_summary_fields_exist():
     assert "vision_calls" in migration
     assert "usage_type = 'embedding'" in summary
     assert "embedding_input_tokens" in summary
+
+
+def test_runtime_repair_migration_grants_duplicate_tables_and_sets_counter_defaults():
+    root = Path(__file__).resolve().parents[1]
+    migration = (root / "migrations" / "034_fix_duplicate_runtime_integrity.sql").read_text(
+        encoding="utf-8"
+    )
+    summary = (root / "services" / "usage_summary.py").read_text(encoding="utf-8")
+
+    for table in (
+        "duplicate_document_members",
+        "duplicate_evidence_clusters",
+        "duplicate_occurrences",
+        "duplicate_pair_summaries",
+    ):
+        assert table in migration
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE" in migration
+    assert "ALTER COLUMN llm_calls SET DEFAULT 0" in migration
+    assert "ALTER COLUMN total_tokens SET DEFAULT 0" in migration
+    assert "llm_calls, ocr_calls, embedding_calls" in summary

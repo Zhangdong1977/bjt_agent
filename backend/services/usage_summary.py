@@ -140,12 +140,23 @@ _INSERT_EMPTY_REVIEW_SQL = text("""
 INSERT INTO ai_usage_task_summary (
     id, task_status, started_at, completed_at, duration_seconds, error_message,
     external_user_id, local_user_id, user_name, enterprise_name, interior_user,
-    project_id, cost_cny, created_at, updated_at
+    project_id,
+    llm_calls, ocr_calls, embedding_calls, vision_calls, failed_calls,
+    prompt_tokens, completion_tokens, total_tokens,
+    prompt_cache_hit_tokens, prompt_cache_miss_tokens,
+    ocr_images, ocr_words_result_num,
+    embedding_inputs, embedding_input_chars, embedding_input_tokens,
+    embedding_cache_hits, vision_images,
+    cost_cny, created_at, updated_at
 )
 SELECT
     r.id, r.status, r.started_at, r.completed_at, r.duration_seconds, r.error_message,
     u.external_user_id, u.id, u.username, u.enterprise_name, u.interior_user,
-    p.id, 0, now(), now()
+    p.id,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0,
+    0, now(), now()
 FROM review_tasks r
 JOIN projects p ON p.id = r.project_id
 LEFT JOIN users u ON u.id = p.user_id
@@ -157,14 +168,25 @@ _INSERT_EMPTY_BLIND_SQL = text("""
 INSERT INTO ai_usage_task_summary (
     id, task_status, started_at, completed_at, duration_seconds, error_message,
     external_user_id, local_user_id, user_name, enterprise_name, interior_user,
-    project_id, cost_cny, created_at, updated_at
+    project_id,
+    llm_calls, ocr_calls, embedding_calls, vision_calls, failed_calls,
+    prompt_tokens, completion_tokens, total_tokens,
+    prompt_cache_hit_tokens, prompt_cache_miss_tokens,
+    ocr_images, ocr_words_result_num,
+    embedding_inputs, embedding_input_chars, embedding_input_tokens,
+    embedding_cache_hits, vision_images,
+    cost_cny, created_at, updated_at
 )
 SELECT
     b.id, b.status, b.started_at, b.completed_at,
     CASE WHEN b.started_at IS NOT NULL AND b.completed_at IS NOT NULL
          THEN EXTRACT(EPOCH FROM (b.completed_at - b.started_at))::INTEGER ELSE NULL END,
     b.error_message, u.external_user_id, u.id, u.username, u.enterprise_name,
-    u.interior_user, NULL, 0, now(), now()
+    u.interior_user, NULL,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0,
+    0, now(), now()
 FROM blind_check_tasks b
 LEFT JOIN users u ON u.id = b.user_id
 WHERE b.id = :task_id

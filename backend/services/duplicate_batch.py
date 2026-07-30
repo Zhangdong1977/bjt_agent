@@ -28,7 +28,7 @@ from backend.services.duplicate_candidates import (
 )
 from backend.services.duplicate_image_evidence import perceptual_similarity
 from backend.services.duplicate_tables import compare_table_blocks
-from backend.services.embedding_service import EmbeddingService, cosine_similarity
+from backend.services.embedding_service import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class MultiDocumentCandidateService:
         structure_min_score: float = 0.50,
         near_exact_min_score: float = 0.72,
         image_min_score: float = 0.78,
-        algorithm_version: str = "duplicate-batch/s2-4.1",
+        algorithm_version: str = "duplicate-batch/s2-4.2",
     ):
         self.documents = list(documents)
         self.max_candidates = max(1, int(max_candidates))
@@ -102,7 +102,13 @@ class MultiDocumentCandidateService:
     def _build_exact_clusters(self) -> list[dict]:
         by_hash: dict[tuple[str, str], list[DocumentBlock]] = defaultdict(list)
         for block in self.blocks:
-            if block.normalized and len(block.normalized) >= 8:
+            # Image paths/alt text are transport metadata, not textual proof.
+            # Images participate only through their binary/perceptual hashes.
+            if (
+                block.content_type != "image"
+                and block.normalized
+                and len(block.normalized) >= 8
+            ):
                 by_hash[("text", block.normalized)].append(block)
             if block.image_sha256:
                 by_hash[("image", block.image_sha256)].append(block)
@@ -166,16 +172,17 @@ class MultiDocumentCandidateService:
                     yield left, right
 
     def _lexical_pool(self) -> list[dict]:
+        text_blocks = [block for block in self.blocks if block.content_type != "image"]
         right_grams: dict[str, set[str]] = {
-            block.id: _char_ngrams(block.normalized) for block in self.blocks
+            block.id: _char_ngrams(block.normalized) for block in text_blocks
         }
         inverted: dict[str, list[str]] = defaultdict(list)
-        for block in self.blocks:
+        for block in text_blocks:
             for gram in right_grams[block.id]:
                 inverted[gram].append(block.id)
-        by_id = {block.id: block for block in self.blocks}
+        by_id = {block.id: block for block in text_blocks}
         pool: list[dict] = []
-        for left in self.blocks:
+        for left in text_blocks:
             if len(left.normalized) < 8:
                 continue
             votes: Counter[str] = Counter()
@@ -278,7 +285,12 @@ class MultiDocumentCandidateService:
                 right = eligible[right_index]
                 if left.document_id == right.document_id or vectors[right_index] is None:
                     continue
-                score = cosine_similarity(vectors[index], vectors[right_index])
+                score = self.embedding_service.semantic_similarity(
+                    left.text,
+                    right.text,
+                    vectors[index],
+                    vectors[right_index],
+                )
                 if score >= self.semantic_min_score:
                     ranked.append((score, right_index))
             for score, right_index in sorted(ranked, reverse=True)[:8]:

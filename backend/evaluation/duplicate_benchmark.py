@@ -21,7 +21,7 @@ from backend.services.duplicate_candidates import (
 )
 
 BENCHMARK_SCHEMA_VERSION = "duplicate-benchmark/v1"
-ALGORITHM_VERSION = "duplicate-candidates/s2-4.1"
+ALGORITHM_VERSION = "duplicate-candidates/s2-4.2"
 
 
 def _case_category(case: dict[str, Any]) -> str:

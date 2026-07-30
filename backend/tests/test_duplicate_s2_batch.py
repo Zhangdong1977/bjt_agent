@@ -9,7 +9,7 @@ from backend.evaluation.duplicate_batch_stress import run_batch_stress
 from backend.evaluation.duplicate_release_gate import evaluate_release_gate
 from backend.schemas.duplicate_check import DuplicateFindingPayload
 from backend.services.duplicate_batch import MultiDocumentCandidateService
-from backend.services.duplicate_candidates import DocumentDescriptor
+from backend.services.duplicate_candidates import DocumentBlock, DocumentDescriptor
 from backend.services.duplicate_hash import find_identical_content_groups
 from backend.services.duplicate_result_grouper import group_duplicate_findings
 from backend.services.duplicate_runtime import snapshot_for_task
@@ -38,6 +38,39 @@ async def test_batch_index_forms_one_exact_cluster_and_keeps_all_occurrences(tmp
     # independent LLM candidates.
     assert sum(candidate.match_type == "exact" for candidate in candidates) == 1
     assert service.pair_statistics()[("doc-0", "doc-3")]["candidate_count"] >= 1
+
+
+def test_batch_image_metadata_never_enters_text_channels():
+    service = MultiDocumentCandidateService([], semantic_enabled=False)
+    common = {
+        "side": "party",
+        "filename": "bid.docx",
+        "section": "图片",
+        "start_line": 1,
+        "end_line": 1,
+        "text": "document_images/image_1.png",
+        "normalized": "documentimagesimage1png",
+        "content_type": "image",
+    }
+    service.blocks = [
+        DocumentBlock(
+            id="left-image",
+            document_id="left-doc",
+            image_sha256="left-sha",
+            perceptual_hash=None,
+            **common,
+        ),
+        DocumentBlock(
+            id="right-image",
+            document_id="right-doc",
+            image_sha256="right-sha",
+            perceptual_hash=None,
+            **common,
+        ),
+    ]
+
+    assert service._build_exact_clusters() == []
+    assert service._lexical_pool() == []
 
 
 def test_batch_hash_guard_hashes_groups_without_pairwise_api(tmp_path: Path):
@@ -85,6 +118,7 @@ def test_runtime_snapshot_is_immutable_after_task_creation():
     settings.duplicate_semantic_enabled = True
     assert task.duplicate_feature_snapshot == snapshot
     assert snapshot["features"]["semantic"] is False
+    assert snapshot["providers"]["semantic"] == "llm"
 
 
 @pytest.mark.asyncio

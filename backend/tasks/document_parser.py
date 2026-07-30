@@ -1064,7 +1064,7 @@ async def _parse_docx(file_path: Path, progress_callback=None, document_id: str 
         # contract instead of leaking a mock/provider-specific value.
         "page_count": None,
         "parser_name": "markitdown",
-        "parser_version": "mammoth-markdown",
+        "parser_version": "mammoth-direct-images/v2",
     }
 
 

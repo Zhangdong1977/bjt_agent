@@ -16,7 +16,7 @@ from backend.schemas.document_artifacts import DuplicateEvidenceBlock
 from backend.services.document_artifacts import load_evidence_blocks
 from backend.services.duplicate_tables import compare_table_blocks
 from backend.services.duplicate_image_evidence import perceptual_similarity
-from backend.services.embedding_service import EmbeddingService, cosine_similarity
+from backend.services.embedding_service import EmbeddingService
 
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$")
 # ``\w`` treats Chinese characters as word characters.  That made values such
@@ -32,6 +32,7 @@ _NUMBER_RE = re.compile(
 )
 _SPACE_RE = re.compile(r"\s+")
 _PUNCT_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
 
 
 @dataclass(slots=True)
@@ -259,6 +260,10 @@ def parse_markdown_blocks(descriptor: DocumentDescriptor, side: str) -> list[Doc
         nonlocal buffer, start_line
         raw = "\n".join(buffer).strip()
         buffer = []
+        # Legacy Markdown may still contain inline image/data-URI references.
+        # They are handled only by the image channel and must never become
+        # exact textual candidates.
+        raw = _MARKDOWN_IMAGE_RE.sub("", raw).strip()
         if not raw:
             return
         offset = 0
@@ -390,7 +395,7 @@ class DuplicateCandidateService:
         structure_min_score: float = 0.50,
         near_exact_min_score: float = 0.72,
         image_min_score: float = 0.78,
-        algorithm_version: str = "duplicate-candidates/s2-4.1",
+        algorithm_version: str = "duplicate-candidates/s2-4.2",
     ):
         self.left_doc = left
         self.right_doc = right
@@ -461,21 +466,25 @@ class DuplicateCandidateService:
         return list(merged.values())
 
     def _lexical_pool(self) -> list[dict]:
-        right_grams = [_char_ngrams(b.normalized) for b in self.right_blocks]
+        # Image blocks are compared by SHA/perceptual hash only.  Their alt
+        # names and legacy data-URI placeholders are not textual evidence.
+        left_blocks = [block for block in self.left_blocks if block.content_type != "image"]
+        right_blocks = [block for block in self.right_blocks if block.content_type != "image"]
+        right_grams = [_char_ngrams(b.normalized) for b in right_blocks]
         inverted: dict[str, list[int]] = defaultdict(list)
         for idx, grams in enumerate(right_grams):
             for gram in grams:
                 inverted[gram].append(idx)
 
         pool: list[dict] = []
-        for left in self.left_blocks:
+        for left in left_blocks:
             left_grams = _char_ngrams(left.normalized)
             votes: Counter[int] = Counter()
             for gram in left_grams:
                 for idx in inverted.get(gram, ()):
                     votes[idx] += 1
             for right_idx, _ in votes.most_common(24):
-                right = self.right_blocks[right_idx]
+                right = right_blocks[right_idx]
                 rg = right_grams[right_idx]
                 union = len(left_grams | rg) or 1
                 jaccard = len(left_grams & rg) / union
@@ -577,7 +586,12 @@ class DuplicateCandidateService:
                 continue
             ranked: list[tuple[float, int]] = []
             for index, right_vector in enumerate(right_vectors):
-                score = cosine_similarity(left_vector, right_vector)
+                score = self.embedding_service.semantic_similarity(
+                    left_block.text,
+                    right[index].text,
+                    left_vector,
+                    right_vector,
+                )
                 if score >= self.semantic_min_score:
                     ranked.append((score, index))
             ranked.sort(reverse=True)

@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     # S2-4 release switches and calibrated thresholds.  Batch mode remains
     # opt-in until the pre-release acceptance gate is signed off.
     duplicate_batch_enabled: bool = False
-    duplicate_algorithm_version: str = "duplicate-s2-4.1"
+    duplicate_algorithm_version: str = "duplicate-s2-4.2"
     duplicate_candidate_min_score: float = 0.45
     duplicate_lexical_min_score: float = 0.16
     duplicate_structure_min_score: float = 0.50
@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     # thresholds.  Turning it off leaves the deterministic S2-1 channels in
     # place and performs zero embedding-provider calls.
     duplicate_semantic_enabled: bool = False
+    # Semantic recall provider is independent from the main LLM provider.
+    # ``llm`` performs one bounded task-local semantic clustering call and is
+    # the safe default when no dedicated embedding endpoint is provisioned.
+    duplicate_semantic_provider: Literal["llm", "minimax", "volcengine"] = "llm"
     duplicate_embedding_batch_size: int = 32
     duplicate_embedding_timeout_seconds: float = 45.0
     duplicate_embedding_max_blocks: int = 400
@@ -128,6 +132,7 @@ class Settings(BaseSettings):
     mini_agent_api_key: str = ""
     mini_agent_api_base: str = "https://api.minimaxi.com"
     mini_agent_model: str = "MiniMax-M2.7-highspeed"
+    minimax_embedding_model: str = "embo-01"
 
     # Volcengine / 火山引擎
     volcengine_api_key: str = ""
