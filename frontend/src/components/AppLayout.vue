@@ -11,6 +11,7 @@ import AnnouncementPopup from './announcement/AnnouncementPopup.vue'
 import AnnouncementInbox from './announcement/AnnouncementInbox.vue'
 import AnnouncementMarquee from './announcement/AnnouncementMarquee.vue'
 import logoUrl from '@/assets/images/ui/common-logo-black.png'
+import iconWallet from '@/assets/images/ui/common-icon-wallet.png'
 import iconPoints from '@/assets/images/ui/common-icon-points.png'
 import iconCart from '@/assets/images/ui/common-icon-cart-full.png'
 import iconUser from '@/assets/images/ui/common-icon-user.png'
@@ -46,6 +47,11 @@ function goProfile() {
 function goOfficialSite() {
   window.open(officialSiteUrl, '_blank', 'noopener')
 }
+
+// 千分位格式化，与 BlindCheckView 的 formatMetric 保持一致
+function formatMetric(value: number) {
+  return new Intl.NumberFormat('zh-CN').format(value || 0)
+}
 </script>
 
 <template>
@@ -64,9 +70,25 @@ function goOfficialSite() {
         <div class="account-strip">
           <span
             class="metric metric--pill metric--points"
-            :style="{ backgroundImage: `url(${iconPoints})` }"
+            :style="{ backgroundImage: `url(${iconWallet})` }"
+            title="账户可用点数余额（有效订单剩余之和）"
           >
-            <span class="metric-value">{{ billingStore.points }}积分</span>
+            <span class="metric-value">{{
+              billingStore.loading && !billingStore.wallet
+                ? '--'
+                : formatMetric(billingStore.balanceWen)
+            }}点</span>
+          </span>
+          <span
+            class="metric metric--pill metric--points"
+            :style="{ backgroundImage: `url(${iconPoints})` }"
+            title="账户积分"
+          >
+            <span class="metric-value">{{
+              billingStore.loading && !billingStore.wallet
+                ? '--'
+                : formatMetric(billingStore.points)
+            }}积分</span>
           </span>
           <span class="metric metric--cart" title="购物车">
             <img :src="iconCart" alt="" />
