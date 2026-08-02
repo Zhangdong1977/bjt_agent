@@ -70,16 +70,19 @@ class BidReviewAgent(BaseAgent):
     def __init__(
         self,
         project_id: str,
-        tender_docs: list[tuple[str, str]],
-        bid_docs: list[tuple[str, str]],
-        user_id: str,
-        rule_doc_path: str,
+        tender_docs: list[tuple[str, str]] | None = None,
+        bid_docs: list[tuple[str, str]] | None = None,
+        user_id: str = "",
+        rule_doc_path: str = "",
         event_callback=None,
         logger=None,
         max_steps: int = 100,
         cancel_event: Optional[asyncio.Event] = None,
         heartbeat_timeout: int = 60,
         heartbeat_session_factory=None,
+        *,
+        tender_doc_path: str | None = None,
+        bid_doc_path: str | None = None,
     ):
         """Initialize the bid review agent (synchronous part).
 
@@ -87,8 +90,10 @@ class BidReviewAgent(BaseAgent):
 
         Args:
             project_id: The project ID for organizing workspace
-            tender_docs: List of (filename, parsed_md_path) for tender documents
-            bid_docs: List of (filename, parsed_md_path) for bid documents
+            tender_docs: List of (filename, parsed_md_path) for tender documents.
+                The legacy ``tender_doc_path`` keyword is also accepted.
+            bid_docs: List of (filename, parsed_md_path) for bid documents.
+                The legacy ``bid_doc_path`` keyword is also accepted.
             user_id: The user ID for workspace organization
             rule_doc_path: Path to the rule document for this review
             event_callback: Optional callback for SSE event publishing
@@ -97,6 +102,23 @@ class BidReviewAgent(BaseAgent):
             cancel_event: Optional asyncio.Event to signal cancellation
             heartbeat_timeout: Heartbeat timeout in seconds (default 60)
         """
+        # Keep the historical single-document constructor spelling working for
+        # merge jobs and third-party integrations while the review pipeline
+        # uses the multi-document lists.  Explicit lists take precedence when
+        # both forms are supplied.
+        if tender_docs is None:
+            tender_docs = (
+                [(Path(tender_doc_path).name or "tender", tender_doc_path)]
+                if tender_doc_path
+                else []
+            )
+        if bid_docs is None:
+            bid_docs = (
+                [(Path(bid_doc_path).name or "bid", bid_doc_path)]
+                if bid_doc_path
+                else []
+            )
+
         self.project_id = project_id
         self.tender_docs = tender_docs
         self.bid_docs = bid_docs
@@ -1095,7 +1117,17 @@ class BidReviewAgent(BaseAgent):
         path = Path(self.rule_doc_path)
         if not path.exists():
             raise FileNotFoundError(f"Rule doc not found: {self.rule_doc_path}")
-        return path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        try:
+            return raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            # Windows deployments may receive legacy GBK/GB18030 rule files
+            # from office tooling.  Keep the rule readable instead of failing
+            # an otherwise valid task solely on the file's historical codec.
+            try:
+                return raw.decode("gb18030")
+            except UnicodeDecodeError:
+                return raw.decode("utf-8", errors="replace")
 
     def _parse_check_items(self, rule_doc_content: str) -> list[dict]:
         """Parse check items from rule document to extract names and suggested keywords.
@@ -2031,7 +2063,7 @@ class BidReviewAgent(BaseAgent):
             # Extract fields from section
             rule_desc = self._extract_field(section, '规则项')
             tender_req = self._extract_field(section, '招标书要求')
-            bid_content = self._extract_field(section, '应标书内容')
+            bid_content = self._extract_field(section, '投标文件内容')
             explanation = self._extract_field(section, '不符合项说明')
             severity = self._extract_severity_from_section(section)
 
@@ -2113,7 +2145,7 @@ class BidReviewAgent(BaseAgent):
   {{
     "requirement_key": "检查项编号",
     "requirement_content": "招标书要求",
-    "bid_content": "应标书内容",
+    "bid_content": "投标文件内容",
     "is_compliant": false,
     "severity": "critical/major/minor",
     "explanation": "不符合项说明"

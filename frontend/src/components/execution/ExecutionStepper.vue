@@ -1,11 +1,12 @@
 <script setup lang="ts">
-defineProps<{
+const props = defineProps<{
   phase: 'pending' | 'running' | 'completed' | 'failed'
+  mode?: 'review' | 'duplicate'
 }>()
 
 const steps = [
   { key: 'pending', label: '等待开始' },
-  { key: 'running', label: '审查中' },
+  { key: 'running', label: props.mode === 'duplicate' ? '查重中' : '审查中' },
   { key: 'completed', label: '已完成' }
 ]
 

@@ -49,11 +49,21 @@ async def verify_project_ownership(
             detail="项目不存在或无权访问",
         )
     if allow_interior and is_interior_user(current_user):
+        if project.project_type != "review":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="查重项目不能调用标书审查接口",
+            )
         return project
     if project.user_id != current_user.id or project.is_deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="项目不存在或无权访问",
+        )
+    if project.project_type != "review":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="查重项目不能调用标书审查接口",
         )
     return project
 
@@ -69,7 +79,10 @@ async def list_review_tasks(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.project_id == project_id)
+        .where(
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+        )
         .order_by(ReviewTask.created_at.desc())
     )
     tasks = result.scalars().all()
@@ -85,19 +98,15 @@ async def start_review(
 ) -> ReviewTask:
     """Start a new review task for the project."""
     await verify_project_ownership(project_id, current_user, db)
-    # 内部用户与外部用户统一走余额校验（便于内部测试计费/积分）。
-    from backend.services.billing import ensure_wallet
+    from backend.services.task_lifecycle import (
+        add_task_dispatch,
+        authorize_billable_task_start,
+        dispatch_task_outbox,
+    )
 
-    wallet = await ensure_wallet(db, current_user.id)
-    if wallet.balance_wen <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={
-                "code": "INSUFFICIENT_BALANCE",
-                "message": "余额不足，请先充值后再发起 AI 检查",
-                "balance_wen": wallet.balance_wen,
-            },
-        )
+    sales_config = await authorize_billable_task_start(
+        db, user_id=current_user.id, operation_name=" AI 检查"
+    )
 
     # Extract concurrency from JWT claims
     from backend.api.deps import oauth2_scheme, get_token_claims
@@ -105,58 +114,26 @@ async def start_review(
     claims = get_token_claims(token)
     concurrency = claims.get("concurrency", settings.max_sub_agent_concurrency)
 
-    # Check if there are running tasks and auto-cancel stale tasks
-    result = await db.execute(
-        select(ReviewTask)
-        .where(ReviewTask.project_id == project_id)
-        .where(ReviewTask.status.in_(["pending", "running"]))
-    )
-    existing_tasks = result.scalars().all()
-    for existing_task in existing_tasks:
-        # Auto-cancel stale tasks from crashed workers - they can't complete
-        existing_task.status = "failed"
-        existing_task.error_message = "上次异常中断的审查任务已自动结束，请重新发起审查"
-        existing_task.completed_at = utc_now()
-    if existing_tasks:
-        await db.flush()
-
     # Create new review task
     task = ReviewTask(
         project_id=project_id,
+        task_type="review",
         status="pending",
         max_concurrency=concurrency,
+        billing_multiplier=sales_config.sales_multiplier,
+        billing_status="pending",
     )
     db.add(task)
     await db.flush()
+    outbox = add_task_dispatch(db, task_kind="review", task_id=task.id)
+    await db.flush()
+    task.celery_task_id = outbox.celery_task_id
     await db.refresh(task)
     await db.commit()
 
-    # Trigger the review task via Celery. If broker dispatch fails after the
-    # task row is created, persist a terminal failed state so the UI never sees
-    # a non-executable pending task.
-    from backend.tasks.review_tasks import run_review
-    try:
-        celery_result = run_review.delay(task.id)
-    except Exception as exc:
-        logger.exception(
-            "[start_review] Failed to dispatch review task to Celery: task_id=%s",
-            task.id,
-        )
-        task.status = "failed"
-        task.error_message = "任务队列暂不可用，请稍后重试"
-        task.completed_at = utc_now()
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "REVIEW_QUEUE_UNAVAILABLE",
-                "message": task.error_message,
-                "task_id": task.id,
-            },
-        ) from exc
-
-    task.celery_task_id = celery_result.id
-    await db.flush()
+    # Opportunistic immediate delivery; the committed outbox is the durable
+    # retry source if Redis/Celery is temporarily unavailable.
+    await dispatch_task_outbox(outbox.id)
 
     return task
 
@@ -176,7 +153,11 @@ async def get_review_results(
     # Get the latest completed review task for this project
     latest_task_result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.project_id == project_id, ReviewTask.status == "completed")
+        .where(
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+            ReviewTask.status == "completed",
+        )
         .order_by(ReviewTask.created_at.desc())
         .limit(1)
     )
@@ -234,7 +215,11 @@ async def get_review_task_status(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(
+            ReviewTask.id == task_id,
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+        )
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -257,7 +242,11 @@ async def cancel_review_task(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(
+            ReviewTask.id == task_id,
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+        )
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -272,23 +261,48 @@ async def cancel_review_task(
             detail="当前任务状态不可取消",
         )
 
-    # Revoke Celery task if running
-    if task.celery_task_id:
+    from backend.services.task_lifecycle import (
+        cancel_pending_dispatch,
+        enqueue_billing_settlement,
+        finalize_task_usage,
+    )
+
+    cancelled_before_dispatch = await cancel_pending_dispatch(
+        db, task_kind="review", task_id=task_id
+    )
+    # Revoke Celery task if it was already delivered.
+    if task.celery_task_id and not cancelled_before_dispatch:
         from backend.celery_app import celery_app
 
         try:
-            celery_app.control.revoke(task.celery_task_id, terminate=True)
+            celery_app.control.revoke(task.celery_task_id, terminate=False)
         except Exception:
             pass  # Task may have already completed or expired
 
     # Set Redis cancellation flag so the heartbeat monitor can detect it
     from backend.tasks.review_tasks import set_task_cancelled
-    set_task_cancelled(task_id)
+    try:
+        set_task_cancelled(task_id)
+    except Exception:
+        logger.exception("[cancel_review] Redis cancellation flag failed: task=%s", task_id)
+        if task.celery_task_id and not cancelled_before_dispatch:
+            celery_app.control.revoke(task.celery_task_id, terminate=True)
 
     task.status = "cancelled"
     task.completed_at = utc_now()
-    await db.flush()
+    task.billing_status = "pending"
+    if cancelled_before_dispatch:
+        task.usage_finalized_at = task.completed_at
+    await db.commit()
     await db.refresh(task)
+    if cancelled_before_dispatch:
+        await finalize_task_usage("review", task_id)
+    else:
+        enqueue_billing_settlement(
+            "review",
+            task_id,
+            countdown=get_settings().billing_orphan_finalize_grace_seconds,
+        )
     return task
 
 
@@ -309,7 +323,11 @@ async def heartbeat_review_task(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(
+            ReviewTask.id == task_id,
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+        )
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -348,7 +366,11 @@ async def get_review_task_steps(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(
+            ReviewTask.id == task_id,
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+        )
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -378,7 +400,11 @@ async def get_review_task_results(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(
+            ReviewTask.id == task_id,
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+        )
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -417,7 +443,11 @@ async def get_review_task_todos(
 
     result = await db.execute(
         select(ReviewTask)
-        .where(ReviewTask.id == task_id, ReviewTask.project_id == project_id)
+        .where(
+            ReviewTask.id == task_id,
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+        )
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -524,6 +554,7 @@ async def stream_review_events(
         select(ReviewTask).where(
             ReviewTask.id == task_id,
             ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
         )
     )
     task = result.scalars().first()

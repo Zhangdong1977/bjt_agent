@@ -26,6 +26,7 @@ const BASE_RECONNECT_DELAY = 1000; // 1 秒基础延迟
 const MAX_RECONNECT_DELAY = 30000; // 30 秒上限
 const MAX_RECONNECT_ATTEMPTS = 20; // 最多重连次数
 const JITTER_MAX = 500; // 最大随机抖动 (ms)
+const DEFAULT_STALE_TIMEOUT = 30000; // HTTP 已连接但无任何事件时的假活检测
 
 export interface SSEOptions {
   /** 收到 SSE 事件时的回调 */
@@ -36,6 +37,10 @@ export interface SSEOptions {
   onError?: (error: Event) => void;
   /** 重连耗尽后的回调，用于启动轮询等降级路径 */
   onPermanentFailure?: (id: string) => void;
+  /** HTTP 连接已打开，但在指定时间内没有收到任何有效事件 */
+  onStale?: (id: string) => void;
+  /** 无事件超时；设为 0 可关闭检测（默认 30 秒） */
+  staleTimeoutMs?: number;
   /** 任务完成/失败时调用，返回 true 表示不应重连 */
   shouldStop?: () => boolean;
   /** 是否启用 requestAnimationFrame 批量处理（默认 false） */
@@ -50,6 +55,8 @@ export function useSSE(options: SSEOptions) {
     onOpen,
     onError,
     onPermanentFailure,
+    onStale,
+    staleTimeoutMs = DEFAULT_STALE_TIMEOUT,
     shouldStop,
     enableBatching = false,
     endpointType = "tasks",
@@ -61,10 +68,30 @@ export function useSSE(options: SSEOptions) {
   let eventSource: EventSource | null = null;
   let currentId: string | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let staleTimer: ReturnType<typeof setTimeout> | null = null;
 
   // RAF batching state
   let pendingEvents: any[] = [];
   let rafId: number | null = null;
+
+  function clearStaleTimer() {
+    if (staleTimer !== null) {
+      clearTimeout(staleTimer);
+      staleTimer = null;
+    }
+  }
+
+  function armStaleTimer(id: string) {
+    clearStaleTimer();
+    if (!onStale || staleTimeoutMs <= 0) return;
+
+    staleTimer = setTimeout(() => {
+      staleTimer = null;
+      if (currentId === id && eventSource) {
+        onStale(id);
+      }
+    }, staleTimeoutMs);
+  }
 
   /**
    * 计算重连延迟（指数退避 + 随机抖动）
@@ -105,6 +132,7 @@ export function useSSE(options: SSEOptions) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    clearStaleTimer();
 
     // 清理 RAF
     if (rafId !== null) {
@@ -129,13 +157,17 @@ export function useSSE(options: SSEOptions) {
 
     eventSource.onopen = () => {
       isConnected.value = true;
-      reconnectAttempts.value = 0; // 重置重连计数
+      // HTTP 200 不代表 Redis 事件读取器已经工作。只有收到一条可解析
+      // 的事件后才重置重连计数，并用超时检测“已打开但零事件”。
+      armStaleTimer(id);
       onOpen?.();
     };
 
     eventSource.onmessage = (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);
+        reconnectAttempts.value = 0;
+        armStaleTimer(id);
 
         if (enableBatching) {
           pendingEvents.push(data);
@@ -151,6 +183,7 @@ export function useSSE(options: SSEOptions) {
     };
 
     eventSource.onerror = (e: Event) => {
+      clearStaleTimer();
       onError?.(e);
 
       // 检查是否应该停止重连（任务已完成/失败）
@@ -200,7 +233,7 @@ export function useSSE(options: SSEOptions) {
    * 建立 SSE 连接。
    *
    * 重连时只重建 EventSource，不重置 reconnectAttempts；只有首次连接
-   * 和真正 onopen 成功后才重置计数。
+   * 或收到一条可解析事件后才重置计数。
    */
   function connect(id: string) {
     disconnect();

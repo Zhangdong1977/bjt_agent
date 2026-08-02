@@ -47,6 +47,8 @@ huggingface-hub>=1.8.0
 
 # PDF processing
 pymupdf>=1.24.0
+Pillow>=10.0.0
+rapidocr>=3.0.0
 pdf2image>=1.17.0
 python-docx>=1.1.0
 pdfplumber>=0.11.0

@@ -27,6 +27,7 @@ from backend.schemas.auth import (
     SendSmsRequest,
     Token,
     UserResponse,
+    VstoSsoRequest,
     RefreshTokenRequest,
 )
 from backend.services.captcha_service import generate_captcha, verify_captcha
@@ -227,6 +228,108 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
         expires_delta=timedelta(days=settings.refresh_token_expire_days),
     )
 
+    return Token(access_token=access_token, refresh_token=refresh_token)
+
+
+@router.post("/vsto-sso", response_model=Token)
+@limiter.limit("30/minute")
+async def vsto_sso(request: Request, body: VstoSsoRequest, db: DBSession) -> Token:
+    """用 VSTO 登录态票据兑换 bjt-agent 自身 JWT。
+
+    票据不经过 URL，由 Word WebView2 消息桥交给页面后立即 POST 到本接口；
+    本接口再以服务间共享密钥向 operate-two 验证，浏览器无法自行伪造用户身份。
+    """
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.operate_api_timeout_seconds,
+            trust_env=False,
+        ) as client:
+            resp = await client.post(
+                _operate_url("/aiCheckSso"),
+                headers=_operate_headers(),
+                json={"ticket": body.ticket},
+            )
+    except httpx.RequestError as exc:
+        logger.error("VSTO SSO verification request failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="认证服务不可用，请稍后重试",
+        ) from exc
+
+    try:
+        ext_data = resp.json()
+    except ValueError as exc:
+        logger.error("VSTO SSO verification returned non-JSON response: %s", resp.status_code)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="认证服务响应异常",
+        ) from exc
+    if ext_data.get("code") != 200:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ext_data.get("msg", "插件登录状态已失效，请重新登录插件"),
+        )
+
+    ext_result = ext_data.get("data") or {}
+    username = str(ext_result.get("userName") or "").strip()
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="认证服务未返回用户账号",
+        )
+
+    interior_user = ext_result.get("interiorUser", 0) == 1
+    concurrency = ext_result.get("concurrency") or settings.max_sub_agent_concurrency
+    external_user_id = ext_result.get("userId")
+    external_nickname = ext_result.get("nickName")
+    enterprise_name = ext_result.get("enterpriseName")
+
+    from backend.services.maintenance_service import get_maintenance_state
+
+    maintenance = await get_maintenance_state(db)
+    if maintenance.is_enabled and not interior_user:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="当前系统维护中",
+        )
+
+    result = await db.execute(select(User).where(User.username == username))
+    user = result.scalar_one_or_none()
+    if user is None:
+        user = User(
+            username=username,
+            email=f"{username}@aibjt",
+            password_hash=get_password_hash("external_auth"),
+        )
+        db.add(user)
+        await db.flush()
+        await db.refresh(user)
+
+    user.external_user_id = external_user_id
+    user.enterprise_name = enterprise_name
+    user.interior_user = interior_user
+    if external_nickname:
+        user.nickname = external_nickname
+    if enterprise_name and not user.company:
+        user.company = enterprise_name
+    await db.flush()
+
+    token_data = {
+        "sub": user.id,
+        "interior_user": interior_user,
+        "concurrency": concurrency,
+        "external_user_id": external_user_id,
+        "enterprise_name": enterprise_name,
+        "user_name": username,
+    }
+    access_token = create_access_token(
+        data=token_data,
+        expires_delta=timedelta(minutes=settings.access_token_expire_minutes),
+    )
+    refresh_token = create_refresh_token(
+        data=token_data,
+        expires_delta=timedelta(days=settings.refresh_token_expire_days),
+    )
     return Token(access_token=access_token, refresh_token=refresh_token)
 
 

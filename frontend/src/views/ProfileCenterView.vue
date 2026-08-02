@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { message } from "ant-design-vue";
 import { billingApi, profileApi } from "@/api/client";
 import { useAuthStore } from "@/stores/auth";
-import type { BillingOrder, ConsumptionRecord, Coupon, User } from "@/types";
+import type { BillingOrder, ConsumptionAllocation, ConsumptionRecord, Coupon, User } from "@/types";
 
 const authStore = useAuthStore();
 const isInterior = computed(() => authStore.isInteriorUser);
@@ -30,6 +30,8 @@ const coupons = ref<Coupon[]>([]);
 const loading = ref(false);
 const couponCode = ref("");
 const couponImporting = ref(false);
+const allocationOpen = ref(false);
+const allocations = ref<ConsumptionAllocation[]>([]);
 
 const orderFilters = reactive({
   start_date: "",
@@ -64,7 +66,12 @@ const orderColumns = computed(() => [
   { title: "订单金额", dataIndex: "order_amount_cents" },
   { title: "实际付款金额", dataIndex: "actual_payment_cents" },
   { title: "优惠券", dataIndex: "coupon_amount_cents" },
-  { title: "订单有效期", dataIndex: "expires_at" },
+  { title: "充值点数", dataIndex: "recharge_points" },
+  { title: "赠送点数", dataIndex: "gift_points" },
+  { title: "已使用点数", dataIndex: "consumed_points" },
+  { title: "剩余点数", dataIndex: "remaining_points" },
+  { title: "点数状态", dataIndex: "points_status" },
+  { title: "点数到期时间", dataIndex: "points_expires_at" },
   { title: "充值后余额", dataIndex: "current_balance_wen" },
 ]);
 
@@ -73,21 +80,30 @@ const consumptionColumns = computed(() => [
   ...ownershipColumns,
   { title: "消费时间", dataIndex: "consumed_at" },
   { title: "项目名称", dataIndex: "project_name" },
-  { title: "消耗点数", dataIndex: "consumed_wen" },
+  { title: "销售点数", dataIndex: "sales_points" },
+  { title: "赠送点数扣除", dataIndex: "gift_points_used" },
+  { title: "充值点数扣除", dataIndex: "recharge_points_used" },
   { title: "获得积分", dataIndex: "earned_points" },
   { title: "使用人", dataIndex: "used_by" },
+  { title: "扣点详情", dataIndex: "actions", width: 100 },
 ]);
 
 const couponColumns = [
   { title: "序号", dataIndex: "index", width: 70 },
   { title: "兑换码", dataIndex: "code" },
   { title: "优惠券金额", dataIndex: "amount_cents" },
+  { title: "赠送点数", dataIndex: "gift_points" },
   { title: "有效期", dataIndex: "valid_until" },
   { title: "状态", dataIndex: "status" },
 ];
 
 const orderRows = computed(() =>
   orders.value.map((item, index) => ({ ...item, index: index + 1 })),
+);
+const activeOrderCards = computed(() =>
+  orders.value.filter(
+    (item) => item.points_status === "active" && Number(item.remaining_points) > 0,
+  ),
 );
 const consumptionRows = computed(() =>
   consumptions.value.map((item, index) => ({ ...item, index: index + 1 })),
@@ -113,11 +129,36 @@ function formatDate(value?: string | null) {
   return value ? new Date(value).toLocaleDateString() : "-";
 }
 
+function formatPoints(value?: number | null) {
+  const points = Number(value || 0);
+  return Number.isInteger(points) ? String(points) : points.toFixed(2);
+}
+
+function remainingPointsPercent(order: BillingOrder) {
+  const totalPoints = Number(order.total_points || 0);
+  if (totalPoints <= 0) return 0;
+  return Math.min(100, Math.max(0, Number(order.remaining_points || 0) / totalPoints * 100));
+}
+
 function orderStatusText(status: string) {
   if (status === "completed") return "已完成";
   if (status === "pending") return "未付费";
   if (status === "cancelled") return "已取消";
   return status;
+}
+
+function orderPointsStatusText(status: BillingOrder["points_status"]) {
+  if (status === "active") return "可使用";
+  if (status === "expired") return "已过期";
+  if (status === "exhausted") return "已用完";
+  return "未生效";
+}
+
+function orderPointsStatusClass(status: BillingOrder["points_status"]) {
+  if (status === "active") return "badge-success";
+  if (status === "expired") return "badge-warning";
+  if (status === "exhausted") return "badge-info";
+  return "badge-error";
 }
 
 function couponStatusClass(status: string) {
@@ -128,8 +169,9 @@ function couponStatusClass(status: string) {
 }
 
 function getApiErrorMessage(err: unknown, fallback: string) {
-  const error = err as { response?: { data?: { detail?: string } } };
-  return error.response?.data?.detail || fallback;
+  const error = err as { response?: { data?: { detail?: string | { message?: string } } } };
+  const detail = error.response?.data?.detail;
+  return typeof detail === "string" ? detail : detail?.message || fallback;
 }
 
 async function loadProfile() {
@@ -210,7 +252,7 @@ async function importCoupon() {
     const result = await billingApi.redeemCoupon(code);
     coupons.value = result.coupons;
     couponCode.value = "";
-    if (result.coupon?.status === "未使用" && result.coupon.amount_cents > 0) {
+    if (result.coupon?.status === "未使用" && (result.coupon.amount_cents > 0 || result.coupon.gift_points > 0)) {
       message.success("优惠券已导入，可在充值时使用");
     } else {
       message.success(`优惠券已导入，当前状态：${result.coupon?.status ?? "未知"}`);
@@ -220,6 +262,11 @@ async function importCoupon() {
   } finally {
     couponImporting.value = false;
   }
+}
+
+async function showAllocations(record: ConsumptionRecord) {
+  allocations.value = await billingApi.getConsumptionAllocations(record.id);
+  allocationOpen.value = true;
 }
 
 async function loadAll() {
@@ -266,6 +313,41 @@ onMounted(() => {
           </div>
         </a-tab-pane>
 
+        <a-tab-pane key="active-orders" tab="当前扣费订单">
+          <div v-if="activeOrderCards.length" class="active-order-grid">
+            <article v-for="order in activeOrderCards" :key="order.id" class="active-order-card">
+              <div class="active-order-card__header">
+                <h2>{{ order.product_name || "未命名订单" }}</h2>
+                <span class="badge badge-success">使用中</span>
+              </div>
+              <dl class="active-order-card__dates">
+                <div>
+                  <dt>创建时间</dt>
+                  <dd>{{ formatDateTime(order.created_at) }}</dd>
+                </div>
+                <div>
+                  <dt>到期时间</dt>
+                  <dd>{{ formatDateTime(order.points_expires_at) }}</dd>
+                </div>
+              </dl>
+              <div class="active-order-card__balance">
+                <div class="active-order-card__balance-label">
+                  <span>剩余点数</span>
+                  <strong>
+                    {{ formatPoints(order.remaining_points) }} / {{ formatPoints(order.total_points) }} 点
+                  </strong>
+                </div>
+                <a-progress
+                  :percent="remainingPointsPercent(order)"
+                  :show-info="false"
+                  stroke-color="#1677ff"
+                />
+              </div>
+            </article>
+          </div>
+          <a-empty v-else description="暂无可用订单" class="active-order-empty" />
+        </a-tab-pane>
+
         <a-tab-pane key="password" tab="修改密码">
           <div class="password-panel">
             <section class="panel">
@@ -299,7 +381,7 @@ onMounted(() => {
                 </template>
                 <a-button type="primary" @click="loadOrders">查询</a-button>
               </div>
-              <a-table :columns="orderColumns" :data-source="orderRows" row-key="id" size="middle" :scroll="{ x: 1120 }">
+              <a-table :columns="orderColumns" :data-source="orderRows" row-key="id" size="middle" :scroll="{ x: 1520 }">
                 <template #bodyCell="{ column, record }">
                   <template v-if="column.dataIndex === 'username'">
                     {{ record.username || "-" }}
@@ -324,11 +406,19 @@ onMounted(() => {
                   <template v-else-if="column.dataIndex === 'coupon_amount_cents'">
                     {{ record.coupon_amount_cents ? formatCents(record.coupon_amount_cents) : "-" }}
                   </template>
-                  <template v-else-if="column.dataIndex === 'expires_at'">
-                    {{ formatDateTime(record.expires_at) }}
+                  <template v-else-if="column.dataIndex === 'consumed_points' || column.dataIndex === 'remaining_points'">
+                    {{ Number(record[column.dataIndex] || 0).toFixed(2) }}点
+                  </template>
+                  <template v-else-if="column.dataIndex === 'points_status'">
+                    <span :class="['badge', orderPointsStatusClass(record.points_status)]">
+                      {{ orderPointsStatusText(record.points_status) }}
+                    </span>
+                  </template>
+                  <template v-else-if="column.dataIndex === 'points_expires_at'">
+                    {{ formatDateTime(record.points_expires_at) }}
                   </template>
                   <template v-else-if="column.dataIndex === 'current_balance_wen'">
-                    {{ record.current_balance_wen != null ? `${record.current_balance_wen}文` : "-" }}
+                    {{ record.current_balance_wen != null ? `${record.current_balance_wen}点` : "-" }}
                   </template>
                 </template>
               </a-table>
@@ -356,11 +446,14 @@ onMounted(() => {
                   <template v-else-if="column.dataIndex === 'consumed_at'">
                     {{ formatDateTime(record.consumed_at) }}
                   </template>
-                  <template v-else-if="column.dataIndex === 'consumed_wen'">
-                    {{ record.consumed_wen }}文
+                  <template v-else-if="column.dataIndex === 'sales_points' || column.dataIndex === 'gift_points_used' || column.dataIndex === 'recharge_points_used'">
+                    {{ Number(record[column.dataIndex] || 0).toFixed(2) }}点
                   </template>
                   <template v-else-if="column.dataIndex === 'earned_points'">
                     {{ record.earned_points }}分
+                  </template>
+                  <template v-else-if="column.dataIndex === 'actions'">
+                    <a-button type="link" size="small" @click="showAllocations(record)">查看</a-button>
                   </template>
                 </template>
               </a-table>
@@ -393,7 +486,10 @@ onMounted(() => {
                 {{ record.code || "-" }}
               </template>
               <template v-if="column.dataIndex === 'amount_cents'">
-                {{ formatCents(record.amount_cents) }}
+                {{ record.benefit_type === 'cash' ? formatCents(record.amount_cents) : '-' }}
+              </template>
+              <template v-else-if="column.dataIndex === 'gift_points'">
+                {{ record.benefit_type === 'gift' ? `${record.gift_points}点` : '-' }}
               </template>
               <template v-else-if="column.dataIndex === 'valid_until'">
                 {{ formatDate(record.valid_until) }}
@@ -407,6 +503,15 @@ onMounted(() => {
           </a-table>
         </a-tab-pane>
       </a-tabs>
+      <a-modal v-model:open="allocationOpen" title="本次消费扣点明细" :footer="null" width="760px">
+        <a-table :data-source="allocations" row-key="id" size="small" :pagination="false">
+          <a-table-column title="点数类型" data-index="lot_type"><template #default="{ text }">{{ text === 'gift' ? '赠送点数' : '充值点数' }}</template></a-table-column>
+          <a-table-column title="扣除点数" data-index="points" />
+          <a-table-column title="每点折合价值" data-index="unit_value_yuan"><template #default="{ text }">￥{{ Number(text || 0).toFixed(6) }}</template></a-table-column>
+          <a-table-column title="折合收入" data-index="folded_income_yuan"><template #default="{ text }">￥{{ Number(text || 0).toFixed(2) }}</template></a-table-column>
+          <a-table-column title="该批次到期时间" data-index="expires_at"><template #default="{ text }">{{ formatDateTime(text) }}</template></a-table-column>
+        </a-table>
+      </a-modal>
     </a-spin>
   </div>
 </template>
@@ -425,6 +530,78 @@ onMounted(() => {
 
 .password-panel {
   max-width: 480px;
+}
+
+.active-order-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.active-order-card {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg1);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 4%);
+}
+
+.active-order-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.active-order-card__header h2 {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: 1.05rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.active-order-card__dates {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 20px;
+}
+
+.active-order-card__dates > div,
+.active-order-card__balance-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.active-order-card__dates dt,
+.active-order-card__balance-label span {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.active-order-card__dates dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  text-align: right;
+}
+
+.active-order-card__balance-label {
+  margin-bottom: 6px;
+}
+
+.active-order-card__balance-label strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.active-order-empty {
+  padding: 48px 0 36px;
 }
 
 .panel {
@@ -472,6 +649,26 @@ onMounted(() => {
 .coupon-code-input {
   width: 320px;
   max-width: 100%;
+}
+
+@media (max-width: 576px) {
+  .active-order-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .active-order-card {
+    padding: 16px;
+  }
+
+  .active-order-card__dates > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .active-order-card__dates dd {
+    text-align: left;
+  }
 }
 
 </style>

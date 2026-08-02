@@ -3,7 +3,8 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, Integer, ForeignKey
+from sqlalchemy import String, Integer, ForeignKey, DateTime
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -27,13 +28,32 @@ class Document(Base):
     )
     # owner_user_id：草稿文档（project_id IS NULL）的归属用户；关联项目后仍保留以备审计。
     owner_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    doc_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'tender' (招标书) or 'bid' (应标书)
+    doc_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'tender' (招标书) or 'bid' (投标文件)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_path: Mapped[str] = mapped_column(String(500), nullable=False)
     parsed_html_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     parsed_markdown_path: Mapped[str | None] = mapped_column(String(500), nullable=True)  # Markdown 文件路径
     parsed_images_dir: Mapped[str | None] = mapped_column(String(500), nullable=True)
     docling_json_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # S2-0 deterministic parser artifacts.  Paths are internal workspace paths;
+    # the artifact API exposes only filenames/hashes and coverage facts.
+    artifact_manifest_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    evidence_blocks_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    parser_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    parser_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    coverage_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # S2-1 immutable source snapshot metadata.  Source documents are uploaded
+    # into the workspace and their hash/version are persisted so a later
+    # result can prove exactly which tender/public reference was consulted.
+    source_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    source_snapshot_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_snapshot_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_uri: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    duplicate_party_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    duplicate_display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    duplicate_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     word_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending", index=True)  # pending, parsing, parsed, failed

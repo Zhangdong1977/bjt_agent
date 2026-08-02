@@ -2,13 +2,14 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
+import { useAuthStore } from '@/stores/auth'
 import { documentsApi } from '@/api/client'
 import type { DocumentContent } from '@/types'
 import { message } from 'ant-design-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
-import { isLegacyDocFile, legacyDocWarning, uploadSizeWarning } from '@/utils/uploadValidation'
+import { isLegacyDocFile, legacyDocWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
 
 // Configure DOMPurify to allow base64 images and table tags
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -27,6 +28,7 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
+const authStore = useAuthStore()
 
 const projectId = computed(() => route.params.id as string)
 const tenderDocs = computed(() => projectStore.documents.filter(d => d.doc_type === 'tender'))
@@ -69,9 +71,9 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
       message.warning(legacyDocWarning(file.name))
       continue
     }
-    const sizeWarning = uploadSizeWarning(file)
-    if (sizeWarning) {
-      message.warning(sizeWarning)
+    const uploadWarning = uploadDocumentWarning(file)
+    if (uploadWarning) {
+      message.warning(uploadWarning)
       continue
     }
     try {
@@ -129,6 +131,10 @@ async function handleStartReview() {
       message.error('启动审查失败')
     }
   }
+}
+
+function handleViewArtifacts(documentId: string) {
+  router.push({ name: 'document-artifacts', params: { id: projectId.value, documentId } })
 }
 
 function getStatusClass(status: string) {
@@ -193,6 +199,13 @@ function getStatusClass(status: string) {
                     @click="handleViewDoc(doc.id)"
                   >
                     查看内容
+                  </button>
+                  <button
+                    v-if="doc.status === 'parsed' && authStore.isInteriorUser"
+                    class="view-btn"
+                    @click="handleViewArtifacts(doc.id)"
+                  >
+                    解析诊断
                   </button>
                   <button
                     class="delete-btn"
@@ -268,6 +281,13 @@ function getStatusClass(status: string) {
                     @click="handleViewDoc(doc.id)"
                   >
                     查看内容
+                  </button>
+                  <button
+                    v-if="doc.status === 'parsed' && authStore.isInteriorUser"
+                    class="view-btn"
+                    @click="handleViewArtifacts(doc.id)"
+                  >
+                    解析诊断
                   </button>
                   <button
                     class="delete-btn"

@@ -6,10 +6,11 @@ from backend.schemas.billing import PackageResponse, PaymentQrResponse
 from backend.services.billing import _is_package_visible, cost_to_wen, list_packages
 
 
-def test_cost_to_wen_uses_markup_and_rounds_up():
+def test_cost_to_wen_uses_markup_and_rounds_half_up():
     assert cost_to_wen(Decimal("0")) == 0
     assert cost_to_wen(Decimal("1")) == 40
-    assert cost_to_wen(Decimal("1.001")) == 41
+    assert cost_to_wen(Decimal("1.001")) == 40
+    assert cost_to_wen(Decimal("1.125")) == 45
     assert cost_to_wen(Decimal("0.025")) == 1
 
 

@@ -1,6 +1,8 @@
 """FastAPI application entry point."""
 
 import asyncio
+import hmac
+import json
 import logging
 import logging.config
 import sys
@@ -8,7 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,7 +18,7 @@ from starlette import status
 
 from backend.config import get_settings
 from backend.models import init_db, close_db
-from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, review_sessions_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, profile_router, billing_router, announcements_router, system_status_router
+from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, duplicate_check_router, duplicate_check_capabilities_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, admin_sales_router, profile_router, billing_router, announcements_router, system_status_router, blind_check_router, vsto_tools_router
 from backend.api.events import router as events_router
 from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
@@ -94,12 +96,14 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
 
-    # 充值配置审计：fb51261 之后所有套餐默认走真实交行支付，唯一可控开关是套餐可见性
-    # （billing_test_package_enabled / billing_hidden_package_codes）。启动时记录当前生效
-    # 的可见套餐 + 校验真实支付依赖（operate_internal_token），帮运维尽早发现配置问题。
+    # 充值配置审计：套餐上下线由运营平台同步的 sales_packages 控制。
+    # 启动时记录当前生效套餐并校验真实支付依赖，帮助运维尽早发现配置问题。
     try:
-        from backend.services.billing import list_packages
-        visible_codes = [p.code for p in list_packages()]
+        from backend.models import async_session_factory
+        from backend.services.billing import list_runtime_packages
+        async with async_session_factory() as billing_db:
+            visible_codes = [p.code for p in await list_runtime_packages(billing_db)]
+            await billing_db.commit()
         if not settings.operate_internal_token:
             logger.warning(
                 "[startup][billing] OPERATE_INTERNAL_TOKEN 为空——真实交行支付不可用，"
@@ -107,8 +111,8 @@ async def lifespan(app: FastAPI):
             )
         if "test" in visible_codes:
             logger.warning(
-                "[startup][billing] 测试套餐（1 分钱 / 200 文）当前对用户可见——"
-                "生产应保持 BILLING_TEST_PACKAGE_ENABLED=false"
+                "[startup][billing] 测试套餐（1 分钱 / 200 点）当前对用户可见——"
+                "生产应在运营平台将其下线"
             )
         logger.info(f"[startup][billing] visible_packages={visible_codes}")
     except Exception as e:
@@ -183,16 +187,20 @@ app.include_router(projects_router, prefix=settings.api_prefix)
 app.include_router(documents_router, prefix=settings.api_prefix)
 app.include_router(documents_drafts_router, prefix=settings.api_prefix)
 app.include_router(review_router, prefix=settings.api_prefix)
-app.include_router(review_sessions_router, prefix=settings.api_prefix)
+app.include_router(duplicate_check_router, prefix=settings.api_prefix)
+app.include_router(duplicate_check_capabilities_router, prefix=settings.api_prefix)
 app.include_router(share_router, prefix=settings.api_prefix)
 app.include_router(knowledge_router, prefix=settings.api_prefix)
 app.include_router(feedback_router, prefix=settings.api_prefix)
 app.include_router(experience_router, prefix=settings.api_prefix)
 app.include_router(admin_router, prefix=settings.api_prefix)
+app.include_router(admin_sales_router, prefix=settings.api_prefix)
 app.include_router(profile_router, prefix=settings.api_prefix)
 app.include_router(billing_router, prefix=settings.api_prefix)
 app.include_router(announcements_router, prefix=settings.api_prefix)
 app.include_router(system_status_router, prefix=settings.api_prefix)
+app.include_router(blind_check_router, prefix=settings.api_prefix)
+app.include_router(vsto_tools_router, prefix=settings.api_prefix)
 app.include_router(events_router)
 
 # Mount workspace directory as static files for image access
@@ -245,7 +253,7 @@ async def debug_redis():
 
 
 @app.get("/api/events/tasks/{task_id}/stream")
-async def stream_task_events(task_id: str, token: str | None = None):
+async def stream_task_events(task_id: str, token: str):
     """Stream SSE events for a specific task.
 
     This endpoint provides real-time updates about task progress,
@@ -256,28 +264,70 @@ async def stream_task_events(task_id: str, token: str | None = None):
     logger = logging.getLogger(__name__)
     logger.info(f"SSE connection requested for task: {task_id}")
 
-    # Validate token if provided (optional for backwards compatibility)
-    if token:
-        from jose import JWTError, jwt
-        from backend.config import get_settings
-        settings = get_settings()
-        try:
-            payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-            user_id: str = payload.get("sub")
-            if user_id is None:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="登录状态无效，请重新登录",
-                )
-        except JWTError:
+    # EventSource cannot set Authorization headers, so authenticate through the
+    # query token and enforce task ownership here. Detailed agent events are
+    # filtered server-side for external users.
+    from jose import JWTError, jwt
+    from sqlalchemy import select
+    from backend.config import get_settings
+    from backend.models import Project, ReviewTask, async_session_factory
+
+    settings = get_settings()
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        user_id: str | None = payload.get("sub")
+        if user_id is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="登录状态无效，请重新登录",
             )
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录状态无效，请重新登录",
+        )
+
+    async with async_session_factory() as db:
+        task = (
+            await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
+        ).scalar_one_or_none()
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务不存在或已被删除")
+        project = (
+            await db.execute(select(Project).where(Project.id == task.project_id))
+        ).scalar_one_or_none()
+        is_internal = bool(payload.get("interior_user", False))
+        if project is None or (
+            not is_internal
+            and (project.user_id != user_id or project.is_deleted)
+        ):
+            raise HTTPException(status_code=404, detail="任务不存在或无权访问")
+
+    blocked_events = {
+        "step",
+        "sub_agent_step",
+        "sub_agent_step_start",
+        "sub_agent_llm_output",
+        "sub_agent_tool_call_start",
+        "sub_agent_tool_call_end",
+        "sub_agent_step_complete",
+    }
 
     async def event_generator():
         async for event in sse_manager.connect(task_id):
-            yield event
+            if is_internal:
+                yield event
+                continue
+            should_block = False
+            for line in event.splitlines():
+                if line.startswith("data: "):
+                    try:
+                        should_block = json.loads(line[6:]).get("type") in blocked_events
+                    except Exception:
+                        should_block = False
+                    break
+            if not should_block:
+                yield event
 
     return StreamingResponse(
         event_generator(),
@@ -291,14 +341,21 @@ async def stream_task_events(task_id: str, token: str | None = None):
 
 
 @app.post("/api/tasks/cleanup-on-restart")
-async def cleanup_tasks_on_restart():
+async def cleanup_tasks_on_restart(
+    x_internal_key: str | None = Header(default=None, alias="X-Internal-Key"),
+):
     """Cleanup all pending/running tasks before service restart.
 
     This endpoint is called by the bjt.sh script before restarting services.
     It terminates all Celery tasks and marks them as failed.
     """
+    if not settings.usage_sync_api_key or not x_internal_key or not hmac.compare_digest(
+        x_internal_key, settings.usage_sync_api_key
+    ):
+        raise HTTPException(status_code=401, detail="无效的内部服务凭证")
+
     from backend.celery_app import celery_app
-    from backend.models import async_session_factory, ReviewTask
+    from backend.models import async_session_factory, BlindCheckTask, ReviewTask
     from sqlalchemy import select
 
     cleaned_count = 0
@@ -308,7 +365,13 @@ async def cleanup_tasks_on_restart():
         result = await db.execute(
             select(ReviewTask).where(ReviewTask.status.in_(["pending", "running"]))
         )
-        tasks = result.scalars().all()
+        tasks = list(result.scalars().all())
+        blind_result = await db.execute(
+            select(BlindCheckTask).where(
+                BlindCheckTask.status.in_(["created", "waiting_for_document", "running"])
+            )
+        )
+        tasks.extend(blind_result.scalars().all())
 
         for task in tasks:
             if task.celery_task_id:
@@ -321,10 +384,23 @@ async def cleanup_tasks_on_restart():
             task.status = "failed"
             task.error_message = "服务正在重启，任务已自动结束，请重新发起"
             task.completed_at = datetime.now(timezone.utc)
+            if getattr(task, "billing_status", "legacy") != "legacy":
+                task.billing_status = "pending"
             cleaned_count += 1
 
         await db.commit()
 
+    if cleaned_count:
+        from backend.tasks.billing_tasks import reconcile_task_billing
+
+        try:
+            reconcile_task_billing.apply_async(
+                countdown=settings.billing_orphan_finalize_grace_seconds
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Could not enqueue restart billing reconciliation; beat will retry"
+            )
     return {"cleaned_tasks": cleaned_count}
 
 

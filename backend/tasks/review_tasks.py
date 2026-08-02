@@ -311,7 +311,11 @@ def _persist_step_fallback(task_id: str, data: dict) -> None:
     t.start()
 
 
-async def _progress_watchdog(task_id: str, cancel_event: asyncio.Event):
+async def _progress_watchdog(
+    task_id: str,
+    cancel_event: asyncio.Event,
+    operation_name: str = "审查",
+):
     """Monitor task progress and trigger cancellation if no events for too long.
 
     Checks every 30s whether a new SSE event has been published for this task.
@@ -321,7 +325,11 @@ async def _progress_watchdog(task_id: str, cancel_event: asyncio.Event):
     """
     settings = get_settings()
     while not cancel_event.is_set():
-        await asyncio.sleep(30)
+        await asyncio.sleep(5)
+        if is_task_cancelled(task_id):
+            logger.info("[progress_watchdog] cancellation requested: task=%s", task_id)
+            cancel_event.set()
+            break
         last_time = _task_last_event_times.get(task_id)
         if last_time is None:
             continue
@@ -332,7 +340,7 @@ async def _progress_watchdog(task_id: str, cancel_event: asyncio.Event):
                 f"no event for {elapsed:.0f}s (limit {settings.agent_progress_timeout}s)"
             )
             _publish_event(task_id, "error", {
-                "message": f"审查已超过 {elapsed:.0f} 秒没有进展，系统已自动停止任务"
+                "message": f"{operation_name}已超过 {elapsed:.0f} 秒没有进展，系统已自动停止任务"
             })
             cancel_event.set()
             break
@@ -379,17 +387,14 @@ def run_review(self, task_id: str) -> dict:
             # so the connection does not sit idle for hours and get dropped
             # by network middleboxes or server-side timeout.
             async with session_factory() as db:
-                result = await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
-                task = result.scalar_one_or_none()
+                from backend.services.task_lifecycle import claim_task_for_execution
+
+                task = await claim_task_for_execution(
+                    db, task_kind="review", task_id=task_id
+                )
 
                 if not task:
-                    return {"status": "error", "message": ERROR_TASK_NOT_FOUND}
-
-                now = utc_now()
-                task.status = "running"
-                task.started_at = now
-                task.last_heartbeat = now
-                await db.commit()
+                    return {"status": "ignored", "message": "任务不存在、已结束或已由其他 worker 认领"}
 
                 _publish_event(task_id, "status", {"status": "running"})
 
@@ -400,6 +405,7 @@ def run_review(self, task_id: str) -> dict:
                 if not project:
                     task.status = "failed"
                     task.error_message = ERROR_PROJECT_NOT_FOUND
+                    task.completed_at = utc_now()
                     await db.commit()
                     _publish_event(task_id, "error", {"message": ERROR_PROJECT_NOT_FOUND})
                     return {"status": "error", "message": ERROR_PROJECT_NOT_FOUND}
@@ -429,6 +435,7 @@ def run_review(self, task_id: str) -> dict:
                 if not tender_docs:
                     task.status = "failed"
                     task.error_message = ERROR_TENDER_NOT_FOUND
+                    task.completed_at = utc_now()
                     await db.commit()
                     _publish_event(task_id, "error", {"message": ERROR_TENDER_NOT_FOUND})
                     return {"status": "error", "message": ERROR_TENDER_NOT_FOUND}
@@ -436,6 +443,7 @@ def run_review(self, task_id: str) -> dict:
                 if not bid_docs:
                     task.status = "failed"
                     task.error_message = ERROR_BID_NOT_FOUND
+                    task.completed_at = utc_now()
                     await db.commit()
                     _publish_event(task_id, "error", {"message": ERROR_BID_NOT_FOUND})
                     return {"status": "error", "message": ERROR_BID_NOT_FOUND}
@@ -519,6 +527,12 @@ def run_review(self, task_id: str) -> dict:
             _publish_event(task_id, "error", {"message": error_msg})
             return {"status": "error", "message": error_msg}
         finally:
+            from backend.services.task_lifecycle import finalize_task_usage
+
+            try:
+                await finalize_task_usage("review", task_id)
+            except Exception:
+                logger.exception("Could not finalize review usage: task=%s", task_id)
             await engine.dispose()
             # Clean up Redis cancel flag
             clear_task_cancelled(task_id)
@@ -825,9 +839,6 @@ async def _run_agent_review(
                 # await 而非 fire-and-forget：保证终态一定写入汇总表。
                 from backend.services.usage_summary import refresh_task_summary
                 await refresh_task_summary(task_id)
-                from backend.services.billing import settle_review_consumption
-                await settle_review_consumption(task_id)
-
             logger.info(f"[_run_agent_review] Completed: {non_compliant_count} non-compliant findings")
 
             try:

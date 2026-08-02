@@ -1,7 +1,6 @@
 """Markitdown converter module for DOCX/DOC/PDF to Markdown conversion."""
 
 import logging
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -45,7 +44,20 @@ class DirectFileImageHandler:
 
     def __call__(self, image):
         self._counter += 1
-        ext = image.content_type.partition("/")[2] if image.content_type else "png"
+        content_type = str(image.content_type or "").lower()
+        ext = {
+            "image/jpeg": "jpeg",
+            "image/jpg": "jpg",
+            "image/png": "png",
+            "image/gif": "gif",
+            "image/webp": "webp",
+            "image/bmp": "bmp",
+            "image/tiff": "tiff",
+            "image/svg+xml": "svg",
+            "image/jp2": "jp2",
+            "image/jpx": "jpx",
+        }.get(content_type, content_type.partition("/")[2] or "png")
+        ext = ext.split("+", 1)[0]
         filename = f"image_{self._counter}.{ext}"
 
         self._images_dir.mkdir(parents=True, exist_ok=True)
@@ -85,19 +97,10 @@ class MarkitdownConverter:
             images_dir = file_path.parent / f"{file_path.stem}_images"
 
         try:
-            markitdown_path = Path(__file__).parent.parent.parent / "third_party" / "markitdown" / "packages" / "markitdown" / "src"
-
-            if str(markitdown_path) not in sys.path:
-                sys.path.insert(0, str(markitdown_path))
-
-            from markitdown import MarkItDown
-
-            converter = MarkItDown()
-
             if suffix in [".docx", ".doc"]:
-                return self._convert_docx(converter, file_path, images_dir, progress_callback)
+                return self._convert_docx(file_path, images_dir, progress_callback)
             else:
-                return self._convert_pdf(converter, file_path, images_dir, progress_callback)
+                return self._convert_pdf(file_path, images_dir, progress_callback)
 
         except MarkitdownConversionError:
             raise
@@ -105,32 +108,49 @@ class MarkitdownConverter:
             logger.error(f"Markitdown conversion failed: {e}")
             raise MarkitdownConversionError(f"文档转换失败：{e}")
 
-    def _convert_docx(self, converter, file_path: Path, images_dir: Path, progress_callback) -> ConversionResult:
-        """Convert DOCX/DOC file to Markdown."""
-        mammoth_path = Path(__file__).parent.parent.parent / "third_party" / "mammoth"
-        if str(mammoth_path) not in sys.path:
-            sys.path.insert(0, str(mammoth_path))
+    def _convert_docx(self, file_path: Path, images_dir: Path, progress_callback) -> ConversionResult:
+        """Convert DOCX/DOC while materializing every embedded image.
 
+        MarkItDown's DOCX converter accepts arbitrary keyword arguments but its
+        current implementation does not forward ``convert_image`` to Mammoth.
+        Calling it therefore produces ``data:image/...;base64`` Markdown and
+        leaves the image directory empty.  Invoke Mammoth directly, then apply
+        the same HTML-to-Markdown stage so image references remain lightweight
+        paths backed by real files.
+        """
         import mammoth
+        from markdownify import markdownify
 
         images_dir_name = images_dir.name
         handler = DirectFileImageHandler(images_dir, images_dir_name)
-
-        kwargs = {"convert_image": mammoth.images.img_element(handler)}
+        with file_path.open("rb") as source:
+            html_result = mammoth.convert_to_html(
+                source,
+                convert_image=mammoth.images.img_element(handler),
+            )
+        for message in html_result.messages:
+            logger.warning("Mammoth DOCX conversion warning: %s", message.message)
+        markdown_content = markdownify(
+            html_result.value,
+            heading_style="ATX",
+            bullets="-",
+        ).strip()
         if progress_callback:
-            kwargs["progress_callback"] = progress_callback
+            progress_callback(1, 1)
 
-        result = converter.convert(source=file_path, **kwargs)
-
-        logger.info(f"DOCX conversion successful: {len(result.markdown)} chars, {len(handler.images)} images")
+        logger.info(
+            "DOCX conversion successful: %s chars, %s materialized images",
+            len(markdown_content),
+            len(handler.images),
+        )
 
         return ConversionResult(
-            markdown_content=result.markdown or "",
+            markdown_content=markdown_content,
             images=handler.images,
             page_count=None,
         )
 
-    def _convert_pdf(self, converter, file_path: Path, images_dir: Path, progress_callback=None) -> ConversionResult:
+    def _convert_pdf(self, file_path: Path, images_dir: Path, progress_callback=None) -> ConversionResult:
         """Convert PDF file to Markdown using PyMuPDF page-by-page extraction.
 
         Extracts text and images per page, inserting image references inline

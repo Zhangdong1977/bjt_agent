@@ -71,6 +71,13 @@ def _serialize(r: AiUsageRecord) -> dict:
         "ocr_images": r.ocr_images,
         "ocr_words_result_num": r.ocr_words_result_num,
         "image_size_bytes": r.image_size_bytes,
+        "embedding_calls": r.embedding_calls,
+        "embedding_inputs": r.embedding_inputs,
+        "embedding_input_chars": r.embedding_input_chars,
+        "embedding_input_tokens": r.embedding_input_tokens,
+        "embedding_cache_hits": r.embedding_cache_hits,
+        "vision_calls": r.vision_calls,
+        "vision_images": r.vision_images,
         "latency_ms": r.latency_ms,
         "endpoint": r.endpoint,
         "error_code": r.error_code,
@@ -139,6 +146,8 @@ def _serialize_task(t: AiUsageTaskSummary) -> dict:
         # 调用次数
         "llm_calls": t.llm_calls,
         "ocr_calls": t.ocr_calls,
+        "embedding_calls": t.embedding_calls,
+        "vision_calls": t.vision_calls,
         "failed_calls": t.failed_calls,
         # LLM token（含 DeepSeek 缓存拆分）
         "prompt_tokens": t.prompt_tokens,
@@ -149,6 +158,11 @@ def _serialize_task(t: AiUsageTaskSummary) -> dict:
         # OCR 指标
         "ocr_images": t.ocr_images,
         "ocr_words_result_num": t.ocr_words_result_num,
+        "embedding_inputs": t.embedding_inputs,
+        "embedding_input_chars": t.embedding_input_chars,
+        "embedding_input_tokens": t.embedding_input_tokens,
+        "embedding_cache_hits": t.embedding_cache_hits,
+        "vision_images": t.vision_images,
         # 费用
         "cost_cny": float(t.cost_cny) if t.cost_cny is not None else None,
         # 任务用量首末时间（= ai_usage_records.created_at 的 MIN/MAX）

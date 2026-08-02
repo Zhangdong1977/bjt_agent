@@ -8,10 +8,10 @@
 |---|---|---|---|---|---|---|
 | 招标书表格 image_8.jpeg | 提取表格中所有产品类别编码与对应的环… | MiniMax | ✅ | 11/15 | 16.6 | — |
 | 招标书表格 image_8.jpeg | 提取表格中所有产品类别编码与对应的环… | 百度OCR | ✅ | 14/15 | 1.3 | — |
-| 应标书身份证 image_1.jpeg | 识别证件上的文字信息 | MiniMax | ✅ | 7/7 | 4.2 | — |
-| 应标书身份证 image_1.jpeg | 识别证件上的文字信息 | 百度OCR | ✅ | 6/7 | 0.5 | — |
-| 应标书身份证 image_1.jpeg | 识别这张身份证的信息 | MiniMax | ✅ | 0/7 | 0.3 | ⚠️是 |
-| 应标书身份证 image_1.jpeg | 识别这张身份证的信息 | 百度OCR | ✅ | 6/7 | 0.5 | — |
+| 投标文件身份证 image_1.jpeg | 识别证件上的文字信息 | MiniMax | ✅ | 7/7 | 4.2 | — |
+| 投标文件身份证 image_1.jpeg | 识别证件上的文字信息 | 百度OCR | ✅ | 6/7 | 0.5 | — |
+| 投标文件身份证 image_1.jpeg | 识别这张身份证的信息 | MiniMax | ✅ | 0/7 | 0.3 | ⚠️是 |
+| 投标文件身份证 image_1.jpeg | 识别这张身份证的信息 | 百度OCR | ✅ | 6/7 | 0.5 | — |
 
 ## 详情
 
@@ -157,7 +157,7 @@ HJ456刚性防水材料
 
 ---
 
-### 应标书身份证 image_1.jpeg
+### 投标文件身份证 image_1.jpeg
 - 文件：`/home/openclaw/bjt_agent/workspace/31ade8e4-91f8-45f2-8414-effbfbffe8b6/3f782b66-ece9-4c45-9f34-2f01c1c8b244/bid/迪维勒普投标文件_20260525154320_images/image_1.jpeg`
 
 #### MiniMax MCP (VLM)  ·  prompt=`识别证件上的文字信息`
@@ -197,7 +197,7 @@ HJ456刚性防水材料
 
 ---
 
-### 应标书身份证 image_1.jpeg
+### 投标文件身份证 image_1.jpeg
 - 文件：`/home/openclaw/bjt_agent/workspace/31ade8e4-91f8-45f2-8414-effbfbffe8b6/3f782b66-ece9-4c45-9f34-2f01c1c8b244/bid/迪维勒普投标文件_20260525154320_images/image_1.jpeg`
 
 #### MiniMax MCP (VLM)  ·  prompt=`识别这张身份证的信息`

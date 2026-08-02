@@ -340,7 +340,21 @@ class DoclingConverter:
         images = []
         if images_dir.exists():
             for img_file in sorted(images_dir.iterdir()):
-                if img_file.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+                if img_file.suffix.lower() in (
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".gif",
+                    ".webp",
+                    ".bmp",
+                    ".tif",
+                    ".tiff",
+                    ".jp2",
+                    ".jpx",
+                    ".j2k",
+                    ".j2c",
+                    ".jpc",
+                ):
                     images.append(ImageInfo(filename=img_file.name, data=b""))
 
         logger.info(

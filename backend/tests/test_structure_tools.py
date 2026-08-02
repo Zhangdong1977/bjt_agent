@@ -122,7 +122,9 @@ async def test_image_ocr_tool_single_doc_works_without_doc_name(tmp_path):
     img_rel = "images/solo.png"
     img_path = tmp_path / img_rel
     img_path.parent.mkdir(parents=True, exist_ok=True)
-    img_path.write_bytes(b"fake-png")
+    from PIL import Image
+
+    Image.new("RGB", (20, 20), "white").save(img_path)
     doc = tmp_path / "solo.md"
     doc.write_text("# doc\n", encoding="utf-8")
 

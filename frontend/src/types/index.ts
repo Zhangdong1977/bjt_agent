@@ -27,6 +27,11 @@ export interface Captcha {
 export interface Wallet {
   balance_wen: number;
   points: number;
+  recharge_balance_points: number;
+  gift_balance_points: number;
+  total_balance_points: number;
+  low_balance_threshold: number;
+  low_balance: boolean;
 }
 
 export interface RechargePackage {
@@ -35,6 +40,12 @@ export interface RechargePackage {
   amount_cents: number;
   balance_wen: number;
   caution?: string | null;
+  icon_url?: string | null;
+  recharge_points: number;
+  gift_points: number;
+  total_points: number;
+  validity_months: number;
+  loyalty_deduction_limit?: number | null;
 }
 
 export interface Coupon {
@@ -45,6 +56,10 @@ export interface Coupon {
   valid_until?: string | null;
   status: string;
   raw_status?: number | null;
+  product_type: "plugin" | "check" | "generate";
+  benefit_type: "cash" | "gift";
+  threshold_amount_cents: number;
+  gift_points: number;
 }
 
 export interface CouponRedeemResponse {
@@ -69,6 +84,15 @@ export interface OrderPreview {
   package_balance_wen: number;
   current_balance_wen: number;
   current_points: number;
+  recharge_points: number;
+  gift_points: number;
+  total_points: number;
+  validity_months: number;
+  loyalty_deduction_limit?: number | null;
+  current_recharge_points: number;
+  current_gift_points: number;
+  coupon_benefit_type?: "cash" | "gift" | null;
+  coupon_gift_points: number;
 }
 
 export interface BillingOrder {
@@ -88,6 +112,19 @@ export interface BillingOrder {
   current_balance_wen?: number | null;
   username?: string | null;
   enterprise_name?: string | null;
+  recharge_points: number;
+  gift_points: number;
+  total_points: number;
+  recharge_balance_after?: number | null;
+  gift_balance_after?: number | null;
+  unit_value_yuan?: number | null;
+  validity_months: number;
+  coupon_benefit_type?: "cash" | "gift" | null;
+  coupon_gift_points: number;
+  consumed_points: number;
+  remaining_points: number;
+  points_expires_at?: string | null;
+  points_status: "active" | "expired" | "exhausted" | "not_credited";
 }
 
 export interface ConsumptionRecord {
@@ -100,6 +137,29 @@ export interface ConsumptionRecord {
   cost_cny?: number | null;
   username?: string | null;
   enterprise_name?: string | null;
+  cost_points?: number | null;
+  sales_multiplier?: number | null;
+  sales_points?: number | null;
+  gift_points_used: number;
+  recharge_points_used: number;
+  recharge_balance_after?: number | null;
+  gift_balance_after?: number | null;
+  weighted_unit_value_yuan?: number | null;
+  folded_income_yuan?: number | null;
+  profit_yuan?: number | null;
+  profit_margin?: number | null;
+}
+
+export interface ConsumptionAllocation {
+  id: string;
+  lot_id?: string | null;
+  lot_type: "recharge" | "gift";
+  source_type?: string | null;
+  source_id?: string | null;
+  points: number;
+  unit_value_yuan: number;
+  folded_income_yuan: number;
+  expires_at?: string | null;
 }
 
 export interface PaymentQr {
@@ -130,6 +190,8 @@ export interface Project {
   id: string;
   name: string;
   description: string | null;
+  project_type: "review" | "duplicate";
+  duplicate_mode?: "pair" | "batch";
   user_id: string;
   status: string;
   is_deleted: boolean;
@@ -142,6 +204,8 @@ export interface Project {
 export interface CreateProjectRequest {
   name: string;
   description?: string;
+  project_type?: "review" | "duplicate";
+  duplicate_mode?: "pair" | "batch";
 }
 
 // Document parse progress (from SSE events)
@@ -157,11 +221,26 @@ export interface Document {
   id: string;
   project_id: string | null;
   owner_user_id: string | null;
-  doc_type: "tender" | "bid";
+  doc_type: DocumentType;
   original_filename: string;
   file_path: string;
-  parsed_md_path: string | null;
+  // The backend uses the explicit parsed_markdown_path name; keep the legacy
+  // alias for older responses during the migration window.
+  parsed_markdown_path?: string | null;
+  parsed_md_path?: string | null;
+  parsed_html_path?: string | null;
   parsed_images_dir: string | null;
+  parser_name?: string | null;
+  parser_version?: string | null;
+  coverage_summary?: DocumentCoverageSummary | null;
+  source_version?: string | null;
+  source_snapshot_hash?: string | null;
+  source_uri?: string | null;
+  source_published_at?: string | null;
+  source_metadata?: Record<string, unknown> | null;
+  duplicate_party_key?: string | null;
+  duplicate_display_name?: string | null;
+  duplicate_ordinal?: number | null;
   page_count: number | null;
   word_count: number | null;
   status: "pending" | "parsing" | "parsed" | "failed";
@@ -169,6 +248,109 @@ export interface Document {
   parse_progress?: ParseProgress;
   created_at: string;
 }
+
+export type CoverageStatus = 'complete' | 'partial' | 'insufficient'
+
+export interface DocumentCoverageSummary {
+  status: CoverageStatus;
+  pages_total: number | null;
+  pages_parsed: number | null;
+  page_ratio: number | null;
+  text_units: number;
+  text_covered_units: number;
+  text_ratio: number;
+  table_count: number;
+  structured_table_count: number;
+  table_ratio: number;
+  image_count: number;
+  hashed_image_count: number;
+  ocr_image_count: number;
+  image_hash_ratio: number;
+  image_ocr_ratio: number;
+  scanned_page_count?: number;
+  ocr_page_count?: number;
+  failed_ocr_page_count?: number;
+  unresolved_objects: number;
+  warnings: string[];
+}
+
+export interface DocumentArtifactBlock {
+  block_id: string;
+  document_id: string;
+  document_role: string | null;
+  content_type: string;
+  section_path: string[];
+  page_number: number | null;
+  start_line: number | null;
+  end_line: number | null;
+  raw_text: string;
+  normalized_hash: string;
+  numbers: string[];
+  models: string[];
+  units: string[];
+  dates: string[];
+  identifiers: string[];
+  table_id: string | null;
+  row_index: number | null;
+  header_map: Record<string, string> | null;
+  image_path: string | null;
+  image_sha256: string | null;
+  perceptual_hash?: string | null;
+  ocr_confidence: number | null;
+  image_width?: number | null;
+  image_height?: number | null;
+  parent_block_id?: string | null;
+  ocr_provider?: string | null;
+  ocr_error?: string | null;
+  vision_description?: string | null;
+  parser_name: string;
+  parser_version: string;
+  artifact_hash: string;
+  source_basis: string;
+}
+
+export interface DocumentArtifactManifest {
+  schema_version: string;
+  document_id: string;
+  document_role: string | null;
+  generated_at: string;
+  source: {
+    name: string;
+    sha256: string | null;
+    size_bytes: number | null;
+    available: boolean;
+  };
+  artifacts: Record<string, {
+    name: string;
+    sha256: string | null;
+    size_bytes: number | null;
+    available: boolean;
+  }>;
+  parser_name: string;
+  parser_version: string;
+  evidence_block_count: number;
+  counts: Record<string, number>;
+  coverage: DocumentCoverageSummary;
+  warnings: string[];
+}
+
+export interface DocumentArtifactsResponse {
+  document_id: string;
+  manifest: DocumentArtifactManifest | null;
+  coverage: DocumentCoverageSummary | null;
+  blocks: DocumentArtifactBlock[];
+  block_count: number;
+  truncated: boolean;
+}
+
+export type DocumentType =
+  | "tender"
+  | "bid"
+  | "duplicate_left"
+  | "duplicate_right"
+  | "duplicate_bid"
+  | "duplicate_tender"
+  | "duplicate_public_reference";
 
 export interface DocumentContent {
   content: string;
@@ -180,6 +362,10 @@ export interface DocumentContent {
 export interface ReviewTask {
   id: string;
   project_id: string;
+  task_type?: "review" | "duplicate";
+  duplicate_mode?: "pair" | "batch";
+  duplicate_algorithm_version?: string | null;
+  duplicate_feature_snapshot?: Record<string, any> | null;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   started_at: string | null;
   completed_at: string | null;
@@ -191,12 +377,157 @@ export interface ReviewTask {
 export interface ReviewTaskListItem {
   id: string;
   project_id: string;
+  task_type?: "review" | "duplicate";
+  duplicate_mode?: "pair" | "batch";
+  duplicate_algorithm_version?: string | null;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   started_at: string | null;
   completed_at: string | null;
   duration_seconds: number | null;
   error_message: string | null;
   created_at: string;
+}
+
+export type DuplicateVerdict = "reasonable" | "suspicious" | "unknown";
+export type DuplicateSourceBasis = "tender" | "public" | "bidder_authored" | "unknown";
+
+export interface DuplicateResult {
+  id: string;
+  task_id: string;
+  todo_id: string | null;
+  rule_doc_name: string;
+  check_item_name: string;
+  verdict: DuplicateVerdict;
+  source_basis: DuplicateSourceBasis;
+  similarity_score: number;
+  confidence?: number | null;
+  coverage_status?: CoverageStatus;
+  channel_scores?: Record<string, number> | null;
+  match_type: string;
+  left_document_id: string;
+  left_filename: string | null;
+  left_excerpt: string;
+  left_location: Record<string, any>;
+  right_document_id: string;
+  right_filename: string | null;
+  right_excerpt: string;
+  right_location: Record<string, any>;
+  explanation: string;
+  suggestion: string | null;
+  evidence: Record<string, any> | null;
+  created_at: string;
+}
+
+export interface DuplicateTodoItem
+  extends Omit<TodoItem, "rule_doc_path" | "result"> {
+  result: { findings: DuplicateResult[] } | null;
+}
+
+export interface DuplicateResultsResponse {
+  summary: {
+    rule_count: number;
+    completed_rule_count: number;
+    reasonable_count: number;
+    suspicious_count: number;
+    unknown_count: number;
+    coverage_status?: CoverageStatus;
+    coverage_warnings?: string[];
+  };
+  findings: DuplicateResult[];
+  todos: DuplicateTodoItem[];
+}
+
+export interface DuplicateDocumentMember {
+  task_id: string;
+  document_id: string;
+  party_key: string;
+  display_name: string;
+  ordinal: number;
+  metadata?: Record<string, any> | null;
+  filename?: string | null;
+  status?: string | null;
+  coverage_status?: CoverageStatus | null;
+}
+
+export interface DuplicatePairSummary {
+  id: string;
+  task_id: string;
+  left_document_id: string;
+  right_document_id: string;
+  left_display_name?: string | null;
+  right_display_name?: string | null;
+  candidate_count: number;
+  finding_count: number;
+  suspicious_count: number;
+  unknown_count: number;
+  max_evidence_strength: number | null;
+  coverage_status: CoverageStatus;
+  channel_hits: Record<string, number> | null;
+}
+
+export interface DuplicateEvidenceOccurrence {
+  id: string;
+  task_id: string;
+  finding_id: string | null;
+  cluster_id: string | null;
+  document_id: string;
+  filename?: string | null;
+  display_name?: string | null;
+  block_id: string | null;
+  excerpt: string;
+  location: Record<string, any>;
+  channel: string | null;
+}
+
+export interface DuplicateEvidenceCluster {
+  id: string;
+  task_id: string;
+  finding_id: string | null;
+  cluster_key: string;
+  content_type: string;
+  document_ids: string[];
+  occurrence_count: number;
+  representative_excerpt: string;
+  evidence_strength: number | null;
+  coverage_status: CoverageStatus;
+  metadata: Record<string, any> | null;
+  occurrences?: DuplicateEvidenceOccurrence[];
+}
+
+export interface DuplicateMatrixResponse {
+  task_id: string;
+  mode: "pair" | "batch";
+  coverage_status: CoverageStatus;
+  coverage_warnings: string[];
+  members: DuplicateDocumentMember[];
+  pairs: DuplicatePairSummary[];
+}
+
+export interface DuplicateSourceEvidence {
+  source_reference_id: string;
+  source_basis: 'tender' | 'public';
+  source_document_id: string;
+  source_filename: string;
+  source_block_id: string;
+  source_excerpt: string;
+  source_location: Record<string, unknown>;
+  source_snapshot_hash: string;
+  source_version: string;
+  source_uri?: string | null;
+  retrieval_score: number;
+}
+
+export interface DuplicateTableComparison {
+  table_candidate_id: string;
+  score: number;
+  header_similarity: number;
+  row_alignment_score: number;
+  numeric_signature_score: number;
+  rare_cell_overlap: number;
+  table_structure_score: number;
+  shared_rare_cells: string[];
+  left: Record<string, any>;
+  right: Record<string, any>;
 }
 
 export interface ReviewResult {

@@ -8,7 +8,7 @@ import { message } from 'ant-design-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
-import { isLegacyDocFile, legacyDocWarning, uploadSizeWarning } from '@/utils/uploadValidation'
+import { isLegacyDocFile, legacyDocWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
 import illustration from '@/assets/images/ui/home-illustration.png'
 import iconFileTheme from '@/assets/images/ui/common-icon-file-theme.png'
 import iconSearch from '@/assets/images/ui/common-icon-search.png'
@@ -137,9 +137,9 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
       message.warning(legacyDocWarning(file.name))
       continue
     }
-    const sizeWarning = uploadSizeWarning(file)
-    if (sizeWarning) {
-      message.warning(sizeWarning)
+    const uploadWarning = uploadDocumentWarning(file)
+    if (uploadWarning) {
+      message.warning(uploadWarning)
       continue
     }
     validFiles.push(file)
@@ -276,7 +276,7 @@ async function startCheck() {
     }
 
     // ② 把所有草稿文档关联到该项目
-    await projectStore.attachDraftDocuments(project.id)
+    await projectStore.attachDraftDocuments(project.id, ['tender', 'bid'])
 
     // ③ 选择项目（加载文档列表，接续 SSE）
     await projectStore.selectProject(project.id)

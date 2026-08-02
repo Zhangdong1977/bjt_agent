@@ -15,6 +15,8 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
+from backend.models import ReviewTask, async_session_factory
+
 
 async def create_test_project(
     client: AsyncClient,
@@ -29,6 +31,21 @@ async def create_test_project(
         headers=auth_headers,
     )
     return response.json()
+
+
+async def create_test_review_task(project_id: str) -> str:
+    """Create a task without invoking billing or Celery."""
+    async with async_session_factory() as session:
+        task = ReviewTask(
+            project_id=project_id,
+            task_type="review",
+            status="pending",
+        )
+        session.add(task)
+        await session.flush()
+        task_id = task.id
+        await session.commit()
+    return task_id
 
 
 class TestReviewStart:
@@ -178,16 +195,12 @@ class TestReviewTaskSteps:
     """Tests for getting review task steps."""
 
     @pytest.mark.asyncio
-    async def test_get_task_steps(self, client: AsyncClient, auth_headers: dict):
-        """REV-007: Get task steps."""
+    async def test_external_user_cannot_get_task_steps(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """REV-007: External users cannot read detailed review steps."""
         project = await create_test_project(client, auth_headers, "Steps Test")
-
-        # Start a review
-        start_response = await client.post(
-            f"/api/projects/{project['id']}/review",
-            headers=auth_headers,
-        )
-        task_id = start_response.json()["id"]
+        task_id = await create_test_review_task(project["id"])
 
         # Get task steps
         response = await client.get(
@@ -195,23 +208,80 @@ class TestReviewTaskSteps:
             headers=auth_headers,
         )
 
-        assert response.status_code == 200
-        data = response.json()
-        # Steps is a list (may be empty if not yet executed)
-        assert isinstance(data, list)
+        assert response.status_code == 403
+        assert response.json()["detail"] == "外部用户无权查看时间线"
 
     @pytest.mark.asyncio
-    async def test_get_steps_not_found(self, client: AsyncClient, auth_headers: dict):
+    async def test_get_steps_not_found(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        interior_auth_headers: dict,
+    ):
         """REV-007: Get steps of non-existent task."""
         project = await create_test_project(client, auth_headers, "Steps NonExistent")
         fake_task_id = str(uuid.uuid4())
 
         response = await client.get(
             f"/api/projects/{project['id']}/review/tasks/{fake_task_id}/steps",
-            headers=auth_headers,
+            headers=interior_auth_headers,
         )
 
         assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_interior_user_can_get_complete_task_steps(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        interior_auth_headers: dict,
+    ):
+        """REV-007: Internal users can inspect another user's review timeline."""
+        project = await create_test_project(client, auth_headers, "Interior Steps Test")
+        task_id = await create_test_review_task(project["id"])
+
+        response = await client.get(
+            f"/api/projects/{project['id']}/review/tasks/{task_id}/steps",
+            headers=interior_auth_headers,
+        )
+
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+
+class TestReviewTaskStream:
+    """Tests for role-based review timeline events."""
+
+    @pytest.mark.asyncio
+    async def test_external_user_receives_filtered_timeline_events(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """External project owners receive status but not detailed agent events."""
+        project = await create_test_project(client, auth_headers, "External Stream Test")
+        task_id = await create_test_review_task(project["id"])
+
+        async def finite_stream(_task_id: str, _last_event_id: str | None):
+            yield 'data: {"type":"sub_agent_llm_output","content":"internal detail"}\n\n'
+            yield 'data: {"type":"status","status":"running"}\n\n'
+
+        monkeypatch.setattr(
+            "backend.api.review.sse_manager.connect",
+            finite_stream,
+        )
+        async with client.stream(
+            "GET",
+            f"/api/projects/{project['id']}/review/tasks/{task_id}/stream",
+            headers=auth_headers,
+        ) as response:
+            body = (await response.aread()).decode("utf-8")
+
+        assert response.status_code == 200
+        assert "sub_agent_llm_output" not in body
+        assert "internal detail" not in body
+        assert '"type":"status"' in body
 
 
 class TestReviewTaskResults:

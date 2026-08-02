@@ -28,7 +28,7 @@ const marqueeVisible = ref(false)
 const officialSiteUrl = 'https://aibjt.com/'
 
 onMounted(() => {
-  void billingStore.fetchWallet()
+  void billingStore.remindLowBalance('login')
   // 拉取未读公告：驱动顶栏角标 + 自动弹窗
   void announcementStore.initialize()
 })
@@ -47,6 +47,11 @@ function goProfile() {
 function goOfficialSite() {
   window.open(officialSiteUrl, '_blank', 'noopener')
 }
+
+// 千分位格式化，与 BlindCheckView 的 formatMetric 保持一致
+function formatMetric(value: number) {
+  return new Intl.NumberFormat('zh-CN').format(value || 0)
+}
 </script>
 
 <template>
@@ -64,17 +69,26 @@ function goOfficialSite() {
       <div class="header-right">
         <div class="account-strip">
           <span
-            class="metric metric--pill metric--wallet"
+            class="metric metric--pill metric--points"
             :style="{ backgroundImage: `url(${iconWallet})` }"
-            @click="rechargeOpen = true"
+            title="账户可用点数余额（有效订单剩余之和）"
           >
-            <span class="metric-value">{{ billingStore.balanceWen }}文</span>
+            <span class="metric-value">{{
+              billingStore.loading && !billingStore.wallet
+                ? '--'
+                : formatMetric(billingStore.balanceWen)
+            }}点</span>
           </span>
           <span
             class="metric metric--pill metric--points"
             :style="{ backgroundImage: `url(${iconPoints})` }"
+            title="账户积分"
           >
-            <span class="metric-value">{{ billingStore.points }}积分</span>
+            <span class="metric-value">{{
+              billingStore.loading && !billingStore.wallet
+                ? '--'
+                : formatMetric(billingStore.points)
+            }}积分</span>
           </span>
           <span class="metric metric--cart" title="购物车">
             <img :src="iconCart" alt="" />
@@ -227,15 +241,6 @@ function goOfficialSite() {
   align-items: center;
   white-space: nowrap;
   cursor: default;
-}
-
-.metric--wallet {
-  cursor: pointer;
-  transition: filter 0.2s ease;
-}
-
-.metric--wallet:hover {
-  filter: brightness(1.04);
 }
 
 .metric--cart {

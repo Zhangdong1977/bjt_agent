@@ -19,7 +19,7 @@ class TestMarkitdownConverter:
         assert converter.timeout == 300
 
     def test_unsupported_file_type(self, tmp_path):
-        unsupported_file = tmp_path / "document.pdf"
+        unsupported_file = tmp_path / "document.txt"
         unsupported_file.write_text("dummy content")
         converter = MarkitdownConverter()
         with pytest.raises(ValueError) as exc_info:
@@ -34,6 +34,28 @@ class TestMarkitdownConverter:
     @pytest.mark.integration
     def test_convert_sample_docx(self, tmp_path):
         pytest.skip("Requires sample DOCX file")
+
+    def test_real_docx_materializes_images_and_never_emits_data_uri(self, tmp_path):
+        from docx import Document
+        from PIL import Image
+
+        image_path = tmp_path / "fixture.png"
+        Image.new("RGB", (640, 360), "white").save(image_path)
+        docx_path = tmp_path / "fixture.docx"
+        document = Document()
+        document.add_heading("图片查重样本", level=1)
+        document.add_paragraph("下图必须被实体化。")
+        document.add_picture(str(image_path))
+        document.save(docx_path)
+
+        images_dir = tmp_path / "fixture_images"
+        result = MarkitdownConverter().convert(docx_path, images_dir=images_dir)
+
+        assert len(result.images) == 1
+        assert (images_dir / result.images[0].filename).is_file()
+        assert images_dir.name in result.markdown_content
+        assert "data:image" not in result.markdown_content
+        assert "base64" not in result.markdown_content
 
 
 class TestDirectFileImageHandler:
@@ -119,3 +141,18 @@ class TestDirectFileImageHandler:
         assert "data:" not in result["src"]
         assert "base64" not in result["src"]
         assert result["src"] == "my_doc_images/image_1.png"
+
+    def test_handler_preserves_jpx_for_later_ocr_normalization(self, tmp_path):
+        images_dir = tmp_path / "doc_images"
+        handler = DirectFileImageHandler(images_dir, "doc_images")
+        mock_image = MagicMock()
+        mock_image.content_type = "image/jpx"
+        mock_image.open.return_value.__enter__ = lambda s: MagicMock(
+            read=lambda: b"jpeg-2000-source"
+        )
+        mock_image.open.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = handler(mock_image)
+
+        assert result == {"src": "doc_images/image_1.jpx"}
+        assert (images_dir / "image_1.jpx").read_bytes() == b"jpeg-2000-source"

@@ -11,8 +11,6 @@ import type {
 } from "@/types";
 import iconSelect from "@/assets/images/ui/plan-icon-select.png";
 import iconOrder from "@/assets/images/ui/common-icon-order.png";
-import iconWallet from "@/assets/images/ui/common-icon-wallet.png";
-import iconPoints from "@/assets/images/ui/common-icon-points.png";
 import iconCart from "@/assets/images/ui/common-icon-cart-full.png";
 import dividerUrl from "@/assets/images/ui/plan-divider.png";
 import pkgTrial from "@/assets/images/ui/plan-icon-trial.png";
@@ -29,7 +27,8 @@ const PACKAGE_ICONS: Array<{ keys: string[]; icon: string }> = [
 ];
 
 function iconFor(pkg: RechargePackage): string {
-  const haystack = `${pkg.code || ""} ${pkg.name || ""}`.toLowerCase();
+  if (pkg.icon_url && /^(https?:|data:|\/)/.test(pkg.icon_url)) return pkg.icon_url;
+  const haystack = `${pkg.code || ""} ${pkg.name || ""} ${pkg.icon_url || ""}`.toLowerCase();
   for (const entry of PACKAGE_ICONS) {
     if (entry.keys.some((k) => haystack.includes(k.toLowerCase()))) {
       return entry.icon;
@@ -69,13 +68,13 @@ const selectedPackage = computed(() =>
 
 const availableCoupons = computed(() =>
   coupons.value
-    .filter((coupon) => coupon.status === "未使用" && coupon.amount_cents > 0)
+    .filter((coupon) => coupon.status === "未使用" && (coupon.amount_cents > 0 || coupon.gift_points > 0))
     .sort((a, b) => couponExpireTime(a) - couponExpireTime(b)),
 );
 
 const couponOptions = computed(() =>
   availableCoupons.value.map((coupon) => ({
-    label: `${formatYuan(coupon.amount_cents)} 优惠券（有效期至 ${formatDate(coupon.valid_until)}）`,
+    label: `${coupon.benefit_type === "gift" ? `赠送${coupon.gift_points}点` : `${formatYuan(coupon.amount_cents)}优惠`}（门槛${formatYuan(coupon.threshold_amount_cents)}，有效期至 ${formatDate(coupon.valid_until)}）`,
     value: coupon.id,
   })),
 );
@@ -98,8 +97,9 @@ function couponExpireTime(coupon: Coupon) {
 }
 
 function getApiErrorMessage(err: unknown, fallback: string) {
-  const error = err as { response?: { data?: { detail?: string } } };
-  return error.response?.data?.detail || fallback;
+  const error = err as { response?: { data?: { detail?: string | { message?: string } } } };
+  const detail = error.response?.data?.detail;
+  return typeof detail === "string" ? detail : detail?.message || fallback;
 }
 
 function normalizeUsePoints(value: number | null | undefined) {
@@ -145,7 +145,7 @@ async function importCoupon() {
     const redeemed =
       result.coupon ??
       result.coupons.find((coupon) => (coupon.code || "").trim().toLowerCase() === code.toLowerCase());
-    const canUseRedeemed = redeemed?.status === "未使用" && redeemed.amount_cents > 0;
+    const canUseRedeemed = redeemed?.status === "未使用" && (redeemed.amount_cents > 0 || redeemed.gift_points > 0);
     if (canUseRedeemed) {
       selectedCouponId.value = redeemed.id;
     } else if (
@@ -175,7 +175,8 @@ async function refreshPreview() {
       use_points: requestedPoints,
     });
     usePoints.value = preview.value.points_used;
-  } catch {
+  } catch (err) {
+    if (selectedCouponId.value) message.warning(getApiErrorMessage(err, "该优惠券暂不可用，已为你取消选择"));
     selectedCouponId.value = null;
     preview.value = await billingApi.previewOrder({
       package_code: selectedPackageCode.value,
@@ -314,7 +315,8 @@ watch(
                 class="package-divider"
                 :style="{ backgroundImage: `url(${dividerUrl})` }"
               ></span>
-              <span class="package-balance">{{ item.balance_wen }}文</span>
+              <span class="package-balance">{{ item.total_points }}点</span>
+              <span class="package-breakdown">充值{{ item.recharge_points }} + 赠送{{ item.gift_points }}</span>
               <span class="package-price">{{ formatYuan(item.amount_cents) }}</span>
               <span v-if="item.caution" class="package-caution">{{ item.caution }}</span>
             </button>
@@ -328,21 +330,6 @@ watch(
             <span>订单详情</span>
           </div>
 
-          <div class="balance-row">
-            <span
-              class="balance-item balance-item--pill"
-              :style="{ backgroundImage: `url(${iconWallet})` }"
-            >
-              <span>{{ preview?.current_balance_wen ?? 0 }}文</span>
-            </span>
-            <span
-              class="balance-item balance-item--pill"
-              :style="{ backgroundImage: `url(${iconPoints})` }"
-            >
-              <span>{{ preview?.current_points ?? 0 }}积分</span>
-            </span>
-          </div>
-
           <div class="summary-row">
             <span>已选套餐</span>
             <strong>{{ selectedPackage?.name || "-" }}</strong>
@@ -350,6 +337,13 @@ watch(
           <div class="summary-row">
             <span>套餐价格</span>
             <strong>{{ preview ? formatYuan(preview.order_amount_cents) : "-" }}</strong>
+          </div>
+          <div class="summary-row">
+            <span>到账点数</span>
+            <strong>{{ preview?.total_points ?? selectedPackage?.total_points ?? 0 }}点</strong>
+          </div>
+          <div v-if="preview?.coupon_gift_points" class="summary-row">
+            <span>赠送券额外点数</span><strong>+{{ preview.coupon_gift_points }}点</strong>
           </div>
 
           <label class="field-label">导入优惠券</label>
@@ -540,6 +534,12 @@ watch(
   letter-spacing: 0.5px;
 }
 
+.package-breakdown {
+  margin-top: -4px;
+  color: #8a8f99;
+  font-size: 11px;
+}
+
 .package-price {
   min-width: 76px;
   height: 28px;
@@ -572,40 +572,6 @@ watch(
   border: 1px solid #eef0f5;
   border-radius: 10px;
   padding: 18px 18px 20px;
-}
-
-.balance-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 12px;
-  background: #fff;
-  border-radius: 8px;
-  border: 1px solid #eef0f5;
-}
-
-.balance-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #555;
-  font-weight: 500;
-}
-
-/* 仅使用图片绘制背景；容器随文字变宽，背景图同步拉伸。 */
-.balance-item--pill {
-  height: 26px;
-  min-width: 78px;
-  box-sizing: border-box;
-  padding: 0 10px 0 32px;
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 100% 100%;
-  align-items: center;
-  white-space: nowrap;
-  color: #333;
-  font-weight: 600;
 }
 
 .summary-row {

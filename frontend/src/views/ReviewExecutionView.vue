@@ -2,7 +2,8 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
-import { reviewApi } from '@/api/client'
+import { useAuthStore } from '@/stores/auth'
+import { duplicateApi, reviewApi } from '@/api/client'
 import ExecutionStepper from '@/components/execution/ExecutionStepper.vue'
 import LeftPane from '@/components/execution/LeftPane.vue'
 import RightSidebar from '@/components/execution/RightSidebar.vue'
@@ -11,8 +12,13 @@ import { useSSE } from '@/composables/useSSE'
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
+const authStore = useAuthStore()
 
 const projectId = computed(() => route.params.id as string)
+const isDuplicate = computed(() => route.meta.taskType === 'duplicate')
+const taskMode = computed<'review' | 'duplicate'>(() => isDuplicate.value ? 'duplicate' : 'review')
+const taskApi = computed(() => isDuplicate.value ? duplicateApi : reviewApi)
+const operationName = computed(() => isDuplicate.value ? '查重' : '审查')
 
 // 状态
 const phase = ref<'pending' | 'running' | 'completed' | 'failed'>('pending')
@@ -82,6 +88,11 @@ const findingsCount = computed(() => {
 async function handleSSEEvent(event: any) {
   // 详细日志，方便调试 SSE 数据
   console.log('[ReviewExecutionView] SSE event received:', event)
+
+  // 只有收到真实 SSE 数据才认为实时链路恢复。单纯 onopen/HTTP 200
+  // 可能是后端 Redis reader 未启动的假活连接。
+  if (statusPollTimer) stopStatusPolling()
+  if (event.type === 'sse_heartbeat') return
 
   switch (event.type) {
     case 'status':
@@ -170,6 +181,7 @@ async function handleSSEEvent(event: any) {
       break
 
     case 'merging_completed':
+      if (isDuplicate.value) break
       phase.value = 'completed'
       stopStatusPolling()
       projectStore.stopHeartbeat()
@@ -396,14 +408,14 @@ async function handleSSEEvent(event: any) {
     case 'error':
       // 错误事件
       phase.value = 'failed'
-      errorMessage.value = event.message || '审查失败，暂无详细原因'
+      errorMessage.value = event.message || `${operationName.value}失败，暂无详细原因`
       stopStatusPolling()
       projectStore.stopHeartbeat()
       disconnect()
       break
 
     case 'warning':
-      realtimeNotice.value = event.message || '部分规则审查失败，结果可能不完整'
+      realtimeNotice.value = event.message || `部分规则${operationName.value}失败，结果可能不完整`
       break
 
     default:
@@ -420,7 +432,7 @@ function addTodoItem(event: any) {
     rule_doc_name: event.rule_doc_name || '',
     check_items: [{
       id: `${event.todo_id}-default`,
-      title: '规则审查',
+      title: `规则${operationName.value}`,
       status: 'pending'
     }],
     status: 'pending'
@@ -458,7 +470,7 @@ function updateTodoProgress(todoId: string, _progress: number, currentCheck: str
 // Load historical todos from API for completed tasks
 async function loadHistoricalTodos(projectId: string, taskId: string) {
   try {
-    const historicalTodos = await reviewApi.getTodosByTask(projectId, taskId)
+    const historicalTodos = await taskApi.value.getTodosByTask(projectId, taskId)
     console.log('[ReviewExecutionView] Loaded historical todos:', historicalTodos.length)
 
     // Clear existing todos and populate from API response
@@ -504,8 +516,10 @@ async function loadHistoricalTodos(projectId: string, taskId: string) {
 // 外部用户时间线本来就以 todos 块为主，不依赖 steps。
 async function loadHistoricalStepsAndTodos(taskId: string) {
   await loadHistoricalTodos(projectId.value, taskId)
+  // 外部用户的执行页只展示主/子代理状态块，不请求受限的内部步骤接口。
+  if (!authStore.isInteriorUser) return
   try {
-    const historicalSteps = await reviewApi.getSteps(projectId.value, taskId)
+    const historicalSteps = await taskApi.value.getSteps(projectId.value, taskId)
     if (historicalSteps.length > 0) {
       const mapStep = (s: any) => ({
         step_number: s.step_number,
@@ -546,7 +560,7 @@ async function loadHistoricalStepsAndTodos(taskId: string) {
 let statusPollTimer: ReturnType<typeof setInterval> | null = null
 
 async function refreshTaskSnapshot(taskId: string) {
-  const task = await reviewApi.getTaskStatus(projectId.value, taskId)
+  const task = await taskApi.value.getTaskStatus(projectId.value, taskId)
   projectStore.currentTask = task
 
   if (task.status === 'running' || task.status === 'pending') {
@@ -569,7 +583,7 @@ async function refreshTaskSnapshot(taskId: string) {
 
   if (task.status === 'failed') {
     phase.value = 'failed'
-    errorMessage.value = task.error_message || '审查失败'
+    errorMessage.value = task.error_message || `${operationName.value}失败`
     await loadHistoricalStepsAndTodos(taskId)
     stopStatusPolling()
     projectStore.stopHeartbeat()
@@ -587,9 +601,12 @@ async function refreshTaskSnapshot(taskId: string) {
   }
 }
 
-function startStatusPolling(taskId: string) {
+function startStatusPolling(
+  taskId: string,
+  notice = '实时连接已断开，正在轮询任务状态',
+) {
+  realtimeNotice.value = notice
   if (statusPollTimer) return
-  realtimeNotice.value = '实时连接已断开，正在轮询任务状态'
   refreshTaskSnapshot(taskId).catch(err => {
     console.error('[ReviewExecutionView] Initial polling refresh failed:', err)
   })
@@ -605,21 +622,23 @@ function stopStatusPolling() {
     clearInterval(statusPollTimer)
     statusPollTimer = null
   }
-  if (realtimeNotice.value === '实时连接已断开，正在轮询任务状态') {
-    realtimeNotice.value = null
-  }
+  realtimeNotice.value = null
 }
 
 // 使用统一的 SSE composable（支持指数退避重连 + Last-Event-ID + RAF 批量处理）
 const { connect: sseConnect, disconnect: sseDisconnect } = useSSE({
   onEvent: handleSSEEvent,
   onOpen: () => {
-    stopStatusPolling()
-    realtimeNotice.value = null
+    // 等第一条有效事件再停止轮询；HTTP 200 本身不足以证明 SSE 健康。
+    if (!statusPollTimer) realtimeNotice.value = null
+  },
+  onStale: (taskId) => {
+    startStatusPolling(taskId, '实时连接暂未收到进度，正在同步任务状态')
   },
   onPermanentFailure: (taskId) => {
     startStatusPolling(taskId)
   },
+  staleTimeoutMs: 30000,
   enableBatching: true,  // 保持 RAF 批量处理
   shouldStop: () => {
     return phase.value === 'completed' || phase.value === 'failed'
@@ -631,7 +650,7 @@ function connect() {
     console.log('[ReviewExecutionView] No currentTask.id, skipping SSE connection')
     return
   }
-  projectStore.startHeartbeat(projectId.value, projectStore.currentTask.id)
+  projectStore.startHeartbeat(projectId.value, projectStore.currentTask.id, taskMode.value)
   sseConnect(projectStore.currentTask.id)
 }
 
@@ -644,12 +663,12 @@ function handleCancelled() {
   projectStore.stopHeartbeat()
   disconnect()
   phase.value = 'failed'
-  errorMessage.value = '用户主动放弃检查'
+  errorMessage.value = `用户主动放弃${operationName.value}`
 }
 
 function goToResults() {
   router.push({
-    name: 'review-results',
+    name: isDuplicate.value ? 'duplicate-results' : 'review-results',
     params: { id: projectId.value }
   })
 }
@@ -705,7 +724,8 @@ onMounted(async () => {
   await projectStore.selectProject(projectId.value)
 
   // 获取当前项目的审查任务
-  await projectStore.fetchReviewTasks()
+  if (isDuplicate.value) await projectStore.fetchDuplicateTasks()
+  else await projectStore.fetchReviewTasks()
 
   // 检查是否有指定的 taskId
   if (route.query.taskId) {
@@ -720,7 +740,7 @@ onMounted(async () => {
         isHistorical.value = true
       } else if (task.status === 'failed') {
         phase.value = 'failed'
-        errorMessage.value = task.error_message || '审查失败'
+        errorMessage.value = task.error_message || `${operationName.value}失败`
       } else if (task.status === 'cancelled') {
         phase.value = 'failed'
         errorMessage.value = '任务已被取消'
@@ -742,7 +762,7 @@ onMounted(async () => {
         isHistorical.value = true
       } else if (latestTask.status === 'failed') {
         phase.value = 'failed'
-        errorMessage.value = projectStore.currentTask?.error_message || '审查失败'
+        errorMessage.value = projectStore.currentTask?.error_message || `${operationName.value}失败`
       } else if (latestTask.status === 'cancelled') {
         phase.value = 'failed'
         errorMessage.value = '任务已被取消'
@@ -787,7 +807,7 @@ onUnmounted(() => {
 <template>
   <div class="review-execution-view">
     <div class="main-layout">
-      <ExecutionStepper :phase="phase" />
+      <ExecutionStepper :phase="phase" :mode="taskMode" />
 
       <div class="content-area">
         <div v-if="realtimeNotice" class="realtime-notice">
@@ -803,6 +823,7 @@ onUnmounted(() => {
           :brain-capacity-map="brainCapacityMap"
           :realtime-notice="realtimeNotice"
           :has-current-task="!!projectStore.currentTask?.id"
+          :mode="taskMode"
         />
 
         <RightSidebar
@@ -815,6 +836,7 @@ onUnmounted(() => {
           :phase="phase"
           :task-start-time="taskStartTime"
           :duration-seconds="projectStore.currentTask?.duration_seconds ?? null"
+          :mode="taskMode"
           @cancelled="handleCancelled"
           @view-results="goToResults"
         />

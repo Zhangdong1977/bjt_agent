@@ -3,7 +3,8 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Integer, String, ForeignKey
+from sqlalchemy import DateTime, Integer, Numeric, String, ForeignKey, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
     from .project import Project
     from .review_result import ReviewResult
     from .agent_step import AgentStep
+    from .duplicate_result import DuplicateResult
 
 
 class ReviewTask(Base):
@@ -20,6 +22,18 @@ class ReviewTask(Base):
     __tablename__ = "review_tasks"
 
     project_id: Mapped[str] = mapped_column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    task_type: Mapped[str] = mapped_column(
+        String(20), default="review", server_default="review", nullable=False, index=True
+    )
+    duplicate_mode: Mapped[str] = mapped_column(
+        String(10), default="pair", server_default="pair", nullable=False, index=True
+    )
+    duplicate_algorithm_version: Mapped[str | None] = mapped_column(
+        String(80), nullable=True
+    )
+    duplicate_feature_snapshot: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True
+    )
     status: Mapped[str] = mapped_column(String(50), default="pending", index=True)  # pending, running, completed, failed, cancelled
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -28,11 +42,25 @@ class ReviewTask(Base):
     error_message: Mapped[str | None] = mapped_column(nullable=True)
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)  # Track frontend heartbeat - if no heartbeat for 20+ seconds, agent will cancel
     max_concurrency: Mapped[int] = mapped_column(Integer, default=2, server_default="2", nullable=False)
+    billing_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # Business lifecycle and billing lifecycle are deliberately independent.
+    # A failed/cancelled task may still have incurred provider cost and must be
+    # settled after its usage writes have been durably flushed.
+    billing_status: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default="pending", nullable=False, index=True
+    )
+    billing_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    billing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage_finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    billing_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     project: Mapped["Project"] = relationship("Project", back_populates="review_tasks")
     results: Mapped[list["ReviewResult"]] = relationship("ReviewResult", back_populates="task", cascade="all, delete-orphan")
     steps: Mapped[list["AgentStep"]] = relationship("AgentStep", back_populates="task", cascade="all, delete-orphan")
+    duplicate_results: Mapped[list["DuplicateResult"]] = relationship(
+        "DuplicateResult", back_populates="task", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<ReviewTask(id={self.id}, status={self.status})>"

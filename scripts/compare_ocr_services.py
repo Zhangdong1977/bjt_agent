@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""对比百度云 OCR 与 MiniMax MCP understand_image 在真实标书/应标书图片上的效果。
+"""对比百度云 OCR 与 MiniMax MCP understand_image 在真实标书/投标文件图片上的效果。
 
-用项目真实文档图片（招标书表格、应标书身份证）分别调用两个服务，采集
+用项目真实文档图片（招标书表格、投标文件身份证）分别调用两个服务，采集
 成功/失败、错误码（重点 1026 敏感内容）、输出文本、耗时，并按"关键 token
 命中率"给出客观准确度信号，产出 docs/ocr_comparison_report.md 供人工评估
 "百度 OCR 是否可替代/设为默认"。
@@ -64,7 +64,7 @@ IMAGES = [
         ],
     },
     {
-        "label": "应标书身份证 image_1.jpeg",
+        "label": "投标文件身份证 image_1.jpeg",
         "path": _BID_IMG,
         # 第2条 prompt 含「身份证」字样，用于验证 MiniMax 是否触发 1026
         "prompts": ["识别证件上的文字信息", "识别这张身份证的信息"],

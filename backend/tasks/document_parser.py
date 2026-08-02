@@ -1,6 +1,7 @@
 """Document parsing tasks."""
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -15,6 +16,15 @@ from backend.celery_app import celery_app
 from backend.models import Document
 
 logger = logging.getLogger(__name__)
+
+_SOURCE_BASIS_BY_DOC_TYPE = {
+    "tender": "tender",
+    "duplicate_tender": "tender",
+    "duplicate_public_reference": "public",
+    "bid": "bidder_authored",
+    "duplicate_left": "bidder_authored",
+    "duplicate_right": "bidder_authored",
+}
 
 
 def _natural_sort_key(text: str) -> list:
@@ -165,7 +175,22 @@ def _insert_missing_img_tags(html_content: str, images_dir: Path) -> str:
         return html_content
 
     # Find all image files in the directory
-    image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
+    image_extensions = {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".svg",
+        ".bmp",
+        ".tif",
+        ".tiff",
+        ".jp2",
+        ".jpx",
+        ".j2k",
+        ".j2c",
+        ".jpc",
+    }
     image_files = []
     for ext in image_extensions:
         image_files.extend(images_dir.glob(f"*{ext}"))
@@ -212,6 +237,154 @@ def _insert_missing_img_tags(html_content: str, images_dir: Path) -> str:
     return str(soup)
 
 
+def _embed_image_descriptions_in_md(
+    markdown: str,
+    descriptions: dict[str, str] | None,
+) -> str:
+    """Insert deterministic image descriptions below matching Markdown links.
+
+    This compatibility helper deliberately performs no image understanding or
+    network work.  The parser and the S2 image-evidence service may populate a
+    filename-to-description map, while callers that do not have descriptions
+    receive the original Markdown byte-for-byte.
+    """
+
+    if not markdown or not descriptions:
+        return markdown
+
+    normalized: dict[str, str] = {}
+    for key, value in descriptions.items():
+        if value is None:
+            continue
+        filename = str(key).replace("\\", "/").split("/")[-1]
+        filename = filename.split("?", 1)[0].split("#", 1)[0]
+        if filename and str(value):
+            normalized[filename] = str(value)
+
+    if not normalized:
+        return markdown
+
+    image_pattern = re.compile(r"^([ \t]*!\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)[ \t]*)$")
+    output: list[str] = []
+    for line in markdown.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        newline = line[len(body) :]
+        match = image_pattern.match(body)
+        if not match:
+            output.append(line)
+            continue
+        image_path = match.group(2).replace("\\", "/")
+        image_name = image_path.rsplit("/", 1)[-1]
+        image_name = image_name.split("?", 1)[0].split("#", 1)[0]
+        description = normalized.get(image_name)
+        if not description:
+            output.append(line)
+            continue
+        output.append(line)
+        # Keep the source newline style.  If the image is the final line,
+        # introduce a separator before the description because the source line
+        # itself has no terminator.
+        description_line = f"图片内容: {description}"
+        if newline:
+            output.append(description_line + newline)
+        else:
+            output.append("\n" + description_line)
+    return "".join(output)
+
+
+async def _process_images_with_llm(
+    images: list[dict],
+    api_key: str,
+    api_base: str,
+    model: str,
+    document_id: str | None = None,
+) -> list[str]:
+    """Legacy MiniMax-compatible image description helper.
+
+    The active S2 parser uses :class:`SelectiveImageEvidenceService` instead;
+    this bounded adapter remains available for older integrations and tests
+    that call the historical helper directly.  It never runs unless a caller
+    explicitly invokes it.
+    """
+
+    import httpx
+
+    descriptions: list[str] = []
+    for image in (images or [])[:5]:
+        filename = str(image.get("filename") or "image")
+        try:
+            payload = base64.b64encode(image.get("data") or b"").decode("ascii")
+            extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
+            mime = (
+                f"image/{extension}"
+                if extension in {"png", "jpeg", "jpg", "gif", "webp"}
+                else "image/png"
+            )
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{api_base.rstrip('/')}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "Describe this image in detail. Focus on text, "
+                                            "diagrams, tables, and important visual elements."
+                                        ),
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{mime};base64,{payload}"
+                                        },
+                                    },
+                                ],
+                            }
+                        ],
+                        "max_tokens": 500,
+                    },
+                )
+            if response.status_code != 200:
+                logger.warning(
+                    "Image understanding API error for %s: %s",
+                    filename,
+                    response.status_code,
+                )
+                continue
+            try:
+                data = response.json()
+            except Exception as exc:
+                logger.warning("Invalid image understanding JSON for %s: %s", filename, exc)
+                continue
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if not choices:
+                continue
+            content = (((choices[0] or {}).get("message") or {}).get("content"))
+            if content is None:
+                continue
+            # MiniMax/DeepSeek responses occasionally include hidden reasoning
+            # tags.  Do not persist those tokens into document evidence.
+            content = re.sub(
+                r"<(?:think|thought)>.*?</(?:think|thought)>",
+                "",
+                str(content),
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            descriptions.append(f"[Image: {filename}] {content.strip()}")
+        except Exception as exc:
+            logger.warning("Failed to process image %s: %s", filename, exc)
+            descriptions.append(f"[Image: {filename}] (Image processing failed)")
+    return descriptions
+
+
 async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Document, settings, document_id: str) -> dict:
     """Save parsed content to disk and update document record."""
     _publish_parse_progress(document_id, "saving", 1, 3, 0)
@@ -224,12 +397,95 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
     md_path.write_text(md_content, encoding="utf-8")
 
     # Images are already on disk (written by DirectFileImageHandler during parsing)
-    if parsed_data["images"]:
-        document.parsed_images_dir = str(images_dir)
+    document.parsed_images_dir = str(images_dir) if parsed_data["images"] else None
 
     document.parsed_markdown_path = str(md_path)
+    # Docling writes its structured JSON beside the source PDF.  The parser
+    # result already contains the path; persist it on the Document in the same
+    # transaction as the Markdown output so downstream duplicate checks never
+    # have to guess where the structured artifact lives.
+    docling_json_path = parsed_data.get("docling_json_path")
+    document.docling_json_path = str(docling_json_path) if docling_json_path else None
     document.word_count = len(md_content.split())
     document.page_count = parsed_data.get("page_count")
+    document.artifact_manifest_path = None
+    document.evidence_blocks_path = None
+    if not parsed_data.get("source_basis"):
+        parsed_data["source_basis"] = _SOURCE_BASIS_BY_DOC_TYPE.get(
+            document.doc_type, "unknown"
+        )
+    if document.doc_type in {"duplicate_tender", "duplicate_public_reference"}:
+        from backend.services.document_artifacts import sha256_file
+
+        snapshot_hash = sha256_file(file_path)
+        document.source_snapshot_path = str(file_path)
+        document.source_snapshot_hash = snapshot_hash
+        if not document.source_version:
+            document.source_version = (
+                f"upload-{snapshot_hash[:12]}" if snapshot_hash else "upload-unhashed"
+            )
+        metadata = dict(document.source_metadata or {})
+        metadata.update(
+            {
+                "snapshot_kind": "uploaded_file",
+                "original_filename": document.original_filename,
+                "source_basis": parsed_data["source_basis"],
+            }
+        )
+        document.source_metadata = metadata
+
+    # S2-0 deterministic evidence IR and artifact manifest.  Artifact
+    # generation is deliberately best-effort: a parser result must remain
+    # usable for the existing review flow even if a secondary JSON artifact
+    # cannot be written.  The coverage summary records that degradation.
+    try:
+        from backend.services.document_artifacts import build_document_artifacts
+
+        artifact_result = build_document_artifacts(
+            document_id=document.id,
+            document_role=document.doc_type,
+            original_filename=document.original_filename,
+            source_path=file_path,
+            markdown_path=md_path,
+            images_dir=images_dir if parsed_data.get("images") else None,
+            parsed_data=parsed_data,
+        )
+        document.artifact_manifest_path = artifact_result["manifest_path"]
+        document.evidence_blocks_path = artifact_result["evidence_blocks_path"]
+        document.parser_name = artifact_result["parser_name"]
+        document.parser_version = artifact_result["parser_version"]
+        document.coverage_summary = artifact_result["coverage"].model_dump(mode="json")
+    except Exception as exc:
+        logger.warning(
+            "[PARSE] Failed to generate S2-0 artifacts for %s: %s",
+            document_id,
+            exc,
+            exc_info=True,
+        )
+        document.parser_name = str(parsed_data.get("parser_name") or "unknown")
+        document.parser_version = str(parsed_data.get("parser_version") or "unknown")
+        document.coverage_summary = {
+            "status": "partial",
+            "pages_total": document.page_count,
+            "pages_parsed": document.page_count,
+            "page_ratio": 1.0 if document.page_count else None,
+            "text_units": 0,
+            "text_covered_units": 0,
+            "text_ratio": 0.0,
+            "table_count": 0,
+            "structured_table_count": 0,
+            "table_ratio": 1.0,
+            "image_count": len(parsed_data.get("images") or []),
+            "hashed_image_count": 0,
+            "ocr_image_count": 0,
+            "image_hash_ratio": 0.0,
+            "image_ocr_ratio": 0.0,
+            "scanned_page_count": int(parsed_data.get("scanned_page_count", 0) or 0),
+            "ocr_page_count": int(parsed_data.get("ocr_page_count", 0) or 0),
+            "failed_ocr_page_count": int(parsed_data.get("failed_ocr_page_count", 0) or 0),
+            "unresolved_objects": 1,
+            "warnings": [f"artifact_generation_failed:{type(exc).__name__}"],
+        }
 
     document.status = "parsed"
 
@@ -239,9 +495,130 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
         "status": "success",
         "document_id": document.id,
         "parsed_markdown_path": str(md_path),
+        "docling_json_path": document.docling_json_path,
+        "artifact_manifest_path": document.artifact_manifest_path,
+        "evidence_blocks_path": document.evidence_blocks_path,
+        "coverage_status": (document.coverage_summary or {}).get("status"),
         "page_count": document.page_count,
         "word_count": document.word_count,
     }
+
+
+async def _augment_duplicate_image_evidence(
+    file_path: Path,
+    parsed_data: dict,
+    document: Document,
+    settings,
+) -> dict:
+    """Hash all duplicate-check images and selectively OCR useful/scan images."""
+
+    if not str(document.doc_type).startswith("duplicate_"):
+        return parsed_data
+
+    from backend.services.duplicate_image_evidence import (
+        SelectiveImageEvidenceService,
+        classify_pdf_pages,
+        render_pdf_pages,
+    )
+
+    images_dir = file_path.parent / f"{file_path.stem}_images"
+    service = SelectiveImageEvidenceService(
+        cache_dir=settings.workspace_path / ".duplicate_cache" / "image_evidence",
+        ocr_enabled=settings.duplicate_ocr_enabled,
+        remote_ocr_enabled=settings.duplicate_remote_ocr_enabled,
+        vision_enabled=settings.duplicate_vision_enabled,
+        max_ocr_images=settings.duplicate_ocr_max_images,
+        max_remote_calls=settings.duplicate_remote_ocr_max_calls,
+        max_vision_calls=settings.duplicate_vision_max_calls,
+        min_local_confidence=settings.duplicate_ocr_min_local_confidence,
+        normalization_cache_dir=settings.workspace_path / ".ocr_image_cache",
+    )
+    evidence_by_name: dict[str, dict] = {}
+    scan_paths: dict[int, Path] = {}
+    classifications = []
+
+    if file_path.suffix.lower() == ".pdf":
+        classifications = await asyncio.to_thread(
+            classify_pdf_pages,
+            file_path,
+            text_threshold=settings.duplicate_scan_text_threshold,
+        )
+        scan_pages = [page.page_number for page in classifications if page.kind == "scan"]
+        if scan_pages:
+            scan_paths = await asyncio.to_thread(
+                render_pdf_pages,
+                file_path,
+                scan_pages,
+                images_dir,
+            )
+            existing_names = {
+                str(item.get("filename")) for item in parsed_data.get("images", [])
+            }
+            markdown_refs: list[str] = []
+            for page_number, path in scan_paths.items():
+                if path.name not in existing_names:
+                    parsed_data.setdefault("images", []).append(
+                        {"filename": path.name, "data": b""}
+                    )
+                markdown_refs.append(
+                    f"![扫描页 {page_number}]({images_dir.name}/{path.name})"
+                )
+            if markdown_refs:
+                parsed_data["text"] = (
+                    str(parsed_data.get("text") or "").rstrip()
+                    + "\n\n"
+                    + "\n\n".join(markdown_refs)
+                    + "\n"
+                )
+
+    image_names = [
+        str(item.get("filename"))
+        for item in parsed_data.get("images", [])
+        if item.get("filename")
+    ]
+    scan_name_to_page = {path.name: page for page, path in scan_paths.items()}
+    warnings: list[str] = list(parsed_data.get("warnings") or [])
+    ocr_scan_pages = 0
+    failed_scan_pages = 0
+    for name in dict.fromkeys(image_names):
+        path = images_dir / Path(name).name
+        if not path.is_file():
+            warnings.append(f"image_unavailable:{Path(name).name}")
+            continue
+        page_number = scan_name_to_page.get(path.name)
+        evidence = await service.analyze(
+            path,
+            force_ocr=page_number is not None,
+            page_number=page_number,
+        )
+        evidence_by_name[path.name] = evidence.to_dict()
+        warnings.extend(evidence.warnings)
+        if page_number is not None:
+            if evidence.ocr_text:
+                ocr_scan_pages += 1
+            else:
+                failed_scan_pages += 1
+
+    scanned_page_count = len(scan_paths)
+    text_page_count = sum(page.kind == "text" for page in classifications)
+    if classifications:
+        parsed_data["page_classification"] = [
+            {
+                "page_number": page.page_number,
+                "kind": page.kind,
+                "extracted_text_length": page.extracted_text_length,
+                "image_count": page.image_count,
+            }
+            for page in classifications
+        ]
+        parsed_data["parsed_page_count"] = text_page_count + ocr_scan_pages
+    parsed_data["scanned_page_count"] = scanned_page_count
+    parsed_data["ocr_page_count"] = ocr_scan_pages
+    parsed_data["failed_ocr_page_count"] = failed_scan_pages
+    parsed_data["unresolved_objects"] = int(parsed_data.get("unresolved_objects", 0) or 0)
+    parsed_data["image_evidence"] = evidence_by_name
+    parsed_data["warnings"] = list(dict.fromkeys(warnings))
+    return parsed_data
 
 
 async def _parse_document_internal(document: Document, file_path: Path, settings) -> dict:
@@ -292,10 +669,9 @@ async def _parse_document_internal(document: Document, file_path: Path, settings
             f"md_length={len(parsed_data.get('text', ''))}"
         )
 
-    # Check for scanned PDF (empty/very short content)
-    md_text = parsed_data.get("text", "")
-    if suffix == ".pdf" and len(md_text.strip()) < 100:
-        raise ValueError("该 PDF 似乎为扫描件（无可提取文字），暂不支持 OCR，请上传文字版 PDF 或 Word 文档")
+    parsed_data = await _augment_duplicate_image_evidence(
+        file_path, parsed_data, document, settings
+    )
 
     return await _save_parsed_content(file_path, parsed_data, document, settings, document.id)
 
@@ -348,6 +724,42 @@ def parse_document(self, document_id: str) -> dict:
                 logger.error(f"[PARSE] Document not found in DB: {document_id}")
                 return {"status": "error", "message": "文档不存在或已被删除"}
 
+            usage_token = None
+            try:
+                from backend.models import Project, User
+                from backend.services.usage_context import UsageContext, set_usage_context
+
+                owner_user_id = document.owner_user_id
+                if owner_user_id is None and document.project_id:
+                    project = (
+                        await db.execute(
+                            select(Project).where(Project.id == document.project_id)
+                        )
+                    ).scalar_one_or_none()
+                    owner_user_id = project.user_id if project else None
+                user = None
+                if owner_user_id:
+                    user = (
+                        await db.execute(select(User).where(User.id == owner_user_id))
+                    ).scalar_one_or_none()
+                if owner_user_id:
+                    usage_token = set_usage_context(
+                        UsageContext(
+                            external_user_id=(user.external_user_id if user else None),
+                            local_user_id=str(owner_user_id),
+                            user_name=(user.username if user else str(owner_user_id))
+                            or str(owner_user_id),
+                            enterprise_name=(user.enterprise_name if user else None),
+                            interior_user=bool(user.interior_user) if user else False,
+                            project_id=document.project_id,
+                            task_id=None,
+                            todo_id=None,
+                        )
+                    )
+            except Exception:
+                usage_token = None
+                logger.warning("[PARSE] OCR usage context unavailable", exc_info=True)
+
             document.status = "parsing"
             await db.flush()
 
@@ -397,6 +809,14 @@ def parse_document(self, document_id: str) -> dict:
                 await db.commit()
                 _publish_parse_progress(document.id, "failed", 0, 0, 0, sub_stage="error")
                 return {"status": "error", "message": str(e)}
+            finally:
+                if usage_token is not None:
+                    try:
+                        from backend.services.usage_context import reset_usage_context
+
+                        reset_usage_context(usage_token)
+                    except Exception:
+                        pass
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -547,6 +967,9 @@ async def _parse_pdf_with_docling(file_path: Path, document_id: str = "") -> dic
         "images": [{"filename": img.filename, "data": img.data} for img in result.images],
         "page_count": result.page_count,
         "docling_json_path": str(docling_json_path),
+        "parser_name": "docling",
+        "parser_version": "docling-table-structure",
+        "parsed_page_count": parsed_pages,
     }
 
 
@@ -601,6 +1024,9 @@ async def _parse_pdf_with_markitdown(file_path: Path, document_id: str = "") -> 
         "text": result.markdown_content,
         "images": [{"filename": img.filename, "data": img.data} for img in result.images],
         "page_count": result.page_count,
+        "parser_name": "markitdown",
+        "parser_version": "pymupdf-markdown",
+        "parsed_page_count": result.page_count,
     }
 
 
@@ -633,7 +1059,12 @@ async def _parse_docx(file_path: Path, progress_callback=None, document_id: str 
     return {
         "text": result.markdown_content,
         "images": [{"filename": img.filename, "data": img.data} for img in result.images],
-        "page_count": result.page_count,
+        # Mammoth/Markitdown cannot provide a reliable DOCX page count because
+        # pagination depends on Word layout.  Keep the established ``None``
+        # contract instead of leaking a mock/provider-specific value.
+        "page_count": None,
+        "parser_name": "markitdown",
+        "parser_version": "mammoth-direct-images/v2",
     }
 
 

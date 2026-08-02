@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     # 测试套餐（code="test"）显式开关。默认 False——fail-closed：即使漏配
     # BILLING_HIDDEN_PACKAGE_CODES，prod 也不会暴露 1 分钱测试套餐。dev 在 .env 设 true 开启。
     billing_test_package_enabled: bool = False  # env: BILLING_TEST_PACKAGE_ENABLED
+    # A user may run only this many billable top-level tasks at once.  This is
+    # separate from the sub-agent concurrency inside one task.
+    billing_max_active_tasks_per_user: int = 1
+    # Terminal tasks whose worker disappeared are finalized by reconciliation
+    # after this grace period, allowing late usage writes to land first.
+    billing_orphan_finalize_grace_seconds: int = 300
 
     # Database
     database_url: str = ""  # Must be set via environment variable
@@ -78,6 +84,47 @@ class Settings(BaseSettings):
     baidu_ocr_secret_key: str = ""  # env: BAIDU_OCR_SECRET_KEY
     baidu_ocr_endpoint: str = "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic"
 
+    # Duplicate S2 selective image/OCR channel.  Hashing is always local;
+    # OCR/VLM calls are separately switchable and bounded so an upload never
+    # fans out into unmetered paid calls.
+    duplicate_ocr_enabled: bool = True
+    duplicate_remote_ocr_enabled: bool = False
+    duplicate_vision_enabled: bool = False
+    duplicate_ocr_max_images: int = 24
+    duplicate_remote_ocr_max_calls: int = 4
+    duplicate_vision_max_calls: int = 2
+    duplicate_ocr_min_local_confidence: float = 0.72
+    duplicate_scan_text_threshold: int = 30
+
+    # S2-4 release switches and calibrated thresholds.  Batch mode remains
+    # opt-in until the pre-release acceptance gate is signed off.
+    duplicate_batch_enabled: bool = False
+    duplicate_algorithm_version: str = "duplicate-s2-4.2"
+    duplicate_candidate_min_score: float = 0.45
+    duplicate_lexical_min_score: float = 0.16
+    duplicate_structure_min_score: float = 0.50
+    duplicate_near_exact_min_score: float = 0.72
+    duplicate_image_min_score: float = 0.78
+    duplicate_pair_max_candidates: int = 400
+    duplicate_batch_max_candidates: int = 1200
+
+    # S2-2B semantic recall is opt-in until S2-4 calibration approves the
+    # thresholds.  Turning it off leaves the deterministic S2-1 channels in
+    # place and performs zero embedding-provider calls.
+    duplicate_semantic_enabled: bool = False
+    # Semantic recall provider is independent from the main LLM provider.
+    # ``llm`` performs one bounded task-local semantic clustering call and is
+    # the safe default when no dedicated embedding endpoint is provisioned.
+    duplicate_semantic_provider: Literal["llm", "minimax", "volcengine"] = "llm"
+    duplicate_embedding_batch_size: int = 32
+    duplicate_embedding_timeout_seconds: float = 45.0
+    duplicate_embedding_max_blocks: int = 400
+    duplicate_embedding_max_input_chars: int = 500_000
+    duplicate_embedding_min_chars: int = 24
+    duplicate_semantic_min_score: float = 0.72
+    duplicate_embedding_breaker_failures: int = 3
+    duplicate_embedding_breaker_cooldown_seconds: int = 120
+
     # LLM Provider: "minimax", "volcengine", or "deepseek"
     llm_provider: str = "minimax"
 
@@ -85,6 +132,7 @@ class Settings(BaseSettings):
     mini_agent_api_key: str = ""
     mini_agent_api_base: str = "https://api.minimaxi.com"
     mini_agent_model: str = "MiniMax-M2.7-highspeed"
+    minimax_embedding_model: str = "embo-01"
 
     # Volcengine / 火山引擎
     volcengine_api_key: str = ""
@@ -107,6 +155,9 @@ class Settings(BaseSettings):
 
     # Rule Library
     rule_library_dir: Path = Path(__file__).parent.parent / "docs" / "rules"
+    duplicate_rule_library_dir: Path = (
+        Path(__file__).parent.parent / "docs" / "rules-duplicate"
+    )
 
     @property
     def project_root(self) -> Path:
@@ -133,6 +184,21 @@ class Settings(BaseSettings):
         if configured_text.endswith("/docs/rules") and default_path.exists() and default_path.is_dir():
             return default_path
 
+        return configured_path
+
+    @property
+    def duplicate_rule_library_path(self) -> Path:
+        """Resolve the technical-bid duplicate-check rule directory."""
+        configured = self.duplicate_rule_library_dir
+        configured_path = configured if configured.is_absolute() else self.project_root / configured
+        configured_path = configured_path.resolve()
+        if configured_path.exists() and configured_path.is_dir():
+            return configured_path
+
+        default_path = (self.project_root / "docs" / "rules-duplicate").resolve()
+        configured_text = configured.as_posix().replace("\\", "/")
+        if configured_text.endswith("/docs/rules-duplicate"):
+            return default_path
         return configured_path
 
     @property
