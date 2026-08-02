@@ -11,6 +11,12 @@ const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 
+// 标书查重导航开关：通过构建期环境变量控制（生产屏蔽、开发可见）
+// - 生产构建读 frontend/.env.production 的 VITE_DUPLICATE_CHECK_ENABLED=false
+// - 开发 (npm run dev) 默认未设该变量 → undefined !== 'false' → true（可见）
+// - 将来开放：把 false 改 true 或删除该行后重新 build
+const duplicateCheckEnabled = import.meta.env.VITE_DUPLICATE_CHECK_ENABLED !== 'false'
+
 const allMenuItems = [
   { key: '/home/check', label: '标书检查', subtitle: '创建新项目，上传标书', icon: iconCheck, internalOnly: false },
   { key: '/home/duplicate-check', label: '标书查重', subtitle: '比对两份技术投标文件', icon: iconCheck, internalOnly: false },
@@ -35,9 +41,13 @@ const allMenuItems = [
   },
 ]
 
-// 标书复盘 / 系统公告仅内部用户可见
+// 标书复盘 / 系统公告仅内部用户可见；标书查重受构建开关控制
 const menuItems = computed(() =>
-  allMenuItems.filter((item) => !item.internalOnly || authStore.isInteriorUser)
+  allMenuItems.filter(
+    (item) =>
+      (item.key !== '/home/duplicate-check' || duplicateCheckEnabled) &&
+      (!item.internalOnly || authStore.isInteriorUser),
+  ),
 )
 
 const selectedKeys = ref<string[]>([route.path])
