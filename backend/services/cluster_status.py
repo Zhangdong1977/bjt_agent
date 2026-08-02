@@ -197,8 +197,12 @@ def _queue_depths() -> dict[str, int | None]:
         return {"review": None, "parser": None}
 
 
-async def get_cluster_status() -> dict[str, Any]:
-    """采集集群实时状态（节点 + worker + 队列深度）。永不抛异常。"""
+async def _probe_cluster_status() -> dict[str, Any]:
+    """真实采集集群实时状态（节点 + worker + 队列深度）。永不抛异常。
+
+    本函数直接发 celery inspect 广播，单次约 2s（inspect 等满 timeout）。
+    高频调用方应走 ``get_cluster_status``（带 Redis 共享缓存），不要直调本函数。
+    """
     ping, active, stats = await asyncio.gather(
         asyncio.to_thread(_ping),
         asyncio.to_thread(_active),
@@ -219,3 +223,125 @@ async def get_cluster_status() -> dict[str, Any]:
         "total_workers": len(workers),
         "degraded": degraded,
     }
+
+
+# ---------------------------------------------------------------------------
+# Redis 共享缓存层
+#
+# celery ``control.inspect()`` 即便所有 worker 瞬间回完也会等满 ``timeout``
+# （实测：9 worker 在 timeout=0.3s 即收齐，写死 2.0s 则必等满 2s）。状态页
+# 接口每次调用都发 3 次 inspect → 单请求 ≈2s。前端 5s 高频轮询 + 多 tab/刷新
+# 时并发请求占满 gunicorn worker → nginx upstream 排队 → 前端断开（499）。
+#
+# 本层把"实时探测结果"按 TTL 缓存到全集群共用的 Redis（``settings.redis_url``，
+# 与 ``_queue_depths`` 同源）。TTL 内所有调用（含 3 节点 × 多 worker）共享一份
+# 缓存，真实 inspect 每 TTL 最多发一次。Redis 不可达时全部降级为直连探测，
+# 绝不让缓存层拖垮状态页。
+# ---------------------------------------------------------------------------
+
+# 固定 2 个 key（不随请求累积），带 TTL 自动回收，详见 get_cluster_status 文档。
+_CACHE_KEY = "cluster:status:v1"        # 探测结果 JSON
+_CACHE_LOCK_KEY = "cluster:status:lock"  # stampede 防护：持锁者探测，其余等结果
+_CACHE_TTL = 8                          # 秒；> 前端轮询周期(5s) 使大部分命中
+_CACHE_LOCK_TTL = 15                    # 秒；略大于单次探测最坏耗时，崩漏时 TTL 兜底
+_CACHE_WAIT = 0.3                       # 秒；非持锁者重试间隔
+
+
+def _redis_client():
+    """从 settings.redis_url 建短生命 redis 连接（与 _queue_depths 同范式）。
+
+    返回 None 表示未配置 / 不可用 —— 调用方据此降级。
+    """
+    url = get_settings().redis_url
+    if not url:
+        return None
+    try:
+        import redis as redis_lib
+
+        return redis_lib.from_url(url, decode_responses=True, socket_timeout=2.0)
+    except Exception as e:
+        logger.warning("cluster_status 缓存 redis 初始化失败，降级直连探测: %s", e)
+        return None
+
+
+def _cache_get() -> dict[str, Any] | None:
+    """读缓存。Redis 不可达 / key 不存在 / JSON 损坏 → 返回 None（放行真实探测）。"""
+    r = _redis_client()
+    if r is None:
+        return None
+    try:
+        raw = r.get(_CACHE_KEY)
+        if not raw:
+            return None
+        return json.loads(raw)
+    except Exception as e:
+        logger.warning("cluster_status 读缓存失败，放行真实探测: %s", e)
+        return None
+
+
+def _cache_set(payload: dict[str, Any]) -> None:
+    """写缓存（带 TTL）。失败仅 warn，不影响调用方拿到的结果。"""
+    r = _redis_client()
+    if r is None:
+        return
+    try:
+        r.setex(_CACHE_KEY, _CACHE_TTL, json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception as e:
+        logger.warning("cluster_status 写缓存失败（不影响本次结果）: %s", e)
+
+
+def _acquire_probe_lock() -> bool:
+    """抢探测锁（SET NX EX）。True=我方持锁去探测，False=他人正在探测。"""
+    r = _redis_client()
+    if r is None:
+        return True  # Redis 不可达 → 不参与互斥，调用方直接探测
+    try:
+        return bool(r.set(_CACHE_LOCK_KEY, "1", nx=True, ex=_CACHE_LOCK_TTL))
+    except Exception as e:
+        logger.warning("cluster_status 抢锁失败，放行直连探测: %s", e)
+        return True
+
+
+def _release_probe_lock() -> None:
+    """释放探测锁。失败仅 warn（TTL 兜底自动回收）。"""
+    r = _redis_client()
+    if r is None:
+        return
+    try:
+        r.delete(_CACHE_LOCK_KEY)
+    except Exception as e:
+        logger.warning("cluster_status 释放锁失败（TTL 会兜底）: %s", e)
+
+
+async def get_cluster_status() -> dict[str, Any]:
+    """采集集群实时状态（带 Redis 共享缓存，TTL 内全集群共享一份）。
+
+    缓存策略：
+    - 命中缓存（TTL 8s 内）→ 直接返回，~ms 级。
+    - 未命中：第一个调用抢锁做真实探测并写回，其余调用轮询等结果
+      （stampede 防护，避免多节点并发各自发一遍 inspect）。
+    - Redis 不可达 → 全部降级为直连 ``_probe_cluster_status``，行为同改前。
+
+    内存占用：固定 2 个 Redis key（结果 + 锁），均带 TTL 自动回收，不累积。
+    """
+    cached = _cache_get()
+    if cached is not None:
+        return cached
+
+    if not _acquire_probe_lock():
+        # 未抢到锁：等持锁者写回，最多等到锁 TTL
+        deadline_steps = int(_CACHE_LOCK_TTL / _CACHE_WAIT)
+        for _ in range(deadline_steps):
+            await asyncio.sleep(_CACHE_WAIT)
+            cached = _cache_get()
+            if cached is not None:
+                return cached
+        # 持锁者超时未回写（崩溃 / 探测极慢）—— 兜底直连，绝不阻塞调用方
+        logger.warning("cluster_status 等待缓存超时，降级直连探测")
+
+    try:
+        result = await _probe_cluster_status()
+        _cache_set(result)
+    finally:
+        _release_probe_lock()
+    return result
