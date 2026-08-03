@@ -131,7 +131,8 @@ function formatDate(value?: string | null) {
 
 function formatPoints(value?: number | null) {
   const points = Number(value || 0);
-  return Number.isInteger(points) ? String(points) : points.toFixed(2);
+  // 点数统一按整数展示，不显示小数点后数字
+  return String(Math.round(points));
 }
 
 function remainingPointsPercent(order: BillingOrder) {
@@ -406,8 +407,8 @@ onMounted(() => {
                   <template v-else-if="column.dataIndex === 'coupon_amount_cents'">
                     {{ record.coupon_amount_cents ? formatCents(record.coupon_amount_cents) : "-" }}
                   </template>
-                  <template v-else-if="column.dataIndex === 'consumed_points' || column.dataIndex === 'remaining_points'">
-                    {{ Number(record[column.dataIndex] || 0).toFixed(2) }}点
+                  <template v-else-if="column.dataIndex === 'consumed_points' || column.dataIndex === 'remaining_points' || column.dataIndex === 'recharge_points' || column.dataIndex === 'gift_points'">
+                    {{ formatPoints(record[column.dataIndex]) }}点
                   </template>
                   <template v-else-if="column.dataIndex === 'points_status'">
                     <span :class="['badge', orderPointsStatusClass(record.points_status)]">
@@ -418,7 +419,7 @@ onMounted(() => {
                     {{ formatDateTime(record.points_expires_at) }}
                   </template>
                   <template v-else-if="column.dataIndex === 'current_balance_wen'">
-                    {{ record.current_balance_wen != null ? `${record.current_balance_wen}点` : "-" }}
+                    {{ record.current_balance_wen != null ? `${formatPoints(record.current_balance_wen)}点` : "-" }}
                   </template>
                 </template>
               </a-table>
@@ -447,7 +448,7 @@ onMounted(() => {
                     {{ formatDateTime(record.consumed_at) }}
                   </template>
                   <template v-else-if="column.dataIndex === 'sales_points' || column.dataIndex === 'gift_points_used' || column.dataIndex === 'recharge_points_used'">
-                    {{ Number(record[column.dataIndex] || 0).toFixed(2) }}点
+                    {{ formatPoints(record[column.dataIndex]) }}点
                   </template>
                   <template v-else-if="column.dataIndex === 'earned_points'">
                     {{ record.earned_points }}分
@@ -489,7 +490,7 @@ onMounted(() => {
                 {{ record.benefit_type === 'cash' ? formatCents(record.amount_cents) : '-' }}
               </template>
               <template v-else-if="column.dataIndex === 'gift_points'">
-                {{ record.benefit_type === 'gift' ? `${record.gift_points}点` : '-' }}
+                {{ record.benefit_type === 'gift' ? `${formatPoints(record.gift_points)}点` : '-' }}
               </template>
               <template v-else-if="column.dataIndex === 'valid_until'">
                 {{ formatDate(record.valid_until) }}
@@ -506,7 +507,7 @@ onMounted(() => {
       <a-modal v-model:open="allocationOpen" title="本次消费扣点明细" :footer="null" width="760px">
         <a-table :data-source="allocations" row-key="id" size="small" :pagination="false">
           <a-table-column title="点数类型" data-index="lot_type"><template #default="{ text }">{{ text === 'gift' ? '赠送点数' : '充值点数' }}</template></a-table-column>
-          <a-table-column title="扣除点数" data-index="points" />
+          <a-table-column title="扣除点数" data-index="points"><template #default="{ text }">{{ formatPoints(text) }}</template></a-table-column>
           <a-table-column title="每点折合价值" data-index="unit_value_yuan"><template #default="{ text }">￥{{ Number(text || 0).toFixed(6) }}</template></a-table-column>
           <a-table-column title="折合收入" data-index="folded_income_yuan"><template #default="{ text }">￥{{ Number(text || 0).toFixed(2) }}</template></a-table-column>
           <a-table-column title="该批次到期时间" data-index="expires_at"><template #default="{ text }">{{ formatDateTime(text) }}</template></a-table-column>

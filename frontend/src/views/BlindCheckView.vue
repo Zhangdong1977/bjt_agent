@@ -85,7 +85,7 @@ function timelineState(index: number): "done" | "active" | "waiting" {
 }
 
 function formatMetric(value: number) {
-  return new Intl.NumberFormat("zh-CN").format(value || 0);
+  return new Intl.NumberFormat("zh-CN").format(Math.round(value || 0));
 }
 
 function postBridge(message: Record<string, unknown>) {

@@ -66,6 +66,11 @@ const selectedPackage = computed(() =>
   packages.value.find((item) => item.code === selectedPackageCode.value),
 );
 
+// 点数有效期（月）：优先取订单预览返回值，回落到所选套餐
+const validityMonths = computed(
+  () => preview.value?.validity_months ?? selectedPackage.value?.validity_months ?? 0,
+);
+
 const availableCoupons = computed(() =>
   coupons.value
     .filter((coupon) => coupon.status === "未使用" && (coupon.amount_cents > 0 || coupon.gift_points > 0))
@@ -74,7 +79,7 @@ const availableCoupons = computed(() =>
 
 const couponOptions = computed(() =>
   availableCoupons.value.map((coupon) => ({
-    label: `${coupon.benefit_type === "gift" ? `赠送${coupon.gift_points}点` : `${formatYuan(coupon.amount_cents)}优惠`}（门槛${formatYuan(coupon.threshold_amount_cents)}，有效期至 ${formatDate(coupon.valid_until)}）`,
+    label: `${coupon.benefit_type === "gift" ? `赠送${formatPoints(coupon.gift_points)}点` : `${formatYuan(coupon.amount_cents)}优惠`}（门槛${formatYuan(coupon.threshold_amount_cents)}，有效期至 ${formatDate(coupon.valid_until)}）`,
     value: coupon.id,
   })),
 );
@@ -86,6 +91,11 @@ function close() {
 
 function formatYuan(cents: number) {
   return `￥${(cents / 100).toFixed(2)}`;
+}
+
+// 点数统一按整数展示，不显示小数点后数字
+function formatPoints(value?: number | null) {
+  return String(Math.round(Number(value || 0)));
 }
 
 function formatDate(value?: string | null) {
@@ -315,8 +325,9 @@ watch(
                 class="package-divider"
                 :style="{ backgroundImage: `url(${dividerUrl})` }"
               ></span>
-              <span class="package-balance">{{ item.total_points }}点</span>
-              <span class="package-breakdown">充值{{ item.recharge_points }} + 赠送{{ item.gift_points }}</span>
+              <span class="package-balance">{{ formatPoints(item.total_points) }}点</span>
+              <span class="package-breakdown">充值{{ formatPoints(item.recharge_points) }} + 赠送{{ formatPoints(item.gift_points) }}</span>
+              <span v-if="item.validity_months" class="package-validity">有效期 {{ item.validity_months }} 个月</span>
               <span class="package-price">{{ formatYuan(item.amount_cents) }}</span>
               <span v-if="item.caution" class="package-caution">{{ item.caution }}</span>
             </button>
@@ -340,10 +351,14 @@ watch(
           </div>
           <div class="summary-row">
             <span>到账点数</span>
-            <strong>{{ preview?.total_points ?? selectedPackage?.total_points ?? 0 }}点</strong>
+            <strong>{{ formatPoints(preview?.total_points ?? selectedPackage?.total_points ?? 0) }}点</strong>
+          </div>
+          <div v-if="validityMonths" class="summary-row">
+            <span>点数有效期</span>
+            <strong>{{ validityMonths }} 个月</strong>
           </div>
           <div v-if="preview?.coupon_gift_points" class="summary-row">
-            <span>赠送券额外点数</span><strong>+{{ preview.coupon_gift_points }}点</strong>
+            <span>赠送券额外点数</span><strong>+{{ formatPoints(preview.coupon_gift_points) }}点</strong>
           </div>
 
           <label class="field-label">导入优惠券</label>
@@ -538,6 +553,13 @@ watch(
   margin-top: -4px;
   color: #8a8f99;
   font-size: 11px;
+}
+
+.package-validity {
+  margin-top: -2px;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .package-price {

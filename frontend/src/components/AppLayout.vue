@@ -48,9 +48,9 @@ function goOfficialSite() {
   window.open(officialSiteUrl, '_blank', 'noopener')
 }
 
-// 千分位格式化，与 BlindCheckView 的 formatMetric 保持一致
+// 千分位格式化（点数/积分统一取整，不显示小数），与 BlindCheckView 的 formatMetric 保持一致
 function formatMetric(value: number) {
-  return new Intl.NumberFormat('zh-CN').format(value || 0)
+  return new Intl.NumberFormat('zh-CN').format(Math.round(value || 0))
 }
 </script>
 
