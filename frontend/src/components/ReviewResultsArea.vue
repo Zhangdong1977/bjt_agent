@@ -270,8 +270,9 @@ function getSeverityColorClass(severity: string): string {
 .stat-card {
   position: relative;
   height: 90px;
-  /* 背景图平铺：图标在左、文字水平居中与背景搭配 */
-  background-size: 100% 100%;
+  /* 背景图按高度等比缩放（auto 100%）：宽度跟随原始比例，
+     绝不横向拉伸；宽屏多出的右侧留白，保持图标与文字比例正常 */
+  background-size: auto 100%;
   background-position: left center;
   background-repeat: no-repeat;
   border-radius: 10px;
