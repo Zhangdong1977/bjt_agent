@@ -717,6 +717,19 @@ export const reviewApi = {
     );
     return response.data;
   },
+
+  // Export the review results of a task as a structured PDF. Chapters are
+  // ordered by check-category dictionary order. Returns a Blob for download.
+  async exportResultsPdf(
+    projectId: string,
+    taskId: string,
+  ): Promise<Blob> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/review/tasks/${taskId}/export.pdf`,
+      { responseType: "blob" },
+    );
+    return response.data;
+  },
 };
 
 export const duplicateApi = {

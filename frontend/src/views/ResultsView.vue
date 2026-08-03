@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Modal } from 'ant-design-vue'
+import { Modal, message } from 'ant-design-vue'
 import { useProjectStore } from '@/stores/project'
 import { reviewApi } from '@/api/client'
+import { downloadBlob } from '@/utils/download'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 import ShareResultModal from '@/components/ShareResultModal.vue'
 import type { ReviewResponse } from '@/types'
@@ -22,6 +23,8 @@ const todos = ref<any[]>([])
 const taskResults = ref<ReviewResponse | null>(null)
 // 分享弹窗
 const shareOpen = ref(false)
+// 导出 PDF 进行中
+const exporting = ref(false)
 
 onMounted(async () => {
   await projectStore.selectProject(projectId.value)
@@ -115,6 +118,22 @@ async function startNewReview() {
     }
   })
 }
+
+// 导出当前任务审查结果为 PDF：按检查大项字典序分章，结构化明细。
+// 后端返回 application/pdf 字节流，前端用 blob 触发浏览器下载。
+async function exportPdf() {
+  if (!selectedTaskId.value || !taskResults.value || exporting.value) return
+  exporting.value = true
+  try {
+    const blob = await reviewApi.exportResultsPdf(projectId.value, selectedTaskId.value)
+    downloadBlob(blob, '标书审查报告.pdf')
+  } catch (error) {
+    console.error('导出 PDF 失败:', error)
+    message.error('导出 PDF 失败，请稍后重试')
+  } finally {
+    exporting.value = false
+  }
+}
 </script>
 
 <template>
@@ -143,6 +162,13 @@ async function startNewReview() {
           @click="startNewReview"
         >
           <span class="bg-btn-text text-red">重新审查</span>
+        </button>
+        <button
+          class="share-btn share-btn--lead"
+          :disabled="!selectedTaskId || !taskResults || exporting"
+          @click="exportPdf"
+        >
+          {{ exporting ? '导出中…' : '导出 PDF' }}
         </button>
         <button
           class="share-btn"
@@ -246,9 +272,8 @@ async function startNewReview() {
   filter: grayscale(0.4);
 }
 
-/* 文字型分享按钮：与 PNG 按钮并列，简洁描边风格 */
+/* 文字型描边按钮：与 PNG 按钮并列，简洁描边风格（导出 PDF / 分享结果复用） */
 .share-btn {
-  margin-left: auto;
   height: 36px;
   padding: 0 18px;
   border: 1px solid #D7041A;
@@ -260,6 +285,11 @@ async function startNewReview() {
   letter-spacing: 0.5px;
   cursor: pointer;
   transition: background 0.2s ease, color 0.2s ease;
+}
+
+/* 把右侧文字按钮组整体推到 task-bar 末端，导出与分享紧挨 */
+.share-btn--lead {
+  margin-left: auto;
 }
 
 .share-btn:hover:not(:disabled) {
