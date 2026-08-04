@@ -422,6 +422,7 @@ function recheck() {
 <style scoped>
 .duplicate-results-view { display: flex; flex-direction: column; gap: 18px; }
 .result-header, .rule-section { background: #fff; border: 1px solid #e6e8ee; border-radius: 9px; padding: 20px; }
+.rule-section { max-height: 70vh; overflow-y: auto; }
 .result-header { display: flex; align-items: center; gap: 24px; }
 .result-title { min-width: 0; flex: 1; }
 .result-header h1 { margin: 0 0 6px; font-size: 22px; }
@@ -454,7 +455,7 @@ button.primary { border-color: #d7041a; background: #d7041a; color: #fff; }
 .cluster-occurrences > div { background: #fafbfc; border-radius: 5px; padding: 8px; }
 .cluster-occurrences small { display: block; color: #888; margin-top: 3px; }
 .cluster-occurrences p { margin: 5px 0 0; white-space: pre-wrap; }
-.rule-section > header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 12px; margin-bottom: 14px; }
+.rule-section > header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 12px; margin-bottom: 14px; position: sticky; top: 0; background: #fff; z-index: 1; }
 .rule-section h2 { display: inline; margin: 0 10px 0 0; font-size: 18px; }
 .status { font-size: 12px; border-radius: 10px; padding: 2px 8px; background: #eee; }
 .status.completed { color: #18864b; background: #eaf7f0; }

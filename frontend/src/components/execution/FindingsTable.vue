@@ -128,6 +128,8 @@ function getSeverityLabel(severity: string): string {
 }
 
 .findings-table-scroll {
+  max-height: 70vh;
+  overflow-y: auto;
 }
 
 .findings-table {

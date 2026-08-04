@@ -217,6 +217,8 @@ function transformStep(step: Step) {
   display: none;
   flex-direction: column;
   gap: 12px;
+  max-height: 60vh;
+  overflow-y: auto;
 }
 .agent-card.open .agent-card-body { display: flex; }
 
