@@ -86,7 +86,10 @@ class OrderPreviewResponse(BaseModel):
 
 class OrderResponse(BaseModel):
     id: str
-    order_no: str
+    # 赠送行无订单号（运营赠送批次不产生订单）
+    order_no: str | None = None
+    # 来源：充值（recharge，来自 BillingOrder）/ 赠送（gift，来自运营赠送批次 CreditLot source_type=grant_batch）
+    source: str = "recharge"
     product_name: str
     created_at: datetime
     status: str
@@ -95,6 +98,8 @@ class OrderResponse(BaseModel):
     coupon_code: str | None = None
     coupon_amount_cents: int
     points_used: int
+    # 积分抵扣金额（分）
+    points_amount_cents: int = 0
     expires_at: datetime
     paid_at: datetime | None = None
     balance_after_wen: int | None = None
@@ -139,8 +144,13 @@ class ConsumptionResponse(BaseModel):
     sales_points: float | None = None
     gift_points_used: float = 0
     recharge_points_used: float = 0
+    # 消费前/后的充值/赠送点数余额（结算时已写入 consumption_records）
+    recharge_balance_before: float | None = None
+    gift_balance_before: float | None = None
     recharge_balance_after: float | None = None
     gift_balance_after: float | None = None
+    # 本次扣点消耗的充值订单编号（经 consumption_allocations→credit_lots→billing_orders 聚合，多张以 ", " 连接）
+    settlement_order_nos: str | None = None
     weighted_unit_value_yuan: float | None = None
     folded_income_yuan: float | None = None
     profit_yuan: float | None = None

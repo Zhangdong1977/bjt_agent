@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import and_, case, func, select
 
 from backend.api.deps import DBSession, CurrentUser, is_interior_user
-from backend.models import BillingOrder, ConsumptionAllocation, ConsumptionRecord, CreditLot, User
+from backend.models import BillingOrder, ConsumptionAllocation, ConsumptionRecord, CreditLot, GrantBatch, User
 from backend.schemas.billing import (
     ConsumptionListResponse,
     ConsumptionAllocationListResponse,
@@ -53,6 +53,7 @@ def _order_response(
     return OrderResponse(
         id=order.id,
         order_no=order.order_no,
+        source="recharge",
         product_name=order.product_name,
         created_at=order.created_at,
         status=order.status,
@@ -61,6 +62,7 @@ def _order_response(
         coupon_code=order.coupon_code,
         coupon_amount_cents=order.coupon_amount_cents,
         points_used=order.points_used,
+        points_amount_cents=order.points_amount_cents,
         expires_at=order.expires_at,
         paid_at=order.paid_at,
         balance_after_wen=order.balance_after_wen,
@@ -102,6 +104,64 @@ def _order_points_status(
     if raw_remaining_points > 0 and points_expires_at is not None and points_expires_at <= utc_now():
         return "expired"
     return "exhausted"
+
+
+def _grant_lot_points_status(lot: CreditLot, *, remaining: float) -> str:
+    """赠送点数批次的点数状态映射（CreditLot.status → OrderResponse.points_status）。"""
+    if lot.status == "active" and remaining > 0:
+        return "active"
+    if lot.status == "expired":
+        return "expired"
+    # exhausted / stopped / 其他均视为已用完（stopped 的剩余点数已失效）
+    return "exhausted"
+
+
+def _grant_lot_response(
+    lot: CreditLot,
+    batch: GrantBatch | None,
+    *,
+    username: str | None = None,
+    enterprise_name: str | None = None,
+) -> OrderResponse:
+    """把运营赠送点数批次（CreditLot, source_type='grant_batch'）映射为订单记录行，来源=赠送。"""
+    initial = float(lot.initial_points or 0)
+    remaining_raw = float(lot.remaining_points or 0)
+    stopped = lot.status == "stopped"
+    remaining = 0.0 if stopped else remaining_raw
+    consumed = initial - remaining
+    return OrderResponse(
+        id=lot.id,
+        order_no=None,
+        source="gift",
+        product_name=batch.name if batch is not None else "运营赠送",
+        created_at=lot.valid_from,
+        status="cancelled" if stopped else "completed",
+        order_amount_cents=0,
+        actual_payment_cents=0,
+        coupon_code=None,
+        coupon_amount_cents=0,
+        points_used=0,
+        points_amount_cents=0,
+        expires_at=lot.expires_at,
+        paid_at=lot.valid_from,
+        balance_after_wen=None,
+        current_balance_wen=None,
+        username=username,
+        enterprise_name=enterprise_name,
+        recharge_points=0,
+        gift_points=initial,
+        total_points=initial,
+        recharge_balance_after=None,
+        gift_balance_after=None,
+        unit_value_yuan=float(lot.unit_value_yuan or 0),
+        validity_months=0,
+        coupon_benefit_type=None,
+        coupon_gift_points=0,
+        consumed_points=consumed,
+        remaining_points=remaining,
+        points_expires_at=lot.expires_at,
+        points_status=_grant_lot_points_status(lot, remaining=remaining),
+    )
 
 
 @router.get("/wallet", response_model=WalletResponse)
@@ -272,20 +332,51 @@ async def list_orders(
     stmt = stmt.order_by(available_first, BillingOrder.created_at.desc())
 
     rows = (await db.execute(stmt)).all()
-    return OrderListResponse(
-        orders=[
-            _order_response(
-                order,
-                username=u_name,
-                enterprise_name=ent_name,
-                consumed_points=consumed,
-                remaining_points=remaining,
-                raw_remaining_points=raw_remaining,
-                points_expires_at=point_expiry,
-            )
-            for order, u_name, ent_name, consumed, remaining, raw_remaining, point_expiry in rows
-        ]
+    billing_orders = [
+        _order_response(
+            order,
+            username=u_name,
+            enterprise_name=ent_name,
+            consumed_points=consumed,
+            remaining_points=remaining,
+            raw_remaining_points=raw_remaining,
+            points_expires_at=point_expiry,
+        )
+        for order, u_name, ent_name, consumed, remaining, raw_remaining, point_expiry in rows
+    ]
+
+    # 运营赠送批次产生的点数（CreditLot, source_type='grant_batch'）并入订单记录，来源标“赠送”
+    grant_stmt = (
+        select(CreditLot, GrantBatch, User.username, User.enterprise_name)
+        .join(GrantBatch, GrantBatch.id == CreditLot.batch_id, isouter=True)
+        .join(User, User.id == CreditLot.user_id, isouter=True)
+        .where(CreditLot.source_type == "grant_batch")
     )
+    if not interior:
+        grant_stmt = grant_stmt.where(CreditLot.user_id == current_user.id)
+    if start_date:
+        grant_stmt = grant_stmt.where(CreditLot.valid_from >= start_date)
+    if end_date:
+        grant_stmt = grant_stmt.where(CreditLot.valid_from <= end_date)
+    if product_name:
+        grant_stmt = grant_stmt.where(GrantBatch.name.ilike(f"%{product_name}%"))
+    # 归属筛选仅对内部用户生效
+    if interior and username:
+        grant_stmt = grant_stmt.where(User.username.ilike(f"%{username}%"))
+    if interior and enterprise_name:
+        grant_stmt = grant_stmt.where(User.enterprise_name.ilike(f"%{enterprise_name}%"))
+    grant_stmt = grant_stmt.order_by(CreditLot.valid_from.desc())
+    grant_rows = (await db.execute(grant_stmt)).all()
+    grant_orders = [
+        _grant_lot_response(lot, batch, username=u_name, enterprise_name=ent_name)
+        for lot, batch, u_name, ent_name in grant_rows
+    ]
+
+    orders = billing_orders + grant_orders
+    # 统一排序：可用点数优先，然后时间倒序（稳定排序：先按时间倒序，再按可用优先）
+    orders.sort(key=lambda o: o.created_at, reverse=True)
+    orders.sort(key=lambda o: 0 if (o.points_status == "active" and o.remaining_points > 0) else 1)
+    return OrderListResponse(orders=orders)
 
 
 @router.get("/orders/{order_id}/pay-qrcode", response_model=PaymentQrResponse)
@@ -394,6 +485,26 @@ async def list_consumptions(
         stmt = stmt.where(User.enterprise_name.ilike(f"%{enterprise_name}%"))
     stmt = stmt.order_by(ConsumptionRecord.created_at.desc())
     rows = (await db.execute(stmt)).all()
+    consumption_ids = [row.id for row, _, _ in rows]
+    # 批量查询每条消费扣点所消耗的充值订单编号（经 consumption_allocations→credit_lots→billing_orders 聚合，避免 N+1）
+    order_nos_by_consumption: dict[str, list[str]] = {}
+    if consumption_ids:
+        order_rows = (
+            await db.execute(
+                select(ConsumptionAllocation.consumption_id, BillingOrder.order_no)
+                .join(CreditLot, CreditLot.id == ConsumptionAllocation.lot_id)
+                .join(BillingOrder, BillingOrder.id == CreditLot.source_id)
+                .where(
+                    ConsumptionAllocation.consumption_id.in_(consumption_ids),
+                    CreditLot.source_type == "billing_order",
+                )
+                .distinct()
+                .order_by(ConsumptionAllocation.consumption_id, BillingOrder.order_no)
+            )
+        ).all()
+        for cid, order_no in order_rows:
+            if order_no:
+                order_nos_by_consumption.setdefault(cid, []).append(order_no)
     return ConsumptionListResponse(
         consumptions=[
             ConsumptionResponse(
@@ -413,8 +524,11 @@ async def list_consumptions(
                 sales_points=float(row.sales_points) if row.sales_points is not None else None,
                 gift_points_used=float(row.gift_points_used or 0),
                 recharge_points_used=float(row.recharge_points_used or 0),
+                recharge_balance_before=float(row.recharge_balance_before) if row.recharge_balance_before is not None else None,
+                gift_balance_before=float(row.gift_balance_before) if row.gift_balance_before is not None else None,
                 recharge_balance_after=float(row.recharge_balance_after) if row.recharge_balance_after is not None else None,
                 gift_balance_after=float(row.gift_balance_after) if row.gift_balance_after is not None else None,
+                settlement_order_nos=", ".join(order_nos_by_consumption.get(row.id, [])) or None,
                 weighted_unit_value_yuan=float(row.weighted_unit_value_yuan) if row.weighted_unit_value_yuan is not None else None,
                 folded_income_yuan=float(row.folded_income_yuan) if row.folded_income_yuan is not None else None,
                 profit_yuan=float(row.profit_yuan) if row.profit_yuan is not None else None,

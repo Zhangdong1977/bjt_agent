@@ -98,6 +98,7 @@ export interface OrderPreview {
 export interface BillingOrder {
   id: string;
   order_no: string;
+  source: "recharge" | "gift";
   product_name: string;
   created_at: string;
   status: string;
@@ -106,6 +107,7 @@ export interface BillingOrder {
   coupon_code?: string | null;
   coupon_amount_cents: number;
   points_used: number;
+  points_amount_cents: number;
   expires_at: string;
   paid_at?: string | null;
   balance_after_wen?: number | null;
@@ -142,8 +144,13 @@ export interface ConsumptionRecord {
   sales_points?: number | null;
   gift_points_used: number;
   recharge_points_used: number;
+  // 消费前/后的充值/赠送点数余额
+  recharge_balance_before?: number | null;
+  gift_balance_before?: number | null;
   recharge_balance_after?: number | null;
   gift_balance_after?: number | null;
+  // 本次扣点消耗的充值订单编号（多张以 ", " 连接）
+  settlement_order_nos?: string | null;
   weighted_unit_value_yuan?: number | null;
   folded_income_yuan?: number | null;
   profit_yuan?: number | null;
