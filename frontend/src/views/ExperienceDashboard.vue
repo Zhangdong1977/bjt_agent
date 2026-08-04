@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { feedbackApi } from '@/api/client'
+import { feedbackApi, documentsApi } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
-import type { FeedbackResponse, FeedbackSummary, ProjectFeedbackSummary } from '@/types'
+import { downloadBlob } from '@/utils/download'
+import type { FeedbackResponse, FeedbackSummary, ProjectFeedbackSummary, Document } from '@/types'
 import FeedbackReviewCard from '@/components/feedback/FeedbackReviewCard.vue'
 
 const authStore = useAuthStore()
@@ -58,6 +59,32 @@ const filterEndDate = ref('')
 const filterUsername = ref('')
 const filterProjectName = ref('')
 const filterProjectId = ref('')
+
+// 资料下载弹窗：拉起某次任务用户上传的附件原件清单并支持逐个下载
+const attachmentModalOpen = ref(false)
+const attachmentProjectId = ref('')
+const attachmentProjectName = ref('')
+const attachments = ref<Document[]>([])
+const attachmentsLoading = ref(false)
+const attachmentError = ref<string | null>(null)
+const downloadingId = ref<string | null>(null)
+
+const docTypeLabels: Record<string, string> = {
+  tender: '招标文件',
+  bid: '投标文件',
+  duplicate_left: 'A 方投标文件',
+  duplicate_right: 'B 方投标文件',
+  duplicate_bid: '批量投标文件',
+  duplicate_tender: '招标文件',
+  duplicate_public_reference: '公开参考文件',
+}
+
+const attachmentStatusLabels: Record<string, string> = {
+  pending: '待解析',
+  parsing: '解析中',
+  parsed: '已解析',
+  failed: '解析失败',
+}
 
 const isInteriorUser = computed(() => authStore.isInteriorUser)
 
@@ -215,9 +242,62 @@ async function handleBatchReview(action: 'accept' | 'reject') {
     pendingFeedback.value = []
     summary.value = await feedbackApi.getSummary(projectId.value)
   } catch {
-    // Error handled silently
+    // Refresh silently
   } finally {
     batchReviewing.value = false
+  }
+}
+
+async function openAttachmentModal(proj: ProjectFeedbackSummary) {
+  attachmentProjectId.value = proj.project_id
+  attachmentProjectName.value = proj.project_name || proj.project_id
+  attachmentModalOpen.value = true
+  attachments.value = []
+  attachmentError.value = null
+  attachmentsLoading.value = true
+  try {
+    attachments.value = await documentsApi.list(proj.project_id)
+  } catch (err: any) {
+    attachmentError.value = err?.response?.data?.detail || '附件清单加载失败'
+  } finally {
+    attachmentsLoading.value = false
+  }
+}
+
+function closeAttachmentModal() {
+  attachmentModalOpen.value = false
+  attachments.value = []
+  attachmentError.value = null
+  downloadingId.value = null
+}
+
+async function downloadAttachment(doc: Document) {
+  if (downloadingId.value || !attachmentProjectId.value) return
+  downloadingId.value = doc.id
+  try {
+    const blob = await documentsApi.downloadOriginal(
+      attachmentProjectId.value,
+      doc.id,
+    )
+    downloadBlob(blob, doc.original_filename)
+  } catch (err: any) {
+    // axios blob 错误体可能是 Blob，需二次解析为 JSON 取 detail
+    let detail = '下载失败，请稍后重试'
+    try {
+      const dataBlob = err?.response?.data
+      if (dataBlob instanceof Blob && dataBlob.type.includes('application/json')) {
+        const text = await dataBlob.text()
+        const data = JSON.parse(text)
+        detail = data.detail || detail
+      } else if (typeof err?.response?.data?.detail === 'string') {
+        detail = err.response.data.detail
+      }
+    } catch {
+      // ignore parse error
+    }
+    attachmentError.value = detail
+  } finally {
+    downloadingId.value = null
   }
 }
 
@@ -348,6 +428,12 @@ function formatDate(dateStr: string): string {
                       class="row-action-btn feedback-btn"
                       @click.stop="loadDashboard(proj.project_id)"
                     >反馈处理</button>
+                    <button
+                      class="row-action-btn download-btn"
+                      :disabled="!proj.has_documents"
+                      :title="proj.has_documents ? '下载该任务用户上传的附件原件' : '该任务未上传文档'"
+                      @click.stop="openAttachmentModal(proj)"
+                    >资料下载</button>
                   </td>
                 </tr>
               </tbody>
@@ -584,6 +670,51 @@ function formatDate(dateStr: string): string {
         </div>
       </template>
     </template>
+
+    <!-- 资料下载弹窗：列出该任务用户上传的附件原件并支持逐个下载 -->
+    <a-modal
+      :open="attachmentModalOpen"
+      :title="`附件清单 · ${attachmentProjectName}`"
+      :width="680"
+      :footer="null"
+      :destroy-on-close="true"
+      @cancel="closeAttachmentModal"
+    >
+      <div v-if="attachmentsLoading" class="attachment-loading">加载中...</div>
+      <div v-else-if="attachmentError" class="attachment-error">{{ attachmentError }}</div>
+      <div v-else-if="attachments.length === 0" class="attachment-empty">
+        <div class="empty-icon">📄</div>
+        <div class="empty-text">该任务暂无附件</div>
+      </div>
+      <table v-else class="attachment-table">
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>文件名</th>
+            <th>状态</th>
+            <th>上传时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="doc in attachments" :key="doc.id" class="attachment-row">
+            <td class="doc-type-cell">{{ docTypeLabels[doc.doc_type] || doc.doc_type }}</td>
+            <td class="filename-cell" :title="doc.original_filename">{{ doc.original_filename }}</td>
+            <td class="status-cell">
+              <span :class="['att-status', doc.status]">{{ attachmentStatusLabels[doc.status] || doc.status }}</span>
+            </td>
+            <td class="time-cell">{{ formatDate(doc.created_at) }}</td>
+            <td class="att-action-cell">
+              <button
+                class="att-download-btn"
+                :disabled="downloadingId === doc.id"
+                @click="downloadAttachment(doc)"
+              >{{ downloadingId === doc.id ? '下载中...' : '下载' }}</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </a-modal>
   </div>
 </template>
 
@@ -906,6 +1037,8 @@ function formatDate(dateStr: string): string {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  max-height: 70vh;
+  overflow-y: auto;
 }
 
 /* Batch action bar */
@@ -1180,6 +1313,20 @@ function formatDate(dateStr: string): string {
   color: #fff;
 }
 
+.download-btn {
+  background: transparent;
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.download-btn:disabled {
+  color: var(--dim);
+  border-color: var(--line);
+  background: var(--bg2);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
 .pending-badge {
   display: inline-flex;
   align-items: center;
@@ -1251,6 +1398,124 @@ function formatDate(dateStr: string): string {
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
+}
+
+/* ===== 资料下载弹窗 ===== */
+.attachment-loading,
+.attachment-error {
+  padding: 24px 0;
+  text-align: center;
+  color: var(--sub);
+}
+
+.attachment-error {
+  color: var(--blue);
+}
+
+.attachment-empty {
+  padding: 32px 0;
+  text-align: center;
+  color: var(--muted);
+}
+
+.attachment-empty .empty-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.attachment-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.attachment-table thead th {
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--sub);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.attachment-table tbody td {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.attachment-row:hover {
+  background: var(--bg2);
+}
+
+.doc-type-cell {
+  white-space: nowrap;
+  color: var(--sub);
+}
+
+.filename-cell {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.att-status {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.att-status.parsed {
+  background: var(--green-bg);
+  color: var(--green);
+}
+
+.att-status.parsing {
+  background: var(--amber-bg);
+  color: var(--amber);
+}
+
+.att-status.pending {
+  background: var(--bg3);
+  color: var(--sub);
+}
+
+.att-status.failed {
+  background: var(--blue-bg);
+  color: var(--blue);
+}
+
+.att-action-cell {
+  white-space: nowrap;
+}
+
+.att-download-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--green);
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.att-download-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.att-download-btn:disabled {
+  color: var(--dim);
+  border-color: var(--line);
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 /* Pagination */

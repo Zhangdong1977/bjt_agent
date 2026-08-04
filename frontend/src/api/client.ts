@@ -550,6 +550,15 @@ export const documentsApi = {
     await apiClient.delete(`/projects/${projectId}/documents/${documentId}`);
   },
 
+  // 下载某份文档的用户上传原件（标书复盘「资料下载」用）。返回二进制 Blob。
+  async downloadOriginal(projectId: string, documentId: string): Promise<Blob> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/documents/${documentId}/download`,
+      { responseType: "blob" },
+    );
+    return response.data;
+  },
+
   // ===== 草稿文档（独立于项目）：选文件即上传解析，点「开始检查」时才关联到项目 =====
 
   async uploadDraft(
