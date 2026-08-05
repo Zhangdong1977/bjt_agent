@@ -15,6 +15,9 @@ import io
 import logging
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from backend.utils.time_utils import ensure_utc_aware
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
@@ -68,6 +71,14 @@ _PROMO_TEXT = "点我立即开始检查："
 _PROMO_URL = "https://check.aibjt.com:30002"
 
 
+# Display timezone for human-readable timestamps in the report. ``completed_at``
+# is stored as tz-aware UTC (see backend/utils/time_utils.py); render it in
+# China Standard Time so the PDF matches what users see in the UI. Naive
+# datetimes (e.g. the legacy ``datetime.now()`` footer fallback) are treated as
+# UTC by ``ensure_utc_aware`` before conversion.
+LOCAL_TZ = ZoneInfo("Asia/Shanghai")
+
+
 def _severity_label(severity: str | None) -> str:
     return {
         "critical": "严重",
@@ -80,8 +91,13 @@ def _fmt_datetime(dt: datetime | None) -> str:
     if not dt:
         return "暂无"
     # reportlab's STSong-Light is CJK; keep zh-CN formatting consistent with UI.
+    # Convert from UTC (the storage timezone) to local time before formatting —
+    # otherwise the printed time is 8 hours behind for CST users.
     try:
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
+        local = ensure_utc_aware(dt)
+        if local is not None:
+            local = local.astimezone(LOCAL_TZ)
+        return (local or dt).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return str(dt)
 
