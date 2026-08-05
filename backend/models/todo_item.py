@@ -24,7 +24,7 @@ class TodoItem(Base):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
-    max_steps: Mapped[int] = mapped_column(Integer, default=100)
+    max_steps: Mapped[int] = mapped_column(Integer, default=500)
     brain_capacity: Mapped[float] = mapped_column(Float, default=0.0)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

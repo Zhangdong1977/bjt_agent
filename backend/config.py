@@ -232,13 +232,26 @@ class Settings(BaseSettings):
     # Agent Token Limit (上下文压缩触发阈值，DeepSeek/MiniMax 支持 1M 上下文)
     agent_token_limit: int = 800000  # 800K tokens, 环境变量: AGENT_TOKEN_LIMIT
 
+    # Sub-Agent 最大执行步数（单项检查脑容量上限，brain_capacity = actual_steps / max_steps × 100%）
+    sub_agent_max_steps: int = 500  # 环境变量: SUB_AGENT_MAX_STEPS
+
+    # LLM 单次调用超时与超时重试（防偶发卡顿毁掉整个子任务）。
+    # 生产实测：deepseek-v4-flash 偶发单次调用卡死 180s，原实现直接放弃整个子任务（已积累的
+    # 数十步核实成果全丢）。改为超时后重试 N 次，挽救偶发性卡顿。注意与 httpx 客户端 timeout
+    # (120s, bid_review_agent.py create_llm_client) 的关系：httpx 先超时会触发内层 async_retry；
+    # 此处覆盖的是 asyncio.timeout(180s) 触发的更外层 TimeoutError（httpx 未触发的卡死场景）。
+    llm_call_timeout: int = 180  # 单次 LLM 调用的 asyncio 超时秒数 (env: LLM_CALL_TIMEOUT)
+    llm_timeout_max_retries: int = 2  # 超时后最多重试次数（总尝试 = 1 + 此值）(env: LLM_TIMEOUT_MAX_RETRIES)
+    llm_timeout_retry_delay: float = 5.0  # 重试前固定等待秒数（给模型端恢复时间）(env: LLM_TIMEOUT_RETRY_DELAY)
+
     # Agent Progress Watchdog
-    agent_progress_timeout: int = 600  # Max seconds without SSE events before task is considered hung (env: AGENT_PROGRESS_TIMEOUT)
+    # 500 步任务下单步偶发慢（读大文档 + 长思考）需要更长容忍，避免误判卡死
+    agent_progress_timeout: int = 1200  # Max seconds without SSE events before task is considered hung (env: AGENT_PROGRESS_TIMEOUT)
 
     # Agent Total Timeout (absolute hard ceiling, independent of event stream).
-    # Normal tasks take 22-35 min; this is the final backstop that terminates a
-    # stuck task no matter what. Coordinates with Celery soft_time_limit/time_limit.
-    agent_total_timeout: int = 5400  # Absolute max seconds for a review task, 90min (env: AGENT_TOTAL_TIMEOUT)
+    # 500 步任务的绝对上界（平均 ~30s/步 ≈ 4.2h，6h 留充足余量）。这是最终兜底，
+    # 无论事件流如何都会终止卡死任务。与 Celery soft_time_limit/time_limit 配合。
+    agent_total_timeout: int = 21600  # Absolute max seconds for a review task, 6h (env: AGENT_TOTAL_TIMEOUT)
 
     # Heartbeat Fail-Closed
     heartbeat_fail_threshold: int = 3  # Consecutive heartbeat check failures before fail-closed (x5s poll ≈ 15s tolerance) (env: HEARTBEAT_FAIL_THRESHOLD)
