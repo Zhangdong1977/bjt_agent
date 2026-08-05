@@ -16,6 +16,7 @@ from backend.services.duplicate_rules import RuleValidationError, load_duplicate
 from backend.services.duplicate_sources import DuplicateSourceIndex
 from backend.services.duplicate_result_grouper import group_duplicate_findings
 from backend.services.todo_service import TodoService
+from backend.utils.fs_encoding import decode_fs_name, heal_directory
 from backend.utils.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -96,19 +97,24 @@ class DuplicateMasterAgent:
         )
         if not self.rule_library_path.is_dir():
             return {"success": False, "error": "查重规则目录不存在"}
+        # Self-heal non-UTF-8 (e.g. GBK) rule filenames before loading: a
+        # Windows deploy can leave GBK filename bytes on disk, which pathlib
+        # reads as surrogateescape strings that the name validation in
+        # load_duplicate_rule and asyncpg cannot handle.
+        heal_directory(self.rule_library_path)
         try:
             rule_specs = load_duplicate_rules(self.rule_library_path)
         except RuleValidationError as exc:
             logger.error("Duplicate rule library validation failed: %s", exc)
             self._event("error", {"message": "查重规则库校验失败", "detail": str(exc)})
             return {"success": False, "error": f"查重规则库校验失败：{exc}"}
-        rules = sorted(self.rule_library_path.glob("*.md"), key=lambda path: path.name)
+        rules = sorted(self.rule_library_path.glob("*.md"), key=lambda path: decode_fs_name(path.name))
 
         self._event(
             "master_scan_completed",
             {
                 "total_docs": len(rules),
-                "rule_docs": [path.name for path in rules],
+                "rule_docs": [decode_fs_name(path.name) for path in rules],
                 "rule_versions": {
                     rule.rule_id: rule.version for rule in rule_specs
                 },
@@ -122,8 +128,8 @@ class DuplicateMasterAgent:
                 todo = await todo_service.create_todo(
                     project_id=self.project_id,
                     session_id=self.task_id,
-                    rule_doc_path=str(rule),
-                    rule_doc_name=rule.name,
+                    rule_doc_path=decode_fs_name(str(rule)),
+                    rule_doc_name=decode_fs_name(rule.name),
                     check_items=None,
                 )
                 todos.append(todo)
