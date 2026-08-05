@@ -60,12 +60,14 @@ const orderColumns = computed(() => [
   { title: "序号", dataIndex: "index", width: 70 },
   ...ownershipColumns,
   { title: "订单编号", dataIndex: "order_no" },
+  { title: "来源", dataIndex: "source", width: 90 },
   { title: "产品名称", dataIndex: "product_name" },
   { title: "下单时间", dataIndex: "created_at" },
   { title: "订单状态", dataIndex: "status" },
   { title: "订单金额", dataIndex: "order_amount_cents" },
   { title: "实际付款金额", dataIndex: "actual_payment_cents" },
   { title: "优惠券", dataIndex: "coupon_amount_cents" },
+  { title: "积分抵扣金额", dataIndex: "points_amount_cents" },
   { title: "充值点数", dataIndex: "recharge_points" },
   { title: "赠送点数", dataIndex: "gift_points" },
   { title: "已使用点数", dataIndex: "consumed_points" },
@@ -78,13 +80,16 @@ const orderColumns = computed(() => [
 const consumptionColumns = computed(() => [
   { title: "序号", dataIndex: "index", width: 70 },
   ...ownershipColumns,
-  { title: "消费时间", dataIndex: "consumed_at" },
+  { title: "消费时间", dataIndex: "consumed_at", width: 170 },
+  { title: "结算订单", dataIndex: "settlement_order_nos", width: 180 },
   { title: "项目名称", dataIndex: "project_name" },
-  { title: "销售点数", dataIndex: "sales_points" },
-  { title: "赠送点数扣除", dataIndex: "gift_points_used" },
-  { title: "充值点数扣除", dataIndex: "recharge_points_used" },
-  { title: "获得积分", dataIndex: "earned_points" },
-  { title: "使用人", dataIndex: "used_by" },
+  { title: "消费前点数", dataIndex: "points_before", width: 110 },
+  { title: "销售点数", dataIndex: "sales_points", width: 100 },
+  { title: "消费后剩余点数", dataIndex: "points_after", width: 120 },
+  { title: "赠送点数扣除", dataIndex: "gift_points_used", width: 110 },
+  { title: "充值点数扣除", dataIndex: "recharge_points_used", width: 110 },
+  { title: "获得积分", dataIndex: "earned_points", width: 90 },
+  { title: "使用人", dataIndex: "used_by", width: 110 },
   { title: "扣点详情", dataIndex: "actions", width: 100 },
 ]);
 
@@ -131,7 +136,8 @@ function formatDate(value?: string | null) {
 
 function formatPoints(value?: number | null) {
   const points = Number(value || 0);
-  return Number.isInteger(points) ? String(points) : points.toFixed(2);
+  // 点数统一按整数展示，不显示小数点后数字
+  return String(Math.round(points));
 }
 
 function remainingPointsPercent(order: BillingOrder) {
@@ -159,6 +165,18 @@ function orderPointsStatusClass(status: BillingOrder["points_status"]) {
   if (status === "expired") return "badge-warning";
   if (status === "exhausted") return "badge-info";
   return "badge-error";
+}
+
+function orderSourceText(source: string) {
+  if (source === "gift") return "赠送";
+  if (source === "recharge") return "充值";
+  return source || "-";
+}
+
+function orderSourceClass(source: string) {
+  if (source === "gift") return "badge-info";
+  if (source === "recharge") return "badge-success";
+  return "badge-info";
 }
 
 function couponStatusClass(status: string) {
@@ -381,13 +399,21 @@ onMounted(() => {
                 </template>
                 <a-button type="primary" @click="loadOrders">查询</a-button>
               </div>
-              <a-table :columns="orderColumns" :data-source="orderRows" row-key="id" size="middle" :scroll="{ x: 1520 }">
+              <a-table :columns="orderColumns" :data-source="orderRows" row-key="id" size="middle" :scroll="{ x: 1800 }">
                 <template #bodyCell="{ column, record }">
-                  <template v-if="column.dataIndex === 'username'">
+                  <template v-if="column.dataIndex === 'order_no'">
+                    {{ record.order_no || "-" }}
+                  </template>
+                  <template v-else-if="column.dataIndex === 'username'">
                     {{ record.username || "-" }}
                   </template>
                   <template v-else-if="column.dataIndex === 'enterprise_name'">
                     {{ record.enterprise_name || "-" }}
+                  </template>
+                  <template v-else-if="column.dataIndex === 'source'">
+                    <span :class="['badge', orderSourceClass(record.source)]">
+                      {{ orderSourceText(record.source) }}
+                    </span>
                   </template>
                   <template v-else-if="column.dataIndex === 'created_at'">
                     {{ formatDateTime(record.created_at) }}
@@ -406,8 +432,11 @@ onMounted(() => {
                   <template v-else-if="column.dataIndex === 'coupon_amount_cents'">
                     {{ record.coupon_amount_cents ? formatCents(record.coupon_amount_cents) : "-" }}
                   </template>
-                  <template v-else-if="column.dataIndex === 'consumed_points' || column.dataIndex === 'remaining_points'">
-                    {{ Number(record[column.dataIndex] || 0).toFixed(2) }}点
+                  <template v-else-if="column.dataIndex === 'points_amount_cents'">
+                    {{ record.points_amount_cents ? formatCents(record.points_amount_cents) : "-" }}
+                  </template>
+                  <template v-else-if="column.dataIndex === 'consumed_points' || column.dataIndex === 'remaining_points' || column.dataIndex === 'recharge_points' || column.dataIndex === 'gift_points'">
+                    {{ formatPoints(record[column.dataIndex]) }}点
                   </template>
                   <template v-else-if="column.dataIndex === 'points_status'">
                     <span :class="['badge', orderPointsStatusClass(record.points_status)]">
@@ -418,7 +447,7 @@ onMounted(() => {
                     {{ formatDateTime(record.points_expires_at) }}
                   </template>
                   <template v-else-if="column.dataIndex === 'current_balance_wen'">
-                    {{ record.current_balance_wen != null ? `${record.current_balance_wen}点` : "-" }}
+                    {{ record.current_balance_wen != null ? `${formatPoints(record.current_balance_wen)}点` : "-" }}
                   </template>
                 </template>
               </a-table>
@@ -435,7 +464,7 @@ onMounted(() => {
                 </template>
                 <a-button type="primary" @click="loadConsumptions">查询</a-button>
               </div>
-              <a-table :columns="consumptionColumns" :data-source="consumptionRows" row-key="id" size="middle">
+              <a-table :columns="consumptionColumns" :data-source="consumptionRows" row-key="id" size="middle" :scroll="{ x: 1500 }">
                 <template #bodyCell="{ column, record }">
                   <template v-if="column.dataIndex === 'username'">
                     {{ record.username || "-" }}
@@ -446,8 +475,17 @@ onMounted(() => {
                   <template v-else-if="column.dataIndex === 'consumed_at'">
                     {{ formatDateTime(record.consumed_at) }}
                   </template>
+                  <template v-else-if="column.dataIndex === 'settlement_order_nos'">
+                    {{ record.settlement_order_nos || "-" }}
+                  </template>
+                  <template v-else-if="column.dataIndex === 'points_before'">
+                    {{ formatPoints((Number(record.recharge_balance_before) || 0) + (Number(record.gift_balance_before) || 0)) }}点
+                  </template>
                   <template v-else-if="column.dataIndex === 'sales_points' || column.dataIndex === 'gift_points_used' || column.dataIndex === 'recharge_points_used'">
-                    {{ Number(record[column.dataIndex] || 0).toFixed(2) }}点
+                    {{ formatPoints(record[column.dataIndex]) }}点
+                  </template>
+                  <template v-else-if="column.dataIndex === 'points_after'">
+                    {{ formatPoints((Number(record.recharge_balance_after) || 0) + (Number(record.gift_balance_after) || 0)) }}点
                   </template>
                   <template v-else-if="column.dataIndex === 'earned_points'">
                     {{ record.earned_points }}分
@@ -489,7 +527,7 @@ onMounted(() => {
                 {{ record.benefit_type === 'cash' ? formatCents(record.amount_cents) : '-' }}
               </template>
               <template v-else-if="column.dataIndex === 'gift_points'">
-                {{ record.benefit_type === 'gift' ? `${record.gift_points}点` : '-' }}
+                {{ record.benefit_type === 'gift' ? `${formatPoints(record.gift_points)}点` : '-' }}
               </template>
               <template v-else-if="column.dataIndex === 'valid_until'">
                 {{ formatDate(record.valid_until) }}
@@ -506,7 +544,7 @@ onMounted(() => {
       <a-modal v-model:open="allocationOpen" title="本次消费扣点明细" :footer="null" width="760px">
         <a-table :data-source="allocations" row-key="id" size="small" :pagination="false">
           <a-table-column title="点数类型" data-index="lot_type"><template #default="{ text }">{{ text === 'gift' ? '赠送点数' : '充值点数' }}</template></a-table-column>
-          <a-table-column title="扣除点数" data-index="points" />
+          <a-table-column title="扣除点数" data-index="points"><template #default="{ text }">{{ formatPoints(text) }}</template></a-table-column>
           <a-table-column title="每点折合价值" data-index="unit_value_yuan"><template #default="{ text }">￥{{ Number(text || 0).toFixed(6) }}</template></a-table-column>
           <a-table-column title="折合收入" data-index="folded_income_yuan"><template #default="{ text }">￥{{ Number(text || 0).toFixed(2) }}</template></a-table-column>
           <a-table-column title="该批次到期时间" data-index="expires_at"><template #default="{ text }">{{ formatDateTime(text) }}</template></a-table-column>
@@ -536,6 +574,8 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 16px;
+  max-height: 70vh;
+  overflow-y: auto;
 }
 
 .active-order-card {

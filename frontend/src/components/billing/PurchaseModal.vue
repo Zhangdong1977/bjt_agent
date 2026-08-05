@@ -66,6 +66,11 @@ const selectedPackage = computed(() =>
   packages.value.find((item) => item.code === selectedPackageCode.value),
 );
 
+// 点数有效期（月）：优先取订单预览返回值，回落到所选套餐
+const validityMonths = computed(
+  () => preview.value?.validity_months ?? selectedPackage.value?.validity_months ?? 0,
+);
+
 const availableCoupons = computed(() =>
   coupons.value
     .filter((coupon) => coupon.status === "未使用" && (coupon.amount_cents > 0 || coupon.gift_points > 0))
@@ -74,7 +79,7 @@ const availableCoupons = computed(() =>
 
 const couponOptions = computed(() =>
   availableCoupons.value.map((coupon) => ({
-    label: `${coupon.benefit_type === "gift" ? `赠送${coupon.gift_points}点` : `${formatYuan(coupon.amount_cents)}优惠`}（门槛${formatYuan(coupon.threshold_amount_cents)}，有效期至 ${formatDate(coupon.valid_until)}）`,
+    label: `${coupon.benefit_type === "gift" ? `赠送${formatPoints(coupon.gift_points)}点` : `${formatYuan(coupon.amount_cents)}优惠`}（门槛${formatYuan(coupon.threshold_amount_cents)}，有效期至 ${formatDate(coupon.valid_until)}）`,
     value: coupon.id,
   })),
 );
@@ -86,6 +91,11 @@ function close() {
 
 function formatYuan(cents: number) {
   return `￥${(cents / 100).toFixed(2)}`;
+}
+
+// 点数统一按整数展示，不显示小数点后数字
+function formatPoints(value?: number | null) {
+  return String(Math.round(Number(value || 0)));
 }
 
 function formatDate(value?: string | null) {
@@ -292,7 +302,12 @@ watch(
     @cancel="close"
   >
     <a-spin :spinning="loading && !qr">
-      <div v-if="!qr" class="purchase-body">
+      <template v-if="!qr">
+      <div class="promo-banner">
+        <span class="promo-tag">重磅优惠</span>
+        <span class="promo-text">为庆祝标捷通智能标书检查服务上线，推出重磅优惠活动，充值满30元，赠送5元；满100元，赠送20元；满300元，赠送100元；满1000元，赠送500元！充值越多，赠送越多！活动随时下架，欢迎尽快充值！</span>
+      </div>
+      <div class="purchase-body">
         <!-- 左侧：套餐选择区 -->
         <div class="package-section">
           <div class="section-head">
@@ -315,11 +330,24 @@ watch(
                 class="package-divider"
                 :style="{ backgroundImage: `url(${dividerUrl})` }"
               ></span>
-              <span class="package-balance">{{ item.total_points }}点</span>
-              <span class="package-breakdown">充值{{ item.recharge_points }} + 赠送{{ item.gift_points }}</span>
+              <span class="package-balance">{{ formatPoints(item.total_points) }}点</span>
+              <span class="package-breakdown">充值{{ formatPoints(item.recharge_points) }} + 赠送{{ formatPoints(item.gift_points) }}</span>
+              <span v-if="item.validity_months" class="package-validity">有效期 {{ item.validity_months }} 个月</span>
               <span class="package-price">{{ formatYuan(item.amount_cents) }}</span>
               <span v-if="item.caution" class="package-caution">{{ item.caution }}</span>
             </button>
+          </div>
+
+          <div class="recharge-notes">
+            <div class="recharge-notes-title">会员充值说明：</div>
+            <ol class="recharge-notes-list">
+              <li>标捷通智能标书检查采用有偿服务模式，用户需购买指定金额的套餐，兑换"点"数（1元人民币相当于10点检查点数），用于检查服务业务。</li>
+              <li>每次检查系统会根据检查内容的自动计算消耗的"点"数，并扣除对应的用户账户余额。</li>
+              <li>平台不定期推出优惠活动，充值指定金额，会赠送一定的检查点数，会员可多关注平台充值活动。</li>
+              <li>每消耗1点检查点，系统会赠送1积分，积分可在下次充值时使用。注意，具体可以使用的积分数量，详见充值页面提示。</li>
+              <li>各充值套餐均设有对应的有效期，请留意到期时间，有效期结束后自动清零。不同时期购买的套餐，单独计算有效期。</li>
+              <li>已购买的套餐，不可转让，不可退换。</li>
+            </ol>
           </div>
         </div>
 
@@ -340,10 +368,14 @@ watch(
           </div>
           <div class="summary-row">
             <span>到账点数</span>
-            <strong>{{ preview?.total_points ?? selectedPackage?.total_points ?? 0 }}点</strong>
+            <strong>{{ formatPoints(preview?.total_points ?? selectedPackage?.total_points ?? 0) }}点</strong>
+          </div>
+          <div v-if="validityMonths" class="summary-row">
+            <span>点数有效期</span>
+            <strong>{{ validityMonths }} 个月</strong>
           </div>
           <div v-if="preview?.coupon_gift_points" class="summary-row">
-            <span>赠送券额外点数</span><strong>+{{ preview.coupon_gift_points }}点</strong>
+            <span>赠送券额外点数</span><strong>+{{ formatPoints(preview.coupon_gift_points) }}点</strong>
           </div>
 
           <label class="field-label">导入优惠券</label>
@@ -405,6 +437,7 @@ watch(
           </div>
         </div>
       </div>
+      </template>
 
       <div v-else class="pay-panel">
         <div class="qr-box">
@@ -431,6 +464,36 @@ watch(
   grid-template-columns: minmax(0, 1.4fr) 320px;
   gap: 24px;
   font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+}
+
+/* ============ 顶部优惠活动横幅 ============ */
+.promo-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 12px 16px;
+  border: 1px solid #f0d5da;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #fff5f6 0%, #fffaf0 100%);
+}
+
+.promo-tag {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #D7041A 0%, #B80015 100%);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.promo-text {
+  color: #7a1a22;
+  font-size: 13px;
+  line-height: 20px;
 }
 
 /* ============ 区块标题 ============ */
@@ -540,6 +603,13 @@ watch(
   font-size: 11px;
 }
 
+.package-validity {
+  margin-top: -2px;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .package-price {
   min-width: 76px;
   height: 28px;
@@ -561,6 +631,35 @@ watch(
   font-size: 11px;
   line-height: 1.4;
   text-align: center;
+}
+
+/* ============ 左侧底部：会员充值说明 ============ */
+.recharge-notes {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid #eef0f5;
+  border-radius: 8px;
+  background: #fafbfd;
+  align-self: start;
+}
+
+.recharge-notes-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+  margin-bottom: 8px;
+}
+
+.recharge-notes-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #8a8f99;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.recharge-notes-list li {
+  margin-bottom: 2px;
 }
 
 /* ============ 订单区 ============ */

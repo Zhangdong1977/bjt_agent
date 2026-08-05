@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, status, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -438,6 +439,48 @@ async def get_document(
             detail=DOCUMENT_NOT_FOUND,
         )
     return document
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    project_id: str,
+    document_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> FileResponse:
+    """Download the original uploaded file of a document.
+
+    Interior users (experience dashboard) may download any user's
+    document to retrieve the source attachments of a review task; write
+    operations remain restricted to the owner via ``verify_project_ownership``.
+    """
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
+
+    result = await db.execute(
+        select(Document)
+        .where(Document.id == document_id, Document.project_id == project_id)
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=DOCUMENT_NOT_FOUND,
+        )
+
+    file_path = Path(document.file_path)
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="附件原件不存在或已被清理",
+        )
+
+    # media_type 用空串让 FileResponse 走 filename 后缀推断；避免对 doc/docx
+    # 等类型硬编码错误的 MIME 导致浏览器拒绝下载。
+    return FileResponse(
+        path=str(file_path),
+        media_type="application/octet-stream",
+        filename=document.original_filename,
+    )
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

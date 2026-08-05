@@ -136,7 +136,7 @@ onMounted(load)
 .warning-panel ul { margin: 0; padding-left: 20px; }
 .meta-grid { display: grid; grid-template-columns: 150px 1fr; gap: 8px 16px; }
 .mono { word-break: break-all; font-family: monospace; }
-.block-list { display: grid; gap: 10px; }
+.block-list { display: grid; gap: 10px; max-height: 70vh; overflow-y: auto; }
 .block-item { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
 .block-head { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
 .badge { background: var(--bg3); border-radius: 4px; padding: 2px 7px; font-size: 12px; }

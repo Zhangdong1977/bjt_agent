@@ -119,7 +119,7 @@ class TodoItemResponse(BaseModel):
     error_message: str | None = None
     retry_count: int
     max_retries: int
-    max_steps: int = 100
+    max_steps: int = 500
     brain_capacity: float = 0.0
     started_at: datetime | None = None
     completed_at: datetime | None = None

@@ -29,7 +29,7 @@ export const useBillingStore = defineStore("billing", () => {
     remindedScenes.add(scene);
     Modal.warning({
       title: "点数余额不足提醒",
-      content: `当前可用点数 ${wallet.value.total_balance_points.toFixed(2)}，低于提醒阈值 ${wallet.value.low_balance_threshold.toFixed(2)}，建议及时充值以免影响任务结算。`,
+      content: `当前可用点数 ${Math.round(wallet.value.total_balance_points)}，低于提醒阈值 ${Math.round(wallet.value.low_balance_threshold)}，建议及时充值以免影响任务结算。`,
       okText: "我知道了",
     });
     return true;

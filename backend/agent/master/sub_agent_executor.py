@@ -112,14 +112,16 @@ class SubAgentExecutor:
             db.add(step)
             await db.commit()
 
-    async def create_agent(self, max_steps: int = 100, logger=None) -> BidReviewAgent:
+    async def create_agent(self, max_steps: int | None = None, logger=None) -> BidReviewAgent:
         """创建子代理实例.
 
         Args:
-            max_steps: Maximum number of agent steps to run.
+            max_steps: Maximum number of agent steps to run. None 时从 settings.sub_agent_max_steps 读取。
             logger: Optional logger for file output.
         """
         from backend.config import get_settings
+        if max_steps is None:
+            max_steps = get_settings().sub_agent_max_steps
 
         agent = BidReviewAgent(
             project_id=self.todo_item.project_id,
@@ -144,7 +146,7 @@ class SubAgentExecutor:
         self._agent = agent
         return agent
 
-    async def execute(self, max_steps: int = 100) -> dict:
+    async def execute(self, max_steps: int | None = None) -> dict:
         """执行子代理检查任务."""
         import logging
         from backend.config import get_settings
@@ -152,6 +154,8 @@ class SubAgentExecutor:
         from sqlalchemy import select
         from backend.models import User
         settings = get_settings()
+        if max_steps is None:
+            max_steps = settings.sub_agent_max_steps
 
         # 设置日志目录和 logger
         log_dir = settings.workspace_path / str(self.user_id) / str(self.todo_item.project_id) / "logs"

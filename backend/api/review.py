@@ -7,7 +7,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, select
 
 from backend.api.deps import DBSession, CurrentUser, get_token_claims, oauth2_scheme, is_interior_user
@@ -604,5 +604,117 @@ async def stream_review_events(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/tasks/{task_id}/export.pdf")
+async def export_review_pdf(
+    project_id: str,
+    task_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+):
+    """Export the review results of a task as a structured PDF.
+
+    Chapters are ordered by check-category (``rule_doc_name``) dictionary
+    order. Each category lists its findings as a card with compliance status,
+    severity, location, requirement, issue and suggestion. Empty results are
+    allowed and produce a minimal "no results" PDF.
+    """
+    from backend.services.pdf_export import build_review_pdf
+
+    project = await verify_project_ownership(
+        project_id, current_user, db, allow_interior=True
+    )
+
+    result = await db.execute(
+        select(ReviewTask).where(
+            ReviewTask.id == task_id,
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+        )
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="审查任务不存在或已被删除",
+        )
+
+    result = await db.execute(
+        select(ReviewResult)
+        .where(ReviewResult.task_id == task_id)
+        .order_by(
+            ReviewResult.severity.asc(),
+            ReviewResult.created_at.asc(),
+        )
+    )
+    findings = result.scalars().all()
+
+    # Group by rule_doc_name (fallback requirement_key), mirroring the UI's
+    # grouping key in ReviewResultsArea.vue. PDF chapter order = label dict
+    # order, applied inside build_review_pdf.
+    groups_map: dict[str, list] = {}
+    order: list[str] = []
+    for f in findings:
+        key = f.rule_doc_name or f.requirement_key
+        if key not in groups_map:
+            groups_map[key] = []
+            order.append(key)
+        groups_map[key].append(f)
+
+    groups = []
+    for key in order:
+        items = groups_map[key]
+        non_compliant = [f for f in items if not f.is_compliant]
+        groups.append({
+            "label": (key or "").replace(".md", "") or "未分类",
+            "is_compliant": len(non_compliant) == 0,
+            "non_compliant_count": len(non_compliant),
+            "findings": items,
+        })
+
+    # Summary mirrors get_review_results so the PDF matches the on-screen stats.
+    category_count_result = await db.execute(
+        select(func.count()).where(TodoItem.session_id == task_id)
+    )
+    category_count = category_count_result.scalar() or 0
+
+    check_item_count_result = await db.execute(
+        select(TodoItem.check_items).where(TodoItem.session_id == task_id)
+    )
+    check_items_rows = check_item_count_result.all()
+    check_item_count = sum(len(row[0] or []) for row in check_items_rows)
+
+    summary = {
+        "category_count": category_count,
+        "check_item_count": check_item_count,
+        "risk_item_count": len({
+            f.check_item_name for f in findings
+            if not f.is_compliant and f.check_item_name
+        }),
+    }
+
+    try:
+        pdf_bytes = build_review_pdf(
+            project.name, task.completed_at, summary, groups,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("[export_review_pdf] build failed task=%s", task_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="生成 PDF 失败，请稍后重试",
+        )
+
+    filename = f"review-{str(task_id)[:8]}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
         },
     )

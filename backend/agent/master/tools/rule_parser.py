@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Optional
 from mini_agent.tools.base import Tool, ToolResult
 
+from backend.utils.fs_encoding import decode_fs_name, heal_directory
+
 
 class RuleParserTool(Tool):
     """解析规则文档，提取检查项"""
@@ -172,12 +174,17 @@ class RuleLibraryScannerTool(Tool):
                     error=f"Rule library not found: {rule_library_path}",
                 )
 
+            # Self-heal: rule docs are git-ignored and manually deployed, so a
+            # Windows scp/zip can leave GBK filename bytes on disk. pathlib then
+            # reads them as surrogateescape strings that asyncpg cannot UTF-8
+            # encode. Rename them to UTF-8 in place before listing.
+            heal_directory(path)
             md_files = list(path.glob("*.md"))
             rule_docs = [
                 {
-                    "path": str(f.absolute()),
-                    "name": f.name,
-                    "stem": f.stem,
+                    "path": decode_fs_name(str(f.absolute())),
+                    "name": decode_fs_name(f.name),
+                    "stem": decode_fs_name(f.stem),
                 }
                 for f in sorted(md_files)
             ]

@@ -270,6 +270,9 @@ class MasterAgent:
                     cancel_event=cancel_event,
                 )
                 logger.info(f"[_run_single_sub_agent] Calling executor.execute() for todo {todo.id}")
+                # 步数上限统一从 settings 读取，确保运行上限 / 脑容量分母 / DB 回写三者一致
+                from backend.config import get_settings
+                sub_agent_max_steps = get_settings().sub_agent_max_steps
                 result = await executor.execute()
                 error_msg = result.get('error', '')
                 logger.info(f"[_run_single_sub_agent] executor.execute() returned for todo {todo.id}, success={result.get('success')}, error={error_msg}, findings_count={len(result.get('findings', []))}")
@@ -281,7 +284,7 @@ class MasterAgent:
                     brain_cap = result.get('brain_capacity', 0.0)
                     await task_todo_service.update_todo_status(
                         todo.id, "failed", error_message=err_msg,
-                        brain_capacity=brain_cap, max_steps=100,
+                        brain_capacity=brain_cap, max_steps=sub_agent_max_steps,
                     )
                     self._send_event("sub_agent_failed", {"todo_id": todo.id, "error": err_msg, "brain_capacity": brain_cap})
                     return {"success": False, "error": err_msg}
@@ -292,7 +295,7 @@ class MasterAgent:
                     brain_cap = result.get('brain_capacity', 0.0)
                     await task_todo_service.update_todo_status(
                         todo.id, "failed", error_message=result["error"],
-                        brain_capacity=brain_cap, max_steps=100,
+                        brain_capacity=brain_cap, max_steps=sub_agent_max_steps,
                     )
                     self._send_event("sub_agent_failed", {
                         "todo_id": todo.id,
@@ -313,7 +316,7 @@ class MasterAgent:
                             brain_cap = result.get('brain_capacity', 0.0)
                             await task_todo_service.update_todo_status(
                                 todo.id, "failed", error_message=err_msg,
-                                brain_capacity=brain_cap, max_steps=100,
+                                brain_capacity=brain_cap, max_steps=sub_agent_max_steps,
                             )
                             self._send_event("sub_agent_failed", {"todo_id": todo.id, "error": err_msg, "brain_capacity": brain_cap})
                             return {"success": False, "error": err_msg}
@@ -328,7 +331,7 @@ class MasterAgent:
                         brain_cap = result.get('brain_capacity', 0.0)
                         await task_todo_service.update_todo_status(
                             todo.id, "failed", error_message="Max retries exceeded",
-                            brain_capacity=brain_cap, max_steps=100,
+                            brain_capacity=brain_cap, max_steps=sub_agent_max_steps,
                         )
                         self._send_event("sub_agent_failed", {
                             "todo_id": todo.id,
@@ -351,7 +354,7 @@ class MasterAgent:
                     result_data["report_path"] = report_path
                 await task_todo_service.update_todo_status(
                     todo.id, "completed", result=result_data,
-                    brain_capacity=brain_cap, max_steps=100,
+                    brain_capacity=brain_cap, max_steps=sub_agent_max_steps,
                 )
                 # 持久化检查项列表，用于统计检查项总数
                 check_items = result.get("check_items", [])

@@ -240,6 +240,7 @@ onUnmounted(stopAutoRefresh)
         row-key="name"
         :loading="loading"
         :pagination="false"
+        :scroll="{ y: 400 }"
         size="middle"
         :locale="{ emptyText: '暂无节点（未配置 cluster_node_specs 且无 worker 在线）' }"
       >
@@ -271,6 +272,7 @@ onUnmounted(stopAutoRefresh)
         :data-source="workers"
         row-key="name"
         :pagination="false"
+        :scroll="{ y: 400 }"
         size="middle"
         :locale="{ emptyText: '暂无 worker' }"
       >

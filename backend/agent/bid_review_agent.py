@@ -76,7 +76,7 @@ class BidReviewAgent(BaseAgent):
         rule_doc_path: str = "",
         event_callback=None,
         logger=None,
-        max_steps: int = 100,
+        max_steps: int = 500,
         cancel_event: Optional[asyncio.Event] = None,
         heartbeat_timeout: int = 60,
         heartbeat_session_factory=None,
@@ -384,69 +384,94 @@ class BidReviewAgent(BaseAgent):
             # Log request
             agent_ref._log_llm_request(call_index, messages, tools)
 
-            try:
-                # Distributed rate limit across all worker processes
-                from backend.services.llm_rate_limiter import acquire_llm_rate_limit
-                async with acquire_llm_rate_limit():
-                    async with _get_llm_semaphore():
-                        async with asyncio.timeout(180.0):
-                            response = await original_generate(*args, **kwargs)
-            except TimeoutError:
-                latency_ms = int((time.perf_counter() - call_start) * 1000)
-                logger.error(
-                    f"[LLM Interaction #{call_index}] TIMEOUT after {latency_ms}ms "
-                    f"(asyncio.timeout exceeded 180s)"
-                )
-                # 用量记录：timeout（失败可见但不计费）
-                try:
-                    from backend.services.usage_recorder import record_llm_usage
-                    record_llm_usage(latency_ms=latency_ms, status="timeout",
-                                     error_message="asyncio.timeout exceeded 180s")
-                except Exception:
-                    pass
-                agent_ref._interactions_log.append({
-                    "call_index": call_index,
-                    "timestamp": call_timestamp,
-                    "latency_ms": latency_ms,
-                    "status": "timeout",
-                    "error": "asyncio.timeout exceeded 180s",
-                    "request": agent_ref._build_request_summary(messages, tools),
-                })
-                raise
-            except Exception as e:
-                latency_ms = int((time.perf_counter() - call_start) * 1000)
+            # 单次 LLM 调用超时重试（防偶发卡顿放弃整个子任务）。
+            # 生产实测：deepseek-v4-flash 偶发单次调用卡死 180s，原实现直接放弃，已积累的
+            # 数十步核实成果全丢。此处对 TimeoutError 重试 N 次，每次全新调用（新 timeout 窗口）。
+            # 只对 TimeoutError 重试；其他异常（429/网络错误等）由内层 async_retry 处理，不在此重试。
+            from backend.services.llm_rate_limiter import acquire_llm_rate_limit
+            timeout_max_retries = settings.llm_timeout_max_retries
+            timeout_retry_delay = settings.llm_timeout_retry_delay
+            llm_call_timeout = settings.llm_call_timeout
 
-                # 检测 429 Rate Limit 错误并记录到 Redis 监控计数器
-                error_str = str(e)
-                status_code = getattr(
-                    getattr(e, "response", None), "status_code", None
-                ) or getattr(e, "status_code", None)
-                if status_code == 429 or "429" in error_str or "rate_limit" in error_str.lower():
-                    agent_ref._record_llm_429(call_index, latency_ms, error_str)
+            response = None
+            for timeout_attempt in range(timeout_max_retries + 1):
+                try:
+                    # Distributed rate limit across all worker processes
+                    async with acquire_llm_rate_limit():
+                        async with _get_llm_semaphore():
+                            async with asyncio.timeout(llm_call_timeout):
+                                response = await original_generate(*args, **kwargs)
+                    break  # 成功则跳出重试循环
+                except TimeoutError:
                     logger.error(
-                        f"[LLM Interaction #{call_index}] RATE LIMITED (429) after {latency_ms}ms: {e}"
+                        f"[LLM Interaction #{call_index}] TIMEOUT after {llm_call_timeout}s "
+                        f"(attempt {timeout_attempt + 1}/{timeout_max_retries + 1})"
                     )
+                    # 用量记录：timeout（失败可见但不计费）
+                    try:
+                        from backend.services.usage_recorder import record_llm_usage
+                        record_llm_usage(latency_ms=llm_call_timeout * 1000, status="timeout",
+                                         error_message=f"asyncio.timeout exceeded {llm_call_timeout}s")
+                    except Exception:
+                        pass
+                    agent_ref._interactions_log.append({
+                        "call_index": call_index,
+                        "timestamp": call_timestamp,
+                        "latency_ms": llm_call_timeout * 1000,
+                        "status": "timeout",
+                        "error": f"asyncio.timeout exceeded {llm_call_timeout}s (attempt {timeout_attempt + 1})",
+                        "request": agent_ref._build_request_summary(messages, tools),
+                    })
+                    # 全部重试耗尽 → 放弃，抛出让上层 run_review 走 fallback
+                    if timeout_attempt >= timeout_max_retries:
+                        logger.error(
+                            f"[LLM Interaction #{call_index}] TIMEOUT retries exhausted "
+                            f"({timeout_max_retries + 1} attempts), giving up"
+                        )
+                        raise
+                    # 否则等待后重试
+                    logger.warning(
+                        f"[LLM Interaction #{call_index}] Retrying after {timeout_retry_delay}s "
+                        f"(attempt {timeout_attempt + 2}/{timeout_max_retries + 1})"
+                    )
+                    await asyncio.sleep(timeout_retry_delay)
+                except Exception as e:
+                    latency_ms = int((time.perf_counter() - call_start) * 1000)
 
-                logger.error(
-                    f"[LLM Interaction #{call_index}] FAILED after {latency_ms}ms: {e}"
-                )
-                # 用量记录：error（失败可见但不计费；error_code 用 HTTP 状态码，便于排查 429 等）
-                try:
-                    from backend.services.usage_recorder import record_llm_usage
-                    record_llm_usage(latency_ms=latency_ms, status="error",
-                                     error_code=str(status_code) if status_code else None,
-                                     error_message=str(e))
-                except Exception:
-                    pass
-                agent_ref._interactions_log.append({
-                    "call_index": call_index,
-                    "timestamp": call_timestamp,
-                    "latency_ms": latency_ms,
-                    "status": "error",
-                    "error": str(e),
-                    "request": agent_ref._build_request_summary(messages, tools),
-                })
-                raise
+                    # 检测 429 Rate Limit 错误并记录到 Redis 监控计数器
+                    error_str = str(e)
+                    status_code = getattr(
+                        getattr(e, "response", None), "status_code", None
+                    ) or getattr(e, "status_code", None)
+                    if status_code == 429 or "429" in error_str or "rate_limit" in error_str.lower():
+                        agent_ref._record_llm_429(call_index, latency_ms, error_str)
+                        logger.error(
+                            f"[LLM Interaction #{call_index}] RATE LIMITED (429) after {latency_ms}ms: {e}"
+                        )
+
+                    logger.error(
+                        f"[LLM Interaction #{call_index}] FAILED after {latency_ms}ms: {e}"
+                    )
+                    # 用量记录：error（失败可见但不计费；error_code 用 HTTP 状态码，便于排查 429 等）
+                    try:
+                        from backend.services.usage_recorder import record_llm_usage
+                        record_llm_usage(latency_ms=latency_ms, status="error",
+                                         error_code=str(status_code) if status_code else None,
+                                         error_message=str(e))
+                    except Exception:
+                        pass
+                    agent_ref._interactions_log.append({
+                        "call_index": call_index,
+                        "timestamp": call_timestamp,
+                        "latency_ms": latency_ms,
+                        "status": "error",
+                        "error": str(e),
+                        "request": agent_ref._build_request_summary(messages, tools),
+                    })
+                    raise
+
+            # response 在循环里通过 break 赋值；到这里一定是成功的
+            assert response is not None
 
             latency_ms = int((time.perf_counter() - call_start) * 1000)
 
