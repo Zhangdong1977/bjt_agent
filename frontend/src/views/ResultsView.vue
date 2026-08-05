@@ -168,7 +168,7 @@ async function exportPdf() {
           :disabled="!selectedTaskId || !taskResults || exporting"
           @click="exportPdf"
         >
-          {{ exporting ? '导出中…' : '导出 PDF' }}
+          {{ exporting ? '下载中…' : '下载审查报告' }}
         </button>
         <button
           class="share-btn"
