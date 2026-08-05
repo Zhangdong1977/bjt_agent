@@ -270,10 +270,14 @@ function getSeverityColorClass(severity: string): string {
 .stat-card {
   position: relative;
   height: 90px;
-  /* 背景图按高度等比缩放（auto 100%）：宽度跟随原始比例，
-     绝不横向拉伸；宽屏多出的右侧留白，保持图标与文字比例正常 */
-  background-size: auto 100%;
-  background-position: left center;
+  /* 卡片宽度由"高度 × 背景图宽高比"推导（约 308px），等于图的渲染宽度；
+     配合 justify-self:center，让卡片在 1fr 网格单元内居中而不再被横向拉伸。
+     这样数字与标签始终叠加在背景图右侧的文本区上，宽屏下不再漂移到图外。 */
+  aspect-ratio: 322 / 94;
+  justify-self: center;
+  max-width: 100%;
+  background-size: 100% 100%;
+  background-position: center;
   background-repeat: no-repeat;
   border-radius: 10px;
   display: flex;
