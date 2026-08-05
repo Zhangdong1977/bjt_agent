@@ -61,6 +61,11 @@ _TEXT_MUTE = colors.HexColor("#888888")
 _LINE = colors.HexColor("#DDDDDD")
 _BG_HEADER = colors.HexColor("#F5F5F5")
 _BG_RISK = colors.HexColor("#FFF1F0")
+_LINK_BLUE = colors.HexColor("#2563EB")
+
+# Promo banner shown in every page header — links to the review portal.
+_PROMO_TEXT = "点我立即开始检查："
+_PROMO_URL = "https://check.aibjt.com:30002"
 
 
 def _severity_label(severity: str | None) -> str:
@@ -164,6 +169,26 @@ def build_review_pdf(
 
     def _on_page(canvas, doc):
         canvas.saveState()
+
+        # ---- Header: promo banner (clickable), mirrored on every page ----
+        header_text = _PROMO_TEXT + _PROMO_URL
+        canvas.setFont(CJK_FONT, 8)
+        canvas.setFillColor(_LINK_BLUE)
+        canvas.drawCentredString(page_w / 2.0, page_h - margin + 2, header_text)
+        # Make the drawn text a clickable hyperlink rectangle.
+        tw = pdfmetrics.stringWidth(header_text, CJK_FONT, 8)
+        hx = page_w / 2.0 - tw / 2.0
+        hy = page_h - margin + 2
+        canvas.linkURL(
+            _PROMO_URL,
+            (hx - 2, hy - 2, hx + tw + 2, hy + 8),
+            relative=0,
+        )
+        canvas.setStrokeColor(_LINE)
+        canvas.setLineWidth(0.5)
+        canvas.line(margin, page_h - margin - 6, page_w - margin, page_h - margin - 6)
+
+        # ---- Footer ----
         canvas.setFont(CJK_FONT, 8)
         canvas.setFillColor(_TEXT_MUTE)
         canvas.drawString(
