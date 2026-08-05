@@ -105,9 +105,17 @@ const couponColumns = [
 const orderRows = computed(() =>
   orders.value.map((item, index) => ({ ...item, index: index + 1 })),
 );
+// 「当前扣费订单」是个人钱包视图：只展示当前登录账户自己正在扣费的订单。
+// 内部用户的订单列表会含全站订单（订单记录表格用），这里必须按归属收敛到本人，
+// 否则会把其它账户的可用订单卡片一起渲染出来。
+const currentUsername = computed(() => authStore.user?.username ?? "");
 const activeOrderCards = computed(() =>
   orders.value.filter(
-    (item) => item.points_status === "active" && Number(item.remaining_points) > 0,
+    (item) =>
+      item.points_status === "active" &&
+      Number(item.remaining_points) > 0 &&
+      // 非内部用户后端已按 user_id 过滤；内部用户在这里二次收敛到本人
+      (!isInterior.value || item.username === currentUsername.value),
   ),
 );
 const consumptionRows = computed(() =>
