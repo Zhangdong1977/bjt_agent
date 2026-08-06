@@ -42,27 +42,20 @@ interface Props {
   findings: Finding[]
   allowExpand?: boolean
   currentStep?: number
-  maxSteps?: number
-  brainCapacity?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
   currentStep: 0,
-  maxSteps: 0,
-  brainCapacity: undefined
 })
 
 const isOpen = ref(false)
 
-const brainPercent = computed(() => {
-  // Use persisted brain capacity from database (for completed/failed agents)
-  if (props.brainCapacity !== undefined) return Math.round(props.brainCapacity)
-  // Calculate from step progress
-  if (props.maxSteps > 0) {
-    return Math.min(Math.round((props.currentStep / props.maxSteps) * 100), 100)
-  }
-  if (props.status === 'running') return 50
-  return 0
+// 执行步数文案：优先用 currentStep（子代理模式由父组件传入），
+// BidReviewAgent 模式未传 prop 时回退到 steps.length（observations 数量）。
+const stepText = computed(() => {
+  if (props.status === 'wait') return '等待'
+  const cur = props.currentStep || props.steps.length
+  return `已执行 ${cur} 步`
 })
 
 function toggle() {
@@ -88,15 +81,8 @@ function getStatusText(status: string) {
       </div>
       <div class="bra-right">
         <div class="brain-cap">
-          <span class="brain-label">脑容量</span>
-          <div class="brain-pbar-outer">
-            <div
-              class="brain-pbar-inner"
-              :style="{ width: `${brainPercent}%` }"
-              :class="{ 'brain-animate': status === 'running' }"
-            ></div>
-          </div>
-          <span class="brain-pct">{{ brainPercent }}%</span>
+          <span class="breathing-lamp" :class="`lamp-${status}`"></span>
+          <span class="step-text">{{ stepText }}</span>
         </div>
         <span :class="['chip', status === 'done' ? 'chip-done' : status === 'running' ? 'chip-run' : status === 'fail' ? 'chip-fail' : 'chip-wait']">
           {{ getStatusText(status) }}
@@ -147,7 +133,7 @@ function getStatusText(status: string) {
   user-select: none;
 }
 
-.bra-running .block-header { background: var(--blue-bg); }
+.bra-running .block-header { background: var(--purple-bg); }
 .bra-done .block-header { background: var(--green-bg); }
 .bra-fail .block-header { background: var(--red-bg); }
 
@@ -177,57 +163,40 @@ function getStatusText(status: string) {
 .brain-cap {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
 }
 
-.brain-label {
-  font-size: 10px;
+/* 呼吸灯：running 时呼吸闪烁，其余态常亮 */
+.breathing-lamp {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.lamp-running {
+  background: var(--purple);
+  animation: lamp-breath 1.8s ease-in-out infinite;
+}
+.lamp-done   { background: var(--green); }
+.lamp-fail   { background: var(--red); }
+.lamp-wait   { background: var(--dim); }
+
+@keyframes lamp-breath {
+  0%   { opacity: 0.35; box-shadow: 0 0 0 0 rgba(114, 46, 209, 0.5); }
+  50%  { opacity: 1;    box-shadow: 0 0 0 4px rgba(114, 46, 209, 0); }
+  100% { opacity: 0.35; box-shadow: 0 0 0 0 rgba(114, 46, 209, 0); }
+}
+
+.step-text {
+  font-size: 11px;
+  font-weight: 500;
   color: var(--muted);
   white-space: nowrap;
 }
 
-.bra-running .brain-label { color: var(--blue); }
-.bra-done .brain-label { color: var(--green); }
-
-.brain-pbar-outer {
-  width: 48px;
-  height: 4px;
-  background: var(--bg4);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.brain-pbar-inner {
-  height: 100%;
-  border-radius: 2px;
-  transition: width 0.5s ease;
-}
-
-.brain-animate {
-  animation: brain-shine 1.8s ease-in-out infinite;
-}
-
-@keyframes brain-shine {
-  0% { opacity: 0.8; }
-  50% { opacity: 1; }
-  100% { opacity: 0.8; }
-}
-
-.bra-done .brain-pbar-inner { background: var(--green); }
-.bra-running .brain-pbar-inner { background: var(--blue); }
-.bra-wait .brain-pbar-inner { background: var(--dim); }
-.bra-fail .brain-pbar-inner { background: var(--red); }
-
-.brain-pct {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--muted);
-  min-width: 28px;
-  text-align: right;
-}
-
-.bra-running .brain-pct { color: var(--blue); }
-.bra-done .brain-pct { color: var(--green); }
+.bra-running .step-text { color: var(--purple); }
+.bra-done .step-text { color: var(--green); }
 
 .chevron {
   font-size: 10px;
