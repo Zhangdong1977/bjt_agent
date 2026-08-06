@@ -13,6 +13,7 @@ import {
   type BlindCheckFinding,
 } from "@/api/blindCheck";
 import { useBillingStore } from "@/stores/billing";
+import { showCheckDurationNotice } from "@/utils/checkDurationNotice";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 import iconWallet from "@/assets/images/ui/common-icon-wallet.png";
 import iconPoints from "@/assets/images/ui/common-icon-points.png";
@@ -226,6 +227,8 @@ async function startCheck() {
     progressStep.value = 1;
     progressMessage.value = "已提交，等待智能体读取文档…";
     void listenTask(task.id);
+    // 提示预计耗时与稍后查看结果的入口（暗标检查在当前页展示进度，提示不阻断监听）
+    void showCheckDurationNotice();
   } catch (error) {
     errorMessage.value = errorText(error, "提交暗标检查失败");
   } finally {

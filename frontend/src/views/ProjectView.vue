@@ -10,6 +10,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
 import { isLegacyDocFile, legacyDocWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
+import { showCheckDurationNotice } from '@/utils/checkDurationNotice'
 
 // Configure DOMPurify to allow base64 images and table tags
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -121,6 +122,8 @@ async function handleDeleteDoc(docId: string) {
 async function handleStartReview() {
   try {
     await projectStore.startReview()
+    // 提示预计耗时，用户确认后再跳转审查执行页
+    await showCheckDurationNotice()
     router.push({ name: 'review-execution', params: { id: projectId.value } })
   } catch (err) {
     const error = err as { response?: { status?: number; data?: { detail?: unknown } } }

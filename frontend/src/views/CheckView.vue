@@ -9,6 +9,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
 import { isLegacyDocFile, legacyDocWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
+import { showCheckDurationNotice } from '@/utils/checkDurationNotice'
 import illustration from '@/assets/images/ui/home-illustration.png'
 import iconFileTheme from '@/assets/images/ui/common-icon-file-theme.png'
 import iconSearch from '@/assets/images/ui/common-icon-search.png'
@@ -284,7 +285,9 @@ async function startCheck() {
     // ④ 启动审查
     await projectStore.startReview()
 
-    // ⑤ 跳转审查执行页
+    // ⑤ 提示预计耗时，用户确认后再跳转审查执行页
+    await showCheckDurationNotice()
+
     router.push({ name: 'review-execution', params: { id: project.id } })
   } catch (err) {
     const error = err as { response?: { status?: number; data?: { detail?: unknown } } }
