@@ -12,9 +12,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-NORMALIZATION_POLICY_VERSION = "v1"
+NORMALIZATION_POLICY_VERSION = "v2"
 DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_DIMENSION = 4096
+# 百度 OCR 通用文字识别对图片像素的要求：最短边 ≥ 50px、最长边 ≤ 4096px。
+# 极小图（logo/占位符/图标）最短边常低于 50px，原样上报会被百度判为 216202 image size error。
+# 这里在规范化阶段把最短边等比放大到下限，既满足百度的像素下限，也尽量保住文字可识别性。
+DEFAULT_MIN_DIMENSION = 50
+# 长宽比超过该值的瘦长图（如 1x5000 的切片）也容易触发 216202，按长边上限约束后顺带校验。
+DEFAULT_MAX_ASPECT_RATIO = 10.0
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_SOURCE_PIXELS = 60_000_000
 _DIRECT_FORMATS = {"JPEG", "PNG"}
@@ -112,7 +118,7 @@ def _cached_result(
     )
 
 
-def _prepare_image(image, *, max_dimension: int):
+def _prepare_image(image, *, max_dimension: int, min_dimension: int = DEFAULT_MIN_DIMENSION):
     from PIL import Image, ImageOps
 
     frame_count = int(getattr(image, "n_frames", 1) or 1)
@@ -129,15 +135,24 @@ def _prepare_image(image, *, max_dimension: int):
             f"图片像素过大: {prepared.width}x{prepared.height}"
         )
 
-    if max(prepared.size) > max_dimension:
-        scale = max_dimension / max(prepared.size)
-        prepared = prepared.resize(
-            (
-                max(1, round(prepared.width * scale)),
-                max(1, round(prepared.height * scale)),
-            ),
-            Image.Resampling.LANCZOS,
-        )
+    # 百度 OCR 要求：最长边 ≤ max_dimension、最短边 ≥ min_dimension。
+    # 必须用同一个 scale 同时满足两个约束：分两步（先缩长边再放短边）会让瘦长图
+    # 的长边在放大短边时暴涨（如 1x5000 会先缩成 1x4096、再放大短边变 50x204800）。
+    # 取 max(长边缩小比, 短边放大比) 作为统一缩放系数，一次 resize 到两边都合规。
+    current_max = max(prepared.size)
+    current_min = min(prepared.size)
+    scale = 1.0
+    if current_max > max_dimension:
+        scale = max(scale, max_dimension / current_max)
+    if current_min < min_dimension:
+        scale = max(scale, min_dimension / current_min)
+    if scale != 1.0:
+        new_w = max(1, round(prepared.width * scale))
+        new_h = max(1, round(prepared.height * scale))
+        # resize 后再次兜底钳制，避免四舍五入导致边界值仍差 1px
+        new_w = min(new_w, max_dimension) if current_max > max_dimension else new_w
+        new_h = min(new_h, max_dimension) if current_max > max_dimension else new_h
+        prepared = prepared.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
     has_alpha = "A" in prepared.getbands() or (
         prepared.mode == "P" and "transparency" in prepared.info
@@ -238,6 +253,7 @@ def normalize_image_for_ocr(
     cache_dir: Path | None = None,
     max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     max_dimension: int = DEFAULT_MAX_DIMENSION,
+    min_dimension: int = DEFAULT_MIN_DIMENSION,
     force_reencode: bool = False,
     prefer_jpeg: bool = False,
     source_sha256: str | None = None,
@@ -254,7 +270,7 @@ def normalize_image_for_ocr(
         raise OcrImageNormalizationError(
             f"图片源文件过大: {original_size / (1024 * 1024):.1f}MB"
         )
-    if max_output_bytes <= 0 or max_dimension <= 0:
+    if max_output_bytes <= 0 or max_dimension <= 0 or min_dimension <= 0:
         raise ValueError("OCR 图片大小限制必须为正数")
 
     try:
@@ -275,6 +291,8 @@ def normalize_image_for_ocr(
                 and image.mode in {"RGB", "L", "P"}
                 and not png_has_alpha
             )
+            # 直接透传要求最短边也达标（≥ min_dimension），否则需走 _prepare_image 放大，
+            # 避免合规但极小的图片绕过规范化直送百度触发 216202。
             can_use_directly = (
                 not force_reencode
                 and source_format in _DIRECT_FORMATS
@@ -283,6 +301,7 @@ def normalize_image_for_ocr(
                 and frame_count == 1
                 and original_size <= max_output_bytes
                 and max(width, height) <= max_dimension
+                and min(width, height) >= min_dimension
             )
             digest = source_sha256 or _sha256_file(path)
             if can_use_directly:
@@ -304,7 +323,9 @@ def normalize_image_for_ocr(
                     width=int(width),
                     height=int(height),
                 )
-            prepared = _prepare_image(image, max_dimension=max_dimension)
+            prepared = _prepare_image(
+                image, max_dimension=max_dimension, min_dimension=min_dimension
+            )
     except OcrImageNormalizationError:
         raise
     except (UnidentifiedImageError, OSError, ValueError) as exc:
@@ -315,7 +336,11 @@ def normalize_image_for_ocr(
         try:
             fallback_image = _decode_jpeg2000_with_pymupdf(path)
             source_format = "JPEG2000"
-            prepared = _prepare_image(fallback_image, max_dimension=max_dimension)
+            prepared = _prepare_image(
+                fallback_image,
+                max_dimension=max_dimension,
+                min_dimension=min_dimension,
+            )
             logger.info("Decoded JPEG 2000 with PyMuPDF fallback: %s", path.name)
         except Exception as fallback_exc:
             raise OcrImageNormalizationError(
@@ -324,7 +349,7 @@ def normalize_image_for_ocr(
 
     digest = source_sha256 or _sha256_file(path)
     variant = "jpeg" if prefer_jpeg else "auto"
-    policy = f"{NORMALIZATION_POLICY_VERSION}-{max_output_bytes}-{max_dimension}-{variant}"
+    policy = f"{NORMALIZATION_POLICY_VERSION}-{max_output_bytes}-{max_dimension}-{min_dimension}-{variant}"
     cache_root = Path(cache_dir) if cache_dir is not None else _default_cache_dir()
     base_path = cache_root / policy / digest[:2] / digest
     for suffix in (".png", ".jpg"):
@@ -376,6 +401,8 @@ def normalize_image_for_ocr(
 __all__ = [
     "DEFAULT_MAX_DIMENSION",
     "DEFAULT_MAX_OUTPUT_BYTES",
+    "DEFAULT_MIN_DIMENSION",
+    "DEFAULT_MAX_ASPECT_RATIO",
     "NormalizedOcrImage",
     "OcrImageNormalizationError",
     "normalize_image_for_ocr",
