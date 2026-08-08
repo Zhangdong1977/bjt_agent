@@ -2,7 +2,6 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
-import { useAuthStore } from '@/stores/auth'
 import { documentsApi } from '@/api/client'
 import type { DocumentContent } from '@/types'
 import { message } from 'ant-design-vue'
@@ -29,7 +28,6 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 const route = useRoute()
 const router = useRouter()
 const projectStore = useProjectStore()
-const authStore = useAuthStore()
 
 const projectId = computed(() => route.params.id as string)
 const tenderDocs = computed(() => projectStore.documents.filter(d => d.doc_type === 'tender'))
@@ -204,7 +202,7 @@ function getStatusClass(status: string) {
                     查看内容
                   </button>
                   <button
-                    v-if="doc.status === 'parsed' && authStore.isInteriorUser"
+                    v-if="false"
                     class="view-btn"
                     @click="handleViewArtifacts(doc.id)"
                   >
@@ -286,7 +284,7 @@ function getStatusClass(status: string) {
                     查看内容
                   </button>
                   <button
-                    v-if="doc.status === 'parsed' && authStore.isInteriorUser"
+                    v-if="false"
                     class="view-btn"
                     @click="handleViewArtifacts(doc.id)"
                   >

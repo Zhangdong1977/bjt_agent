@@ -194,8 +194,11 @@ apiClient.interceptors.response.use(
         originalRequest.headers.Authorization = `Bearer ${newToken}`;
         return apiClient(originalRequest);
       } else {
-        // Refresh failed - redirect to login, preserving the original page so
+        // Refresh failed - reject any queued subscribers so they don't hang
+        // forever, then redirect to login, preserving the original page so
         // the user can be returned after a fresh login (e.g. shared links).
+        refreshSubscribers.forEach((resolve) => resolve(""));
+        refreshSubscribers = [];
         if (window.location.pathname !== "/login") {
           const current = window.location.pathname + window.location.search;
           const redirect = encodeURIComponent(current);

@@ -408,7 +408,7 @@ function formatBytes(value: number): string {
           <p v-else class="success">解析完成</p>
           <div class="actions">
             <button v-if="document.status === 'parsed'" @click="preview(document)">查看内容</button>
-            <button v-if="document.status === 'parsed' && authStore.isInteriorUser" @click="openArtifacts(document.id)">解析诊断</button>
+            <button v-if="false" @click="openArtifacts(document.id)">解析诊断</button>
             <button class="danger" @click="removeDocument(document)">删除</button>
           </div>
         </div>
@@ -451,7 +451,7 @@ function formatBytes(value: number): string {
             <div class="actions">
               <button v-if="document.status === 'parsed'" @click="preview(document)">查看内容</button>
               <button
-                v-if="document.status === 'parsed' && authStore.isInteriorUser"
+                v-if="false"
                 @click="openArtifacts(document.id)"
               >解析诊断</button>
               <button class="danger" @click="removeDocument(document)">删除</button>
