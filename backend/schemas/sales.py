@@ -9,6 +9,12 @@ class SalesConfigPayload(BaseModel):
     sales_multiplier: float = Field(gt=0, le=1000)
     low_balance_threshold: float = Field(ge=0)
     version: int = Field(ge=1)
+    # Optional per-feature overrides. Omitted/None means "use sales_multiplier".
+    # Kept optional so an older operate-two that still pushes only the single
+    # global multiplier continues to be accepted by this payload.
+    review_multiplier: float | None = Field(default=None, gt=0, le=1000)
+    duplicate_multiplier: float | None = Field(default=None, gt=0, le=1000)
+    blind_check_multiplier: float | None = Field(default=None, gt=0, le=1000)
 
 
 class SalesPackagePayload(BaseModel):
