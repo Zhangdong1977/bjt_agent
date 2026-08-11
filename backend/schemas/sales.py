@@ -12,9 +12,12 @@ class SalesConfigPayload(BaseModel):
     # Optional per-feature overrides. Omitted/None means "use sales_multiplier".
     # Kept optional so an older operate-two that still pushes only the single
     # global multiplier continues to be accepted by this payload.
-    review_multiplier: float | None = Field(default=None, gt=0, le=1000)
-    duplicate_multiplier: float | None = Field(default=None, gt=0, le=1000)
-    blind_check_multiplier: float | None = Field(default=None, gt=0, le=1000)
+    # A value of 0 makes the feature free for all users (limited-time
+    # promotion); the global sales_multiplier above stays strictly positive so
+    # an unset feature still bills at the global rate by default.
+    review_multiplier: float | None = Field(default=None, ge=0, le=1000)
+    duplicate_multiplier: float | None = Field(default=None, ge=0, le=1000)
+    blind_check_multiplier: float | None = Field(default=None, ge=0, le=1000)
 
 
 class SalesPackagePayload(BaseModel):
