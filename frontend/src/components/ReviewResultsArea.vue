@@ -112,13 +112,8 @@ const subAgentGroups = computed<SubAgentGroup[]>(() => {
     })
   }
 
-  // Sort: risk items first (by severity), then compliant items
-  const severityOrder = { critical: 0, major: 1, minor: 2, none: 3 }
-  groups.sort((a, b) => {
-    const sevDiff = severityOrder[a.topSeverity] - severityOrder[b.topSeverity]
-    if (sevDiff !== 0) return sevDiff
-    return b.nonCompliantCount - a.nonCompliantCount
-  })
+  // Sort: dictionary order by check item code (A001, A002, ..., B001, C001, ...)
+  groups.sort((a, b) => a.label.localeCompare(b.label))
 
   return groups
 })

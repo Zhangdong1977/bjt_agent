@@ -151,6 +151,11 @@ class BidReviewAgent(BaseAgent):
         self._cancel_reason: Optional[str] = None
         # Track whether max_steps was reached during execution
         self._max_steps_exceeded: bool = False
+        # Track whether the LLM extraction has explicitly returned an empty list
+        # (= "all checks compliant"), so run_review can skip the keyword fallback
+        # which would otherwise fabricate false non-compliant findings from
+        # neutral words like "无缺失资质" / "损失分值 0 分". See _extract_keyword_findings.
+        self._llm_extract_all_compliant: bool = False
 
         # Duplicate action detection
         from collections import deque
@@ -1478,8 +1483,17 @@ class BidReviewAgent(BaseAgent):
             findings = await self._post_process(output_md_path)
             logger.info(f"[BidReviewAgent.run_review] Post-processing completed, found {len(findings)} findings")
 
-            # Fallback: if post_process returned empty, try extracting from message history
+            # Fallback: if post_process returned empty, try extracting from message history.
+            # IMPORTANT: distinguish "LLM explicitly judged all-compliant" (the LLM
+            # extraction step returned a well-formed empty list) from "extraction
+            # genuinely failed". In the former case we must NOT fall back to keyword
+            # scanning, which fabricates false non-compliant findings from neutral
+            # words that compliant verdicts routinely contain (e.g. D002's required
+            # "损失分值 0 分 / 无缺失资质" output). See _extract_keyword_findings.
             if not findings:
+                if self._llm_extract_all_compliant:
+                    logger.info("[BidReviewAgent.run_review] _post_process empty but LLM already judged all-compliant, skipping keyword fallback")
+                    return self._enrich_findings([])
                 logger.warning("[BidReviewAgent.run_review] _post_process returned empty, trying _extract_findings_from_messages")
                 findings = self._extract_findings_from_messages()
                 logger.info(f"[BidReviewAgent.run_review] Fallback extraction returned {len(findings)} findings")
@@ -1520,9 +1534,12 @@ class BidReviewAgent(BaseAgent):
 
         for msg in reversed(self.messages):
             if msg.role == "assistant" and msg.content:
-                # Try to parse JSON array from content
+                # Try to parse JSON array from content.
+                # Use isinstance alone (not `parsed and isinstance`) so an empty
+                # array "[]" is recognized as "no findings here" rather than
+                # skipped due to bool([]) == False.
                 parsed = self._try_parse_json(msg.content)
-                if parsed and isinstance(parsed, list):
+                if isinstance(parsed, list):
                     for item in parsed:
                         if isinstance(item, dict) and "requirement_key" in item:
                             normalized = self._normalize_finding(item, requirement_counter)
@@ -1530,7 +1547,7 @@ class BidReviewAgent(BaseAgent):
                                 findings.append(normalized)
                                 requirement_counter += 1
                 # Also check for single JSON object
-                elif parsed and isinstance(parsed, dict) and "requirement_key" in parsed:
+                elif isinstance(parsed, dict) and "requirement_key" in parsed:
                     normalized = self._normalize_finding(parsed, requirement_counter)
                     if normalized:
                         findings.append(normalized)
@@ -1538,12 +1555,42 @@ class BidReviewAgent(BaseAgent):
 
         return findings
 
-    # Keywords indicating non-compliance in Chinese review analysis text
+    # Keywords indicating non-compliance in Chinese review analysis text.
+    # Only "strong-signal" phrases that almost never appear in a compliant verdict
+    # are kept here for the fallback scanner. Neutral words with heavy compliant
+    # use (缺失/缺少/不一致/未体现/未说明/未明确) were removed because rules like
+    # D002 *require* the agent to emit "损失分值 0 分 / 无缺失资质" even when fully
+    # compliant — those words then got misread as non-compliance (false risk items).
     _NON_COMPLIANCE_KEYWORDS = [
-        "不通过", "不符合", "不合规", "未提供", "缺失", "缺少",
-        "存在问题", "不满足", "未满足", "没有找到", "未找到",
-        "未包含", "未说明", "未明确", "未体现", "不一致",
+        "不通过", "不符合", "不合规", "存在问题",
+        "不满足", "未满足", "没有找到", "未找到",
     ]
+
+    # Phrases that, when co-occurring with a non-compliance keyword in the same
+    # context block, indicate the keyword is actually being used in a *compliant*
+    # / negated sense and must NOT be flagged. Examples these defeat:
+    #   "损失分值：0 分（无缺失资质）"  -> 命中"缺失"，但同句有"无缺失"+"0 分"
+    #   "未发现问题"                   -> 命中"未"，但同句有"未发现"
+    #   "证书均已提供，无不一致"        -> 命中"不一致"，但同句有"无不一致"+"均已"
+    # DESIGN RULES (important — a naive substring match backfires easily):
+    #   1. Do NOT include bare single chars like "无" or "未" — they appear inside
+    #      unrelated words (无法/无关/无效/未知) and suppress genuine findings.
+    #      Instead use the "无 + negative noun" combinations that only occur when
+    #      the agent is asserting the negative thing is absent (compliant).
+    #   2. Do NOT include 符合/满足/一致 alone — they are substrings of the very
+    #      non-compliance keywords we scan (不符合/不满足/不一致).
+    #   3. Prefer multi-char phrases; only zero/total/absence signals qualify,
+    #      since those are unambiguous on the compliant side.
+    _COMPLIANCE_NEGATION_PHRASES = (
+        # "无 + 负面名词"：合规断言（负面情况不存在）
+        "无缺失", "无扣分", "无问题", "无不符", "无不一致",
+        "无遗漏", "无缺失项", "无损失", "无不合规",
+        # 明确的零值
+        "0 分", "0分", "零分", "损失 0", "损失0",
+        # 总体通过断言
+        "均已", "全部", "齐全", "全部满足", "全部通过", "全部合规",
+        "未发现", "未检测到", "不存在",
+    )
 
     def _extract_keyword_findings(self) -> list[dict]:
         """Fallback: extract findings from natural-language analysis text.
@@ -1571,10 +1618,23 @@ class BidReviewAgent(BaseAgent):
                 if idx < 0:
                     continue
 
-                # Extract surrounding context (~200 chars around the keyword)
-                start = max(0, idx - 80)
-                end = min(len(content), idx + len(keyword) + 120)
-                context = content[start:end].strip()
+                # Extract the context block around the keyword. Previously this
+                # used a hard 200-char window (idx-80 .. idx+len+120), which
+                # truncated the explanation mid-sentence (e.g. "有效期至...
+                # 2027-09-" cut off mid-date) and made the finding unreadable
+                # on the results page. Expand to the surrounding paragraph
+                # (delimited by blank lines) so the explanation stays coherent,
+                # with a sane upper bound.
+                context = self._extract_context_block(content, idx, len(keyword))
+
+                # Negation/compliance guard: if the surrounding sentence reads as
+                # a compliant verdict (e.g. "无缺失资质", "损失 0 分", "均已提供，
+                # 无不一致"), the keyword hit is a false positive and must be
+                # skipped. This is the primary defense against the fallback
+                # fabricating risk items for fully-compliant D002-style summaries
+                # that the rule *forces* the agent to emit.
+                if any(neg in context for neg in self._COMPLIANCE_NEGATION_PHRASES):
+                    continue
 
                 # Deduplicate by context to avoid repeating the same finding
                 if context in seen_contexts:
@@ -1591,7 +1651,11 @@ class BidReviewAgent(BaseAgent):
                     "requirement_content": requirement_content or context[:200],
                     "bid_content": None,
                     "is_compliant": False,
-                    "severity": "major",
+                    # Downgrade from "major" to "minor": keyword fallback is a
+                    # low-confidence path (no LLM verdict), so it should not
+                    # surface as a major risk. Frontend/PDF already display
+                    # non-compliant findings regardless of severity.
+                    "severity": "minor",
                     "location_page": None,
                     "location_line": None,
                     "suggestion": None,
@@ -1600,6 +1664,50 @@ class BidReviewAgent(BaseAgent):
                 requirement_counter += 1
 
         return findings
+
+    def _extract_context_block(
+        self, content: str, keyword_idx: int, keyword_len: int,
+        max_chars: int = 2000,
+    ) -> str:
+        """Extract the paragraph surrounding a keyword match.
+
+        Expands from the keyword to the nearest blank-line paragraph boundaries
+        (``\\n\\n``) so the returned context reads as a coherent unit instead of
+        being sliced mid-sentence. Falls back to a symmetric window when no
+        paragraph boundary is found. Capped at ``max_chars`` to keep findings
+        readable and bounded.
+
+        Args:
+            content: Full message text.
+            keyword_idx: Start index of the matched keyword.
+            keyword_len: Length of the matched keyword.
+            max_chars: Upper bound on the returned context length.
+
+        Returns:
+            Stripped context string.
+        """
+        match_end = keyword_idx + keyword_len
+
+        # Expand backwards to the nearest paragraph break (or start of content)
+        start = content.rfind("\n\n", 0, keyword_idx)
+        start = 0 if start < 0 else start + 2
+
+        # Expand forwards to the nearest paragraph break (or end of content)
+        end = content.find("\n\n", match_end)
+        end = len(content) if end < 0 else end
+
+        block = content[start:end].strip()
+
+        # Enforce the upper bound without slicing mid-word when the paragraph
+        # is very long: keep the keyword visible by centering the window on it.
+        if len(block) > max_chars:
+            rel_idx = keyword_idx - start
+            half = max_chars // 2
+            ws = max(0, rel_idx - half)
+            we = min(len(block), ws + max_chars)
+            block = block[ws:we].strip()
+
+        return block
 
     def _extract_requirement_context(self, content: str, keyword_idx: int) -> str:
         """Extract the requirement description preceding a keyword match."""
@@ -2197,17 +2305,32 @@ class BidReviewAgent(BaseAgent):
             )
 
             if not response.content:
+                # No content = extraction failure (LLM returned nothing); do NOT
+                # mark all-compliant here — leave the door open for keyword fallback.
                 return []
 
             # Try to parse JSON from response
             parsed = self._try_parse_json(response.content)
-            if parsed and isinstance(parsed, list):
+            # NOTE: use `isinstance(...)` alone, NOT `parsed and isinstance(...)`.
+            # `bool([])` is False, so the old guard skipped the branch entirely
+            # when the LLM deliberately returned an empty array (= "all compliant"),
+            # which then fell through to the keyword fallback and produced phantom
+            # risk items. This was the exact mechanism behind the D002 incident.
+            if isinstance(parsed, list):
                 findings = []
                 for i, item in enumerate(parsed):
                     if isinstance(item, dict):
                         normalized = self._normalize_finding(item, i + 1)
                         if normalized:
                             findings.append(normalized)
+                # The LLM successfully parsed its structured verdict. An empty list
+                # here is a *deliberate* "all checks compliant" verdict, not a
+                # failure to extract. Record it so run_review can skip the keyword
+                # fallback, which would otherwise misread compliant phrasing such
+                # as "无缺失资质" / "损失分值 0 分" as non-compliance.
+                if not findings:
+                    self._llm_extract_all_compliant = True
+                    logger.info("[BidReviewAgent._llm_extract_findings] LLM returned empty list — all checks compliant, suppress keyword fallback")
                 return findings
 
         except Exception as e:
