@@ -58,6 +58,10 @@ const pendingToolCallsMap = ref<Map<string, Map<number, { tool_calls: any[], too
 // maxStepsMap and taskStartTime for execution stats
 const maxStepsMap = ref<Record<string, number>>({})
 const brainCapacityMap = ref<Record<string, number>>({})
+// 子代理步数计数（来自 sub_agent_step_count 事件，仅 step_number，不含审查内容）。
+// 外部用户收不到含细节的 sub_agent_step（被 review.py BLOCKED_EVENTS 过滤），
+// 但能收到 sub_agent_step_count，用此 Map 驱动"已执行 N 步"显示。
+const stepCountMap = ref<Record<string, number>>({})
 const taskStartTime = ref<number>(0)
 
 // 统计数据
@@ -127,6 +131,7 @@ async function handleSSEEvent(event: any) {
       // 主代理开始解析，重置 steps 和 subAgentSteps
       steps.value = []
       subAgentSteps.value = new Map()
+      stepCountMap.value = {}
       break
 
     case 'master_scan_completed':
@@ -273,6 +278,16 @@ async function handleSSEEvent(event: any) {
 
         subAgentSteps.value.set(todoId, [...existingSteps])
         console.log('[ReviewExecutionView] Sub-agent step added for', todoId, 'total steps:', existingSteps.length)
+      }
+      break
+
+    case 'sub_agent_step_count':
+      // 子代理步数计数（仅 step_number + todo_id，不含审查内容）。
+      // 对所有用户可见；外部用户靠此事件更新"已执行 N 步"（sub_agent_step 被过滤）。
+      // 用 Math.max 防止乱序事件导致步数回退。
+      if (event.todo_id && event.step_number !== undefined) {
+        const prev = stepCountMap.value[event.todo_id] || 0
+        stepCountMap.value[event.todo_id] = Math.max(prev, event.step_number)
       }
       break
 
@@ -821,6 +836,7 @@ onUnmounted(() => {
           :sub-agent-steps-map="subAgentStepsMap"
           :max-steps-map="maxStepsMap"
           :brain-capacity-map="brainCapacityMap"
+          :step-count-map="stepCountMap"
           :realtime-notice="realtimeNotice"
           :has-current-task="!!projectStore.currentTask?.id"
           :mode="taskMode"
