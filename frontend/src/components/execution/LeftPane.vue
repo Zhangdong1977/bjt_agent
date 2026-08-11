@@ -54,6 +54,7 @@ interface Props {
   subAgentStepsMap?: Record<string, TimelineStep[]>
   maxStepsMap?: Record<string, number>
   brainCapacityMap?: Record<string, number>
+  stepCountMap?: Record<string, number>
   // 透传父组件的实时通道状态：null=SSE 正常，非空=已降级到轮询（文案由父组件控制）
   realtimeNotice?: string | null
   // 是否已有 currentTask：用于区分"任务排队中"与"真无任务"
@@ -189,7 +190,7 @@ function mapSubAgentStatus(status: string): 'done' | 'running' | 'wait' | 'fail'
 
       <!-- SubAgentExecutor -->
       <div v-if="hasSubAgentExecutor" class="phase-block">
-        <SubAgentExecutorBlock :agents="subAgents" :sub-agent-steps-map="subAgentStepsMap" :max-steps-map="maxStepsMap" :brain-capacity-map="brainCapacityMap" />
+        <SubAgentExecutorBlock :agents="subAgents" :sub-agent-steps-map="subAgentStepsMap" :max-steps-map="maxStepsMap" :brain-capacity-map="brainCapacityMap" :step-count-map="stepCountMap" />
       </div>
     </template>
 

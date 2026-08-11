@@ -50,6 +50,7 @@ interface Props {
   subAgentStepsMap?: Record<string, TimelineStep[]>
   maxStepsMap?: Record<string, number>
   brainCapacityMap?: Record<string, number>
+  stepCountMap?: Record<string, number>
 }
 
 const props = defineProps<Props>()
@@ -59,10 +60,15 @@ const agentsWithSteps = computed(() => {
     const steps = props.subAgentStepsMap?.[agent.todoId] || agent.steps
     const maxSteps = props.maxStepsMap?.[agent.todoId] || 0
     const brainCapacity = props.brainCapacityMap?.[agent.todoId]
+    // 步数优先取 stepCountMap（来自 sub_agent_step_count，对所有用户可见）；
+    // 外部用户 subAgentStepsMap 恒空（sub_agent_step 被过滤），靠 stepCountMap 驱动显示。
+    // 内部用户两者都有时取较大值（防止回退）；上限受 maxSteps 约束。
+    const countFromMap = props.stepCountMap?.[agent.todoId] || 0
+    const stepsBased = Math.max(steps.length, countFromMap)
     return {
       ...agent,
       steps,
-      currentStep: Math.min(steps.length, maxSteps || steps.length),
+      currentStep: Math.min(stepsBased, maxSteps || stepsBased),
       maxSteps,
       brainCapacity
     }

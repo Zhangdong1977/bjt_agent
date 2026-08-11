@@ -1095,6 +1095,14 @@ class BidReviewAgent(BaseAgent):
                         logger.debug(f"[BidReviewAgent._emit_event] Emitted sub_agent_step for step {step}")
                     except Exception as e:
                         logger.error(f"[BidReviewAgent._emit_event] Failed to emit sub_agent_step: {e}")
+                    # 计数事件：只含 step_number，不含 content/tool_calls/tool_results 等审查细节。
+                    # 对所有用户可见（sub_agent_step 含细节，被外部用户 BLOCKED_EVENTS 过滤，
+                    # 导致外部用户前端"已执行 N 步"恒为 0；step_count 不在黑名单，可补足进度显示）。
+                    # todo_id 由 master_agent._create_sub_agent_callback 自动注入，无需手动塞。
+                    try:
+                        self.event_callback("sub_agent_step_count", {"step_number": step_info["step_number"]})
+                    except Exception as e:
+                        logger.error(f"[BidReviewAgent._emit_event] Failed to emit sub_agent_step_count: {e}")
 
                 # Clean up
                 del self._step_data[step]

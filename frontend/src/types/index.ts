@@ -623,6 +623,7 @@ export interface SSEEvent {
     | "sub_agent_started"
     | "sub_agent_progress"
     | "sub_agent_step"
+    | "sub_agent_step_count"
     | "sub_agent_completed"
     | "sub_agent_failed"
     | "merging_started"
