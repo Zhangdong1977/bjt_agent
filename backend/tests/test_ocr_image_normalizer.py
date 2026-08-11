@@ -102,3 +102,31 @@ def test_corrupt_image_has_explicit_normalization_error(tmp_path: Path):
 
     with pytest.raises(OcrImageNormalizationError, match="无法解码图片格式"):
         normalize_image_for_ocr(source, cache_dir=tmp_path / "cache")
+
+
+def test_tiny_image_is_upscaled_to_min_dimension(tmp_path: Path):
+    """最短边低于百度下限（50px）的有效图片应等比放大到下限，而非原样放行。
+
+    回归保护：修复前 5x5 这类极小有效图会被直接透传给百度，触发 216202 image size error。
+    """
+    source = tmp_path / "tiny.png"
+    Image.new("RGB", (5, 5), "white").save(source, format="PNG")
+
+    result = normalize_image_for_ocr(source, cache_dir=tmp_path / "cache")
+
+    assert result.converted is True
+    assert min(result.width, result.height) >= 50
+    assert result.width == result.height == 50
+
+
+def test_thin_image_satisfies_both_dimension_bounds(tmp_path: Path):
+    """瘦长图按统一 scale 同时满足长边上限和短边下限，不能分两步 resize 致长边暴涨。"""
+    source = tmp_path / "thin.jpg"
+    Image.new("RGB", (1, 5000), "white").save(source, format="JPEG", quality=85)
+
+    result = normalize_image_for_ocr(source, cache_dir=tmp_path / "cache")
+
+    assert result.converted is True
+    assert max(result.width, result.height) <= 4096
+    assert min(result.width, result.height) >= 50
+

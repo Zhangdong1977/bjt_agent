@@ -551,7 +551,15 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
                 await db.execute(select(User).where(User.id == user_id))
             ).scalar_one_or_none()
             config = await get_sales_config(db)
-            multiplier = decimal_value(task.billing_multiplier or config.sales_multiplier)
+            # Use an explicit None/empty check instead of `or`: a multiplier of 0
+            # (free feature) is falsy and would otherwise fall back to the global
+            # multiplier, silently re-enabling billing on a free task.
+            effective_multiplier = (
+                task.billing_multiplier
+                if task.billing_multiplier not in (None, "")
+                else config.sales_multiplier
+            )
+            multiplier = decimal_value(effective_multiplier)
             cost_yuan = decimal_value(
                 (
                     await db.execute(
@@ -644,12 +652,14 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
             task.billing_settled_at = utc_now()
             await db.commit()
             logger.info(
-                "[billing] settled %s task %s: status=%s cost=%s sales_points=%s",
+                "[billing] settled %s task %s: status=%s cost=%s multiplier=%s sales_points=%s%s",
                 task_kind,
                 task_id,
                 task.status,
                 cost_yuan,
+                multiplier,
                 sales_points,
+                " [free-task] zero-multiplier" if multiplier == 0 else "",
             )
             return record
     except Exception as exc:

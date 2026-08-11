@@ -7,6 +7,7 @@ import tempfile
 import asyncio
 
 from backend.agent.bid_review_agent import BidReviewAgent
+from mini_agent.schema import Message
 
 
 class TestBidReviewAgentNormalization:
@@ -271,3 +272,208 @@ class TestBidReviewAgentIntegration:
 
         assert isinstance(findings, list)
         await agent.close()
+
+
+class TestKeywordFallbackComplianceGuard:
+    """Regression tests for the false-risk-item bug.
+
+    Reproduces the production incident where a fully-compliant D002 verdict
+    ("损失分值 0 分 / 无缺失资质") was misread by the keyword fallback
+    (_extract_keyword_findings) as a non-compliant finding, producing a phantom
+    risk item. The fix has three layers, each tested below.
+    """
+
+    @pytest.fixture
+    def agent(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
+            f.write("# Test Rule\n检查规则内容")
+            rule_doc_path = f.name
+        agent = BidReviewAgent(
+            project_id="test_project",
+            tender_doc_path="/tmp/test_tender.md",
+            bid_doc_path="/tmp/test_bid.md",
+            user_id="test_user",
+            rule_doc_path=rule_doc_path,
+            max_steps=5,
+        )
+        return agent
+
+    def _assistant(self, content: str) -> Message:
+        return Message(role="assistant", content=content, thinking=None, tool_calls=[])
+
+    # --- Layer 1: negation-context filter in _extract_keyword_findings ---------
+
+    def test_keyword_fallback_skips_compliant_summary(self, agent):
+        """A compliant verdict containing neutral words like '缺失' inside a
+        negation ('无缺失资质', '损失 0 分') must NOT produce a finding.
+        This is the exact production D002 case.
+        """
+        agent.messages = [self._assistant(
+            "## 检查项5：企业证书得分情况汇总\n\n"
+            "- 企业证书满分分值：8 分\n"
+            "- 实际可得分值：8 分（6项得分项全部满足）\n"
+            "- 损失分值：0 分（无缺失资质）\n\n"
+            "关键合规要点确认：全部6项证书的拥有方均与投标人名称完全一致；"
+            "所有体系认证证书均在有效期内，符合评分标准要求。\n"
+            "最终结论：企业证书能力得分项可得满分 8 分，无扣分项。"
+        )]
+        findings = agent._extract_keyword_findings()
+        assert findings == [], (
+            f"Compliant summary must yield zero findings, got {len(findings)}: "
+            f"{[f.get('explanation') for f in findings]}"
+        )
+
+    def test_keyword_fallback_keeps_genuine_non_compliance(self, agent):
+        """A genuine non-compliance statement ('不满足要求', no negation context)
+        must still be caught by the fallback."""
+        agent.messages = [self._assistant(
+            "## 检查项2\n经核查，投标人提供的ISO9001证书已过有效期，不满足评分标准中"
+            "'有效期内'的要求，该可得分项不得分。"
+        )]
+        findings = agent._extract_keyword_findings()
+        # '不满足' is a strong keyword, sentence has no negation phrase -> should fire
+        assert len(findings) == 1
+        assert findings[0]["is_compliant"] is False
+
+    def test_keyword_fallback_downgrades_severity_to_minor(self, agent):
+        """Keyword fallback is low-confidence; its findings must be 'minor',
+        not 'major' (production incident had a phantom 'major' risk)."""
+        agent.messages = [self._assistant(
+            "经核查，该章节内容不符合评分标准要求，存在明显问题。"
+        )]
+        findings = agent._extract_keyword_findings()
+        assert len(findings) >= 1
+        assert all(f["severity"] == "minor" for f in findings), (
+            f"fallback findings must be minor, got {[f['severity'] for f in findings]}"
+        )
+
+    def test_neutral_words_removed_from_strong_keywords(self, agent):
+        """'缺失'/'缺少'/'不一致' etc. must no longer be in the strong keyword
+        list (they were the root cause: '无缺失资质' matched '缺失')."""
+        removed = {"缺失", "缺少", "不一致", "未体现", "未说明", "未明确", "未包含", "未提供"}
+        for w in removed:
+            assert w not in BidReviewAgent._NON_COMPLIANCE_KEYWORDS, (
+                f"'{w}' should be removed from strong keywords"
+            )
+
+    # --- Layer 2: _llm_extract_findings empty-list flag ------------------------
+
+    @pytest.mark.asyncio
+    async def test_llm_extract_empty_list_sets_all_compliant_flag(self, agent):
+        """When the LLM returns a well-formed empty JSON array, that is a
+        deliberate 'all compliant' verdict — the flag must be set so run_review
+        can skip the keyword fallback."""
+        from mini_agent.schema import Message as M
+
+        async def mock_generate(**kwargs):
+            return M(role="assistant", content="[]", thinking=None, tool_calls=[])
+        agent.llm_client.generate = mock_generate
+
+        result = await agent._llm_extract_findings("some markdown")
+        assert result == []
+        assert agent._llm_extract_all_compliant is True
+
+    @pytest.mark.asyncio
+    async def test_llm_extract_no_content_does_not_set_flag(self, agent):
+        """When the LLM returns nothing (extraction failure), the flag must
+        stay False so the keyword fallback can still run."""
+        from mini_agent.schema import Message as M
+
+        async def mock_generate(**kwargs):
+            return M(role="assistant", content="", thinking=None, tool_calls=[])
+        agent.llm_client.generate = mock_generate
+
+        result = await agent._llm_extract_findings("some markdown")
+        assert result == []
+        assert agent._llm_extract_all_compliant is False
+
+    # --- Layer 3: end-to-end guard (flag suppresses keyword fallback) -----------
+
+    def test_flag_initially_false(self, agent):
+        """The all-compliant flag must start False so it only affects runs where
+        the LLM genuinely returned an empty verdict."""
+        assert agent._llm_extract_all_compliant is False
+
+
+class TestKeywordFallbackContextBlock:
+    """Regression tests for the truncated-explanation bug.
+
+    The keyword fallback (_extract_keyword_findings) previously extracted a
+    hard ~200-char window around each keyword, which sliced the explanation
+    mid-sentence / mid-date (e.g. production finding cut off at "...2027-09-"
+    with no ellipsis). The fix (_extract_context_block) expands to paragraph
+    boundaries so the explanation stays coherent.
+    """
+
+    @pytest.fixture
+    def agent(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
+            f.write("# Test Rule\n检查规则内容")
+            rule_doc_path = f.name
+        agent = BidReviewAgent(
+            project_id="test_project",
+            tender_doc_path="/tmp/test_tender.md",
+            bid_doc_path="/tmp/test_bid.md",
+            user_id="test_user",
+            rule_doc_path=rule_doc_path,
+            max_steps=5,
+        )
+        return agent
+
+    def _assistant(self, content: str) -> Message:
+        return Message(role="assistant", content=content, thinking=None, tool_calls=[])
+
+    def test_explanation_not_truncated_mid_date(self, agent):
+        """A finding whose explanation is longer than 200 chars must NOT be cut
+        mid-token. This reproduces the production case where the date
+        "2027-09-02" was truncated to "2027-09-".
+        """
+        long_para = (
+            "## 检查项2：企业体系认证证书得分检查\n\n"
+            "经核查，投标人提供的ISO9001证书存在问题：证书有效期标注不清晰，"
+            "不满足评分标准中关于有效期的要求。该证书有效期至2026-05-10，"
+            "而CMMI证书有效期至2027-01-27，CCRC证书有效期至2027-09-02，"
+            "但ISO9001证书的发证机构信息存在明显矛盾，与评分标准要求不符。"
+            "综合判定该项不得分，损失1分。"
+        )
+        agent.messages = [self._assistant(long_para)]
+        findings = agent._extract_keyword_findings()
+        assert len(findings) >= 1
+        expl = findings[0]["explanation"]
+        # The full date must survive — no mid-date truncation.
+        assert "2027-09-02" in expl, f"date truncated in explanation: ...{expl[-60:]}"
+        assert "2026-05-10" in expl, f"earlier date lost: {expl[:80]}..."
+
+    def test_context_block_respects_paragraph_boundary(self, agent):
+        """The context should expand to the surrounding paragraph (\\n\\n
+        delimited), not stop at an arbitrary fixed window. A multi-sentence
+        paragraph that mentions a keyword once should be returned whole."""
+        para = (
+            "前一段无关内容，这里是一些背景介绍，投标人基本情况说明。\n\n"
+            "检查项：该章节内容不符合评分标准要求，详细原因如下所述。"
+            "第一，证书扫描件模糊不清无法识别。"
+            "第二，证书拥有方名称与投标人名称不一致。"
+            "第三，证书已过有效期。"
+            "因此综合判定为不符合，该项不得分。\n\n"
+            "下一段无关内容，继续其他检查项的说明。"
+        )
+        agent.messages = [self._assistant(para)]
+        findings = agent._extract_keyword_findings()
+        assert len(findings) == 1
+        expl = findings[0]["explanation"]
+        # The middle paragraph must be returned in full (both ends present)
+        assert "检查项：该章节内容不符合" in expl
+        assert "因此综合判定为不符合，该项不得分。" in expl
+        # And must NOT bleed into neighboring paragraphs
+        assert "前一段无关内容" not in expl
+        assert "下一段无关内容" not in expl
+
+    def test_context_block_capped_for_oversized_paragraph(self, agent):
+        """An extremely long paragraph is bounded by max_chars so a runaway
+        explanation can't overwhelm the results page / PDF."""
+        huge = "A" * 5000 + " 不符合 " + "B" * 5000
+        agent.messages = [self._assistant(huge)]
+        findings = agent._extract_keyword_findings()
+        assert len(findings) == 1
+        # Default cap is 2000; explanation must respect it.
+        assert len(findings[0]["explanation"]) <= 2000

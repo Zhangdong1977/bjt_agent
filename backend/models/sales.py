@@ -21,6 +21,11 @@ class SalesConfig(Base):
     sales_multiplier: Mapped[float] = mapped_column(
         Numeric(10, 4), nullable=False, default=4, server_default="4"
     )
+    # Optional per-feature overrides. NULL means "fall back to sales_multiplier",
+    # so existing behaviour is unchanged until a feature-specific value is set.
+    review_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    duplicate_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    blind_check_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     low_balance_threshold: Mapped[float] = mapped_column(
         Numeric(16, 2), nullable=False, default=0, server_default="0"
     )

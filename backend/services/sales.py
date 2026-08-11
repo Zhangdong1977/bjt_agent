@@ -86,6 +86,21 @@ async def get_sales_config(db: AsyncSession) -> SalesConfig:
     return await ensure_sales_defaults(db)
 
 
+def multiplier_for_task(config: SalesConfig, task_kind: str) -> Decimal:
+    """Effective sales multiplier for a billable task kind.
+
+    Falls back to the global ``sales_multiplier`` when a feature-specific
+    override is unset (NULL), so unconfigured features keep their historical
+    behaviour.  Unknown kinds also fall back to the global multiplier.
+    """
+    specific = {
+        "review": config.review_multiplier,
+        "duplicate": config.duplicate_multiplier,
+        "blind_check": config.blind_check_multiplier,
+    }.get(task_kind)
+    return decimal_value(specific) if specific not in (None, "") else decimal_value(config.sales_multiplier)
+
+
 async def list_sales_packages(db: AsyncSession, *, online_only: bool = True) -> list[SalesPackage]:
     await ensure_sales_defaults(db)
     stmt = select(SalesPackage)
@@ -112,6 +127,22 @@ async def apply_sales_snapshot(db: AsyncSession, payload: SalesSnapshotPayload) 
         raise HTTPException(status_code=409, detail="配置版本低于当前生效版本")
 
     config.sales_multiplier = Decimal(str(payload.config.sales_multiplier))
+    # Optional per-feature overrides. Absent (older operate-two) or None keeps
+    # the column NULL, which multiplier_for_task treats as "use the global
+    # sales_multiplier".
+    config.review_multiplier = (
+        Decimal(str(payload.config.review_multiplier)) if payload.config.review_multiplier is not None else None
+    )
+    config.duplicate_multiplier = (
+        Decimal(str(payload.config.duplicate_multiplier))
+        if payload.config.duplicate_multiplier is not None
+        else None
+    )
+    config.blind_check_multiplier = (
+        Decimal(str(payload.config.blind_check_multiplier))
+        if payload.config.blind_check_multiplier is not None
+        else None
+    )
     config.low_balance_threshold = point_value(payload.config.low_balance_threshold)
     config.config_version = incoming_version
 

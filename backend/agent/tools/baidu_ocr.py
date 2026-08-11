@@ -36,6 +36,10 @@ OCR_RETRY_BASE_DELAY_SECONDS = 1.0
 RETRYABLE_HTTP_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 RETRYABLE_BAIDU_ERROR_CODES = {"1", "2", "18", "282000"}
 TOKEN_ERROR_CODES = {"110", "111"}
+# 216202 image size error 兜底重试时使用的更紧长边上限。
+# normalizer 默认上限是 4096（百度 nominal 上限），但实际部分接近 4096 的图仍被判 size error，
+# 兜底重试时压到 2048 再发一次，提高成功率。
+IMAGE_SIZE_ERROR_FALLBACK_DIMENSION = 2048
 
 # 模块级 access_token 缓存：{api_key: (token, expires_at_epoch)}
 # Celery prefork worker 为独立进程，各进程独立缓存；同进程跨事件循环复用 dict 安全。
@@ -155,6 +159,32 @@ class BaiduOcrTool(BaseTool):
                     image_path,
                     cache_dir=self._normalization_cache_dir,
                     max_output_bytes=MAX_IMAGE_SIZE_BYTES,
+                    force_reencode=True,
+                    prefer_jpeg=True,
+                    source_sha256=normalized.source_sha256,
+                )
+                fallback_bytes = fallback.path.read_bytes()
+                if fallback_bytes != image_bytes:
+                    image_bytes = fallback_bytes
+                    data["image"] = base64.b64encode(image_bytes).decode("utf-8")
+                    result = await self._request_ocr_with_retry(data)
+                    normalized = fallback
+
+            # 百度返回 216202 image size error 时，把图片按更紧的长边上限（2048）
+            # 重新降采样后补发一次。覆盖 normalizer 之后的边缘情况：超大图字节虽已压
+            # 到 4MB 以内，但像素仍可能触百度上限；或瘦长图比例异常被判 size error。
+            # 仅重试一次，失败即按业务错误上报，不进网络重试退避。
+            if str(result.get("error_code") or "") == "216202":
+                logger.warning(
+                    "[BaiduOcrTool] 收到 216202 image size error，按 max_dimension=2048 降采样重试一次: %s",
+                    image_path.name,
+                )
+                fallback = await asyncio.to_thread(
+                    normalize_image_for_ocr,
+                    image_path,
+                    cache_dir=self._normalization_cache_dir,
+                    max_output_bytes=MAX_IMAGE_SIZE_BYTES,
+                    max_dimension=IMAGE_SIZE_ERROR_FALLBACK_DIMENSION,
                     force_reencode=True,
                     prefer_jpeg=True,
                     source_sha256=normalized.source_sha256,

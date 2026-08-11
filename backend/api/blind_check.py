@@ -74,6 +74,7 @@ async def create_task(
     sales_config = await authorize_billable_task_start(
         db, user_id=current_user.id, operation_name="暗标检查"
     )
+    from backend.services.sales import multiplier_for_task
     now = utc_now()
     task = BlindCheckTask(
         user_id=current_user.id,
@@ -85,7 +86,7 @@ async def create_task(
         snapshot_id=session.snapshot_id,
         scope=body.scope.model_dump(mode="json") if body.scope is not None else None,
         status="waiting_for_document",
-        billing_multiplier=sales_config.sales_multiplier,
+        billing_multiplier=multiplier_for_task(sales_config, "blind_check"),
         billing_status="pending",
     )
     session.last_seen_at = now
