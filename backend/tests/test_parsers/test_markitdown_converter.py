@@ -57,6 +57,64 @@ class TestMarkitdownConverter:
         assert "data:image" not in result.markdown_content
         assert "base64" not in result.markdown_content
 
+    def test_docx_with_null_image_relationship_converts_with_placeholder(self, tmp_path):
+        """Regression (prod 2026-08-15): DOCX files from some bid-authoring
+        tools carry an image relationship with Target="../NULL" whose part is
+        absent from the archive.  mammoth raises KeyError("There is no item
+        named 'word/../NULL' in the archive"), which used to fail the whole
+        conversion; the broken image must become a 1x1 placeholder instead."""
+        import re
+        import zipfile
+        from docx import Document
+        from PIL import Image
+
+        image_path = tmp_path / "fixture.png"
+        Image.new("RGB", (320, 240), "white").save(image_path)
+        docx_path = tmp_path / "fixture.docx"
+        document = Document()
+        document.add_heading("九州投标文件", level=1)
+        document.add_paragraph("正文必须完整保留。")
+        document.add_picture(str(image_path))
+        document.save(docx_path)
+
+        # Clone the existing drawing, retarget its blip at a relationship whose
+        # Target="../NULL" has no part inside the archive.
+        with zipfile.ZipFile(docx_path) as zin:
+            entries = {name: zin.read(name) for name in zin.namelist()}
+        document_xml = entries["word/document.xml"].decode("utf-8")
+        drawing = re.search(r"<w:drawing>.*?</w:drawing>", document_xml, re.DOTALL).group(0)
+        embed_id = re.search(r'r:embed="([^"]+)"', drawing).group(1)
+        broken_drawing = drawing.replace(f'r:embed="{embed_id}"', 'r:embed="rIdNULLIMG"')
+        document_xml = document_xml.replace(
+            "<w:body>", "<w:body>" + f"<w:p><w:r>{broken_drawing}</w:r></w:p>", 1
+        )
+        entries["word/document.xml"] = document_xml.encode("utf-8")
+        rels_xml = entries["word/_rels/document.xml.rels"].decode("utf-8")
+        rels_xml = rels_xml.replace(
+            "</Relationships>",
+            '<Relationship Id="rIdNULLIMG" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+            'Target="../NULL"/></Relationships>',
+        )
+        entries["word/_rels/document.xml.rels"] = rels_xml.encode("utf-8")
+
+        corrupted_path = tmp_path / "fixture_null.docx"
+        with zipfile.ZipFile(corrupted_path, "w", zipfile.ZIP_DEFLATED) as zout:
+            for name, data in entries.items():
+                zout.writestr(name, data)
+
+        images_dir = tmp_path / "fixture_null_images"
+        result = MarkitdownConverter().convert(corrupted_path, images_dir=images_dir)
+
+        assert "正文必须完整保留" in result.markdown_content
+        assert len(result.images) == 2
+        sizes = {}
+        for img in result.images:
+            with Image.open(images_dir / img.filename) as im:
+                sizes[img.filename] = im.size
+            assert img.filename in result.markdown_content
+        assert sorted(sizes.values()) == [(1, 1), (320, 240)]
+
 
 class TestDirectFileImageHandler:
     """Test the DirectFileImageHandler that writes images directly to disk."""
@@ -156,3 +214,58 @@ class TestDirectFileImageHandler:
 
         assert result == {"src": "doc_images/image_1.jpx"}
         assert (images_dir / "image_1.jpx").read_bytes() == b"jpeg-2000-source"
+
+    def test_handler_substitutes_placeholder_when_image_part_missing(self, tmp_path):
+        """word/../NULL-style broken relationships must not kill the handler."""
+        images_dir = tmp_path / "doc_images"
+        handler = DirectFileImageHandler(images_dir, "doc_images")
+
+        mock_image = MagicMock()
+        mock_image.content_type = "image/png"
+        mock_image.open.side_effect = KeyError(
+            "There is no item named 'word/../NULL' in the archive"
+        )
+
+        result = handler(mock_image)
+
+        assert result == {"src": "doc_images/image_1.png"}
+        assert handler.failed_images == 1
+        assert len(handler.images) == 1
+        placeholder_file = images_dir / "image_1.png"
+        assert placeholder_file.is_file()
+        assert placeholder_file.read_bytes() == handler.images[0].data
+
+    def test_handler_placeholder_forces_png_ext_for_odd_content_type(self, tmp_path):
+        """A broken image with a non-image content type still lands on .png."""
+        images_dir = tmp_path / "doc_images"
+        handler = DirectFileImageHandler(images_dir, "doc_images")
+
+        mock_image = MagicMock()
+        mock_image.content_type = "application/octet-stream"
+        mock_image.open.side_effect = KeyError("There is no item named 'NULL' in the archive")
+
+        result = handler(mock_image)
+
+        assert result == {"src": "doc_images/image_1.png"}
+        assert (images_dir / "image_1.png").is_file()
+
+    def test_handler_failed_image_does_not_break_numbering(self, tmp_path):
+        """A failed image consumes its slot; subsequent images keep numbering."""
+        images_dir = tmp_path / "doc_images"
+        handler = DirectFileImageHandler(images_dir, "doc_images")
+
+        broken = MagicMock()
+        broken.content_type = "image/png"
+        broken.open.side_effect = KeyError("word/../NULL")
+        handler(broken)
+
+        good = MagicMock()
+        good.content_type = "image/png"
+        good.open.return_value.__enter__ = lambda s: MagicMock(read=lambda: b"real-data")
+        good.open.return_value.__exit__ = MagicMock(return_value=False)
+        result = handler(good)
+
+        assert result == {"src": "doc_images/image_2.png"}
+        assert (images_dir / "image_2.png").read_bytes() == b"real-data"
+        assert [img.filename for img in handler.images] == ["image_1.png", "image_2.png"]
+        assert handler.failed_images == 1

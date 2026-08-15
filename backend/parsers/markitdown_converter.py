@@ -1,11 +1,20 @@
 """Markitdown converter module for DOCX/DOC/PDF to Markdown conversion."""
 
+import base64
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# 1x1 transparent PNG substituted for DOCX images whose part is missing or
+# unreadable inside the archive (e.g. bid-authoring tools emitting image
+# relationships with Target="../NULL").
+_PLACEHOLDER_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+    "AAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
 
 
 class MarkitdownConversionError(Exception):
@@ -41,6 +50,7 @@ class DirectFileImageHandler:
         self._images_dir_name = images_dir_name
         self._counter = 0
         self.images: list[ImageInfo] = []
+        self.failed_images = 0
 
     def __call__(self, image):
         self._counter += 1
@@ -61,8 +71,23 @@ class DirectFileImageHandler:
         filename = f"image_{self._counter}.{ext}"
 
         self._images_dir.mkdir(parents=True, exist_ok=True)
-        with image.open() as image_bytes:
-            data = image_bytes.read()
+        try:
+            with image.open() as image_bytes:
+                data = image_bytes.read()
+        except Exception as e:
+            # Some authoring tools emit image relationships pointing at parts
+            # that don't exist in the archive (Target="../NULL"); mammoth
+            # surfaces that as KeyError from zipfile.  One broken image must
+            # not fail the whole conversion: substitute a 1x1 placeholder so
+            # markdown refs, files on disk and the images list stay consistent.
+            logger.warning(
+                "DOCX image %s could not be read (%s); substituting 1x1 placeholder",
+                filename,
+                e,
+            )
+            self.failed_images += 1
+            filename = f"image_{self._counter}.png"
+            data = _PLACEHOLDER_PNG
 
         dest = self._images_dir / filename
         dest.write_bytes(data)
@@ -143,6 +168,11 @@ class MarkitdownConverter:
             len(markdown_content),
             len(handler.images),
         )
+        if handler.failed_images:
+            logger.warning(
+                "DOCX contained %s unreadable image(s); substituted 1x1 placeholder(s)",
+                handler.failed_images,
+            )
 
         return ConversionResult(
             markdown_content=markdown_content,
