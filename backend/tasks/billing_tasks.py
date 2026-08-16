@@ -178,6 +178,97 @@ def expire_credit_lots(self) -> dict:
     return asyncio.run(_run_with_session(_expire_credit_lots_async))
 
 
+@celery_app.task(bind=True, name="backend.tasks.billing_tasks.expire_pending_recharge_orders")
+def expire_pending_recharge_orders(self) -> dict:
+    """Cancel pending orders past expires_at（poll 任务覆盖不到的悬挂单）。
+
+    poll_pending_recharge_orders 只扫「已取交行码 + 创建 24h 内」的订单；本任务
+    兜底其余过期 pending：从未取码（不可能已付款，直接取消）与超 24h 取码单
+    （先查交行防漏收款，再取消）。2026-08-16 巡检发现 42 笔此类僵尸单。
+    """
+    return asyncio.run(_run_with_session(_expire_pending_orders_async))
+
+
+async def _expire_pending_orders_async(session_factory) -> dict:
+    from backend.models import BillingOrder, User
+    from backend.services import operate_recharge
+    from backend.services.billing import complete_order
+    from backend.services.operate_coupons import release_coupon
+    from backend.utils.time_utils import utc_now
+
+    processed = {"completed": 0, "cancelled": 0, "skipped": 0, "errors": 0}
+
+    async with session_factory() as db:
+        result = await db.execute(
+            select(BillingOrder.id)
+            .where(BillingOrder.status == "pending", BillingOrder.expires_at < utc_now())
+            .limit(100)
+        )
+        order_ids = result.scalars().all()
+        if not order_ids:
+            return processed
+
+        for order_id in order_ids:
+            order = (
+                await db.execute(select(BillingOrder).where(BillingOrder.id == order_id))
+            ).scalar_one_or_none()
+            if order is None or order.status != "pending":
+                processed["skipped"] += 1
+                await db.rollback()
+                continue
+            order_no = order.order_no
+            try:
+                if order.external_order_no:
+                    # 取过交行码的过期单：先查一次交行，晚到的真实付款必须补单
+                    pay_status = await operate_recharge.query_order_status(
+                        order.external_order_no
+                    )
+                    if pay_status == "success":
+                        user = (
+                            await db.execute(
+                                select(User).where(User.id == order.user_id)
+                            )
+                        ).scalar_one_or_none()
+                        if user is None:
+                            logger.warning(
+                                "[order-expiry] order %s: user %s not found, skip",
+                                order.order_no, order.user_id,
+                            )
+                            processed["skipped"] += 1
+                            await db.rollback()
+                            continue
+                        await complete_order(
+                            db, user, order, allow_expired_if_paid=True
+                        )
+                        await db.flush()
+                        processed["completed"] += 1
+                        logger.info(
+                            "[order-expiry] order %s completed (paid after expiry—补单)",
+                            order.order_no,
+                        )
+                        await db.commit()
+                        continue
+
+                # 未取码（不可能付款）或交行未收款 → 取消并释放优惠券
+                order.status = "cancelled"
+                if order.coupon_id is not None:
+                    await release_coupon(order.coupon_id, order.order_no)
+                await db.flush()
+                await db.commit()
+                processed["cancelled"] += 1
+            except Exception as e:
+                processed["errors"] += 1
+                await db.rollback()
+                logger.exception(
+                    "[order-expiry] order %s failed: %s", order_no, e
+                )
+
+    logger.info(
+        "[order-expiry] scanned %d expired orders: %s", len(order_ids), processed
+    )
+    return processed
+
+
 async def _expire_credit_lots_async(session_factory) -> dict:
     from backend.services.sales import expire_all_due_lots
 
