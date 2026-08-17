@@ -8,20 +8,30 @@
 仅 status=success 的记录累计算钱（error/timeout 行 caller 传 status!=success，
 本函数直接返回 None）。
 
-DeepSeek 上下文缓存拆分计价：命中输入是未命中输入的 1/50，必须分开计；
+DeepSeek 上下文缓存拆分计价：命中输入约为未命中输入的 1/30，必须分开计；
 其它厂商暂无缓存拆分，hit=0、miss=prompt_tokens 兜底（见 _llm_cost）。
+DeepSeek 官方价目表分高峰/空闲双档（2026-08 调价）：高峰 = 北京时间
+9:00-12:00、14:00-18:00，其余空闲（官方未区分工作日/周末）；按调用时刻
+选档见 _is_peak_beijing，调用方不传 at 则取当前时刻。
 """
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-# —— DeepSeek（按百万 token）—— 来源 api-docs.deepseek.com/zh-cn 公开价目表（2026-06 核对）
+# —— DeepSeek（按百万 token）—— 来源 api-docs.deepseek.com/zh-cn 公开价目表（2026-08-17 核对）
 #    三档：缓存命中输入 hit / 缓存未命中输入 miss / 输出 output
-#    deepseek-v4-flash：命中 0.02 元、未命中 1 元、输出 2 元（每百万 token）
+#    2026-08 官方调价为高峰/空闲双档（空闲价 = 高峰价的一半，元/百万 token）：
+#      高峰（北京 9:00-12:00、14:00-18:00）：命中 0.10 / 未命中 3.0 / 输出 9.0
+#      空闲（其余时段）：                    命中 0.05 / 未命中 1.5 / 输出 4.5
+_DEEPSEEK_FLASH_TIERS = {
+    "peak":    {"hit": 0.10 / 1_000_000, "miss": 3.0 / 1_000_000, "output": 9.0 / 1_000_000},
+    "offpeak": {"hit": 0.05 / 1_000_000, "miss": 1.5 / 1_000_000, "output": 4.5 / 1_000_000},
+}
 _DEEPSEEK = {
-    "deepseek-v4-flash": {"hit": 0.02 / 1_000_000, "miss": 1.0 / 1_000_000, "output": 2.0 / 1_000_000},
+    "deepseek-v4-flash": _DEEPSEEK_FLASH_TIERS,
     # 兜底：当前默认 provider 即 v4-flash，且 deepseek-chat/reasoner 已宣布 2026/07 弃用
     # 并映射到 v4-flash，故兜底价直接对齐 v4-flash。
-    "__default__":       {"hit": 0.02 / 1_000_000, "miss": 1.0 / 1_000_000, "output": 2.0 / 1_000_000},
+    "__default__":       _DEEPSEEK_FLASH_TIERS,
 }
 
 # —— MiniMax（按百万 token）—— 无缓存拆分
@@ -54,6 +64,24 @@ _EMBEDDING_PER_TOKEN = {
     "minimax_embedding": 0.50 / 1_000_000,
 }
 
+_BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def _is_peak_beijing(at: Optional[datetime]) -> bool:
+    """DeepSeek 高峰时段：北京时间 9:00-12:00、14:00-18:00。
+
+    官方未明确端点归属与工作日/周末之分，按 [起, 止) 半开区间实现：
+    12:00 / 18:00 整点起计空闲，周末同时段照常计高峰。
+    at 为空取当前时刻（≈ ai_usage_records 写入时刻，即调用发生时刻）；
+    朴素 datetime 按 UTC 解释，避免依赖宿主机时区。
+    """
+    if at is None:
+        at = datetime.now(timezone.utc)
+    elif at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    local = at.astimezone(_BEIJING_TZ)
+    return 9 <= local.hour < 12 or 14 <= local.hour < 18
+
 
 def _llm_cost(
     rates: dict,
@@ -63,13 +91,17 @@ def _llm_cost(
     completion_tokens: int,
     prompt_cache_hit_tokens: int = 0,
     prompt_cache_miss_tokens: int = 0,
+    at: Optional[datetime] = None,
 ) -> float:
     """按 hit/miss/output 三档计价。
 
     兼容回退：若调用方未传 cache 拆分（hit=miss=0 但有 prompt_tokens），
     则把全部 prompt_tokens 当作 miss 计价，保证旧调用方不回归。
+    价目表含 peak/offpeak 双档时（DeepSeek）按 at 所处时段选档。
     """
     rate = rates.get(model) or rates["__default__"]
+    if "peak" in rate:
+        rate = rate["peak" if _is_peak_beijing(at) else "offpeak"]
     miss = prompt_cache_miss_tokens
     hit = prompt_cache_hit_tokens
     if miss == 0 and hit == 0:
@@ -89,9 +121,13 @@ def estimate_cost(
     prompt_cache_hit_tokens: int = 0,
     prompt_cache_miss_tokens: int = 0,
     status: str,
+    at: Optional[datetime] = None,
     **_,
 ) -> Optional[float]:
-    """预估单次调用费用（元）。仅 success 返回数值，否则 None。"""
+    """预估单次调用费用（元）。仅 success 返回数值，否则 None。
+
+    at 为计价时刻（DeepSeek 双档价目选峰谷用），缺省取当前时刻。
+    """
     if status != "success":
         return None
 
@@ -105,6 +141,7 @@ def estimate_cost(
             completion_tokens=completion_tokens,
             prompt_cache_hit_tokens=prompt_cache_hit_tokens,
             prompt_cache_miss_tokens=prompt_cache_miss_tokens,
+            at=at,
         )
 
     # OCR
