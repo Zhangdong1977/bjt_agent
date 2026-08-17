@@ -443,14 +443,17 @@ def run_duplicate_check(self, task_id: str) -> dict:
                 / "duplicate_candidates.json"
             )
             candidate_service.save_cache(cache_path)
-            if prepared.mode == "batch":
-                await seed_duplicate_task_index(
-                    session_factory,
-                    task_id=task_id,
-                    documents=prepared.bidder_documents,
-                    candidate_service=candidate_service,
-                    default_coverage_status=coverage_status,
-                )
+            # Membership/pair rows are mode-agnostic: pair tasks seed exactly
+            # one pair (combinations of two bidders). Without this the matrix
+            # API falls back to synthesizing rows and pair counters never
+            # persist.
+            await seed_duplicate_task_index(
+                session_factory,
+                task_id=task_id,
+                documents=prepared.bidder_documents,
+                candidate_service=candidate_service,
+                default_coverage_status=coverage_status,
+            )
             _publish_event(
                 task_id,
                 "progress",
@@ -518,12 +521,11 @@ def run_duplicate_check(self, task_id: str) -> dict:
                 raise asyncio.CancelledError()
             if not result.get("success"):
                 raise RuntimeError(result.get("error") or "duplicate master failed")
-            if prepared.mode == "batch":
-                await finalize_duplicate_task_matrix(
-                    session_factory,
-                    task_id=task_id,
-                    candidate_service=candidate_service,
-                )
+            await finalize_duplicate_task_matrix(
+                session_factory,
+                task_id=task_id,
+                candidate_service=candidate_service,
+            )
 
             async with session_factory() as db:
                 task = (

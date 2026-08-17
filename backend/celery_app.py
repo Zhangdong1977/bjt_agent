@@ -77,6 +77,7 @@ celery_app.conf.update(
         "backend.tasks.billing_tasks.settle_task_billing": {"queue": "review"},
         "backend.tasks.billing_tasks.dispatch_pending_task_outbox": {"queue": "review"},
         "backend.tasks.billing_tasks.reconcile_task_billing": {"queue": "review"},
+        "backend.tasks.billing_tasks.expire_pending_recharge_orders": {"queue": "review"},
     },
     # 定时任务调度。beat 进程在 prod 单例跑（bjt-proc.sh start_celery_beat），
     # 派发的任务路由到 review 队列由 3 节点 celery worker 消费。
@@ -96,6 +97,12 @@ celery_app.conf.update(
         "reconcile-task-billing": {
             "task": "backend.tasks.billing_tasks.reconcile_task_billing",
             "schedule": 120.0,
+        },
+        # 兜底清理 poll 覆盖不到的过期 pending 订单（未取码 / 超 24h），
+        # 首轮会清历史积压（2026-08-16 巡检 42 笔），之后稳态量极小。
+        "expire-pending-recharge-orders": {
+            "task": "backend.tasks.billing_tasks.expire_pending_recharge_orders",
+            "schedule": 300.0,
         },
     },
     task_annotations={
@@ -147,6 +154,11 @@ celery_app.conf.update(
         "backend.tasks.billing_tasks.reconcile_task_billing": {
             "time_limit": 300,
             "soft_time_limit": 240,
+        },
+        # 首轮清积压时逐单查交行（100 条 × 5s 超时上限），放宽硬超时兜底。
+        "backend.tasks.billing_tasks.expire_pending_recharge_orders": {
+            "time_limit": 600,
+            "soft_time_limit": 540,
         },
     },
 )

@@ -1386,6 +1386,10 @@ class BidReviewAgent(BaseAgent):
 
 所有 {total_items} 个检查项完成后，调用 write_file 将完整结果写入 {output_md_path}。
 
+写入时每个检查项使用固定小节结构：`## 检查项N: 名称`，内含 `### 规则项`、`### 招标书要求`、`### 投标文件内容`、`### 不符合项说明`、`### 严重程度`（critical/major/minor）；对每个不符合项还必须追加两个小节：
+- `### 页码`：该问题在投标文件中的页码（纯数字；正文引用格式如"第 X 页"时填 X；确实无法定位时填"未知"）
+- `### 整改建议`：一句话可执行的修改建议（如"在投标函落款处补盖投标人公章"）
+
 ⚠️ 重要约束：
 - 禁止使用 read_file 读取招标书或投标书（必须使用 search_tender_doc）
 - 禁止在一次工具调用中尝试完成多个检查项
@@ -2207,6 +2211,17 @@ class BidReviewAgent(BaseAgent):
             bid_content = self._extract_field(section, '投标文件内容')
             explanation = self._extract_field(section, '不符合项说明')
             severity = self._extract_severity_from_section(section)
+            # Optional sections introduced for finding anchoring; absent in
+            # legacy reports → stay None (fields are nullable).
+            page_text = self._extract_field(section, '页码')
+            suggestion = self._extract_field(
+                section, '整改建议'
+            ) or self._extract_field(section, '建议')
+            location_page = None
+            if page_text:
+                page_match = re.search(r'\d+', page_text)
+                if page_match:
+                    location_page = int(page_match.group())
 
             if tender_req:
                 finding = {
@@ -2215,9 +2230,9 @@ class BidReviewAgent(BaseAgent):
                     "bid_content": bid_content,
                     "is_compliant": severity is None,  # If no severity, it's compliant
                     "severity": severity,
-                    "location_page": None,
+                    "location_page": location_page,
                     "location_line": None,
-                    "suggestion": None,
+                    "suggestion": suggestion,
                     "explanation": explanation or "",
                 }
                 findings.append(finding)
@@ -2289,6 +2304,9 @@ class BidReviewAgent(BaseAgent):
     "bid_content": "投标文件内容",
     "is_compliant": false,
     "severity": "critical/major/minor",
+    "location_page": 页码整数或null,
+    "location_line": 行号整数或null,
+    "suggestion": "整改建议或null",
     "explanation": "不符合项说明"
   }},
   ...
@@ -2300,8 +2318,10 @@ class BidReviewAgent(BaseAgent):
 ## 要求
 1. 只提取不符合项（is_compliant=false 的项）
 2. severity 必须是 "critical"、"major" 或 "minor" 之一
-3. 如果所有检查都符合要求，返回空数组 []
-4. 输出必须是有效的 JSON 数组"""
+3. location_page/location_line：从 Markdown 中的页码/位置信息提取（如"第 12 页"→ 12）；文档未提供则填 null，禁止编造
+4. suggestion：从 Markdown 中的整改建议/建议小节提取；未提供则填 null，禁止编造
+5. 如果所有检查都符合要求，返回空数组 []
+6. 输出必须是有效的 JSON 数组"""
 
         try:
             response = await self.llm_client.generate(

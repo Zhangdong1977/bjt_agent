@@ -477,3 +477,96 @@ class TestKeywordFallbackContextBlock:
         assert len(findings) == 1
         # Default cap is 2000; explanation must respect it.
         assert len(findings[0]["explanation"]) <= 2000
+
+
+class TestParseMdFindingsAnchoring:
+    """页码/整改建议小节的规则解析（历史缺陷：两字段恒 None）。"""
+
+    @pytest.fixture
+    def agent(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
+            f.write("# Test Rule\n检查规则内容")
+            rule_doc_path = f.name
+        return BidReviewAgent(
+            project_id="test_project",
+            tender_doc_path="/tmp/test_tender.md",
+            bid_doc_path="/tmp/test_bid.md",
+            user_id="test_user",
+            rule_doc_path=rule_doc_path,
+            max_steps=5,
+        )
+
+    def test_extracts_page_and_suggestion_sections(self, agent):
+        md = """## 检查项1: 投标人公章检查
+
+### 规则项
+投标人公章检查
+
+### 招标书要求
+响应文件所要求盖章的盖章齐全。
+
+### 投标文件内容
+投标函落款处未加盖公章。
+
+### 不符合项说明
+所有要求盖章的落款处均未实际盖章，存在投标无效风险。
+
+### 严重程度
+critical
+
+### 页码
+第 12 页
+
+### 整改建议
+在投标函落款处补盖投标人公章。
+"""
+        findings = agent._parse_md_findings(md)
+        assert findings is not None and len(findings) == 1
+        assert findings[0]["location_page"] == 12
+        assert findings[0]["suggestion"] == "在投标函落款处补盖投标人公章。"
+
+    def test_legacy_md_without_sections_yields_none_fields(self, agent):
+        md = """## 检查项1: 投标函检查
+
+### 招标书要求
+投标函须按模板填写。
+
+### 投标文件内容
+投标函中报价大小写不一致。
+
+### 不符合项说明
+报价金额大小写不一致。
+
+### 严重程度
+major
+"""
+        findings = agent._parse_md_findings(md)
+        assert findings is not None and len(findings) == 1
+        assert findings[0]["location_page"] is None
+        assert findings[0]["suggestion"] is None
+
+    def test_unknown_page_text_stays_none(self, agent):
+        md = """## 检查项1: 签字检查
+
+### 招标书要求
+签字齐全。
+
+### 投标文件内容
+授权书未签字。
+
+### 不符合项说明
+缺少签字。
+
+### 严重程度
+critical
+
+### 页码
+未知
+
+### 建议
+补签。
+"""
+        findings = agent._parse_md_findings(md)
+        assert findings is not None and len(findings) == 1
+        assert findings[0]["location_page"] is None
+        assert findings[0]["suggestion"] == "补签。"
