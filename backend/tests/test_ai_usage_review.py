@@ -68,34 +68,82 @@ cost_mod = _load_module_by_path(
 )
 estimate_cost = cost_mod.estimate_cost
 
+# —— DeepSeek 双档计价时刻（官方 2026-08 价目：高峰=北京 9:00-12:00、14:00-18:00）——
+# 北京 20:00（UTC 12:00）= 空闲；北京 10:00（UTC 02:00）= 高峰。显式传 at 保证确定性。
+from datetime import datetime, timezone as _tz
+
+AT_OFFPEAK = datetime(2026, 8, 17, 12, 0, tzinfo=_tz.utc)   # 北京 20:00
+AT_PEAK = datetime(2026, 8, 17, 2, 0, tzinfo=_tz.utc)       # 北京 10:00
+
 c_ds = estimate_cost(provider="deepseek", model="deepseek-chat",
-                     prompt_tokens=1_000_000, completion_tokens=1_000_000, status="success")
-# deepseek-chat 未显式列入价目表，走 __default__（= v4-flash 价：miss 1 + output 2）
-check("deepseek success 估算 = miss1+output2", c_ds is not None and abs(c_ds - 3.0) < 1e-6, f"got {c_ds}")
+                     prompt_tokens=1_000_000, completion_tokens=1_000_000,
+                     status="success", at=AT_OFFPEAK)
+# deepseek-chat 未显式列入价目表，走 __default__（= v4-flash 空闲价：miss 1.5 + output 4.5）
+check("deepseek success 空闲估算 = miss1.5+output4.5", c_ds is not None and abs(c_ds - 6.0) < 1e-6, f"got {c_ds}")
 
 # —— deepseek-v4-flash 三档费率（中国官方人民币价目表，每百万 token）——
-# 缓存命中 0.02 / 缓存未命中 1.0 / 输出 2.0
+# 空闲：缓存命中 0.05 / 缓存未命中 1.5 / 输出 4.5；高峰：0.10 / 3.0 / 9.0
 c_hit = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
                       prompt_cache_hit_tokens=1_000_000, prompt_cache_miss_tokens=0,
-                      completion_tokens=0, status="success")
-check("v4-flash 全命中1M = 0.02元", c_hit is not None and abs(c_hit - 0.02) < 1e-9, f"got {c_hit}")
+                      completion_tokens=0, status="success", at=AT_OFFPEAK)
+check("v4-flash 空闲全命中1M = 0.05元", c_hit is not None and abs(c_hit - 0.05) < 1e-9, f"got {c_hit}")
 c_miss = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
-                      prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=1_000_000,
-                      completion_tokens=0, status="success")
-check("v4-flash 全未命中1M = 1.0元", c_miss is not None and abs(c_miss - 1.0) < 1e-9, f"got {c_miss}")
+                       prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=1_000_000,
+                       completion_tokens=0, status="success", at=AT_OFFPEAK)
+check("v4-flash 空闲全未命中1M = 1.5元", c_miss is not None and abs(c_miss - 1.5) < 1e-9, f"got {c_miss}")
 c_out = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
-                     prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=0,
-                     completion_tokens=1_000_000, status="success")
-check("v4-flash 输出1M = 2.0元", c_out is not None and abs(c_out - 2.0) < 1e-9, f"got {c_out}")
-# 混合：命中 0.5M + 未命中 0.5M + 输出 0.2M = 0.5*0.02 + 0.5*1 + 0.2*2 = 0.91
+                      prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=0,
+                      completion_tokens=1_000_000, status="success", at=AT_OFFPEAK)
+check("v4-flash 空闲输出1M = 4.5元", c_out is not None and abs(c_out - 4.5) < 1e-9, f"got {c_out}")
+# 混合（空闲）：命中 0.5M + 未命中 0.5M + 输出 0.2M = 0.5*0.05 + 0.5*1.5 + 0.2*4.5 = 1.675
 c_mix = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
-                     prompt_cache_hit_tokens=500_000, prompt_cache_miss_tokens=500_000,
-                     completion_tokens=200_000, status="success")
-check("v4-flash 混合计价 = 0.91元", c_mix is not None and abs(c_mix - 0.91) < 1e-9, f"got {c_mix}")
+                      prompt_cache_hit_tokens=500_000, prompt_cache_miss_tokens=500_000,
+                      completion_tokens=200_000, status="success", at=AT_OFFPEAK)
+check("v4-flash 空闲混合计价 = 1.675元", c_mix is not None and abs(c_mix - 1.675) < 1e-9, f"got {c_mix}")
 # 无 cache 拆分信息时兜底（miss=prompt_tokens）
 c_fallback = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
-                          prompt_tokens=1_000_000, completion_tokens=0, status="success")
-check("v4-flash 无cache拆分兜底 miss=prompt = 1.0元", c_fallback is not None and abs(c_fallback - 1.0) < 1e-9, f"got {c_fallback}")
+                           prompt_tokens=1_000_000, completion_tokens=0,
+                           status="success", at=AT_OFFPEAK)
+check("v4-flash 空闲无cache拆分兜底 miss=prompt = 1.5元", c_fallback is not None and abs(c_fallback - 1.5) < 1e-9, f"got {c_fallback}")
+
+# —— 高峰档（北京 10:00）：命中 0.10 / 未命中 3.0 / 输出 9.0；混合 = 0.05+1.5+1.8 = 3.35 ——
+c_hit_p = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
+                        prompt_cache_hit_tokens=1_000_000, prompt_cache_miss_tokens=0,
+                        completion_tokens=0, status="success", at=AT_PEAK)
+check("v4-flash 高峰全命中1M = 0.10元", c_hit_p is not None and abs(c_hit_p - 0.10) < 1e-9, f"got {c_hit_p}")
+c_miss_p = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
+                         prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=1_000_000,
+                         completion_tokens=0, status="success", at=AT_PEAK)
+check("v4-flash 高峰全未命中1M = 3.0元", c_miss_p is not None and abs(c_miss_p - 3.0) < 1e-9, f"got {c_miss_p}")
+c_out_p = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
+                        prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=0,
+                        completion_tokens=1_000_000, status="success", at=AT_PEAK)
+check("v4-flash 高峰输出1M = 9.0元", c_out_p is not None and abs(c_out_p - 9.0) < 1e-9, f"got {c_out_p}")
+c_mix_p = estimate_cost(provider="deepseek", model="deepseek-v4-flash",
+                        prompt_cache_hit_tokens=500_000, prompt_cache_miss_tokens=500_000,
+                        completion_tokens=200_000, status="success", at=AT_PEAK)
+check("v4-flash 高峰混合计价 = 3.35元", c_mix_p is not None and abs(c_mix_p - 3.35) < 1e-9, f"got {c_mix_p}")
+
+# —— 峰谷边界（按 [起, 止) 半开区间：整点起止算空闲）——
+def _miss_at(dt):
+    return estimate_cost(provider="deepseek", model="deepseek-v4-flash",
+                         prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=1_000_000,
+                         completion_tokens=0, status="success", at=dt)
+
+BOUNDARIES = [
+    ("北京9:00 整算高峰", datetime(2026, 8, 17, 1, 0, tzinfo=_tz.utc), 3.0),
+    ("北京11:59 算高峰", datetime(2026, 8, 17, 3, 59, 30, tzinfo=_tz.utc), 3.0),
+    ("北京12:00 整算空闲", datetime(2026, 8, 17, 4, 0, tzinfo=_tz.utc), 1.5),
+    ("北京13:00 午间算空闲", datetime(2026, 8, 17, 5, 0, tzinfo=_tz.utc), 1.5),
+    ("北京14:00 整算高峰", datetime(2026, 8, 17, 6, 0, tzinfo=_tz.utc), 3.0),
+    ("北京17:59 算高峰", datetime(2026, 8, 17, 9, 59, 30, tzinfo=_tz.utc), 3.0),
+    ("北京18:00 整算空闲", datetime(2026, 8, 17, 10, 0, tzinfo=_tz.utc), 1.5),
+    ("北京8:59 算空闲", datetime(2026, 8, 17, 0, 59, 30, tzinfo=_tz.utc), 1.5),
+    ("北京3:00 凌晨算空闲（跨日）", datetime(2026, 8, 16, 19, 0, tzinfo=_tz.utc), 1.5),
+]
+for label, dt, want in BOUNDARIES:
+    got = _miss_at(dt)
+    check(f"峰谷边界 {label} = {want}元", got is not None and abs(got - want) < 1e-9, f"got {got}")
 
 check("error 不计费", estimate_cost(provider="deepseek", status="error") is None)
 check("timeout 不计费", estimate_cost(provider="deepseek", status="timeout") is None)
@@ -103,7 +151,7 @@ c_ocr = estimate_cost(provider="baidu_ocr", status="success")
 check("baidu_ocr success = 0.028", c_ocr is not None and abs(c_ocr - 0.028) < 1e-9, f"got {c_ocr}")
 check("未知 provider 返回 None", estimate_cost(provider="xxx", status="success") is None)
 c_default = estimate_cost(provider="deepseek", model="unknown-model",
-                          prompt_tokens=1, completion_tokens=0, status="success")
+                          prompt_tokens=1, completion_tokens=0, status="success", at=AT_OFFPEAK)
 check("deepseek 未知 model 走兜底价", c_default is not None, f"got {c_default}")
 # minimax / volcengine 也应可用
 check("minimax 可估算", estimate_cost(provider="minimax", model="MiniMax-M2.7-highspeed",
