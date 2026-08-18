@@ -8,6 +8,14 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# markdownify treats images inside table cells / headings as inline decorations
+# and by default (keep_inline_images_in=[]) drops them, keeping only the alt
+# text.  Bid documents routinely wrap certificate scans and verification
+# screenshots in (borderless) tables; losing those refs made the review agent
+# see empty sections and report missing evidence.  Whitelist the tags mammoth
+# uses around cell images so `![alt](path)` refs survive inside tables.
+_KEEP_INLINE_IMAGES_IN = ["p", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6"]
+
 # 1x1 transparent PNG substituted for DOCX images whose part is missing or
 # unreadable inside the archive (e.g. bid-authoring tools emitting image
 # relationships with Target="../NULL").
@@ -159,6 +167,7 @@ class MarkitdownConverter:
             html_result.value,
             heading_style="ATX",
             bullets="-",
+            keep_inline_images_in=_KEEP_INLINE_IMAGES_IN,
         ).strip()
         if progress_callback:
             progress_callback(1, 1)
