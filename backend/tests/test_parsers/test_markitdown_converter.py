@@ -57,6 +57,42 @@ class TestMarkitdownConverter:
         assert "data:image" not in result.markdown_content
         assert "base64" not in result.markdown_content
 
+    def test_docx_image_inside_table_cell_keeps_markdown_ref(self, tmp_path):
+        """Regression (prod 2026-08-18 永定区侨育中学项目): bid documents place
+        certificate scans / verification screenshots inside (borderless)
+        tables.  markdownify's default keep_inline_images_in=[] drops cell
+        images keeping only alt text, so descr-less screenshots vanished from
+        the parsed markdown and the review agent reported them missing.  The
+        converter must keep `![alt](path)` refs inside table cells."""
+        from docx import Document
+        from PIL import Image
+
+        image_path = tmp_path / "fixture.png"
+        Image.new("RGB", (640, 360), "white").save(image_path)
+        docx_path = tmp_path / "fixture.docx"
+        document = Document()
+        document.add_heading("认证体系", level=1)
+        table = document.add_table(rows=1, cols=1)
+        # add_picture emits an inline drawing without docPr descr → empty alt,
+        # the exact shape that used to collapse to an empty table cell.
+        run = table.cell(0, 0).paragraphs[0].add_run()
+        run.add_picture(str(image_path))
+        document.save(docx_path)
+
+        images_dir = tmp_path / "fixture_images"
+        result = MarkitdownConverter().convert(docx_path, images_dir=images_dir)
+
+        assert len(result.images) == 1
+        ref_rows = [
+            line
+            for line in result.markdown_content.splitlines()
+            if line.startswith("|") and f"]({images_dir.name}/" in line
+        ]
+        assert ref_rows, (
+            "image ref inside a table cell was dropped from markdown:\n"
+            + result.markdown_content
+        )
+
     def test_docx_with_null_image_relationship_converts_with_placeholder(self, tmp_path):
         """Regression (prod 2026-08-15): DOCX files from some bid-authoring
         tools carry an image relationship with Target="../NULL" whose part is
