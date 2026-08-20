@@ -158,6 +158,29 @@ check("minimax 可估算", estimate_cost(provider="minimax", model="MiniMax-M2.7
                                        prompt_tokens=0, completion_tokens=0, status="success") is not None)
 check("volcengine 可估算", estimate_cost(provider="volcengine", status="success") is not None)
 
+# —— tencent（腾讯云 TokenHub）：deepseek-v4-flash 原厂直供，峰谷双档与 deepseek 官方同价 ——
+# 空闲：命中 0.05 / 未命中 1.5 / 输出 4.5；高峰：0.10 / 3.0 / 9.0（来源 product/1823/130055）
+c_t_off = estimate_cost(provider="tencent", model="deepseek-v4-flash",
+                        prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=1_000_000,
+                        completion_tokens=0, status="success", at=AT_OFFPEAK)
+check("tencent v4-flash 空闲全未命中1M = 1.5元", c_t_off is not None and abs(c_t_off - 1.5) < 1e-9, f"got {c_t_off}")
+c_t_peak = estimate_cost(provider="tencent", model="deepseek-v4-flash",
+                         prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=1_000_000,
+                         completion_tokens=0, status="success", at=AT_PEAK)
+check("tencent v4-flash 高峰全未命中1M = 3.0元", c_t_peak is not None and abs(c_t_peak - 3.0) < 1e-9, f"got {c_t_peak}")
+c_t_mix = estimate_cost(provider="tencent", model="deepseek-v4-flash",
+                        prompt_cache_hit_tokens=500_000, prompt_cache_miss_tokens=500_000,
+                        completion_tokens=200_000, status="success", at=AT_PEAK)
+check("tencent v4-flash 高峰混合计价 = 3.35元", c_t_mix is not None and abs(c_t_mix - 3.35) < 1e-9, f"got {c_t_mix}")
+c_t_out_off = estimate_cost(provider="tencent", model="deepseek-v4-flash",
+                            prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=0,
+                            completion_tokens=1_000_000, status="success", at=AT_OFFPEAK)
+check("tencent v4-flash 空闲输出1M = 4.5元", c_t_out_off is not None and abs(c_t_out_off - 4.5) < 1e-9, f"got {c_t_out_off}")
+c_t_def = estimate_cost(provider="tencent", model="unknown-model",
+                        prompt_cache_hit_tokens=0, prompt_cache_miss_tokens=1_000_000,
+                        completion_tokens=0, status="success", at=AT_OFFPEAK)
+check("tencent 未知 model 走兜底价", c_t_def is not None and abs(c_t_def - 1.5) < 1e-9, f"got {c_t_def}")
+
 # ============ B. 结构断言（AST，避开重型依赖 import）============
 print("\n--- B. models / recorder / admin 结构断言（AST）---")
 
@@ -278,6 +301,14 @@ check("OCR 接入至少 4 处出口(success/百度错/超时/异常)", n_ocr_cal
 src_cfg = open(os.path.join(_ROOT, "backend", "config.py"), encoding="utf-8").read()
 check("config 有 usage_sync_api_key", "usage_sync_api_key" in src_cfg)
 check("config 有 usage_sync_ip_allowlist", "usage_sync_ip_allowlist" in src_cfg)
+check("config 有 tencent provider 三件套",
+      all(f in src_cfg for f in ("tencent_api_key", "tencent_api_base", "tencent_model")))
+
+# B12. tencent provider 接入链路（factory 分支 + recorder 模型解析）
+src_fac = open(os.path.join(_ROOT, "backend", "services", "llm_factory.py"), encoding="utf-8").read()
+check("llm_factory 有 tencent 分支", '"tencent"' in src_fac and "tencent_api_key" in src_fac)
+check("llm_factory tencent 走 OPENAI 兼容协议", src_fac.count('provider=LLMProvider.OPENAI') >= 3)
+check("recorder _resolve_llm_model 支持 tencent", "tencent_model" in src_rr)
 
 # B10. 模型注册到 __init__.py
 src_init = open(os.path.join(_ROOT, "backend", "models", "__init__.py"), encoding="utf-8").read()

@@ -41,6 +41,19 @@ def create_llm_client(timeout: float | None = None) -> LLMClient:
             timeout=timeout,
         )
 
+    # Tencent Cloud TokenHub: OpenAI 兼容协议，deepseek 系模型思考模式下同样
+    # 返回 message.reasoning_content，复用 deepseek 的 reasoning 解析。
+    if settings.llm_provider == "tencent":
+        return LLMClient(
+            api_key=settings.tencent_api_key,
+            provider=LLMProvider.OPENAI,
+            api_base=settings.tencent_api_base,
+            model=settings.tencent_model,
+            reasoning_split=False,
+            reasoning_mode="deepseek",
+            timeout=timeout,
+        )
+
     # Default: MiniMax
     return LLMClient(
         api_key=settings.mini_agent_api_key,

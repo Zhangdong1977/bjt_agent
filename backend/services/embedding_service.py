@@ -125,6 +125,7 @@ class EmbeddingService:
             self.provider = f"{settings.llm_provider}_semantic_cluster"
             self.model = {
                 "deepseek": settings.deepseek_model,
+                "tencent": settings.tencent_model,
                 "volcengine": settings.volcengine_model,
                 "minimax": settings.mini_agent_model,
             }.get(settings.llm_provider, settings.llm_provider)

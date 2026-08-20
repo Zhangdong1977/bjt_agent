@@ -29,7 +29,8 @@ async def test_basic_connectivity():
     print("=" * 60)
 
     client = create_llm_client()
-    print(f"Provider: deepseek")
+    from backend.config import get_settings
+    print(f"Provider: {get_settings().llm_provider}")
     print(f"API Base: {client.api_base}")
     print(f"Model: {client.model}")
     print(f"Reasoning Mode: {client._client.reasoning_mode}")

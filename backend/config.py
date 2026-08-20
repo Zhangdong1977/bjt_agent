@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     duplicate_embedding_breaker_failures: int = 3
     duplicate_embedding_breaker_cooldown_seconds: int = 120
 
-    # LLM Provider: "minimax", "volcengine", or "deepseek"
+    # LLM Provider: "minimax", "volcengine", "deepseek", or "tencent"
     llm_provider: str = "minimax"
 
     # MiniMax
@@ -144,6 +144,12 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_api_base: str = "https://api.deepseek.com/v1"
     deepseek_model: str = "deepseek-v4-flash"
+
+    # Tencent Cloud TokenHub（腾讯云大模型服务平台，OpenAI 兼容协议）
+    # 对接文档: https://cloud.tencent.com/document/product/1823/132248
+    tencent_api_key: str = ""
+    tencent_api_base: str = "https://tokenhub.tencentmaas.com/v1"
+    tencent_model: str = "deepseek-v4-flash"
 
     # Mini-Max MCP
     minimax_api_key: str = ""
