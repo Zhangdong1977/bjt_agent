@@ -748,6 +748,7 @@ export interface DocumentContentResponse {
 export interface ProjectFeedbackSummary {
   project_id: string;
   project_name: string;
+  project_type: string;
   user_id: string;
   username: string;
   total_feedback: number;

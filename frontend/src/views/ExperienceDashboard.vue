@@ -192,9 +192,13 @@ async function loadDashboard(pid: string) {
   }
 }
 
+function isDuplicateProject(proj: ProjectFeedbackSummary) {
+  return proj.project_type === 'duplicate'
+}
+
 function goToProjectDetail(proj: ProjectFeedbackSummary) {
   router.push({
-    name: 'review-results',
+    name: proj.project_type === 'duplicate' ? 'duplicate-results' : 'review-results',
     params: { id: proj.project_id },
     query: { from: 'experience' },
   })
@@ -385,6 +389,7 @@ function formatDate(dateStr: string): string {
                 <tr>
                   <th>用户</th>
                   <th>项目名称</th>
+                  <th>类型</th>
                   <th>项目 ID</th>
                   <th class="num-col">反馈总数</th>
                   <th class="num-col">已审核</th>
@@ -402,6 +407,11 @@ function formatDate(dateStr: string): string {
                 >
                   <td class="username-cell">{{ proj.username }}</td>
                   <td class="project-name-cell">{{ proj.project_name }}</td>
+                  <td class="type-cell">
+                    <span :class="['type-badge', isDuplicateProject(proj) ? 'type-duplicate' : 'type-review']">
+                      {{ isDuplicateProject(proj) ? '标书查重' : '标书检查' }}
+                    </span>
+                  </td>
                   <td class="id-cell">{{ proj.project_id.substring(0, 8) }}…</td>
                   <td class="num-col">{{ proj.total_feedback }}</td>
                   <td class="num-col">{{ proj.reviewed_feedback }}</td>
@@ -414,9 +424,9 @@ function formatDate(dateStr: string): string {
                   <td class="time-cell">{{ formatDate(proj.created_at) }}</td>
                   <td class="status-cell">
                     <span v-if="proj.is_deleted" class="status-badge status-deleted">已删除</span>
-                    <span v-else-if="proj.review_completed" class="status-badge status-completed">审核完成</span>
-                    <span v-else-if="proj.has_review" class="status-badge status-running">审核未完成</span>
-                    <span v-else-if="proj.has_documents" class="status-badge status-pending">待审核</span>
+                    <span v-else-if="proj.review_completed" class="status-badge status-completed">{{ isDuplicateProject(proj) ? '查重完成' : '审核完成' }}</span>
+                    <span v-else-if="proj.has_review" class="status-badge status-running">{{ isDuplicateProject(proj) ? '查重未完成' : '审核未完成' }}</span>
+                    <span v-else-if="proj.has_documents" class="status-badge status-pending">{{ isDuplicateProject(proj) ? '待查重' : '待审核' }}</span>
                     <span v-else class="status-badge status-empty">未上传文档</span>
                   </td>
                   <td class="action-cell">
@@ -426,6 +436,8 @@ function formatDate(dateStr: string): string {
                     >查看详情</button>
                     <button
                       class="row-action-btn feedback-btn"
+                      :disabled="isDuplicateProject(proj)"
+                      :title="isDuplicateProject(proj) ? '查重项目第一版暂不支持反馈处理' : undefined"
                       @click.stop="loadDashboard(proj.project_id)"
                     >反馈处理</button>
                     <button
@@ -1353,6 +1365,26 @@ function formatDate(dateStr: string): string {
   font-size: 11px;
   font-weight: 600;
   border-radius: 10px;
+}
+
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 10px;
+}
+
+.type-review {
+  background: rgba(22, 119, 255, 0.12);
+  color: #1677ff;
+}
+
+.type-duplicate {
+  background: rgba(114, 46, 209, 0.12);
+  color: #722ed1;
 }
 
 .status-deleted {
