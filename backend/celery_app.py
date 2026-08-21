@@ -65,6 +65,7 @@ celery_app.conf.update(
         "backend.tasks.review_tasks.run_review": {"queue": "review"},
         "backend.tasks.duplicate_tasks.run_duplicate_check": {"queue": "review"},
         "backend.tasks.review_tasks.merge_review_results": {"queue": "review"},
+        "backend.tasks.review_tasks.generate_overall_report": {"queue": "review"},
         "backend.tasks.document_parser.parse_document": {"queue": "parser"},
         "backend.tasks.feedback_tasks.process_feedback": {"queue": "review"},
         "backend.tasks.feedback_tasks.process_batch_feedback": {"queue": "review"},
