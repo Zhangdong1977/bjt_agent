@@ -16,6 +16,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from backend.utils.time_utils import ensure_utc_aware
@@ -120,6 +121,35 @@ def _escape(text: object) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+class OutlineParagraph(Paragraph):
+    """带 PDF 书签（outline 目录项）的标题段落。
+
+    书签在 ``draw()`` 里注册——draw 只在段落最终落页的那一页执行，因此
+    被 KeepTogether/Table 包裹或触发跨页重排后，书签仍指向正确页面。
+    ``outline_title`` 传纯文本（不经 _escape / 内联标记转换），作为阅读器
+    目录面板里显示的标题。
+    """
+
+    def __init__(
+        self, text, style, *,
+        outline_title: str, outline_level: int, closed: bool = False,
+    ):
+        super().__init__(text, style)
+        self._outline_title = outline_title
+        self._outline_level = outline_level
+        self._outline_closed = closed
+
+    def draw(self):
+        # 每次绘制生成新 key：split 出的副本会复用实例属性，同一 key 的
+        # 目标页会互相覆盖
+        key = uuid4().hex
+        self.canv.bookmarkPage(key)
+        self.canv.addOutlineEntry(
+            self._outline_title, key, self._outline_level, self._outline_closed,
+        )
+        super().draw()
+
+
 def build_review_pdf(
     project_name: str,
     task_completed_at: datetime | None,
@@ -200,6 +230,9 @@ def build_review_pdf(
 
     def _on_page(canvas, doc):
         canvas.saveState()
+
+        # 打开即显示书签目录面板（文档级 PageMode=UseOutlines，幂等）
+        canvas.showOutline()
 
         # ---- Header: promo banner (clickable), mirrored on every page ----
         header_text = _PROMO_TEXT + _PROMO_URL
@@ -334,7 +367,9 @@ def build_review_pdf(
                 f"H2_{sev}", fontName=CJK_FONT, fontSize=14, leading=19,
                 spaceBefore=12, spaceAfter=4, textColor=colors.HexColor(hexcolor),
             )
-            story.append(Paragraph(title, head_style))
+            story.append(OutlineParagraph(
+                title, head_style, outline_title=title, outline_level=0,
+            ))
             entries = sections.get(sev) or []
             if not entries:
                 story.append(Paragraph("无。", normal_style))
@@ -354,7 +389,10 @@ def build_review_pdf(
 
         score_items = overall_report.get("score_items") or []
         if score_items:
-            story.append(Paragraph("四、评分项得分摘要", h1_style))
+            story.append(OutlineParagraph(
+                "四、评分项得分摘要", h1_style,
+                outline_title="四、评分项得分摘要", outline_level=0,
+            ))
             head_row = [
                 Paragraph("<b>评分项</b>", cell_value_style),
                 Paragraph("<b>满分</b>", cell_value_style),
@@ -386,13 +424,18 @@ def build_review_pdf(
             ]))
             story.append(score_tbl)
 
-        story.append(Paragraph("附录：各大类检查明细", h1_style))
+        story.append(OutlineParagraph(
+            "附录：各大类检查明细", h1_style,
+            outline_title="附录：各大类检查明细", outline_level=0,
+        ))
 
     # ---- Body: one section per check category (dict order) ----
     sorted_groups = sorted(
         groups,
         key=lambda g: (g.get("label") or "").lower(),
     )
+    # 有总体报告时各大类是"附录"的下级书签，旧版式里则是顶级章节
+    cat_outline_level = 1 if overall_report else 0
 
     if not sorted_groups:
         story.append(Paragraph("暂无审查结果。", empty_style))
@@ -404,7 +447,10 @@ def build_review_pdf(
         findings = g.get("findings") or []
 
         section_flow: list[Any] = []
-        section_flow.append(Paragraph(_escape(label), h1_style))
+        section_flow.append(OutlineParagraph(
+            _escape(label), h1_style,
+            outline_title=label, outline_level=cat_outline_level, closed=True,
+        ))
         status_text = (
             "状态：全部合规" if is_compliant
             else f"状态：存在风险项（{non_compliant} 个）"
@@ -419,6 +465,7 @@ def build_review_pdf(
                     f, idx,
                     cell_label_style, cell_value_style,
                     page_w - 2 * margin,
+                    outline_level=cat_outline_level + 1,
                 )
                 section_flow.append(Spacer(1, 4))
                 section_flow.append(KeepTogether(card))
@@ -451,8 +498,12 @@ def _finding_card(
     label_style: ParagraphStyle,
     value_style: ParagraphStyle,
     content_width: float,
+    outline_level: int | None = None,
 ) -> Table:
-    """Render one finding as a single-column card (label/value rows)."""
+    """Render one finding as a single-column card (label/value rows).
+
+    ``outline_level`` 非空时卡片头行同时注册一条检查项级 PDF 书签。
+    """
     check_item = _get(finding, "check_item_name") or _get(finding, "requirement_key") or "—"
     is_compliant = bool(_get(finding, "is_compliant"))
     severity = _get(finding, "severity")
@@ -469,8 +520,16 @@ def _finding_card(
         f"　|　合规性：{_escape(compliance_text)}"
         + ("" if is_compliant else f"（{_severity_label(severity)}）")
     )
+    if outline_level is not None:
+        header_para: Paragraph = OutlineParagraph(
+            header, value_style,
+            outline_title=f"检查项 {idx}：{check_item}",
+            outline_level=outline_level,
+        )
+    else:
+        header_para = Paragraph(header, value_style)
 
-    rows: list[list[Any]] = [[Paragraph(header, value_style)]]
+    rows: list[list[Any]] = [[header_para]]
 
     # Location row
     if page is not None or line is not None:

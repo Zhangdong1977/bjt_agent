@@ -321,6 +321,64 @@ def test_pdf_overlong_finding_text_splits_across_pages():
 
 
 # ---------------------------------------------------------------------------
+# PDF 书签目录（outline）：阅读器导航面板按 章节/大类/检查项 跳转
+# ---------------------------------------------------------------------------
+
+def _outline_titles(items) -> list[str]:
+    """pypdf outline 树（Destination 与子列表混排）展平成标题列表."""
+    titles: list[str] = []
+    for it in items:
+        if isinstance(it, list):
+            titles.extend(_outline_titles(it))
+        else:
+            titles.append(it.title)
+    return titles
+
+
+def test_pdf_contains_outline_bookmarks():
+    from pypdf import PdfReader
+
+    from backend.services.pdf_export import build_review_pdf
+
+    report = assemble_report(_sample_input(), {
+        "category_summaries": {"A004": "投标函未按要求加盖法人章"},
+        "score_items": [{"code": "D001", "name": "业绩得分检查", "full_score": 8, "estimated_score": 5, "note": "缺1项订单"}],
+    })
+    pdf_bytes = build_review_pdf(
+        "测试项目", None,
+        {"category_count": 3, "check_item_count": 3, "risk_item_count": 3},
+        _pdf_groups(), overall_report=report,
+    )
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    # 打开即显示目录面板
+    assert reader.trailer["/Root"]["/PageMode"] == "/UseOutlines"
+    titles = _outline_titles(reader.outline)
+    assert "一、严重风险" in titles
+    assert "四、评分项得分摘要" in titles
+    assert "附录：各大类检查明细" in titles
+    assert "A004 投标函检查" in titles
+    assert "检查项 1：投标函盖章" in titles
+
+
+def test_pdf_outline_legacy_layout_categories_top_level():
+    """无总体报告的旧版式：大类作为顶级书签，检查项挂在其下."""
+    from pypdf import PdfReader
+
+    from backend.services.pdf_export import build_review_pdf
+
+    pdf_bytes = build_review_pdf(
+        "测试项目", None,
+        {"category_count": 1, "check_item_count": 1, "risk_item_count": 1},
+        _pdf_groups(),
+    )
+    outline = PdfReader(io.BytesIO(pdf_bytes)).outline
+    top_titles = [it.title for it in outline if not isinstance(it, list)]
+    # 顶级没有"附录"章节，大类直接在第一层
+    assert top_titles == ["A004 投标函检查"]
+    assert _outline_titles(outline) == ["A004 投标函检查", "检查项 1：投标函盖章"]
+
+
+# ---------------------------------------------------------------------------
 # PDF 明细卡片 Markdown 渲染
 # ---------------------------------------------------------------------------
 
