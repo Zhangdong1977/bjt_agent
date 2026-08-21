@@ -366,6 +366,15 @@ export interface DocumentContent {
 }
 
 // Review types
+export interface RuleDocInfo {
+  /** 规则文档文件名（含 .md），发起检查时按此回传 */
+  name: string;
+  /** 展示名（去扩展名），如 "A001 检查投标文件填写完整性" */
+  stem: string;
+  /** 弹窗默认是否勾选（当前除 E001 签字盖章检查外默认全选） */
+  default_selected: boolean;
+}
+
 export interface ReviewTask {
   id: string;
   project_id: string;
@@ -373,6 +382,7 @@ export interface ReviewTask {
   duplicate_mode?: "pair" | "batch";
   duplicate_algorithm_version?: string | null;
   duplicate_feature_snapshot?: Record<string, any> | null;
+  selected_rule_docs?: string[] | null;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   started_at: string | null;
   completed_at: string | null;
@@ -565,6 +575,50 @@ export interface ReviewResponse {
   findings: ReviewResult[];
 }
 
+// ---- 总体报告（报告生成 Agent 汇总各子 agent 输出，结构对应后端 report_agent.py） ----
+
+export interface OverallRiskSectionEntry {
+  rule_doc: string;
+  rule_doc_code: string;
+  count: number;
+  summary: string;
+  rejection_related?: boolean; // 仅 critical 节：是否涉及废标条款
+}
+
+export interface OverallScoreItem {
+  code: string;
+  name: string;
+  full_score: number | null;
+  estimated_score: number | null;
+  note: string;
+}
+
+export interface OverallReport {
+  schema_version: number;
+  generated_at: string;
+  degraded: boolean; // true = LLM 精简失败，描述为原文摘录
+  summary: {
+    category_count: number;
+    check_item_count: number;
+    risk_item_count: number;
+    severity_dist: { critical: number; major: number; minor: number };
+    failed_categories?: string[];
+  };
+  rejection_risk: { level: "高" | "中" | "低"; reason: string };
+  risk_sections: {
+    critical: OverallRiskSectionEntry[];
+    major: OverallRiskSectionEntry[];
+    minor: OverallRiskSectionEntry[];
+  };
+  score_items: OverallScoreItem[];
+}
+
+export interface OverallReportResponse {
+  task_id: string;
+  status: string; // 任务状态：running = 报告生成中；completed = 已定稿
+  report: OverallReport | null;
+}
+
 export interface AgentStep {
   id: string;
   task_id: string;
@@ -738,6 +792,7 @@ export interface DocumentContentResponse {
 export interface ProjectFeedbackSummary {
   project_id: string;
   project_name: string;
+  project_type: string;
   user_id: string;
   username: string;
   total_feedback: number;

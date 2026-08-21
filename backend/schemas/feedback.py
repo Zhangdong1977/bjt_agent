@@ -154,6 +154,7 @@ class ProjectFeedbackSummary(BaseModel):
 
     project_id: str
     project_name: str
+    project_type: str = "review"
     user_id: str
     username: str
     total_feedback: int

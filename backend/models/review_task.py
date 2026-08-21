@@ -34,6 +34,9 @@ class ReviewTask(Base):
     duplicate_feature_snapshot: Mapped[dict | None] = mapped_column(
         JSONB, nullable=True
     )
+    # 用户在发起检查时勾选的检查项大类（规则文档文件名列表）；NULL = 未指定（检查全部，
+    # 兼容旧客户端），空数组在 API 层被拒绝。
+    selected_rule_docs: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending", index=True)  # pending, running, completed, failed, cancelled
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -53,6 +56,9 @@ class ReviewTask(Base):
     billing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     usage_finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     billing_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 总体报告：检查完成后由报告 Agent 汇总各子 agent 输出生成（结构见
+    # backend/agent/report_agent.py assemble_report；NULL = 尚未生成，可在结果页补生成）
+    overall_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Relationships
     project: Mapped["Project"] = relationship("Project", back_populates="review_tasks")

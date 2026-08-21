@@ -4,6 +4,7 @@ from .projects import router as projects_router
 from .documents import router as documents_router
 from .documents import drafts_router as documents_drafts_router
 from .review import router as review_router
+from .review import rule_docs_router as review_rule_docs_router
 from .duplicate_check import router as duplicate_check_router
 from .duplicate_check import capabilities_router as duplicate_check_capabilities_router
 from .share import router as share_router
@@ -25,6 +26,7 @@ __all__ = [
     "documents_router",
     "documents_drafts_router",
     "review_router",
+    "review_rule_docs_router",
     "duplicate_check_router",
     "duplicate_check_capabilities_router",
     "share_router",

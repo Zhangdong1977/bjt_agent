@@ -199,6 +199,7 @@ async def projects_feedback_summary(
     base_columns = (
         Project.id.label("project_id"),
         Project.name.label("project_name"),
+        Project.project_type,
         Project.user_id,
         User.username,
         func.count(ExperienceFeedback.id).label("total_feedback"),
@@ -219,13 +220,13 @@ async def projects_feedback_summary(
         exists().where(
             and_(
                 ReviewTask.project_id == Project.id,
-                ReviewTask.task_type == "review",
+                ReviewTask.task_type.in_(["review", "duplicate"]),
             )
         ).label("has_review"),
         exists().where(
             and_(
                 ReviewTask.project_id == Project.id,
-                ReviewTask.task_type == "review",
+                ReviewTask.task_type.in_(["review", "duplicate"]),
                 ReviewTask.status == "completed",
             )
         ).label("review_completed"),
@@ -242,7 +243,7 @@ async def projects_feedback_summary(
             ),
         )
         .group_by(Project.id, User.username)
-        .where(Project.project_type == "review")
+        .where(Project.project_type.in_(["review", "duplicate"]))
     )
 
     # Apply time range filter
@@ -282,6 +283,7 @@ async def projects_feedback_summary(
         ProjectFeedbackSummary(
             project_id=row.project_id,
             project_name=row.project_name,
+            project_type=row.project_type,
             user_id=row.user_id,
             username=row.username,
             total_feedback=row.total_feedback,

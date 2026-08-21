@@ -237,6 +237,7 @@ async def get_shared_review(
         project_name=project.name if project else None,
         findings=[ReviewResultResponse.model_validate(f) for f in findings],
         todos=[SharedTodoItemResponse.model_validate(t) for t in todos],
+        overall_report=task.overall_report,
     )
 
 

@@ -8,6 +8,7 @@ import { downloadBlob } from '@/utils/download'
 import { apiErrorText } from '@/utils/apiError'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 import ShareResultModal from '@/components/ShareResultModal.vue'
+import RuleDocSelectModal from '@/components/RuleDocSelectModal.vue'
 import type { ReviewResponse } from '@/types'
 // 按钮图（自带胶囊/图标，文字叠加在右侧）：查看时间线 / 重新审查
 import btnTimeline from '@/assets/images/ui/result-btn-timeline.png'
@@ -99,35 +100,43 @@ function goBack() {
   router.push({ name: fromExperience.value ? 'experience-dashboard' : 'history' })
 }
 
-async function startNewReview() {
+// 重新审查：二次确认 → 弹窗选择检查项大类 → 确认后启动
+const ruleDocModalOpen = ref(false)
+
+function startNewReview() {
   if (!projectId.value) return
   Modal.confirm({
     title: '确认重新审查',
     content: '重新审查将发起新的审查任务，当前审查结果不会被删除。确定要继续吗？',
     okText: '确定',
     cancelText: '取消',
-    onOk: async () => {
-      try {
-        await reviewApi.start(projectId.value)
-        router.push({
-          name: 'review-execution',
-          params: { id: projectId.value }
-        })
-      } catch (error) {
-        console.error('启动审查失败:', error)
-        // 透传后端文案（402 余额不足 / 409 已有任务在执行等），原先静默失败用户无从知晓
-        const status = (error as { response?: { status?: number } }).response?.status
-        const text = apiErrorText(error)
-        if (text && (status === 402 || status === 409)) {
-          message.warning(text)
-        } else if (text) {
-          message.error(text)
-        } else {
-          message.error('启动审查失败，请稍后重试')
-        }
-      }
+    onOk: () => {
+      ruleDocModalOpen.value = true
     }
   })
+}
+
+async function onRuleDocsConfirm(selectedRuleDocs: string[]) {
+  if (!projectId.value) return
+  try {
+    await reviewApi.start(projectId.value, selectedRuleDocs)
+    router.push({
+      name: 'review-execution',
+      params: { id: projectId.value }
+    })
+  } catch (error) {
+    console.error('启动审查失败:', error)
+    // 透传后端文案（402 余额不足 / 409 已有任务在执行等），原先静默失败/兜底文案让用户无从知晓
+    const status = (error as { response?: { status?: number } }).response?.status
+    const text = apiErrorText(error)
+    if (text && (status === 402 || status === 409)) {
+      message.warning(text)
+    } else if (text) {
+      message.error(text)
+    } else {
+      message.error('启动审查失败')
+    }
+  }
 }
 
 // 导出当前任务审查结果为 PDF：按检查大项字典序分章，结构化明细。
@@ -217,6 +226,9 @@ async function exportPdf() {
         :project-id="projectId"
         :task-id="selectedTaskId"
       />
+
+      <!-- 检查项大类多选弹窗：确认后才开始检查 -->
+      <RuleDocSelectModal v-model:open="ruleDocModalOpen" @confirm="onRuleDocsConfirm" />
     </main>
   </div>
 </template>

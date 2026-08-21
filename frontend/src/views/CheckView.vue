@@ -8,6 +8,7 @@ import { message } from 'ant-design-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
+import RuleDocSelectModal from '@/components/RuleDocSelectModal.vue'
 import { isLegacyDocFile, legacyDocWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
 import { showCheckDurationNotice } from '@/utils/checkDurationNotice'
 import { apiErrorText } from '@/utils/apiError'
@@ -254,8 +255,10 @@ function closeDocViewer() {
   docViewerContent.value = null
 }
 
-// 开始检查：创建项目 → 关联所有草稿文档 → 选择项目 → 启动审查 → 跳转
-async function startCheck() {
+// 开始检查：先弹窗选择检查项大类 → 创建项目 → 关联所有草稿文档 → 选择项目 → 启动审查 → 跳转
+const ruleDocModalOpen = ref(false)
+
+function startCheck() {
   if (!projectName.value.trim()) {
     message.warning('请输入项目名称')
     return
@@ -264,7 +267,10 @@ async function startCheck() {
     message.warning('请确保招标和投标文件各有至少一份解析完成，且所有文件解析结束')
     return
   }
+  ruleDocModalOpen.value = true
+}
 
+async function onRuleDocsConfirm(selectedRuleDocs: string[]) {
   submitting.value = true
   try {
     // ① 创建项目
@@ -283,8 +289,8 @@ async function startCheck() {
     // ③ 选择项目（加载文档列表，接续 SSE）
     await projectStore.selectProject(project.id)
 
-    // ④ 启动审查
-    await projectStore.startReview()
+    // ④ 按勾选的检查项大类启动审查
+    await projectStore.startReview(selectedRuleDocs)
 
     // ⑤ 提示预计耗时，用户确认后再跳转审查执行页
     await showCheckDurationNotice()
@@ -555,6 +561,9 @@ function getStatusClass(status: string) {
       <img :src="iconSearch" alt="" class="check-btn__icon" />
       <span>{{ submitting ? '提交中...' : '立即检查' }}</span>
     </button>
+
+    <!-- 检查项大类多选弹窗：确认后才开始检查 -->
+    <RuleDocSelectModal v-model:open="ruleDocModalOpen" @confirm="onRuleDocsConfirm" />
 
     <!-- 文档查看器 Modal -->
     <div v-if="showDocViewer" class="modal-overlay" @click.self="closeDocViewer">
