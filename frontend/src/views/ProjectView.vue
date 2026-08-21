@@ -11,6 +11,7 @@ import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
 import RuleDocSelectModal from '@/components/RuleDocSelectModal.vue'
 import { isLegacyDocFile, legacyDocWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
 import { showCheckDurationNotice } from '@/utils/checkDurationNotice'
+import { apiErrorText } from '@/utils/apiError'
 
 // Configure DOMPurify to allow base64 images and table tags
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -132,10 +133,13 @@ async function onRuleDocsConfirm(selectedRuleDocs: string[]) {
     await showCheckDurationNotice()
     router.push({ name: 'review-execution', params: { id: projectId.value } })
   } catch (err) {
-    const error = err as { response?: { status?: number; data?: { detail?: unknown } } }
-    const detail = error.response?.data?.detail
-    if (error.response?.status === 402 && typeof detail === 'object' && detail && 'message' in detail) {
-      message.warning(String((detail as { message: unknown }).message))
+    const error = err as { response?: { status?: number } }
+    // 透传后端文案（402 余额不足 / 409 已有任务在执行等），让用户知道该做什么而不是盲目重试
+    const text = apiErrorText(err)
+    if (text && (error.response?.status === 402 || error.response?.status === 409)) {
+      message.warning(text)
+    } else if (text) {
+      message.error(text)
     } else {
       message.error('启动审查失败')
     }
