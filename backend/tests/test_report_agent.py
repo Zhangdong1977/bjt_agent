@@ -284,3 +284,35 @@ def test_pdf_without_overall_report_keeps_legacy_layout():
         _pdf_groups(),
     )
     assert pdf_bytes[:5] == b"%PDF-"
+
+
+def test_pdf_overlong_finding_text_splits_across_pages():
+    """单条 finding 的超长字段（>页面高度）不能让导出整体失败（LayoutError 回归）."""
+    from backend.services.pdf_export import build_review_pdf
+
+    groups = [{
+        "label": "A009 明确否决条款检查",
+        "is_compliant": False,
+        "non_compliant_count": 1,
+        "findings": [{
+            "check_item_name": "招标文件否决条款识别与分类",
+            "requirement_key": "req_1",
+            # 模拟真实事故数据：A009 把整份否决条款清单写进 requirement（2678+ 字）
+            "requirement_content": "招标文件中识别的否决条款如下：" + "；".join(
+                f"第{i}条 投标人不得存在下列情形之{'一二三四五六七八九十'[i % 10]}，否则投标将被否决" for i in range(200)
+            ),
+            "bid_content": "已按清单逐项响应" * 50,
+            "is_compliant": False,
+            "severity": "critical",
+            "location_page": None,
+            "location_line": None,
+            "suggestion": None,
+            "explanation": "承诺函仅响应部分否决条款。" * 30,
+        }],
+    }]
+    pdf_bytes = build_review_pdf(
+        "超长字段项目", None,
+        {"category_count": 1, "check_item_count": 1, "risk_item_count": 1},
+        groups,
+    )
+    assert pdf_bytes[:5] == b"%PDF-"

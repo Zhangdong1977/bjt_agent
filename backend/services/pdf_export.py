@@ -483,13 +483,13 @@ def _finding_card(
         )])
 
     if requirement:
-        rows.append(_kv_row("依据要求", requirement, value_style))
+        rows.extend(_kv_rows("依据要求", requirement, value_style))
     if bid:
-        rows.append(_kv_row("投标内容", bid, value_style))
+        rows.extend(_kv_rows("投标内容", bid, value_style))
     if explanation:
-        rows.append(_kv_row("问题描述", explanation, value_style))
+        rows.extend(_kv_rows("问题描述", explanation, value_style))
     if suggestion:
-        rows.append(_kv_row("修改建议", suggestion, value_style))
+        rows.extend(_kv_rows("修改建议", suggestion, value_style))
 
     tbl = Table(rows, colWidths=[content_width])
     style = TableStyle([
@@ -508,9 +508,42 @@ def _finding_card(
     return tbl
 
 
-def _kv_row(label: str, value: object, value_style: ParagraphStyle) -> list[Any]:
-    text = f"<b>{_escape(label)}</b>：{_escape(value)}"
-    return [Paragraph(text, value_style)]
+def _chunk_text(text: str, limit: int = 1200) -> list[str]:
+    """Split over-long text into page-safe chunks (each renders well below one frame).
+
+    Single table rows taller than one page frame raise reportlab LayoutError
+    (rows are atomic and cannot split) — seen with A009 findings whose
+    ``requirement_content`` embeds the full rejection-clause list (~2700 chars
+    ≈ 900pt tall). Splitting into ~1200-char chunks keeps every row ≈30 lines
+    and lets the table split at row boundaries.
+    """
+    text = text or ""
+    if len(text) <= limit:
+        return [text] if text else []
+    chunks: list[str] = []
+    rest = text
+    while rest:
+        if len(rest) <= limit:
+            chunks.append(rest)
+            break
+        cut = rest.rfind("\n", 0, limit)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(rest[:cut])
+        rest = rest[cut:].lstrip("\n")
+    return chunks
+
+
+def _kv_rows(label: str, value: object, value_style: ParagraphStyle) -> list[list[Any]]:
+    """Label/value row(s); over-long values are chunked so rows stay page-safe."""
+    text = str(value or "")
+    chunks = _chunk_text(text)
+    if not chunks:
+        return []
+    rows = [[Paragraph(f"<b>{_escape(label)}</b>：{_escape(chunks[0])}", value_style)]]
+    for chunk in chunks[1:]:
+        rows.append([Paragraph(_escape(chunk), value_style)])
+    return rows
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
