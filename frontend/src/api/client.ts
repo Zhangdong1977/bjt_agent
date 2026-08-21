@@ -17,6 +17,7 @@ import type {
   DocumentContent,
   ReviewTask,
   ReviewTaskListItem,
+  RuleDocInfo,
   ReviewResponse,
   AgentStep,
   ReviewResult,
@@ -655,9 +656,17 @@ export const documentsApi = {
 
 // Review API
 export const reviewApi = {
-  async start(projectId: string): Promise<ReviewTask> {
-    const response = await apiClient.post(`/projects/${projectId}/review`);
+  async start(projectId: string, selectedRuleDocs?: string[]): Promise<ReviewTask> {
+    // 勾选了检查项大类时随请求体下发；undefined = 不传（兼容旧后端，检查全部）
+    const body =
+      selectedRuleDocs !== undefined ? { selected_rule_docs: selectedRuleDocs } : undefined;
+    const response = await apiClient.post(`/projects/${projectId}/review`, body);
     return response.data;
+  },
+
+  async getRuleDocs(): Promise<RuleDocInfo[]> {
+    const response = await apiClient.get(`/review/rule-docs`);
+    return response.data.rule_docs;
   },
 
   async getResults(projectId: string): Promise<ReviewResponse> {

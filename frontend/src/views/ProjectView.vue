@@ -8,6 +8,7 @@ import { message } from 'ant-design-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
+import RuleDocSelectModal from '@/components/RuleDocSelectModal.vue'
 import { isLegacyDocFile, legacyDocWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
 import { showCheckDurationNotice } from '@/utils/checkDurationNotice'
 
@@ -117,9 +118,16 @@ async function handleDeleteDoc(docId: string) {
   }
 }
 
-async function handleStartReview() {
+// 开始审查：先弹窗选择检查项大类，确认后再启动
+const ruleDocModalOpen = ref(false)
+
+function handleStartReview() {
+  ruleDocModalOpen.value = true
+}
+
+async function onRuleDocsConfirm(selectedRuleDocs: string[]) {
   try {
-    await projectStore.startReview()
+    await projectStore.startReview(selectedRuleDocs)
     // 提示预计耗时，用户确认后再跳转审查执行页
     await showCheckDurationNotice()
     router.push({ name: 'review-execution', params: { id: projectId.value } })
@@ -339,6 +347,9 @@ function getStatusClass(status: string) {
         </button>
       </div>
     </main>
+
+    <!-- 检查项大类多选弹窗：确认后才开始检查 -->
+    <RuleDocSelectModal v-model:open="ruleDocModalOpen" @confirm="onRuleDocsConfirm" />
 
     <!-- Document Viewer Modal -->
     <div v-if="showDocViewer" class="modal-overlay" @click.self="closeDocViewer">

@@ -366,6 +366,15 @@ export interface DocumentContent {
 }
 
 // Review types
+export interface RuleDocInfo {
+  /** 规则文档文件名（含 .md），发起检查时按此回传 */
+  name: string;
+  /** 展示名（去扩展名），如 "A001 检查投标文件填写完整性" */
+  stem: string;
+  /** 弹窗默认是否勾选（当前除 E001 签字盖章检查外默认全选） */
+  default_selected: boolean;
+}
+
 export interface ReviewTask {
   id: string;
   project_id: string;
@@ -373,6 +382,7 @@ export interface ReviewTask {
   duplicate_mode?: "pair" | "batch";
   duplicate_algorithm_version?: string | null;
   duplicate_feature_snapshot?: Record<string, any> | null;
+  selected_rule_docs?: string[] | null;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   started_at: string | null;
   completed_at: string | null;

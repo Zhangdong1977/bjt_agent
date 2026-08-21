@@ -451,6 +451,8 @@ def run_review(self, task_id: str) -> dict:
                 # Extract needed values before session closes
                 project_id = str(task.project_id)
                 max_concurrency = task.max_concurrency
+                # 用户勾选的检查项大类；None = 未指定（检查全部）
+                selected_rule_docs = task.selected_rule_docs
                 user_id = ""
                 if hasattr(project, 'user_id'):
                     user_id = str(project.user_id)
@@ -474,6 +476,7 @@ def run_review(self, task_id: str) -> dict:
                     max_concurrency=max_concurrency,
                     session_factory=session_factory,
                     cancel_event=cancel_event,
+                    selected_rule_docs=selected_rule_docs,
                 )
             finally:
                 watchdog_task.cancel()
@@ -707,6 +710,7 @@ async def _run_agent_review(
     max_concurrency: int,
     session_factory,
     cancel_event: asyncio.Event,
+    selected_rule_docs: list[str] | None = None,
 ) -> int:
     """Run the agent review process and return non-compliant findings count.
 
@@ -726,6 +730,7 @@ async def _run_agent_review(
         max_concurrency: Max concurrent sub-agents
         session_factory: Async session factory for database operations.
         cancel_event: asyncio.Event for cancellation.
+        selected_rule_docs: Rule doc filenames selected by the user; None = all.
     """
     from backend.agent.master import MasterAgent
     from backend.services.todo_service import TodoService
@@ -782,6 +787,7 @@ async def _run_agent_review(
         cancel_event=cancel_event,
         on_sub_agent_result=on_sub_agent_completed,
         max_concurrency=max_concurrency,
+        rule_doc_filter=selected_rule_docs,
     )
 
     try:

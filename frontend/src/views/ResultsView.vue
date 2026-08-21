@@ -7,6 +7,7 @@ import { reviewApi } from '@/api/client'
 import { downloadBlob } from '@/utils/download'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 import ShareResultModal from '@/components/ShareResultModal.vue'
+import RuleDocSelectModal from '@/components/RuleDocSelectModal.vue'
 import type { ReviewResponse } from '@/types'
 // 按钮图（自带胶囊/图标，文字叠加在右侧）：查看时间线 / 重新审查
 import btnTimeline from '@/assets/images/ui/result-btn-timeline.png'
@@ -98,25 +99,34 @@ function goBack() {
   router.push({ name: fromExperience.value ? 'experience-dashboard' : 'history' })
 }
 
-async function startNewReview() {
+// 重新审查：二次确认 → 弹窗选择检查项大类 → 确认后启动
+const ruleDocModalOpen = ref(false)
+
+function startNewReview() {
   if (!projectId.value) return
   Modal.confirm({
     title: '确认重新审查',
     content: '重新审查将发起新的审查任务，当前审查结果不会被删除。确定要继续吗？',
     okText: '确定',
     cancelText: '取消',
-    onOk: async () => {
-      try {
-        await reviewApi.start(projectId.value)
-        router.push({
-          name: 'review-execution',
-          params: { id: projectId.value }
-        })
-      } catch (error) {
-        console.error('启动审查失败:', error)
-      }
+    onOk: () => {
+      ruleDocModalOpen.value = true
     }
   })
+}
+
+async function onRuleDocsConfirm(selectedRuleDocs: string[]) {
+  if (!projectId.value) return
+  try {
+    await reviewApi.start(projectId.value, selectedRuleDocs)
+    router.push({
+      name: 'review-execution',
+      params: { id: projectId.value }
+    })
+  } catch (error) {
+    console.error('启动审查失败:', error)
+    message.error('启动审查失败')
+  }
 }
 
 // 导出当前任务审查结果为 PDF：按检查大项字典序分章，结构化明细。
@@ -206,6 +216,9 @@ async function exportPdf() {
         :project-id="projectId"
         :task-id="selectedTaskId"
       />
+
+      <!-- 检查项大类多选弹窗：确认后才开始检查 -->
+      <RuleDocSelectModal v-model:open="ruleDocModalOpen" @confirm="onRuleDocsConfirm" />
     </main>
   </div>
 </template>

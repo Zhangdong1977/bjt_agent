@@ -374,13 +374,13 @@ export const useProjectStore = defineStore("project", () => {
     documents.value = documents.value.filter((d) => d.id !== documentId);
   }
 
-  async function startReview() {
+  async function startReview(selectedRuleDocs?: string[]) {
     if (!currentProject.value) return;
     await useBillingStore().remindLowBalance("task", true);
     reviewLoading.value = true;
     resetAgentSteps();
     try {
-      currentTask.value = await reviewApi.start(currentProject.value.id);
+      currentTask.value = await reviewApi.start(currentProject.value.id, selectedRuleDocs);
     } finally {
       reviewLoading.value = false;
     }

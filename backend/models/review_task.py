@@ -34,6 +34,9 @@ class ReviewTask(Base):
     duplicate_feature_snapshot: Mapped[dict | None] = mapped_column(
         JSONB, nullable=True
     )
+    # 用户在发起检查时勾选的检查项大类（规则文档文件名列表）；NULL = 未指定（检查全部，
+    # 兼容旧客户端），空数组在 API 层被拒绝。
+    selected_rule_docs: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending", index=True)  # pending, running, completed, failed, cancelled
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

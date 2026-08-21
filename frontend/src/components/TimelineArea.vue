@@ -5,6 +5,7 @@ import { useProjectStore } from '@/stores/project'
 import { useAuthStore } from '@/stores/auth'
 import { reviewApi } from '@/api/client'
 import ReviewTimeline from '@/components/ReviewTimeline.vue'
+import RuleDocSelectModal from '@/components/RuleDocSelectModal.vue'
 import { message } from 'ant-design-vue'
 
 const props = defineProps<{
@@ -79,14 +80,21 @@ async function loadHistoricalSteps() {
   }
 }
 
-async function startReview() {
+// 开始审查：先弹窗选择检查项大类，确认后再启动
+const ruleDocModalOpen = ref(false)
+
+function startReview() {
+  ruleDocModalOpen.value = true
+}
+
+async function onRuleDocsConfirm(selectedRuleDocs: string[]) {
   try {
     // Clear historical mode
     isHistoricalMode.value = false
     selectedTaskId.value = ''
     historicalSteps.value = []
 
-    await projectStore.startReview()
+    await projectStore.startReview(selectedRuleDocs)
     message.success('审查已启动，正在跳转...')
 
     // Navigate to review execution page
@@ -168,6 +176,9 @@ function getStatusClass(status: string) {
       :historical-mode="isHistoricalMode"
       @complete="handleTaskComplete"
     />
+
+    <!-- 检查项大类多选弹窗：确认后才开始检查 -->
+    <RuleDocSelectModal v-model:open="ruleDocModalOpen" @confirm="onRuleDocsConfirm" />
   </div>
 </template>
 

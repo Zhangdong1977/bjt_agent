@@ -19,13 +19,59 @@ from backend.schemas.review import (
     ReviewResultResponse,
     ReviewTaskResponse,
     ReviewTaskListItem,
+    ReviewStartRequest,
+    RuleDocInfo,
+    RuleDocsResponse,
     AgentStepResponse,
     TodoItemResponse,
 )
 from backend.services.sse_service import sse_manager
 
 router = APIRouter(prefix="/projects/{project_id}/review", tags=["Review"])
+# 全局路由（不挂在项目下）：发起检查前的检查项大类列表在项目创建之前就要展示
+rule_docs_router = APIRouter(prefix="/review", tags=["Review"])
 settings = get_settings()
+
+# 发起检查弹窗里默认不勾选的检查项大类（按规则文档编号前缀匹配）
+DEFAULT_UNSELECTED_RULE_DOC_CODES = ("E001",)
+
+
+def _rule_doc_code(name: str) -> str:
+    """规则文档编号：文件名第一个空格前的部分，如 'E001 签字盖章检查.md' → 'E001'."""
+    return name.split(" ", 1)[0]
+
+
+@rule_docs_router.get("/rule-docs", response_model=RuleDocsResponse)
+async def list_rule_docs(current_user: CurrentUser) -> RuleDocsResponse:
+    """List check-item categories (rule library docs) for the start dialog."""
+    from backend.agent.master.tools.rule_parser import RuleLibraryScannerTool
+
+    scanner = RuleLibraryScannerTool()
+    scan_result = await scanner.execute(str(settings.rule_library_path))
+    if not scan_result.success:
+        logger.error(f"[list_rule_docs] Rule library scan failed: {scan_result.error}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="检查项规则库不可用，请稍后重试",
+        )
+
+    rule_docs = json.loads(scan_result.content)["rule_docs"]
+    if not rule_docs:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="检查项规则库为空，请联系管理员",
+        )
+
+    return RuleDocsResponse(
+        rule_docs=[
+            RuleDocInfo(
+                name=d["name"],
+                stem=d["stem"],
+                default_selected=_rule_doc_code(d["name"]) not in DEFAULT_UNSELECTED_RULE_DOC_CODES,
+            )
+            for d in rule_docs
+        ]
+    )
 
 
 async def verify_project_ownership(
@@ -95,9 +141,21 @@ async def start_review(
     project_id: str,
     db: DBSession,
     current_user: CurrentUser,
+    payload: ReviewStartRequest | None = None,
 ) -> ReviewTask:
     """Start a new review task for the project."""
     await verify_project_ownership(project_id, current_user, db)
+
+    selected_rule_docs: list[str] | None = None
+    if payload is not None and payload.selected_rule_docs is not None:
+        if not payload.selected_rule_docs:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="请至少选择一个检查项大类",
+            )
+        # 去重并保持勾选顺序
+        selected_rule_docs = list(dict.fromkeys(payload.selected_rule_docs))
+
     from backend.services.task_lifecycle import (
         add_task_dispatch,
         authorize_billable_task_start,
@@ -123,6 +181,7 @@ async def start_review(
         max_concurrency=concurrency,
         billing_multiplier=multiplier_for_task(sales_config, "review"),
         billing_status="pending",
+        selected_rule_docs=selected_rule_docs,
     )
     db.add(task)
     await db.flush()
