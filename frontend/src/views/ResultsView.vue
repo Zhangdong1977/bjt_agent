@@ -5,6 +5,7 @@ import { Modal, message } from 'ant-design-vue'
 import { useProjectStore } from '@/stores/project'
 import { reviewApi } from '@/api/client'
 import { downloadBlob } from '@/utils/download'
+import { apiErrorText } from '@/utils/apiError'
 import ReviewResultsArea from '@/components/ReviewResultsArea.vue'
 import ShareResultModal from '@/components/ShareResultModal.vue'
 import type { ReviewResponse } from '@/types'
@@ -114,6 +115,16 @@ async function startNewReview() {
         })
       } catch (error) {
         console.error('启动审查失败:', error)
+        // 透传后端文案（402 余额不足 / 409 已有任务在执行等），原先静默失败用户无从知晓
+        const status = (error as { response?: { status?: number } }).response?.status
+        const text = apiErrorText(error)
+        if (text && (status === 402 || status === 409)) {
+          message.warning(text)
+        } else if (text) {
+          message.error(text)
+        } else {
+          message.error('启动审查失败，请稍后重试')
+        }
       }
     }
   })
