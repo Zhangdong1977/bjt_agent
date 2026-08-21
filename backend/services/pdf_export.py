@@ -66,6 +66,13 @@ _BG_HEADER = colors.HexColor("#F5F5F5")
 _BG_RISK = colors.HexColor("#FFF1F0")
 _LINK_BLUE = colors.HexColor("#2563EB")
 
+# 风险等级配色（严重红/重要橙/一般绿），前端 OverallReportPanel 使用同一组色值
+_HEX_CRITICAL = "#C0392B"
+_HEX_MAJOR = "#E67E22"
+_HEX_MINOR = "#27AE60"
+_SEV_HEX = {"critical": _HEX_CRITICAL, "major": _HEX_MAJOR, "minor": _HEX_MINOR}
+_LEVEL_HEX = {"高": _HEX_CRITICAL, "中": _HEX_MAJOR, "低": _HEX_MINOR}
+
 # Promo banner shown in every page header — links to the review portal.
 _PROMO_TEXT = "点我立即开始检查："
 _PROMO_URL = "https://check.aibjt.com:30002"
@@ -83,7 +90,7 @@ def _severity_label(severity: str | None) -> str:
     return {
         "critical": "严重",
         "major": "重要",
-        "minor": "次要",
+        "minor": "一般",
     }.get((severity or "").lower(), "—")
 
 
@@ -118,6 +125,7 @@ def build_review_pdf(
     summary: dict,
     groups: list[dict],
     *,
+    overall_report: dict | None = None,
     generated_at: datetime | None = None,
 ) -> bytes:
     """Render a structured bid-review report to PDF bytes.
@@ -130,6 +138,12 @@ def build_review_pdf(
             stripped of ``.md``), ``is_compliant``, ``non_compliant_count``
             and ``findings`` (list of ReviewResult-like objects/attrs).
             Groups are sorted by ``label`` dictionary order inside.
+        overall_report: Optional overall report dict (see
+            ``backend/agent/report_agent.py::assemble_report``). When present
+            the PDF opens with the overall summary (rating, severity
+            distribution, critical/major/minor sections, score items) and the
+            per-category details become an appendix; when absent the legacy
+            layout is kept.
         generated_at: Override "exported at" timestamp (UTC now by default).
 
     Returns:
@@ -265,11 +279,113 @@ def build_review_pdf(
     ]))
     story.append(summary_tbl)
 
+    # ---- Overall report: rating + severity distribution (overview) ----
+    if overall_report:
+        rej = overall_report.get("rejection_risk") or {}
+        level = str(rej.get("level") or "低")
+        level_hex = _LEVEL_HEX.get(level, "#222222")
+        reason = _escape(rej.get("reason"))
+        story.append(Paragraph(
+            f"废标风险评级：<font color='{level_hex}'><b>{_escape(level)}</b></font>"
+            + (f"　—　{reason}" if reason else ""),
+            ParagraphStyle(
+                "LevelLine", parent=normal_style, fontSize=11, leading=16,
+                spaceBefore=8,
+            ),
+        ))
+        dist = (overall_report.get("summary") or {}).get("severity_dist") or {}
+        story.append(Paragraph(
+            "风险等级分布："
+            f"<font color='{_HEX_CRITICAL}'><b>严重 {dist.get('critical', 0)} 项</b></font>　"
+            f"<font color='{_HEX_MAJOR}'><b>重要 {dist.get('major', 0)} 项</b></font>　"
+            f"<font color='{_HEX_MINOR}'><b>一般 {dist.get('minor', 0)} 项</b></font>",
+            ParagraphStyle("DistLine", parent=normal_style, fontSize=11, leading=16),
+        ))
+        failed = (overall_report.get("summary") or {}).get("failed_categories") or []
+        if failed:
+            story.append(Paragraph(
+                f"提示：以下大类子检查未成功，结果可能不完整：{'、'.join(_escape(x) for x in failed)}",
+                disclaimer_style,
+            ))
+
     # ---- Disclaimer ----
     story.append(Paragraph(
         "免责声明：检查结果由大模型生成，仅供参考，请谨慎判别！本结果不可作为最终判定是否废标的依据，最终结果以专家实际判别为准。",
         disclaimer_style,
     ))
+
+    # ---- Overall report: risk sections + score items ----
+    if overall_report:
+        if overall_report.get("degraded"):
+            story.append(Paragraph(
+                "提示：本次总体报告的精简描述生成失败，已降级为原始结论摘录。",
+                disclaimer_style,
+            ))
+
+        section_specs = [
+            ("critical", "一、严重风险", _HEX_CRITICAL),
+            ("major", "二、重要风险", _HEX_MAJOR),
+            ("minor", "三、一般风险", _HEX_MINOR),
+        ]
+        sections = overall_report.get("risk_sections") or {}
+        for sev, title, hexcolor in section_specs:
+            head_style = ParagraphStyle(
+                f"H2_{sev}", fontName=CJK_FONT, fontSize=14, leading=19,
+                spaceBefore=12, spaceAfter=4, textColor=colors.HexColor(hexcolor),
+            )
+            story.append(Paragraph(title, head_style))
+            entries = sections.get(sev) or []
+            if not entries:
+                story.append(Paragraph("无。", normal_style))
+                continue
+            for e in entries:
+                head = (
+                    f"<font color='{hexcolor}'><b>"
+                    f"{_escape(e.get('rule_doc'))}（{e.get('count')} 项）"
+                    f"</b></font>"
+                )
+                if sev == "critical" and e.get("rejection_related"):
+                    head += (
+                        f"　<font color='{_HEX_CRITICAL}'><b>〔涉及废标条款〕</b></font>"
+                    )
+                story.append(Paragraph(head, normal_style))
+                story.append(Paragraph(_escape(e.get("summary") or "—"), normal_style))
+
+        score_items = overall_report.get("score_items") or []
+        if score_items:
+            story.append(Paragraph("四、评分项得分摘要", h1_style))
+            head_row = [
+                Paragraph("<b>评分项</b>", cell_value_style),
+                Paragraph("<b>满分</b>", cell_value_style),
+                Paragraph("<b>预估得分</b>", cell_value_style),
+                Paragraph("<b>说明</b>", cell_value_style),
+            ]
+            rows: list[list[Any]] = [head_row]
+            for it in score_items:
+                rows.append([
+                    Paragraph(_escape(it.get("name") or it.get("code")), cell_value_style),
+                    Paragraph(_fmt_score(it.get("full_score")), cell_value_style),
+                    Paragraph(_fmt_score(it.get("estimated_score")), cell_value_style),
+                    Paragraph(_escape(it.get("note") or "—"), cell_value_style),
+                ])
+            content_w = page_w - 2 * margin
+            score_tbl = Table(
+                rows, colWidths=[content_w * 0.30, content_w * 0.12, content_w * 0.14, content_w * 0.44],
+            )
+            score_tbl.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), _BG_HEADER),
+                ("BOX", (0, 0), (-1, -1), 0.5, _LINE),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, _LINE),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (1, 0), (2, -1), "CENTER"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            story.append(score_tbl)
+
+        story.append(Paragraph("附录：各大类检查明细", h1_style))
 
     # ---- Body: one section per check category (dict order) ----
     sorted_groups = sorted(
@@ -315,6 +431,17 @@ def build_review_pdf(
 
     doc.build(story)
     return buffer.getvalue()
+
+
+def _fmt_score(value: Any) -> str:
+    """Format a score number; None / unparsable -> em dash."""
+    if value is None:
+        return "—"
+    try:
+        f = float(value)
+        return f"{f:g}"
+    except (TypeError, ValueError):
+        return _escape(value)
 
 
 def _finding_card(

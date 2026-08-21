@@ -75,6 +75,7 @@ onMounted(async () => {
             :project-id="shared!.project_id"
             :task-id="shared!.task_id"
             :report-fetcher="reportFetcher"
+            :initial-overall-report="shared!.overall_report"
             read-only
           />
           <a-alert

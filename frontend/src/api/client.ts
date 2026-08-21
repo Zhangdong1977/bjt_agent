@@ -19,6 +19,7 @@ import type {
   ReviewTaskListItem,
   RuleDocInfo,
   ReviewResponse,
+  OverallReportResponse,
   AgentStep,
   ReviewResult,
   TodoItem,
@@ -739,6 +740,28 @@ export const reviewApi = {
     return response.data;
   },
 
+  // 总体报告：report 为 null 时，status=running 表示生成中（轮询），
+  // status=completed 表示可补生成（调 regenerateOverallReport）。
+  async getOverallReport(
+    projectId: string,
+    taskId: string,
+  ): Promise<OverallReportResponse> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/review/tasks/${taskId}/overall-report`,
+    );
+    return response.data;
+  },
+
+  async regenerateOverallReport(
+    projectId: string,
+    taskId: string,
+  ): Promise<{ status: string; celery_task_id: string }> {
+    const response = await apiClient.post(
+      `/projects/${projectId}/review/tasks/${taskId}/overall-report/regenerate`,
+    );
+    return response.data;
+  },
+
   // Export the review results of a task as a structured PDF. Chapters are
   // ordered by check-category dictionary order. Returns a Blob for download.
   async exportResultsPdf(
@@ -934,6 +957,7 @@ export interface SharedReview {
   project_name: string | null;
   findings: ReviewResult[];
   todos: TodoItem[];
+  overall_report: import("@/types").OverallReport | null;
 }
 
 export const shareApi = {

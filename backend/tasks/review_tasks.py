@@ -608,6 +608,61 @@ def merge_review_results(self, project_id: str, latest_task_id: str) -> dict:
         return {"status": "error", "message": "结果合并超时，请稍后重试"}
 
 
+@celery_app.task(bind=True, name="backend.tasks.review_tasks.generate_overall_report")
+def generate_overall_report(self, task_id: str) -> dict:
+    """(Re)generate the overall report for a completed review task.
+
+    补生成入口：历史任务（overall_report 为 NULL）或需要重新生成时由 API 触发。
+    任务用量已在终态时 finalize，因此这里的 LLM 调用不再计量（meter_usage=False）。
+    """
+    def _event_cb(event_type: str, data: dict):
+        _publish_event(task_id, event_type, data)
+
+    async def _run():
+        from sqlalchemy import select
+
+        session_factory, engine = create_session_factory()
+        try:
+            from backend.agent.report_agent import generate_overall_report as _generate
+
+            async with session_factory() as db:
+                task = (
+                    await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
+                ).scalar_one_or_none()
+                if not task or task.status != "completed":
+                    return {"status": "error", "message": "任务不存在或未完成，无法生成总体报告"}
+
+            _publish_event(task_id, "report_generation_started", {"message": "正在汇总生成总体报告"})
+            report = await _generate(
+                task_id, session_factory,
+                event_callback=_event_cb, meter_usage=False,
+            )
+            if report is None:
+                _publish_event(task_id, "report_generation_failed", {
+                    "message": "总体报告生成失败，请稍后重试",
+                })
+                return {"status": "error", "message": "总体报告生成失败"}
+
+            async with session_factory() as db:
+                task = (
+                    await db.execute(select(ReviewTask).where(ReviewTask.id == task_id))
+                ).scalar_one_or_none()
+                if not task:
+                    return {"status": "error", "message": "任务不存在"}
+                task.overall_report = report
+                await db.commit()
+
+            _publish_event(task_id, "report_generation_completed", {
+                "message": "总体报告已生成",
+                "level": (report.get("rejection_risk") or {}).get("level"),
+            })
+            return {"status": "success", "task_id": task_id}
+        finally:
+            await engine.dispose()
+
+    return run_async(_run())
+
+
 def _record_agent_step(db, task_id: str, step_number: int, msg, tool_results: list | None = None) -> int:
     """Record agent steps from message history.
 
@@ -815,6 +870,33 @@ async def _run_agent_review(
             )
 
         if result.get("success"):
+            # 总体报告生成（尽力而为）：在任务标记 completed 前汇总各子 agent 输出。
+            # 失败不阻塞主流程——overall_report 保持 NULL，用户可在结果页补生成。
+            overall_report = None
+            try:
+                from backend.agent.report_agent import generate_overall_report
+                event_cb("report_generation_started", {"message": "正在汇总生成总体报告"})
+                overall_report = await generate_overall_report(
+                    task_id, session_factory, event_callback=event_cb,
+                )
+                if overall_report is not None:
+                    event_cb("report_generation_completed", {
+                        "message": "总体报告已生成",
+                        "level": (overall_report.get("rejection_risk") or {}).get("level"),
+                    })
+                else:
+                    event_cb("report_generation_failed", {
+                        "message": "总体报告生成失败，可稍后在结果页补生成",
+                    })
+            except Exception as report_err:
+                logger.warning(
+                    f"[run_review] Overall report generation failed for {task_id}: {report_err}",
+                    exc_info=True,
+                )
+                event_cb("report_generation_failed", {
+                    "message": "总体报告生成失败，可稍后在结果页补生成",
+                })
+
             # Count non-compliant findings and update task status
             # Use a fresh short-lived session instead of a long-held one
             # to avoid connection timeout issues.
@@ -834,6 +916,7 @@ async def _run_agent_review(
                 if review_task:
                     review_task.status = "completed"
                     review_task.completed_at = utc_now()
+                    review_task.overall_report = overall_report
                     if review_task.started_at and review_task.completed_at:
                         review_task.duration_seconds = utc_seconds_between(
                             review_task.started_at,

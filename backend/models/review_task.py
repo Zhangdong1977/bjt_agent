@@ -56,6 +56,9 @@ class ReviewTask(Base):
     billing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     usage_finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     billing_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 总体报告：检查完成后由报告 Agent 汇总各子 agent 输出生成（结构见
+    # backend/agent/report_agent.py assemble_report；NULL = 尚未生成，可在结果页补生成）
+    overall_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Relationships
     project: Mapped["Project"] = relationship("Project", back_populates="review_tasks")

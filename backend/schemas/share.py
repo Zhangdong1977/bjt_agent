@@ -49,6 +49,8 @@ class SharedReviewPayload(BaseModel):
     project_name: str | None = None
     findings: list[ReviewResultResponse]
     todos: list["SharedTodoItemResponse"]
+    # 总体报告（报告生成 Agent 的汇总结果）；旧任务可能为 null
+    overall_report: dict | None = None
 
 
 class SharedTodoItemResponse(BaseModel):

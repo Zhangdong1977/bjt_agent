@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import type { ReviewResponse, ReviewResult } from '@/types'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { ReviewResponse, ReviewResult, OverallReport } from '@/types'
 import { renderMarkdown } from '@/utils/markdown'
 import { reviewApi } from '@/api/client'
 import BatchConfirmBar from '@/components/feedback/BatchConfirmBar.vue'
 import FindingsTable from '@/components/execution/FindingsTable.vue'
+import OverallReportPanel from '@/components/OverallReportPanel.vue'
 // 统计卡片背景图（自带图标）：大类 / 总数 / 风险
 import bgCategory from '@/assets/images/ui/result-card-category.png'
 import bgTotal from '@/assets/images/ui/result-card-total.png'
@@ -21,6 +22,8 @@ const props = defineProps<{
   // 只读模式：分享页（非项目所有者查看）时为 true，隐藏"全部确认"等写操作按钮，
   // 这些操作只对项目所有者有意义，对查看者会因权限不足而失败。
   readOnly?: boolean
+  // 分享页直接下发总体报告（只读，不轮询不补生成）
+  initialOverallReport?: OverallReport | null
 }>()
 
 const summary = computed(() => props.reviewResults?.summary ?? {
@@ -150,10 +153,114 @@ function getSeverityColorClass(severity: string): string {
     default: return ''
   }
 }
+
+// ---- 总体报告：加载 / 轮询 / 补生成 ----
+// 时序说明：主流程在 merging_completed 后、任务标记 completed 前生成总体报告，
+// 前端此时已跳到结果页——所以 report 为空且任务 running 时轮询等它出现。
+const overallReport = ref<OverallReport | null>(props.initialOverallReport ?? null)
+const overallGenerating = ref(false)
+const overallRegenerating = ref(false)
+let overallPollTimer: number | null = null
+
+function stopOverallPolling() {
+  if (overallPollTimer !== null) {
+    window.clearInterval(overallPollTimer)
+    overallPollTimer = null
+  }
+}
+
+async function fetchOverallReport() {
+  if (props.readOnly) return // 分享页数据由 initialOverallReport 提供
+  if (!overallReport.value) overallGenerating.value = true
+  try {
+    const resp = await reviewApi.getOverallReport(props.projectId, props.taskId)
+    if (resp.report) {
+      overallReport.value = resp.report
+      overallGenerating.value = false
+      overallRegenerating.value = false
+      stopOverallPolling()
+      return
+    }
+    // 任务还在跑（报告生成中）或补生成进行中 → 轮询等待
+    if (resp.status === 'running' || overallRegenerating.value) {
+      scheduleOverallPolling()
+    } else {
+      overallGenerating.value = false
+    }
+  } catch {
+    overallGenerating.value = overallReport.value ? false : overallGenerating.value
+  }
+}
+
+function scheduleOverallPolling() {
+  overallGenerating.value = true
+  if (overallPollTimer !== null) return
+  const deadline = Date.now() + 3 * 60 * 1000
+  overallPollTimer = window.setInterval(async () => {
+    if (Date.now() > deadline) {
+      stopOverallPolling()
+      overallGenerating.value = false
+      overallRegenerating.value = false
+      return
+    }
+    await fetchOverallReport()
+  }, 4000)
+}
+
+async function regenerateOverallReport() {
+  if (overallRegenerating.value || props.readOnly) return
+  overallRegenerating.value = true
+  overallGenerating.value = true
+  try {
+    await reviewApi.regenerateOverallReport(props.projectId, props.taskId)
+    scheduleOverallPolling()
+  } catch (err) {
+    console.error('生成总体报告失败:', err)
+    overallRegenerating.value = false
+    overallGenerating.value = false
+  }
+}
+
+const canRegenerateOverall = computed(
+  () =>
+    !props.readOnly &&
+    !overallReport.value &&
+    !overallGenerating.value &&
+    !overallRegenerating.value &&
+    hasFindings.value,
+)
+
+const showOverallPanel = computed(
+  () =>
+    !!overallReport.value ||
+    overallGenerating.value ||
+    overallRegenerating.value ||
+    canRegenerateOverall.value,
+)
+
+watch(() => props.taskId, () => {
+  stopOverallPolling()
+  overallRegenerating.value = false
+  overallReport.value = props.initialOverallReport ?? null
+  fetchOverallReport()
+})
+
+onMounted(fetchOverallReport)
+onBeforeUnmount(stopOverallPolling)
 </script>
 
 <template>
   <div class="review-results-area">
+    <!-- 总体报告（报告生成 Agent 汇总层） -->
+    <OverallReportPanel
+      v-if="showOverallPanel"
+      :report="overallReport"
+      :generating="overallGenerating || overallRegenerating"
+      :can-regenerate="canRegenerateOverall"
+      :regenerating="overallRegenerating"
+      @regenerate="regenerateOverallReport"
+    />
+
     <!-- 统计区（背景图自带图标，文字叠加在右侧） -->
     <div v-if="hasFindings" class="stats-bar">
       <div class="stat-card" :style="{ backgroundImage: `url(${bgCategory})` }">

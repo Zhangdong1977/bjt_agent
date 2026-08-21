@@ -575,6 +575,50 @@ export interface ReviewResponse {
   findings: ReviewResult[];
 }
 
+// ---- 总体报告（报告生成 Agent 汇总各子 agent 输出，结构对应后端 report_agent.py） ----
+
+export interface OverallRiskSectionEntry {
+  rule_doc: string;
+  rule_doc_code: string;
+  count: number;
+  summary: string;
+  rejection_related?: boolean; // 仅 critical 节：是否涉及废标条款
+}
+
+export interface OverallScoreItem {
+  code: string;
+  name: string;
+  full_score: number | null;
+  estimated_score: number | null;
+  note: string;
+}
+
+export interface OverallReport {
+  schema_version: number;
+  generated_at: string;
+  degraded: boolean; // true = LLM 精简失败，描述为原文摘录
+  summary: {
+    category_count: number;
+    check_item_count: number;
+    risk_item_count: number;
+    severity_dist: { critical: number; major: number; minor: number };
+    failed_categories?: string[];
+  };
+  rejection_risk: { level: "高" | "中" | "低"; reason: string };
+  risk_sections: {
+    critical: OverallRiskSectionEntry[];
+    major: OverallRiskSectionEntry[];
+    minor: OverallRiskSectionEntry[];
+  };
+  score_items: OverallScoreItem[];
+}
+
+export interface OverallReportResponse {
+  task_id: string;
+  status: string; // 任务状态：running = 报告生成中；completed = 已定稿
+  report: OverallReport | null;
+}
+
 export interface AgentStep {
   id: string;
   task_id: string;

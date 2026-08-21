@@ -585,6 +585,79 @@ async def get_todo_report(
     return PlainTextResponse(content=content, media_type="text/markdown")
 
 
+@router.get("/tasks/{task_id}/overall-report")
+async def get_overall_report(
+    project_id: str,
+    task_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> dict:
+    """Return the overall report of a review task (may be null).
+
+    前端据返回值展示三种状态：report 非空 → 渲染总体报告；status=running 且
+    report 为空 → 展示"生成中"并轮询；status=completed 且 report 为空 → 展示
+    补生成入口。
+    """
+    await verify_project_ownership(project_id, current_user, db, allow_interior=True)
+
+    result = await db.execute(
+        select(ReviewTask).where(
+            ReviewTask.id == task_id,
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+        )
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="审查任务不存在或已被删除",
+        )
+    return {"task_id": task_id, "status": task.status, "report": task.overall_report}
+
+
+@router.post("/tasks/{task_id}/overall-report/regenerate", status_code=status.HTTP_202_ACCEPTED)
+async def regenerate_overall_report(
+    project_id: str,
+    task_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> dict:
+    """(Re)generate the overall report for a completed task (async Celery)."""
+    await verify_project_ownership(project_id, current_user, db)
+
+    result = await db.execute(
+        select(ReviewTask).where(
+            ReviewTask.id == task_id,
+            ReviewTask.project_id == project_id,
+            ReviewTask.task_type == "review",
+        )
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="审查任务不存在或已被删除",
+        )
+    if task.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="仅已完成的任务支持生成总体报告",
+        )
+
+    from backend.tasks.review_tasks import generate_overall_report as generate_task
+
+    try:
+        async_result = generate_task.delay(task_id)
+    except Exception:
+        logger.exception("[regenerate_overall_report] dispatch failed task=%s", task_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="总体报告生成任务派发失败，请稍后重试",
+        )
+    return {"status": "accepted", "task_id": task_id, "celery_task_id": async_result.id}
+
+
 @router.get("/tasks/{task_id}/stream")
 async def stream_review_events(
     project_id: str,
@@ -759,6 +832,7 @@ async def export_review_pdf(
     try:
         pdf_bytes = build_review_pdf(
             project.name, task.completed_at, summary, groups,
+            overall_report=task.overall_report,
         )
     except HTTPException:
         raise
