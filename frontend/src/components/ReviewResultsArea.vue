@@ -251,16 +251,6 @@ onBeforeUnmount(stopOverallPolling)
 
 <template>
   <div class="review-results-area">
-    <!-- 总体报告（报告生成 Agent 汇总层） -->
-    <OverallReportPanel
-      v-if="showOverallPanel"
-      :report="overallReport"
-      :generating="overallGenerating || overallRegenerating"
-      :can-regenerate="canRegenerateOverall"
-      :regenerating="overallRegenerating"
-      @regenerate="regenerateOverallReport"
-    />
-
     <!-- 统计区（背景图自带图标，文字叠加在右侧） -->
     <div v-if="hasFindings" class="stats-bar">
       <div class="stat-card" :style="{ backgroundImage: `url(${bgCategory})` }">
@@ -284,6 +274,16 @@ onBeforeUnmount(stopOverallPolling)
         </div>
       </div>
     </div>
+
+    <!-- 总体报告（报告生成 Agent 汇总层） -->
+    <OverallReportPanel
+      v-if="showOverallPanel"
+      :report="overallReport"
+      :generating="overallGenerating || overallRegenerating"
+      :can-regenerate="canRegenerateOverall"
+      :regenerating="overallRegenerating"
+      @regenerate="regenerateOverallReport"
+    />
 
     <!-- 左右分栏 -->
     <div v-if="hasFindings" class="split-panel">
