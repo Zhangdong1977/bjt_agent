@@ -4,6 +4,8 @@
 均为纯函数，LLM 部分通过注入输出 dict 验证校验与降级路径。
 """
 
+import io
+
 from backend.agent.report_agent import (
     REJECTION_RULE_DOC_CODES,
     _parse_json,
@@ -316,3 +318,79 @@ def test_pdf_overlong_finding_text_splits_across_pages():
         groups,
     )
     assert pdf_bytes[:5] == b"%PDF-"
+
+
+# ---------------------------------------------------------------------------
+# PDF 明细卡片 Markdown 渲染
+# ---------------------------------------------------------------------------
+
+def test_md_inline_converts_tokens():
+    from backend.services.pdf_export import _md_inline
+
+    out = _md_inline("**加粗** 与 *斜体* 与 `code` 与 ~~删除~~ 与 [链接](http://x.com)")
+    assert "<b>加粗</b>" in out
+    assert "<i>斜体</i>" in out
+    assert '<font face="Courier">code</font>' in out
+    assert "<strike>删除</strike>" in out
+    assert "链接（http://x.com）" in out
+    # 算式里的星号不应误转斜体
+    assert _md_inline("宽度 2*3 与 4*6 相等") == "宽度 2*3 与 4*6 相等"
+    # 用户内容先转义，不能注入段落标签
+    assert "<script>" not in _md_inline("<script>alert(1)</script>")
+
+
+def test_md_blocks_types():
+    from backend.services.pdf_export import _md_blocks
+
+    blocks = _md_blocks(
+        "### 标题\n普通段落\n- 无序项\n1. 有序项\n| a | b |\n|---|---|\n| 1 | 2 |"
+    )
+    kinds = [k for k, _ in blocks]
+    assert kinds == ["h", "p", "li", "num", "table"]
+    assert blocks[4][1][0] == "| a | b |"
+
+
+def test_pdf_renders_markdown_findings():
+    """明细卡片的 md 字段应按块渲染且导出成功（含嵌套表格与列表）."""
+    from pypdf import PdfReader
+
+    from backend.services.pdf_export import build_review_pdf
+
+    md = (
+        "招标文件（示例.docx）中识别的否决条款如下：\n"
+        "**类型一：集中列出的否决条款（2组）**\n"
+        "1. 投标函未加盖公章\n"
+        "2. 报价超过最高限价\n"
+        "- 另有分散否决要求 3 项\n"
+        "| 条款 | 要求 | 响应 |\n|---|---|---|\n| 7.1 | 承诺函 | 未提供 |\n| 7.2 | 证明 | 已提供 |\n"
+        + "补充说明段落。" * 300
+    )
+    groups = [{
+        "label": "A009 明确否决条款检查",
+        "is_compliant": False,
+        "non_compliant_count": 1,
+        "findings": [{
+            "check_item_name": "招标文件否决条款识别与分类",
+            "requirement_key": "req_1",
+            "requirement_content": md,
+            "bid_content": "- 响应一\n- 响应二",
+            "is_compliant": False,
+            "severity": "critical",
+            "location_page": None,
+            "location_line": None,
+            "suggestion": "补盖**公章**",
+            "explanation": "缺承诺函。",
+        }],
+    }]
+    pdf_bytes = build_review_pdf(
+        "md渲染项目", None,
+        {"category_count": 1, "check_item_count": 1, "risk_item_count": 1},
+        groups,
+    )
+    assert pdf_bytes[:5] == b"%PDF-"
+    text = "".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(pdf_bytes)).pages)
+    # 渲染后不应再出现裸 md 标记；文字内容仍在
+    assert "**" not in text
+    assert "类型一：集中列出的否决条款（2组）" in text
+    assert "投标函未加盖公章" in text
+    assert "另有分散否决要求 3 项" in text

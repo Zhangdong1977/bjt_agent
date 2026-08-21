@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -284,7 +285,7 @@ def build_review_pdf(
         rej = overall_report.get("rejection_risk") or {}
         level = str(rej.get("level") or "低")
         level_hex = _LEVEL_HEX.get(level, "#222222")
-        reason = _escape(rej.get("reason"))
+        reason = _md_inline(rej.get("reason"))
         story.append(Paragraph(
             f"废标风险评级：<font color='{level_hex}'><b>{_escape(level)}</b></font>"
             + (f"　—　{reason}" if reason else ""),
@@ -349,7 +350,7 @@ def build_review_pdf(
                         f"　<font color='{_HEX_CRITICAL}'><b>〔涉及废标条款〕</b></font>"
                     )
                 story.append(Paragraph(head, normal_style))
-                story.append(Paragraph(_escape(e.get("summary") or "—"), normal_style))
+                story.append(Paragraph(_md_inline(e.get("summary") or "—"), normal_style))
 
         score_items = overall_report.get("score_items") or []
         if score_items:
@@ -366,7 +367,7 @@ def build_review_pdf(
                     Paragraph(_escape(it.get("name") or it.get("code")), cell_value_style),
                     Paragraph(_fmt_score(it.get("full_score")), cell_value_style),
                     Paragraph(_fmt_score(it.get("estimated_score")), cell_value_style),
-                    Paragraph(_escape(it.get("note") or "—"), cell_value_style),
+                    Paragraph(_md_inline(it.get("note") or "—"), cell_value_style),
                 ])
             content_w = page_w - 2 * margin
             score_tbl = Table(
@@ -483,13 +484,13 @@ def _finding_card(
         )])
 
     if requirement:
-        rows.extend(_kv_rows("依据要求", requirement, value_style))
+        rows.extend(_md_kv_rows("依据要求", requirement, value_style, content_width))
     if bid:
-        rows.extend(_kv_rows("投标内容", bid, value_style))
+        rows.extend(_md_kv_rows("投标内容", bid, value_style, content_width))
     if explanation:
-        rows.extend(_kv_rows("问题描述", explanation, value_style))
+        rows.extend(_md_kv_rows("问题描述", explanation, value_style, content_width))
     if suggestion:
-        rows.extend(_kv_rows("修改建议", suggestion, value_style))
+        rows.extend(_md_kv_rows("修改建议", suggestion, value_style, content_width))
 
     tbl = Table(rows, colWidths=[content_width])
     style = TableStyle([
@@ -534,15 +535,184 @@ def _chunk_text(text: str, limit: int = 1200) -> list[str]:
     return chunks
 
 
-def _kv_rows(label: str, value: object, value_style: ParagraphStyle) -> list[list[Any]]:
-    """Label/value row(s); over-long values are chunked so rows stay page-safe."""
-    text = str(value or "")
-    chunks = _chunk_text(text)
-    if not chunks:
+# ---- 轻量 Markdown 渲染（findings 字段是 md 文本，PDF 里不能裸输出标记） ----
+# 只覆盖子 agent 输出里实际出现的语法：加粗/斜体/行内代码/删除线/链接、
+# 标题、无序/有序列表、代码块、表格。分块行渲染，天然兼容超长字段分块。
+
+# 嵌套 md 表格每块的行数上限（防止单块行高超过页框，同 _chunk_text 的动机）
+_MD_TABLE_CHUNK_ROWS = 12
+
+
+def _md_inline(text: str) -> str:
+    """Markdown 行内标记 → reportlab 段落标记（先转义，用户内容不会注入标签）."""
+    t = _escape(text)
+    t = re.sub(r"\*\*\*(.+?)\*\*\*", r"<b><i>\1</i></b>", t)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+    t = re.sub(r"__(.+?)__", r"<b>\1</b>", t)
+
+    def _italic(m: re.Match) -> str:
+        inner = m.group(1)
+        # 首尾必须是字母/汉字才视为强调，避免把 "2*3 与 4*6" 这类算式误转斜体
+        if inner and re.match(r"[A-Za-z\u4e00-\u9fff]", inner) and re.search(r"[A-Za-z\u4e00-\u9fff]$", inner):
+            return f"<i>{inner}</i>"
+        return m.group(0)
+
+    t = re.sub(r"\*([^*\n]{1,80}?)\*", _italic, t)
+    t = re.sub(r"~~(.+?)~~", r"<strike>\1</strike>", t)
+    t = re.sub(r"`([^`]+)`", r'<font face="Courier">\1</font>', t)
+    t = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r"\1（\2）", t)
+    return t
+
+
+def _md_blocks(text: str) -> list[tuple[str, Any]]:
+    """把 md 文本切成 (类型, 内容) 块：p/h/li/num/code/table."""
+    lines = text.splitlines()
+    blocks: list[tuple[str, Any]] = []
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if not s or re.fullmatch(r"-{3,}|\*{3,}", s):
+            i += 1
+            continue
+        if s.startswith("|"):
+            j = i
+            tbl: list[str] = []
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                tbl.append(lines[j].strip())
+                j += 1
+            blocks.append(("table", tbl))
+            i = j
+            continue
+        if s.startswith("```"):
+            j = i + 1
+            code: list[str] = []
+            while j < len(lines) and not lines[j].strip().startswith("```"):
+                code.append(lines[j])
+                j += 1
+            blocks.append(("code", "\n".join(code)))
+            i = j + 1
+            continue
+        m = re.match(r"^#{1,6}\s+(.*)$", s)
+        if m:
+            blocks.append(("h", m.group(1)))
+            i += 1
+            continue
+        if re.match(r"^[-*+]\s+\S", s):
+            blocks.append(("li", re.sub(r"^[-*+]\s+", "", s)))
+            i += 1
+            continue
+        m = re.match(r"^(\d+)[.、)）]\s*(\S.*)$", s)
+        if m:
+            blocks.append(("num", f"{m.group(1)}. {m.group(2)}"))
+            i += 1
+            continue
+        blocks.append(("p", s))
+        i += 1
+    return blocks
+
+
+def _md_table_rows(
+    tbl_lines: list[str],
+    value_style: ParagraphStyle,
+    content_width: float,
+) -> list[list[Any]]:
+    """md 表格 → 嵌套 reportlab Table（按行分块防超页），每块作为卡片的一行."""
+    data: list[list[str]] = []
+    for ln in tbl_lines:
+        if re.fullmatch(r"\|[\s:\-|]+\|?", ln):
+            continue  # 对齐分隔行
+        data.append([c.strip() for c in ln.strip().strip("|").split("|")])
+    if not data:
         return []
-    rows = [[Paragraph(f"<b>{_escape(label)}</b>：{_escape(chunks[0])}", value_style)]]
-    for chunk in chunks[1:]:
-        rows.append([Paragraph(_escape(chunk), value_style)])
+    ncols = max(len(r) for r in data)
+    cell_style = ParagraphStyle(
+        "MdCell", parent=value_style, fontSize=8.5, leading=12,
+    )
+    avail = max(content_width - 16, 60)  # 扣掉卡片单元格左右 padding
+    col_w = [avail / ncols] * ncols
+    out: list[list[Any]] = []
+    for start in range(0, len(data), _MD_TABLE_CHUNK_ROWS):
+        chunk = data[start:start + _MD_TABLE_CHUNK_ROWS]
+        tbl_rows: list[list[Any]] = []
+        for ri, r in enumerate(chunk):
+            cells = r + [""] * (ncols - len(r))
+            tbl_rows.append([
+                Paragraph(
+                    (f"<b>{_md_inline(c)}</b>" if start == 0 and ri == 0 else _md_inline(c)) or " ",
+                    cell_style,
+                )
+                for c in cells
+            ])
+        t = Table(tbl_rows, colWidths=col_w)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), _BG_HEADER if start == 0 else colors.white),
+            ("BOX", (0, 0), (-1, -1), 0.5, _LINE),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, _LINE),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        out.append([t])
+    return out
+
+
+def _md_block_rows(
+    blocks: list[tuple[str, Any]],
+    value_style: ParagraphStyle,
+    content_width: float,
+) -> list[list[Any]]:
+    list_style = ParagraphStyle(
+        "MdList", parent=value_style, leftIndent=14, firstLineIndent=-14,
+    )
+    rows: list[list[Any]] = []
+    for kind, content in blocks:
+        if kind == "p":
+            for chunk in _chunk_text(content):
+                rows.append([Paragraph(_md_inline(chunk), value_style)])
+        elif kind == "h":
+            rows.append([Paragraph(f"<b>{_md_inline(content)}</b>", value_style)])
+        elif kind == "li":
+            rows.append([Paragraph(f"• {_md_inline(content)}", list_style)])
+        elif kind == "num":
+            rows.append([Paragraph(_md_inline(content), list_style)])
+        elif kind == "code":
+            code_lines = content.splitlines() or [content]
+            for cs in range(0, len(code_lines), 20):
+                part = code_lines[cs:cs + 20]
+                html = "<br/>".join(_escape(l) or "&nbsp;" for l in part)
+                rows.append([
+                    Paragraph(f'<font face="Courier">{html}</font>', value_style),
+                ])
+        elif kind == "table":
+            rows.extend(_md_table_rows(content, value_style, content_width))
+    return rows
+
+
+def _md_kv_rows(
+    label: str,
+    value: object,
+    value_style: ParagraphStyle,
+    content_width: float,
+) -> list[list[Any]]:
+    """md 字段渲染入口：单一普通段落走原分块路径（标签内联），多块走块渲染."""
+    text = str(value or "")
+    if not text.strip():
+        return []
+    blocks = _md_blocks(text)
+    if len(blocks) == 1 and blocks[0][0] == "p":
+        chunks = _chunk_text(blocks[0][1])
+        if not chunks:
+            return []
+        rows = [[
+            Paragraph(f"<b>{_escape(label)}</b>：{_md_inline(chunks[0])}", value_style),
+        ]]
+        for chunk in chunks[1:]:
+            rows.append([Paragraph(_md_inline(chunk), value_style)])
+        return rows
+    rows = [[Paragraph(f"<b>{_escape(label)}</b>：", value_style)]]
+    rows.extend(_md_block_rows(blocks, value_style, content_width))
     return rows
 
 
