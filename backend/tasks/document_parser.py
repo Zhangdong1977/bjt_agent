@@ -644,7 +644,7 @@ async def _parse_document_internal(document: Document, file_path: Path, settings
             f"pages={parsed_data.get('page_count')}"
         )
     elif suffix == ".xlsx":
-        parsed_data = await _parse_xlsx(file_path, document_id=document.id)
+        parsed_data = await _parse_xlsx(file_path, settings=settings, document_id=document.id)
         elapsed = time_module.time() - start_time
         logger.info(
             f"[PARSE] XLSX done: document_id={document.id}, elapsed={elapsed:.1f}s, "
@@ -1038,7 +1038,7 @@ async def _parse_pdf_with_markitdown(file_path: Path, document_id: str = "") -> 
     }
 
 
-async def _parse_xlsx(file_path: Path, document_id: str = "") -> dict:
+async def _parse_xlsx(file_path: Path, settings, document_id: str = "") -> dict:
     """Parse XLSX file using openpyxl: each visible sheet becomes a Markdown table.
 
     Progress is reported per worksheet (stage ``extracting_text``) so the parse
