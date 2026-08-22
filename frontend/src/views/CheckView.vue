@@ -557,7 +557,7 @@ function getStatusClass(status: string) {
         </div>
       </div>
 
-      <p class="upload-note">支持 PDF、Docx 格式，单个文件不超过 1GB；上传后立即开始解析</p>
+      <p class="upload-note">支持 PDF、Word（.docx）、Excel（.xlsx）格式，单个文件不超过 1GB；上传后立即开始解析</p>
     </section>
 
     <!-- 开始检查按钮：条件具备时启用 -->
