@@ -224,6 +224,12 @@ class Settings(BaseSettings):
     # 集群并发上限由 nginx limit_conn 控制，见 deploy/nginx/bjt-cluster。
     upload_bytes_per_sec: int = 4 * 1024 * 1024  # 4 MB/s
 
+    # XLSX 解析输出上限（每个工作表）。标书报价清单表动辄上千行，而审查流程
+    # 对解析产物无分段截断（全文进 LLM），全量转换会 token 失控并易触发解析
+    # 软超时；超出部分在 Markdown 中以省略提示标注。env: XLSX_MAX_ROWS/COLS_PER_SHEET。
+    xlsx_max_rows_per_sheet: int = 300
+    xlsx_max_cols_per_sheet: int = 64
+
     # Rate Limiting
     rate_limit_per_minute: int = 60  # Default rate limit per minute
     rate_limit_auth_per_minute: int = 10  # Stricter limit for auth endpoints
