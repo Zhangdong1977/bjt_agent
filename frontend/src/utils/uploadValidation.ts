@@ -3,7 +3,9 @@
  *
  * 后端使用 mammoth 解析 Word 文档，mammoth 仅支持基于 Office Open XML 的
  * .docx 格式，无法解析 Word 97-2003 的二进制 .doc 格式（解析会失败）。
- * 因此在前端提前拦截 .doc，引导用户转换为 .docx 或 PDF 再上传。
+ * Excel 侧同理：后端使用 openpyxl 解析，仅支持 .xlsx，无法解析
+ * Excel 97-2003 的二进制 .xls 格式。
+ * 因此在前端提前拦截 .doc / .xls，引导用户转换格式后再上传。
  */
 
 /** 提取文件扩展名（小写，不含点）。例如 "report.DOCX" -> "docx" */
@@ -15,6 +17,11 @@ export function getFileExtension(filename: string): string {
 /** 判断文件是否为旧版 .doc（Word 97-2003）二进制格式 */
 export function isLegacyDocFile(file: File): boolean {
   return getFileExtension(file.name) === 'doc'
+}
+
+/** 判断文件是否为旧版 .xls（Excel 97-2003）二进制格式 */
+export function isLegacyXlsFile(file: File): boolean {
+  return getFileExtension(file.name) === 'xls'
 }
 
 /** 单文件上限：1 GiB。与后端 Settings.max_upload_size_bytes 保持一致。 */
@@ -30,6 +37,11 @@ const STORAGE_TIMESTAMP_PLACEHOLDER = '0'.repeat(14)
 /** 生成 .doc 旧格式被拦截时的友好提示文案 */
 export function legacyDocWarning(filename: string): string {
   return `「${filename}」是 .doc（Word 97-2003）旧版格式，暂不支持解析。请用 Word「另存为 .docx」或「导出为 PDF」后重新上传。`
+}
+
+/** 生成 .xls 旧格式被拦截时的友好提示文案 */
+export function legacyXlsWarning(filename: string): string {
+  return `「${filename}」是 .xls（Excel 97-2003）旧版格式，暂不支持解析。请用 Excel「另存为 .xlsx」后重新上传。`
 }
 
 /** 超过 1 GiB 时返回友好提示；大小合法时返回 null。 */

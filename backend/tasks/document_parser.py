@@ -643,6 +643,14 @@ async def _parse_document_internal(document: Document, file_path: Path, settings
             f"images={len(parsed_data.get('images', []))}, "
             f"pages={parsed_data.get('page_count')}"
         )
+    elif suffix == ".xlsx":
+        parsed_data = await _parse_xlsx(file_path, settings=settings, document_id=document.id)
+        elapsed = time_module.time() - start_time
+        logger.info(
+            f"[PARSE] XLSX done: document_id={document.id}, elapsed={elapsed:.1f}s, "
+            f"md_length={len(parsed_data.get('text', ''))}, "
+            f"images={len(parsed_data.get('images', []))}"
+        )
     else:
         # DOCX/DOC parsing with mammoth progress callback
         last_published_time = 0
@@ -1027,6 +1035,48 @@ async def _parse_pdf_with_markitdown(file_path: Path, document_id: str = "") -> 
         "parser_name": "markitdown",
         "parser_version": "pymupdf-markdown",
         "parsed_page_count": result.page_count,
+    }
+
+
+async def _parse_xlsx(file_path: Path, settings, document_id: str = "") -> dict:
+    """Parse XLSX file using openpyxl: each visible sheet becomes a Markdown table.
+
+    Progress is reported per worksheet (stage ``extracting_text``) so the parse
+    card stays alive for multi-sheet workbooks.  page_count stays None — a
+    spreadsheet has no page concept (same contract as DOCX).
+    """
+    import time as time_module
+    from backend.parsers.markitdown_converter import MarkitdownConverter
+
+    file_size = file_path.stat().st_size
+    logger.info(f"[XLSX] Starting: {file_path.name} ({file_size / (1024 * 1024):.2f}MB)")
+
+    images_dir = file_path.parent / f"{file_path.stem}_images"
+
+    def on_sheet_progress(processed: int, total: int):
+        _publish_parse_progress(document_id, "extracting_text", processed, max(total, 1), 0)
+
+    convert_start = time_module.time()
+    converter = MarkitdownConverter(
+        xlsx_max_rows=settings.xlsx_max_rows_per_sheet,
+        xlsx_max_cols=settings.xlsx_max_cols_per_sheet,
+    )
+    result = await asyncio.to_thread(
+        converter.convert, file_path, images_dir=images_dir, progress_callback=on_sheet_progress
+    )
+    convert_elapsed = time_module.time() - convert_start
+
+    logger.info(
+        f"[XLSX] Conversion done: elapsed={convert_elapsed:.1f}s, "
+        f"md={len(result.markdown_content)} chars, images={len(result.images)}"
+    )
+
+    return {
+        "text": result.markdown_content,
+        "images": [{"filename": img.filename, "data": img.data} for img in result.images],
+        "page_count": None,
+        "parser_name": "markitdown",
+        "parser_version": "openpyxl-tables/v1",
     }
 
 

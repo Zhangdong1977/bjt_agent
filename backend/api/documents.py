@@ -345,8 +345,8 @@ async def get_document_content(
     content_format = "html"
     images = []
 
-    if file_ext in [".docx", ".doc", ".pdf"]:
-        # Return Markdown content for DOCX/PDF files
+    if file_ext in [".docx", ".doc", ".pdf", ".xlsx"]:
+        # Return Markdown content for DOCX/PDF/XLSX files
         content_format = "markdown"
         workspace_dir = settings.workspace_path
         workspace_rel_path = ""
@@ -516,7 +516,7 @@ async def delete_document(
 # 草稿文档（独立于项目）：选文件即上传解析，点「开始检查」时才关联到项目
 # ============================================================
 
-SUPPORTED_EXTENSIONS = {"pdf", "docx", "doc"}
+SUPPORTED_EXTENSIONS = {"pdf", "docx", "doc", "xlsx"}
 
 
 def _validate_upload_file(file: UploadFile) -> None:
@@ -542,7 +542,7 @@ def _validate_upload_file(file: UploadFile) -> None:
     if file_ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"暂不支持 {file_ext or '未知'} 格式，请上传 PDF、DOCX 或 DOC 文件",
+            detail=f"暂不支持 {file_ext or '未知'} 格式，请上传 PDF、DOCX、DOC 或 XLSX 文件",
         )
 
 
@@ -1046,7 +1046,7 @@ async def get_draft_document_content(
     content_format = "html"
     images = []
 
-    if file_ext in [".docx", ".doc", ".pdf"]:
+    if file_ext in [".docx", ".doc", ".pdf", ".xlsx"]:
         content_format = "markdown"
         workspace_dir = settings.workspace_path
         workspace_rel_path = ""

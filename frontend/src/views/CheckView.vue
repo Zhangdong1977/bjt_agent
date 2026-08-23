@@ -9,7 +9,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
 import RuleDocSelectModal from '@/components/RuleDocSelectModal.vue'
-import { isLegacyDocFile, legacyDocWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
+import { isLegacyDocFile, legacyDocWarning, isLegacyXlsFile, legacyXlsWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
 import { showCheckDurationNotice } from '@/utils/checkDurationNotice'
 import { apiErrorText } from '@/utils/apiError'
 import illustration from '@/assets/images/ui/home-illustration.png'
@@ -133,11 +133,15 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
   input.value = ''
   if (!files.length) return
 
-  // ① 旧版 .doc 直接拦截，不创建临时卡
+  // ① 旧版 .doc / .xls 直接拦截，不创建临时卡
   const validFiles: File[] = []
   for (const file of files) {
     if (isLegacyDocFile(file)) {
       message.warning(legacyDocWarning(file.name))
+      continue
+    }
+    if (isLegacyXlsFile(file)) {
+      message.warning(legacyXlsWarning(file.name))
       continue
     }
     const uploadWarning = uploadDocumentWarning(file)
@@ -330,8 +334,8 @@ function getStatusClass(status: string) {
 
 <template>
   <div class="check-view">
-    <input ref="tenderInput" type="file" accept=".pdf,.docx" multiple hidden @change="handleUpload($event, 'tender')" />
-    <input ref="bidInput" type="file" accept=".pdf,.docx" multiple hidden @change="handleUpload($event, 'bid')" />
+    <input ref="tenderInput" type="file" accept=".pdf,.docx,.xlsx" multiple hidden @change="handleUpload($event, 'tender')" />
+    <input ref="bidInput" type="file" accept=".pdf,.docx,.xlsx" multiple hidden @change="handleUpload($event, 'bid')" />
 
     <!-- 卡片①：创建新项目 -->
     <section class="card card-project">
@@ -461,7 +465,7 @@ function getStatusClass(status: string) {
               :disabled="isUploadingTender"
               @click="pickTender"
             >
-              {{ isUploadingTender ? '上传中…' : '+ 添加招标文件（PDF / Word .docx）' }}
+              {{ isUploadingTender ? '上传中…' : '+ 添加招标文件（PDF / Word .docx / Excel .xlsx）' }}
             </button>
           </div>
         </div>
@@ -547,13 +551,13 @@ function getStatusClass(status: string) {
               :disabled="isUploadingBid"
               @click="pickBid"
             >
-              {{ isUploadingBid ? '上传中…' : '+ 添加投标文件（PDF / Word .docx）' }}
+              {{ isUploadingBid ? '上传中…' : '+ 添加投标文件（PDF / Word .docx / Excel .xlsx）' }}
             </button>
           </div>
         </div>
       </div>
 
-      <p class="upload-note">支持 PDF、Docx 格式，单个文件不超过 1GB；上传后立即开始解析</p>
+      <p class="upload-note">支持 PDF、Word（.docx）、Excel（.xlsx）格式，单个文件不超过 1GB；上传后立即开始解析</p>
     </section>
 
     <!-- 开始检查按钮：条件具备时启用 -->
