@@ -229,6 +229,41 @@ start_parser_workers() {
     done
 }
 
+start_generation_workers() {
+    local count="${GENERATION_WORKER_COUNT:-1}"
+
+    if [ "$count" -eq 0 ]; then
+        info "No Generation Workers for this node (GENERATION_WORKER_COUNT=0)"
+        return
+    fi
+
+    local concurrency="${GENERATION_CONCURRENCY:-2}"
+    local max_tasks="${GENERATION_MAX_TASKS_PER_CHILD:-10}"
+    local max_mem="${GENERATION_MAX_MEMORY_PER_CHILD:-2500000}"
+
+    cd "$PROJECT_DIR/backend"
+
+    for i in $(seq 1 "$count"); do
+        local worker_name="generation_${i}"
+        local hostname="${NODE_NAME}_generation_${i}"
+
+        log "Starting Celery Generation Worker $i/$count (c=$concurrency, hostname=$hostname)..."
+        nohup celery -A celery_app worker \
+            --loglevel=info \
+            --concurrency="$concurrency" \
+            -Q generation \
+            --hostname="$hostname" \
+            --max-tasks-per-child="$max_tasks" \
+            --max-memory-per-child="$max_mem" \
+            --logfile="$SCRIPT_DIR/logs/${NODE_NAME}_${worker_name}.log" \
+            > /dev/null 2>&1 &
+
+        save_pid "$worker_name" "$!"
+        log "Generation Worker $i started (PID: $(get_pid "$worker_name"))"
+        sleep 1
+    done
+}
+
 start_rag_memory() {
     if [ "${START_RAG_MEMORY:-false}" != "true" ]; then
         info "RAG Memory Service not configured for this node"
@@ -288,6 +323,7 @@ do_start() {
     # Celery workers 先启动
     start_review_workers
     start_parser_workers
+    start_generation_workers
     sleep 2
 
     # API 服务
@@ -306,6 +342,7 @@ do_start() {
     echo "  Backend API:    http://localhost:${BACKEND_PORT:-8001}"
     echo "  Review Workers: ${REVIEW_WORKER_COUNT:-2} × c=${REVIEW_CONCURRENCY:-3}"
     echo "  Parser Workers: ${PARSER_WORKER_COUNT:-1} × c=${PARSER_CONCURRENCY:-2}"
+    echo "  Generation Workers: ${GENERATION_WORKER_COUNT:-1} × c=${GENERATION_CONCURRENCY:-2}"
     echo ""
     echo "  Logs: $SCRIPT_DIR/logs/${NODE_NAME}_*"
     echo ""
@@ -340,6 +377,13 @@ do_stop() {
             stop_by_pid "parser_${i}"
         done
         stop_by_pattern "celery.*--hostname=${NODE_NAME}_parser"
+
+        # 停止 Generation Workers
+        local generation_count="${GENERATION_WORKER_COUNT:-1}"
+        for i in $(seq 1 "$generation_count"); do
+            stop_by_pid "generation_${i}"
+        done
+        stop_by_pattern "celery.*--hostname=${NODE_NAME}_generation"
 
         # 停止 RAG Memory
         stop_by_pid "rag_memory"
@@ -410,6 +454,19 @@ do_status() {
         echo -e "    Parser Workers: ${RED}none${NC}"
     fi
 
+    local generation_pids
+    generation_pids=$(pgrep -af "celery.*-Q generation" 2>/dev/null) || true
+    if [ -n "$generation_pids" ]; then
+        local gcount
+        gcount=$(echo "$generation_pids" | wc -l)
+        echo -e "    Generation Workers: ${GREEN}${gcount} running${NC}"
+        echo "$generation_pids" | while read -r line; do
+            echo "      $line"
+        done
+    else
+        echo -e "    Generation Workers: ${RED}none${NC}"
+    fi
+
     # Health Check
     echo ""
     echo "  Health Checks:"
@@ -428,8 +485,10 @@ try:
     r = redis.Redis(host='183.66.37.186', port=7005, decode_responses=True)
     review_len = r.llen('review')
     parser_len = r.llen('parser')
+    generation_len = r.llen('generation')
     print(f"    Review queue: {review_len} pending")
     print(f"    Parser queue: {parser_len} pending")
+    print(f"    Generation queue: {generation_len} pending")
 except Exception as e:
     print(f"    Error: {e}")
 PYEOF
