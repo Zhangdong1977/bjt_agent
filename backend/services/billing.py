@@ -18,6 +18,7 @@ from backend.models import (
     ConsumptionRecord,
     Project,
     ReviewTask,
+    TASK_MODEL_BY_KIND,
     User,
     UserWallet,
     WalletTransaction,
@@ -478,7 +479,7 @@ class BillingNotReady(RuntimeError):
 
 
 async def _mark_settlement_retry(task_kind: str, task_id: str, exc: Exception) -> None:
-    model = BlindCheckTask if task_kind == "blind_check" else ReviewTask
+    model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
     async with async_session_factory() as db:
         task = (
             await db.execute(select(model).where(model.id == task_id).with_for_update())
@@ -498,9 +499,9 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
     have been incurred before the terminal business status was reached.
     """
 
-    if task_kind not in {"review", "duplicate", "blind_check"}:
+    if task_kind not in {"review", "duplicate", "blind_check", "bid_draft", "polish"}:
         raise ValueError(f"unsupported task kind: {task_kind}")
-    model = BlindCheckTask if task_kind == "blind_check" else ReviewTask
+    model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
     try:
         async with async_session_factory() as db:
             task = (
@@ -508,7 +509,7 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
             ).scalar_one_or_none()
             if task is None:
                 return None
-            if task_kind != "blind_check" and task.task_type != task_kind:
+            if isinstance(task, ReviewTask) and task.task_type != task_kind:
                 return None
             if task.billing_status == "legacy":
                 return None
@@ -537,6 +538,11 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
                 user_id = task.user_id
                 project_id = None
                 project_name = task.document_name or "暗标检查"
+            elif task_kind == "polish":
+                project = None
+                user_id = task.user_id
+                project_id = None
+                project_name = "AI 润色"
             else:
                 project = (
                     await db.execute(select(Project).where(Project.id == task.project_id))

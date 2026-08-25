@@ -1,11 +1,26 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, type Component } from "vue";
+import { useRoute } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import BlindCheckView from "@/views/BlindCheckView.vue";
+import BidDraftView from "@/views/BidDraftView.vue";
+import PolishView from "@/views/PolishView.vue";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 
 const SSO_REQUEST = "bjt.vsto.sso.request";
 const SSO_RESULT = "bjt.vsto.sso.result";
+
+// /vsto/* 专用页共用这一 SSO 壳：票据兑换成功后按路由挂载目标组件。
+// 新增 VSTO 页面时在这里登记一行即可。
+const TARGETS: Record<string, { component: Component; title: string; entering: string }> = {
+  "/vsto/blind-check": { component: BlindCheckView, title: "暗标合规检查", entering: "正在进入暗标合规检查…" },
+  "/vsto/bid-draft": { component: BidDraftView, title: "AI 标书生成", entering: "正在进入 AI 标书生成…" },
+  "/vsto/polish": { component: PolishView, title: "AI 扩写润色", entering: "正在进入 AI 扩写润色…" },
+};
+
+const route = useRoute();
+const target = computed(() => TARGETS[route.path] || TARGETS["/vsto/blind-check"]);
+
 const authStore = useAuthStore();
 const statusText = ref("正在读取插件登录状态…");
 const errorText = ref("");
@@ -68,7 +83,7 @@ async function handleMessage(event: MessageEvent) {
     errorText.value = String(payload.error || "插件登录状态无效，请重新登录插件");
     return;
   }
-  statusText.value = "正在进入暗标合规检查…";
+  statusText.value = target.value.entering;
   try {
     await authStore.loginWithVstoTicket(String(payload.ticket));
     ready.value = true;
@@ -81,7 +96,7 @@ onMounted(() => {
   const webview = (window as VstoWindow).chrome?.webview;
   if (!webview) {
     statusText.value = "此页面不提供浏览器入口";
-    errorText.value = "暗标合规检查只能从 Word VSTO 插件的任务面板中打开";
+    errorText.value = `${target.value.title}只能从 Word VSTO 插件的任务面板中打开`;
     return;
   }
   if (authStore.isAuthenticated) {
@@ -101,13 +116,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <BlindCheckView v-if="ready" />
+  <component :is="target.component" v-if="ready" />
   <main v-else class="sso-page">
     <div class="brand-line" />
     <section class="sso-card">
       <img :src="logoUrl" alt="标书审查智能体" class="sso-logo">
       <div v-if="!errorText" class="spinner" aria-hidden="true" />
-      <h1>暗标合规检查</h1>
+      <h1>{{ target.title }}</h1>
       <p>{{ statusText }}</p>
       <div v-if="errorText" class="error" role="alert">{{ errorText }}</div>
       <button v-if="errorText && insideVsto" type="button" @click="requestTicket">重试</button>
