@@ -163,17 +163,22 @@ function Start-Backend {
     Start-One "backend" $UvicornExe @("main:app", "--host", $BackendHost, "--port", $BackendPort, "--reload") $BackendDir
 }
 function Start-Celery {
-    Write-Log "Starting Celery worker (review,parser,celery queues, pool=solo)..."
+    Write-Log "Starting Celery worker (review,parser,celery,generation queues, pool=solo)..."
     # NOTE: do NOT pass --logfile here. The project's logging_config.py already
     # configures a concurrent_log_handler (ConcurrentRotatingFileHandler) writing
     # to scripts/logs/celery.log. Passing --logfile=celery.log too causes a
     # PermissionError storm (two writers on the same file) that crashes the worker.
     # We only redirect stdout/stderr via Start-One's cmd wrapper, which captures
     # the worker boot/traceback output that the rotating handler may miss.
-    Start-One "celery" $CeleryExe @("-A", "celery_app", "worker", "--loglevel=info", "-Q", "review,parser,celery", "--pool=solo") $BackendDir
+    # generation 队列：标书生成（bid_draft）专用，避免与 review/parser 互相阻塞
+    # （本机联调 solo 池共用进程；生产按 bjt-proc.sh/bjt-cluster.sh 起独立 worker）。
+    Start-One "celery" $CeleryExe @("-A", "celery_app", "worker", "--loglevel=info", "-Q", "review,parser,celery,generation", "--pool=solo") $BackendDir
 }
 function Start-Frontend {
     Write-Log "Starting frontend (vite)..."
+    # vite 的 /api 代理与后端端口联动（vite.config.ts 读 BJT_BACKEND_URL，
+    # 缺省 localhost:8000）；不设则显式注入当前后端端口，避免两处漂移。
+    if (-not $env:BJT_BACKEND_URL) { $env:BJT_BACKEND_URL = "http://127.0.0.1:$BackendPort" }
     # Run vite directly via node (bypasses npm.cmd wrapper which detaches its child,
     # so the captured PID would die with the cmd wrapper). This keeps the node PID.
     $viteJs = Join-Path $FrontendDir "node_modules\vite\bin\vite.js"

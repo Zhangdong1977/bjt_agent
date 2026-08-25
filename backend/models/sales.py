@@ -26,6 +26,8 @@ class SalesConfig(Base):
     review_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     duplicate_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     blind_check_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    bid_draft_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    polish_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     low_balance_threshold: Mapped[float] = mapped_column(
         Numeric(16, 2), nullable=False, default=0, server_default="0"
     )

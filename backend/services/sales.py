@@ -97,6 +97,8 @@ def multiplier_for_task(config: SalesConfig, task_kind: str) -> Decimal:
         "review": config.review_multiplier,
         "duplicate": config.duplicate_multiplier,
         "blind_check": config.blind_check_multiplier,
+        "bid_draft": config.bid_draft_multiplier,
+        "polish": config.polish_multiplier,
     }.get(task_kind)
     return decimal_value(specific) if specific not in (None, "") else decimal_value(config.sales_multiplier)
 
@@ -141,6 +143,16 @@ async def apply_sales_snapshot(db: AsyncSession, payload: SalesSnapshotPayload) 
     config.blind_check_multiplier = (
         Decimal(str(payload.config.blind_check_multiplier))
         if payload.config.blind_check_multiplier is not None
+        else None
+    )
+    config.bid_draft_multiplier = (
+        Decimal(str(payload.config.bid_draft_multiplier))
+        if payload.config.bid_draft_multiplier is not None
+        else None
+    )
+    config.polish_multiplier = (
+        Decimal(str(payload.config.polish_multiplier))
+        if payload.config.polish_multiplier is not None
         else None
     )
     config.low_balance_threshold = point_value(payload.config.low_balance_threshold)

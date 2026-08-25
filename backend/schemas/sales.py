@@ -18,6 +18,8 @@ class SalesConfigPayload(BaseModel):
     review_multiplier: float | None = Field(default=None, ge=0, le=1000)
     duplicate_multiplier: float | None = Field(default=None, ge=0, le=1000)
     blind_check_multiplier: float | None = Field(default=None, ge=0, le=1000)
+    bid_draft_multiplier: float | None = Field(default=None, ge=0, le=1000)
+    polish_multiplier: float | None = Field(default=None, ge=0, le=1000)
 
 
 class SalesPackagePayload(BaseModel):

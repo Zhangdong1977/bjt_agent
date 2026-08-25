@@ -12,7 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import get_settings
 from backend.models import (
+    TASK_MODEL_BY_KIND,
+    BidDraftTask,
     BlindCheckTask,
+    PolishTask,
     Project,
     ReviewTask,
     TaskDispatchOutbox,
@@ -31,6 +34,18 @@ _TASK_NAMES = {
     "review": "backend.tasks.review_tasks.run_review",
     "duplicate": "backend.tasks.duplicate_tasks.run_duplicate_check",
     "blind_check": "backend.tasks.blind_check_tasks.run_blind_check",
+    "bid_draft": "backend.tasks.bid_draft_tasks.run_bid_draft",
+    "polish": "backend.tasks.polish_tasks.run_polish",
+}
+
+# Outbox delivery queue per kind. bid_draft runs on a dedicated "generation"
+# queue so long generation runs cannot starve review/duplicate workers.
+_TASK_QUEUES = {
+    "review": "review",
+    "duplicate": "review",
+    "blind_check": "review",
+    "polish": "review",
+    "bid_draft": "generation",
 }
 
 
@@ -85,14 +100,35 @@ async def authorize_billable_task_start(
             )
         )
     ).scalar_one()
-    unsettled_count = int(review_count or 0) + int(blind_count or 0)
+    bid_draft_count = (
+        await db.execute(
+            select(func.count(BidDraftTask.id)).where(
+                BidDraftTask.user_id == user_id,
+                BidDraftTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    polish_count = (
+        await db.execute(
+            select(func.count(PolishTask.id)).where(
+                PolishTask.user_id == user_id,
+                PolishTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    unsettled_count = (
+        int(review_count or 0)
+        + int(blind_count or 0)
+        + int(bid_draft_count or 0)
+        + int(polish_count or 0)
+    )
     limit = max(1, int(get_settings().billing_max_active_tasks_per_user))
     if unsettled_count >= limit:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "code": "ACTIVE_BILLING_TASK_EXISTS",
-                "message": "当前账号已有检查任务正在执行或结算，请等待完成后再重试",
+                "message": "当前账号已有 AI 任务（检查/生成/润色）正在执行或结算，请等待完成后再重试",
                 "active_tasks": unsettled_count,
                 "max_active_tasks": limit,
             },
@@ -140,7 +176,7 @@ async def _dispatch_task_outbox(outbox_id: str) -> bool:
                 _TASK_NAMES[row.task_kind],
                 args=[row.task_id],
                 task_id=row.celery_task_id,
-                queue="review",
+                queue=_TASK_QUEUES.get(row.task_kind, "review"),
             )
         except Exception as exc:
             row.status = "retry"
@@ -242,7 +278,7 @@ async def finalize_task_usage(task_kind: str, task_id: str) -> bool:
         )
         return False
 
-    model = BlindCheckTask if task_kind == "blind_check" else ReviewTask
+    model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
     async with async_session_factory() as db:
         task = (
             await db.execute(select(model).where(model.id == task_id).with_for_update())
@@ -276,7 +312,7 @@ def enqueue_billing_settlement(task_kind: str, task_id: str, *, countdown: int =
 
 
 async def mark_billing_retry(task_kind: str, task_id: str, exc: Exception) -> None:
-    model = BlindCheckTask if task_kind == "blind_check" else ReviewTask
+    model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
     async with async_session_factory() as db:
         task = (
             await db.execute(select(model).where(model.id == task_id).with_for_update())
@@ -291,7 +327,7 @@ async def mark_billing_retry(task_kind: str, task_id: str, exc: Exception) -> No
 async def claim_task_for_execution(db: AsyncSession, *, task_kind: str, task_id: str):
     """Claim an outbox-delivered task once, preventing duplicate provider work."""
 
-    model = BlindCheckTask if task_kind == "blind_check" else ReviewTask
+    model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
     task = (
         await db.execute(select(model).where(model.id == task_id).with_for_update())
     ).scalar_one_or_none()

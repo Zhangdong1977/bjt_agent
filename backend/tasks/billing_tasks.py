@@ -322,11 +322,13 @@ async def _reconcile_task_billing_async() -> dict:
     """Recover orphan terminal tasks and retry all durable unsettled tasks."""
     from backend.config import get_settings
     from backend.models import (
-        BlindCheckTask,
+        TASK_MODEL_BY_KIND,
         ReviewTask,
         TaskDispatchOutbox,
         async_session_factory,
     )
+    from backend.tasks.bid_draft_tasks import BID_DRAFT_MAX_RUNTIME_SECONDS
+    from backend.tasks.polish_tasks import POLISH_MAX_RUNTIME_SECONDS
     from backend.services.billing import settle_task_consumption
     from backend.services.usage_summary import refresh_task_summary
     from backend.utils.time_utils import utc_now
@@ -351,7 +353,9 @@ async def _reconcile_task_billing_async() -> dict:
             ).scalars()
         )
         for outbox in stale_dispatches:
-            model = BlindCheckTask if outbox.task_kind == "blind_check" else ReviewTask
+            model = TASK_MODEL_BY_KIND.get(outbox.task_kind)
+            if model is None:
+                continue
             task = (
                 await db.execute(select(model).where(model.id == outbox.task_id))
             ).scalar_one_or_none()
@@ -372,65 +376,59 @@ async def _reconcile_task_billing_async() -> dict:
         # Celery hard-kill/process-loss can bypass worker finally blocks.  The
         # absolute task runtime is a deterministic upper bound; once exceeded,
         # move the business task to failed so cost reconciliation can proceed.
-        review_runtime_cutoff = utc_now() - timedelta(
-            seconds=get_settings().agent_total_timeout
-            + get_settings().billing_orphan_finalize_grace_seconds
-        )
-        stuck_reviews = list(
-            (
-                await db.execute(
-                    select(ReviewTask).where(
-                        ReviewTask.status == "running",
-                        ReviewTask.billing_status != "legacy",
-                        ReviewTask.started_at <= review_runtime_cutoff,
+        grace_seconds = get_settings().billing_orphan_finalize_grace_seconds
+        runtime_bases = {
+            "review": get_settings().agent_total_timeout,
+            "duplicate": get_settings().agent_total_timeout,
+            "blind_check": 25 * 60,
+            "polish": POLISH_MAX_RUNTIME_SECONDS,
+            "bid_draft": BID_DRAFT_MAX_RUNTIME_SECONDS,
+        }
+        stuck_tasks = []
+        seen_models = set()
+        for kind, model in TASK_MODEL_BY_KIND.items():
+            base = runtime_bases.get(kind)
+            if base is None or model in seen_models:
+                continue
+            seen_models.add(model)
+            runtime_cutoff = utc_now() - timedelta(seconds=base + grace_seconds)
+            stuck_tasks.extend(
+                (
+                    await db.execute(
+                        select(model).where(
+                            model.status == "running",
+                            model.billing_status != "legacy",
+                            model.started_at <= runtime_cutoff,
+                        ).limit(200)
                     )
-                )
-            ).scalars()
-        )
-        blind_runtime_cutoff = utc_now() - timedelta(
-            seconds=25 * 60 + get_settings().billing_orphan_finalize_grace_seconds
-        )
-        stuck_blind = list(
-            (
-                await db.execute(
-                    select(BlindCheckTask).where(
-                        BlindCheckTask.status == "running",
-                        BlindCheckTask.billing_status != "legacy",
-                        BlindCheckTask.started_at <= blind_runtime_cutoff,
-                    )
-                )
-            ).scalars()
-        )
-        for task in [*stuck_reviews, *stuck_blind]:
+                ).scalars()
+            )
+        for task in stuck_tasks:
             task.status = "failed"
             task.error_message = "任务执行进程异常退出或超过最长运行时间，系统已自动结束"
             task.completed_at = utc_now()
             task.billing_status = "pending"
-        if stuck_reviews or stuck_blind:
+        if stuck_tasks:
             await db.flush()
 
-        review_rows = list(
-            (
+        settled_rows = []
+        settled_seen = set()
+        for kind, model in TASK_MODEL_BY_KIND.items():
+            if model in settled_seen:
+                continue
+            settled_seen.add(model)
+            for task in (
                 await db.execute(
-                    select(ReviewTask).where(
-                        ReviewTask.status.in_(("completed", "failed", "cancelled")),
-                        ReviewTask.billing_status.in_(("pending", "retry", "processing")),
+                    select(model).where(
+                        model.status.in_(("completed", "failed", "cancelled")),
+                        model.billing_status.in_(("pending", "retry", "processing")),
                     ).limit(200)
                 )
-            ).scalars()
-        )
-        blind_rows = list(
-            (
-                await db.execute(
-                    select(BlindCheckTask).where(
-                        BlindCheckTask.status.in_(("completed", "failed", "cancelled")),
-                        BlindCheckTask.billing_status.in_(("pending", "retry", "processing")),
-                    ).limit(200)
+            ).scalars():
+                settled_rows.append(
+                    (task.task_type if isinstance(task, ReviewTask) else kind, task)
                 )
-            ).scalars()
-        )
-        for task in review_rows:
-            kind = task.task_type
+        for kind, task in settled_rows:
             if task.usage_finalized_at is not None:
                 candidates.append((kind, task.id))
             elif (
@@ -445,28 +443,13 @@ async def _reconcile_task_billing_async() -> dict:
                 and task.completed_at <= cutoff
             ):
                 orphaned.append((kind, task.id))
-        for task in blind_rows:
-            if task.usage_finalized_at is not None:
-                candidates.append(("blind_check", task.id))
-            elif (
-                (
-                    task.billing_status == "pending"
-                    or (
-                        task.billing_status == "retry"
-                        and not (task.billing_error or "").startswith("USAGE_WRITE_FAILED:")
-                    )
-                )
-                and task.completed_at is not None
-                and task.completed_at <= cutoff
-            ):
-                orphaned.append(("blind_check", task.id))
         await db.commit()
 
     # A terminal task left pending past the grace period has no live worker.
     # Rebuild its summary from durable rows, then mark the usage gate complete.
     for kind, task_id in orphaned:
         await refresh_task_summary(task_id, strict=True)
-        model = BlindCheckTask if kind == "blind_check" else ReviewTask
+        model = TASK_MODEL_BY_KIND.get(kind) or ReviewTask
         async with async_session_factory() as db:
             task = (
                 await db.execute(select(model).where(model.id == task_id).with_for_update())
