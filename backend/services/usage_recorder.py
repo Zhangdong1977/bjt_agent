@@ -127,6 +127,28 @@ def record_ocr_usage(
         usage_date=datetime.now(timezone.utc).date(),
     )
     _spawn(record)
+    _report_private_cloud_ocr(ctx)
+
+
+def _report_private_cloud_ocr(ctx) -> None:
+    """私有云模式：OCR 按次上报共享配额池（fire-and-forget，失败不影响主流程）。"""
+    try:
+        from backend.services.quota_client import consume_ocr, is_private_cloud
+
+        if not is_private_cloud():
+            return
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            consume_ocr(
+                service_type="ocr_review",
+                user_id=str(ctx.external_user_id or "") or None,
+                user_name=ctx.user_name,
+            )
+        )
+    except RuntimeError:
+        pass  # 无事件循环（脚本/单测），跳过上报
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[quota] ocr report dispatch failed: %s", exc)
 
 
 def record_embedding_usage(

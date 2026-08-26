@@ -578,6 +578,40 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
             cost_points = cost_to_points(cost_yuan)
             sales_points = sales_points_for(cost_yuan, multiplier)
 
+            # ============ 私有云模式：结算改为向私有云后台上报次数消耗 ============
+            # 不写本地钱包/消费记录（ConsumptionRecord 保持空表）；幂等由
+            # 私有云侧 ref_id(=task_id) 唯一约束 + 本地 billing_status 状态机保证。
+            from backend.services.quota_client import consume_ai_task, is_private_cloud
+
+            if is_private_cloud():
+                if task.billing_status == "settled":
+                    return None
+                prompt_t, comp_t, total_t = (
+                    await db.execute(
+                        select(
+                            func.coalesce(func.sum(AiUsageRecord.prompt_tokens), 0),
+                            func.coalesce(func.sum(AiUsageRecord.completion_tokens), 0),
+                            func.coalesce(func.sum(AiUsageRecord.total_tokens), 0),
+                        ).where(AiUsageRecord.task_id == task_id)
+                    )
+                ).one()
+                await consume_ai_task(
+                    ref_id=str(task_id),
+                    service_type=task_kind,
+                    prompt_tokens=int(prompt_t or 0),
+                    completion_tokens=int(comp_t or 0),
+                    total_tokens=int(total_t or 0),
+                    cost_cny=float(cost_yuan),
+                    user_id=str(getattr(user, "external_user_id", "") or "") or None,
+                    user_name=(user.username if user else None),
+                )
+                task.billing_status = "settled"
+                task.billing_error = None
+                task.billing_settled_at = task.billing_settled_at or utc_now()
+                await db.commit()
+                return None
+            # ==================== 私有云分支结束（以下为公有云钱包结算） ====================
+
             wallet = (
                 await db.execute(
                     select(UserWallet).where(UserWallet.user_id == user_id).with_for_update()

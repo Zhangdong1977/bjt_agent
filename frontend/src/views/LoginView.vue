@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { configApi } from "@/api/client"
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -28,6 +29,13 @@ const loginCaptchaCode = ref('')
 const regCaptchaCode = ref('')
 
 const activeTab = ref<'login' | 'register'>('login')
+
+// 企业私有云模式：隐藏注册/短信流程（后端 /config/features）
+const featuresPrivate = ref(false)
+configApi.getFeatures().then((f) => {
+  featuresPrivate.value = !!f.private_cloud
+  if (featuresPrivate.value) activeTab.value = 'login'
+}).catch(() => {})
 
 // ============ 登录表单 ============
 const username = ref('')
@@ -375,6 +383,7 @@ async function handleResetPassword() {
             登录
           </button>
           <button
+            v-if="!featuresPrivate"
             class="auth-tab"
             :class="{ 'auth-tab--active': activeTab === 'register' }"
             type="button"
@@ -439,7 +448,7 @@ async function handleResetPassword() {
                 @click="fetchCaptcha"
               />
               <span v-else class="captcha-placeholder" @click="fetchCaptcha">点击加载</span>
-              <a class="reset-link reset-link--inline" href="#" @click.prevent="showReset = true">重置密码？</a>
+              <a v-if="!featuresPrivate" class="reset-link reset-link--inline" href="#" @click.prevent="showReset = true">重置密码？</a>
             </div>
 
             <div v-if="loginError" class="error-msg" role="alert">{{ loginError }}</div>

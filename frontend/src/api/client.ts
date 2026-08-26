@@ -335,6 +335,22 @@ export const profileApi = {
   },
 };
 
+export interface CloudFeatures {
+  billing_mode: string
+  private_cloud: boolean
+  recharge_enabled: boolean
+  sms_enabled: boolean
+  register_enabled: boolean
+  coupon_enabled: boolean
+}
+
+export const configApi = {
+  async getFeatures(): Promise<CloudFeatures> {
+    const response = await apiClient.get("/config/features")
+    return response.data
+  },
+}
+
 export const billingApi = {
   async getWallet(): Promise<Wallet> {
     const response = await apiClient.get("/billing/wallet");

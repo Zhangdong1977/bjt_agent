@@ -18,6 +18,8 @@ from starlette import status
 
 from backend.config import get_settings
 from backend.models import init_db, close_db
+from backend.api.config_features import router as config_features_router
+from backend.api.ocr_internal import router as ocr_internal_router
 from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, review_rule_docs_router, duplicate_check_router, duplicate_check_capabilities_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, admin_sales_router, profile_router, billing_router, announcements_router, system_status_router, blind_check_router, vsto_tools_router, bid_draft_router, polish_router
 from backend.api.events import router as events_router
 from backend.services.sse_service import sse_manager
@@ -182,6 +184,8 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(config_features_router, prefix=settings.api_prefix)
+app.include_router(ocr_internal_router, prefix=settings.api_prefix)
 app.include_router(auth_router, prefix=settings.api_prefix)
 app.include_router(projects_router, prefix=settings.api_prefix)
 app.include_router(documents_router, prefix=settings.api_prefix)

@@ -2,10 +2,13 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { message } from "ant-design-vue";
 import { billingApi, profileApi } from "@/api/client";
+import { useBillingStore } from "@/stores/billing";
 import { useAuthStore } from "@/stores/auth";
 import type { BillingOrder, ConsumptionAllocation, ConsumptionRecord, Coupon, User } from "@/types";
 
-const authStore = useAuthStore();
+const authStore = useAuthStore()
+const billingStore = useBillingStore()
+void billingStore.fetchFeatures();
 const isInterior = computed(() => authStore.isInteriorUser);
 
 const activeKey = ref("info");
@@ -339,7 +342,7 @@ onMounted(() => {
           </div>
         </a-tab-pane>
 
-        <a-tab-pane key="active-orders" tab="当前扣费订单">
+        <a-tab-pane v-if="!billingStore.privateCloud" key="active-orders" tab="当前扣费订单">
           <div v-if="activeOrderCards.length" class="active-order-grid">
             <article v-for="order in activeOrderCards" :key="order.id" class="active-order-card">
               <div class="active-order-card__header">
@@ -394,7 +397,7 @@ onMounted(() => {
           </div>
         </a-tab-pane>
 
-        <a-tab-pane key="orders" tab="订单与消费">
+        <a-tab-pane v-if="!billingStore.privateCloud" key="orders" tab="订单与消费">
           <a-tabs v-model:activeKey="orderActiveKey">
             <a-tab-pane key="orders" tab="订单记录">
               <div class="query-row">

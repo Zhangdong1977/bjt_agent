@@ -5,6 +5,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import and_, case, func, select
 
+from backend.services.quota_client import private_cloud_forbidden
 from backend.api.deps import DBSession, CurrentUser, is_interior_user
 from backend.models import BillingOrder, ConsumptionAllocation, ConsumptionRecord, CreditLot, GrantBatch, User
 from backend.schemas.billing import (
@@ -166,6 +167,27 @@ def _grant_lot_response(
 
 @router.get("/wallet", response_model=WalletResponse)
 async def get_wallet(db: DBSession, current_user: CurrentUser) -> WalletResponse:
+    # 私有云模式：钱包语义映射为企业共享次数池（points=AI 剩余次数；
+    # gift 位置放 OCR 剩余次数，前端按 features 开关把文案切为"剩余次数"）
+    from backend.services.quota_client import fetch_quota_status, is_private_cloud
+
+    if is_private_cloud():
+        try:
+            quota = await fetch_quota_status()
+        except Exception:  # noqa: BLE001 - 展示路径：配额服务异常时展示 0
+            quota = {}
+        ai_remaining = float(quota.get("aiRemaining") or 0)
+        ocr_remaining = float(quota.get("ocrRemaining") or 0)
+        return WalletResponse(
+            balance_wen=0,
+            points=int(ai_remaining),
+            recharge_balance_points=ai_remaining,
+            gift_balance_points=ocr_remaining,
+            total_balance_points=ai_remaining,
+            low_balance_threshold=0,
+            low_balance=ai_remaining <= 0,
+        )
+
     wallet = await ensure_wallet(db, current_user.id, for_update=True)
     from backend.services.sales import expire_user_lots, get_sales_config
     await expire_user_lots(db, wallet)
@@ -195,6 +217,7 @@ async def get_coupons(current_user: CurrentUser) -> list[CouponResponse]:
     return await list_user_coupons(current_user.username, include_all=True)
 
 
+@private_cloud_forbidden("优惠券兑换")
 @router.post("/coupons/redeem", response_model=CouponRedeemResponse)
 async def redeem_coupon(
     body: CouponRedeemRequest,
@@ -219,6 +242,7 @@ async def redeem_coupon(
     return CouponRedeemResponse(coupon=redeemed, coupons=coupons)
 
 
+@private_cloud_forbidden("套餐购买")
 @router.post("/orders/preview", response_model=OrderPreviewResponse)
 async def preview_recharge_order(
     body: OrderPreviewRequest,
@@ -234,6 +258,7 @@ async def preview_recharge_order(
     )
 
 
+@private_cloud_forbidden("套餐购买")
 @router.post("/orders", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 async def create_recharge_order(
     body: OrderCreateRequest,
@@ -379,6 +404,7 @@ async def list_orders(
     return OrderListResponse(orders=orders)
 
 
+@private_cloud_forbidden("充值支付")
 @router.get("/orders/{order_id}/pay-qrcode", response_model=PaymentQrResponse)
 async def get_pay_qrcode(
     order_id: str,

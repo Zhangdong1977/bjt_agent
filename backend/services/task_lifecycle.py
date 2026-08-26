@@ -59,23 +59,43 @@ async def authorize_billable_task_start(
 
     The wallet row is the per-account serialization point, so concurrent API
     workers cannot both pass the active-task count and create paid work.
+
+    私有云模式（billing_mode=private_cloud）：余额预检替换为私有云后台的
+    次数配额预检（企业共享池，无本地钱包）；并发任务限制照旧执行。
     """
 
-    wallet = await ensure_wallet(db, user_id, for_update=True)
-    await expire_user_lots(db, wallet)
-    available = decimal_value(wallet.recharge_balance_points) + decimal_value(
-        wallet.gift_balance_points
-    )
-    if available <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={
-                "code": "INSUFFICIENT_BALANCE",
-                "message": f"余额不足，请先充值后再发起{operation_name}",
-                "balance_wen": wallet.balance_wen,
-                "available_points": float(available),
-            },
+    from backend.services.quota_client import QuotaExhausted, check_ai_quota, is_private_cloud
+
+    private_cloud = is_private_cloud()
+    if private_cloud:
+        try:
+            await check_ai_quota()
+        except QuotaExhausted as exc:
+            # 复用公有云 402 语义（前端 utils/apiError 已有余额不足弹窗文案处理）
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message or f"私有云配额不足，无法发起{operation_name}",
+                    **exc.extra,
+                },
+            )
+    else:
+        wallet = await ensure_wallet(db, user_id, for_update=True)
+        await expire_user_lots(db, wallet)
+        available = decimal_value(wallet.recharge_balance_points) + decimal_value(
+            wallet.gift_balance_points
         )
+        if available <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "code": "INSUFFICIENT_BALANCE",
+                    "message": f"余额不足，请先充值后再发起{operation_name}",
+                    "balance_wen": wallet.balance_wen,
+                    "available_points": float(available),
+                },
+            )
 
     # Keep the account closed until the previous task is fully settled, not
     # merely until its business status becomes terminal.  Otherwise a billing

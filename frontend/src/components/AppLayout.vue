@@ -28,6 +28,7 @@ const marqueeVisible = ref(false)
 const officialSiteUrl = 'https://aibjt.com/'
 
 onMounted(() => {
+  void billingStore.fetchFeatures()
   void billingStore.remindLowBalance('login')
   // 拉取未读公告：驱动顶栏角标 + 自动弹窗
   void announcementStore.initialize()
@@ -68,7 +69,32 @@ function formatMetric(value: number) {
 
       <div class="header-right">
         <div class="account-strip">
+          <template v-if="billingStore.privateCloud">
+            <span
+              class="metric metric--pill metric--points"
+              :style="{ backgroundImage: `url(${iconWallet})` }"
+              title="AI 服务剩余次数（企业共享次数池）"
+            >
+              <span class="metric-value">{{
+                billingStore.loading && !billingStore.wallet
+                  ? '--'
+                  : formatMetric(billingStore.rechargeBalance)
+              }}次</span>
+            </span>
+            <span
+              class="metric metric--pill metric--points"
+              :style="{ backgroundImage: `url(${iconPoints})` }"
+              title="OCR 识别剩余次数（企业共享次数池）"
+            >
+              <span class="metric-value">{{
+                billingStore.loading && !billingStore.wallet
+                  ? '--'
+                  : formatMetric(billingStore.giftBalance)
+              }}次</span>
+            </span>
+          </template>
           <span
+            v-if="!billingStore.privateCloud"
             class="metric metric--pill metric--points"
             :style="{ backgroundImage: `url(${iconWallet})` }"
             title="账户可用点数余额（有效订单剩余之和）"
@@ -80,6 +106,7 @@ function formatMetric(value: number) {
             }}点</span>
           </span>
           <span
+            v-if="!billingStore.privateCloud"
             class="metric metric--pill metric--points"
             :style="{ backgroundImage: `url(${iconPoints})` }"
             title="账户积分"
@@ -90,11 +117,11 @@ function formatMetric(value: number) {
                 : formatMetric(billingStore.points)
             }}积分</span>
           </span>
-          <span class="metric metric--cart" title="购物车">
+          <span v-if="!billingStore.privateCloud" class="metric metric--cart" title="购物车">
             <img :src="iconCart" alt="" />
           </span>
         </div>
-        <button class="recharge-btn" @click="rechargeOpen = true">立即充值</button>
+        <button v-if="!billingStore.privateCloud" class="recharge-btn" @click="rechargeOpen = true">立即充值</button>
         <button class="outline-btn" @click="goOfficialSite">前往官网</button>
         <button class="outline-btn" @click="contactOpen = true">联系我们</button>
         <a-badge

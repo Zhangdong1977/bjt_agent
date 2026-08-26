@@ -56,6 +56,19 @@ class Settings(BaseSettings):
     # after this grace period, allowing late usage writes to land first.
     billing_orphan_finalize_grace_seconds: int = 300
 
+    # ============ 企业私有云模式（private cloud） ============
+    # billing_mode:
+    #   "wallet"        —— 公有云钱包点数计费（默认，行为不变）
+    #   "private_cloud" —— 私有云次数配额计费：预检/结算改为调私有云后台
+    #                      （operate_api_base_url 指向私有云后台管理系统），
+    #                      充值/优惠券/短信注册重置全部禁用。
+    # env: BILLING_MODE
+    billing_mode: str = "wallet"
+    # 私有云配额状态预检缓存秒数（预检在每个任务提交时调用，短缓存挡住高频打点）
+    private_cloud_quota_cache_seconds: float = 30.0
+    # OCR 消耗上报批量缓冲秒数（fire-and-forget，失败仅告警不阻塞主流程）
+    private_cloud_ocr_report_timeout_seconds: float = 5.0
+
     # Database
     database_url: str = ""  # Must be set via environment variable
 

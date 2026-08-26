@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -654,10 +655,26 @@ class ImageOcrTool(BaseTool):
 
             normalized = await asyncio.to_thread(normalize_image_for_ocr, full_path)
             ocr_path = normalized.path
+            _ocr_started = time.monotonic()
+            _ocr_endpoint = "remote"
             if self._ocr_service_url:
                 ocr_text = await self._remote_ocr(ocr_path)
             else:
+                _ocr_endpoint = "local"
                 ocr_text = await asyncio.to_thread(self._run_ocr_local, ocr_path)
+            # OCR 按次计量（公有云：ai_usage_records；私有云模式额外上报共享配额池）
+            try:
+                from backend.services.usage_recorder import record_ocr_usage
+
+                record_ocr_usage(
+                    provider="rapidocr",
+                    endpoint=_ocr_endpoint,
+                    status="success",
+                    latency_ms=int((time.monotonic() - _ocr_started) * 1000),
+                    words_result_num=len(ocr_text.splitlines()) if ocr_text else 0,
+                )
+            except Exception as meter_exc:  # noqa: BLE001 - 计量失败不阻塞识别
+                logger.debug("ocr usage metering skipped: %s", meter_exc)
 
             image_data = {
                 "image_path": image_path,
