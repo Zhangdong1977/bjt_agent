@@ -197,7 +197,7 @@ export interface Project {
   id: string;
   name: string;
   description: string | null;
-  project_type: "review" | "duplicate";
+  project_type: "review" | "duplicate" | "bid_draft";
   duplicate_mode?: "pair" | "batch";
   user_id: string;
   status: string;
@@ -211,7 +211,7 @@ export interface Project {
 export interface CreateProjectRequest {
   name: string;
   description?: string;
-  project_type?: "review" | "duplicate";
+  project_type?: "review" | "duplicate" | "bid_draft";
   duplicate_mode?: "pair" | "batch";
 }
 

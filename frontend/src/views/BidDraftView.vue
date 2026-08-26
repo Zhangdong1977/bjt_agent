@@ -269,7 +269,7 @@ async function loadProjects() {
   loadingProjects.value = true;
   try {
     const all = await projectsApi.list();
-    projects.value = all.filter((item) => item.project_type === "review");
+    projects.value = all.filter((item) => item.project_type === "bid_draft");
   } catch (error) {
     docErrorMessage.value = friendlyError(error, "项目列表加载失败");
   } finally {
@@ -282,7 +282,7 @@ async function createProject() {
   if (!name) return;
   creatingProject.value = true;
   try {
-    const project = await projectsApi.create({ name, project_type: "review" });
+    const project = await projectsApi.create({ name, project_type: "bid_draft" });
     projects.value = [project, ...projects.value];
     projectId.value = project.id;
     newProjectName.value = "";
