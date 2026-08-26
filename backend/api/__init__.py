@@ -4,6 +4,7 @@ from .projects import router as projects_router
 from .documents import router as documents_router
 from .documents import drafts_router as documents_drafts_router
 from .review import router as review_router
+from .review import rule_docs_router as review_rule_docs_router
 from .duplicate_check import router as duplicate_check_router
 from .duplicate_check import capabilities_router as duplicate_check_capabilities_router
 from .share import router as share_router
@@ -18,6 +19,8 @@ from .system_status import router as system_status_router
 from .blind_check import router as blind_check_router
 from .vsto_tools import router as vsto_tools_router
 from .admin_sales import router as admin_sales_router
+from .bid_draft import router as bid_draft_router
+from .polish import router as polish_router
 
 __all__ = [
     "auth_router",
@@ -25,6 +28,7 @@ __all__ = [
     "documents_router",
     "documents_drafts_router",
     "review_router",
+    "review_rule_docs_router",
     "duplicate_check_router",
     "duplicate_check_capabilities_router",
     "share_router",
@@ -39,4 +43,6 @@ __all__ = [
     "blind_check_router",
     "vsto_tools_router",
     "admin_sales_router",
+    "bid_draft_router",
+    "polish_router",
 ]

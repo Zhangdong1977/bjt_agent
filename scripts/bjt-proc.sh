@@ -108,6 +108,14 @@ start_celery_parser() {
     log "Celery Parser started (PID: $(get_pid celery_parser))"
 }
 
+start_celery_generation() {
+    log "Starting Celery Worker (generation queue)..."
+    cd "$BACKEND_DIR"
+    nohup celery -A celery_app worker --loglevel=info --concurrency=2 -Q generation --max-tasks-per-child=10 --max-memory-per-child=2500000 --logfile="$SCRIPT_DIR/logs/celery_generation.log" > /dev/null 2>&1 &
+    save_pid "celery_generation" "$!"
+    log "Celery Generation started (PID: $(get_pid celery_generation))"
+}
+
 start_celery_beat() {
     log "Starting Celery Beat (task scheduler)..."
     cd "$BACKEND_DIR"
@@ -269,6 +277,8 @@ do_start() {
     sleep 1
     start_celery_parser
     sleep 1
+    start_celery_generation
+    sleep 1
     start_celery_beat
     sleep 1
 
@@ -309,6 +319,7 @@ do_stop() {
     stop_celery_beat "celery_beat"
     stop_celery "celery_parser" "parser"
     stop_celery "celery_review" "review"
+    stop_celery "celery_generation" "generation"
 
     # Cleanup Redis task data
     cleanup_redis_celery
@@ -384,6 +395,7 @@ do_status() {
     # Celery workers
     local celery_review_pid=$(pgrep -f "celery.*-Q review" 2>/dev/null | head -1)
     local celery_parser_pid=$(pgrep -f "celery.*-Q parser" 2>/dev/null | head -1)
+    local celery_generation_pid=$(pgrep -f "celery.*-Q generation" 2>/dev/null | head -1)
     local celery_beat_pid=$(pgrep -f "celery.*beat" 2>/dev/null | head -1)
 
     if [ -n "$celery_review_pid" ]; then
@@ -396,6 +408,12 @@ do_status() {
         echo -e "[celery_parser] Running (PID: $celery_parser_pid) ${GREEN}✓${NC}"
     else
         echo -e "[celery_parser] Not running ${RED}✗${NC}"
+    fi
+
+    if [ -n "$celery_generation_pid" ]; then
+        echo -e "[celery_generation] Running (PID: $celery_generation_pid) ${GREEN}✓${NC}"
+    else
+        echo -e "[celery_generation] Not running ${RED}✗${NC}"
     fi
 
     if [ -n "$celery_beat_pid" ]; then

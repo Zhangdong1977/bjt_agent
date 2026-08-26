@@ -108,7 +108,9 @@ async def test_account_level_active_task_limit_blocks_parallel_paid_work():
         balance_wen=100,
     )
     db = MagicMock()
-    db.execute = AsyncMock(side_effect=[_scalar(1), _scalar(0)])
+    # Count queries in authorize_billable_task_start order: review, blind_check,
+    # bid_draft, polish (the two new kinds must join the active-task gate too).
+    db.execute = AsyncMock(side_effect=[_scalar(1), _scalar(0), _scalar(0), _scalar(0)])
     settings = SimpleNamespace(billing_max_active_tasks_per_user=1)
     with patch.object(task_lifecycle, "ensure_wallet", new=AsyncMock(return_value=wallet)), patch.object(
         task_lifecycle, "expire_user_lots", new=AsyncMock(return_value=0)

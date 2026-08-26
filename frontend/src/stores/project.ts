@@ -63,7 +63,9 @@ export const useProjectStore = defineStore("project", () => {
   async function fetchProjects() {
     loading.value = true;
     try {
-      projects.value = await projectsApi.list();
+      // 检查网站（历史/我的项目）只展示检查与查重项目；标书生成项目仅在插件生成页可见
+      const all = await projectsApi.list();
+      projects.value = all.filter((p) => p.project_type !== "bid_draft");
     } finally {
       loading.value = false;
     }
@@ -72,7 +74,7 @@ export const useProjectStore = defineStore("project", () => {
   async function createProject(
     name: string,
     description?: string,
-    projectType: "review" | "duplicate" = "review",
+    projectType: "review" | "duplicate" | "bid_draft" = "review",
     duplicateMode: "pair" | "batch" = "pair",
   ) {
     loading.value = true;
@@ -374,13 +376,13 @@ export const useProjectStore = defineStore("project", () => {
     documents.value = documents.value.filter((d) => d.id !== documentId);
   }
 
-  async function startReview() {
+  async function startReview(selectedRuleDocs?: string[]) {
     if (!currentProject.value) return;
     await useBillingStore().remindLowBalance("task", true);
     reviewLoading.value = true;
     resetAgentSteps();
     try {
-      currentTask.value = await reviewApi.start(currentProject.value.id);
+      currentTask.value = await reviewApi.start(currentProject.value.id, selectedRuleDocs);
     } finally {
       reviewLoading.value = false;
     }

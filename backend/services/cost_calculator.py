@@ -46,9 +46,20 @@ _VOLCENGINE = {
     "__default__":                {"hit": 0.0, "miss": 4.0 / 1_000_000, "output": 16.0 / 1_000_000},
 }
 
+# —— Tencent Cloud TokenHub（按百万 token）—— deepseek-v4-flash 为原厂直供正式版，
+#    跟随原厂峰谷双档（2026-08-17 起），与 DeepSeek 官方同价同档，直接复用
+#    _DEEPSEEK_FLASH_TIERS。来源 cloud.tencent.com/document/product/1823/130055
+#    （2026-08-19 核对；表中另有一档非正式版 flat 价 hit0.2/miss1/output2，
+#    现行 deepseek-v4-flash 调用均命中原厂直供正式版，不采用）。
+_TENCENT = {
+    "deepseek-v4-flash": _DEEPSEEK_FLASH_TIERS,
+    "__default__":       _DEEPSEEK_FLASH_TIERS,
+}
+
 # —— LLM provider → 价目表映射 ——
 _LLM_RATES = {
     "deepseek": _DEEPSEEK,
+    "tencent": _TENCENT,
     "minimax": _MINIMAX,
     "volcengine": _VOLCENGINE,
 }
@@ -68,7 +79,8 @@ _BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def _is_peak_beijing(at: Optional[datetime]) -> bool:
-    """DeepSeek 高峰时段：北京时间 9:00-12:00、14:00-18:00。
+    """高峰时段：北京时间 9:00-12:00、14:00-18:00（DeepSeek 官方与腾讯
+    TokenHub 原厂直供的 deepseek-v4-flash 双档价目共用同一时段定义）。
 
     官方未明确端点归属与工作日/周末之分，按 [起, 止) 半开区间实现：
     12:00 / 18:00 整点起计空闲，周末同时段照常计高峰。

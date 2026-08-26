@@ -17,7 +17,9 @@ import type {
   DocumentContent,
   ReviewTask,
   ReviewTaskListItem,
+  RuleDocInfo,
   ReviewResponse,
+  OverallReportResponse,
   AgentStep,
   ReviewResult,
   TodoItem,
@@ -422,7 +424,7 @@ export function getTokenClaims(): {
 
 // Projects API
 export const projectsApi = {
-  async list(projectType?: "review" | "duplicate"): Promise<Project[]> {
+  async list(projectType?: "review" | "duplicate" | "bid_draft"): Promise<Project[]> {
     const response = await apiClient.get("/projects", {
       params: projectType ? { project_type: projectType } : undefined,
     });
@@ -655,9 +657,17 @@ export const documentsApi = {
 
 // Review API
 export const reviewApi = {
-  async start(projectId: string): Promise<ReviewTask> {
-    const response = await apiClient.post(`/projects/${projectId}/review`);
+  async start(projectId: string, selectedRuleDocs?: string[]): Promise<ReviewTask> {
+    // 勾选了检查项大类时随请求体下发；undefined = 不传（兼容旧后端，检查全部）
+    const body =
+      selectedRuleDocs !== undefined ? { selected_rule_docs: selectedRuleDocs } : undefined;
+    const response = await apiClient.post(`/projects/${projectId}/review`, body);
     return response.data;
+  },
+
+  async getRuleDocs(): Promise<RuleDocInfo[]> {
+    const response = await apiClient.get(`/review/rule-docs`);
+    return response.data.rule_docs;
   },
 
   async getResults(projectId: string): Promise<ReviewResponse> {
@@ -726,6 +736,28 @@ export const reviewApi = {
     const response = await apiClient.get(
       `/projects/${projectId}/review/tasks/${taskId}/todos/${todoId}/report`,
       { responseType: "text" },
+    );
+    return response.data;
+  },
+
+  // 总体报告：report 为 null 时，status=running 表示生成中（轮询），
+  // status=completed 表示可补生成（调 regenerateOverallReport）。
+  async getOverallReport(
+    projectId: string,
+    taskId: string,
+  ): Promise<OverallReportResponse> {
+    const response = await apiClient.get(
+      `/projects/${projectId}/review/tasks/${taskId}/overall-report`,
+    );
+    return response.data;
+  },
+
+  async regenerateOverallReport(
+    projectId: string,
+    taskId: string,
+  ): Promise<{ status: string; celery_task_id: string }> {
+    const response = await apiClient.post(
+      `/projects/${projectId}/review/tasks/${taskId}/overall-report/regenerate`,
     );
     return response.data;
   },
@@ -925,6 +957,7 @@ export interface SharedReview {
   project_name: string | null;
   findings: ReviewResult[];
   todos: TodoItem[];
+  overall_report: import("@/types").OverallReport | null;
 }
 
 export const shareApi = {

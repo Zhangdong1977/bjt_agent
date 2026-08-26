@@ -17,6 +17,18 @@ const router = createRouter({
       meta: { title: "暗标合规检查" },
     },
     {
+      path: "/vsto/bid-draft",
+      name: "vsto-bid-draft-sso",
+      component: () => import("@/views/VstoSsoView.vue"),
+      meta: { title: "AI 标书生成" },
+    },
+    {
+      path: "/vsto/polish",
+      name: "vsto-polish-sso",
+      component: () => import("@/views/VstoSsoView.vue"),
+      meta: { title: "AI 扩写润色" },
+    },
+    {
       // 兼容早期测试地址，但始终脱离 AppLayout，浏览器访问也不会显示站内导航。
       path: "/home/blind-check",
       redirect: "/vsto/blind-check",

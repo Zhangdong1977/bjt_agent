@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     duplicate_embedding_breaker_failures: int = 3
     duplicate_embedding_breaker_cooldown_seconds: int = 120
 
-    # LLM Provider: "minimax", "volcengine", or "deepseek"
+    # LLM Provider: "minimax", "volcengine", "deepseek", or "tencent"
     llm_provider: str = "minimax"
 
     # MiniMax
@@ -144,6 +144,12 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_api_base: str = "https://api.deepseek.com/v1"
     deepseek_model: str = "deepseek-v4-flash"
+
+    # Tencent Cloud TokenHub（腾讯云大模型服务平台，OpenAI 兼容协议）
+    # 对接文档: https://cloud.tencent.com/document/product/1823/132248
+    tencent_api_key: str = ""
+    tencent_api_base: str = "https://tokenhub.tencentmaas.com/v1"
+    tencent_model: str = "deepseek-v4-flash"
 
     # Mini-Max MCP
     minimax_api_key: str = ""
@@ -217,6 +223,12 @@ class Settings(BaseSettings):
     # 后端读慢会 TCP 反压到浏览器，端到端限速成立。默认 4 MiB/s（1GiB ≈ 256s）。
     # 集群并发上限由 nginx limit_conn 控制，见 deploy/nginx/bjt-cluster。
     upload_bytes_per_sec: int = 4 * 1024 * 1024  # 4 MB/s
+
+    # XLSX 解析输出上限（每个工作表）。标书报价清单表动辄上千行，而审查流程
+    # 对解析产物无分段截断（全文进 LLM），全量转换会 token 失控并易触发解析
+    # 软超时；超出部分在 Markdown 中以省略提示标注。env: XLSX_MAX_ROWS/COLS_PER_SHEET。
+    xlsx_max_rows_per_sheet: int = 300
+    xlsx_max_cols_per_sheet: int = 64
 
     # Rate Limiting
     rate_limit_per_minute: int = 60  # Default rate limit per minute

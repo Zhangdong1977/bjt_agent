@@ -9,7 +9,7 @@ class ProjectCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
-    project_type: str = Field(default="review", pattern="^(review|duplicate)$")
+    project_type: str = Field(default="review", pattern="^(review|duplicate|bid_draft)$")
     duplicate_mode: str = Field(default="pair", pattern="^(pair|batch)$")
 
 

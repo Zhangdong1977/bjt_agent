@@ -8,8 +8,10 @@ import { message } from 'ant-design-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import DocumentParseProgress from '@/components/DocumentParseProgress.vue'
+import RuleDocSelectModal from '@/components/RuleDocSelectModal.vue'
 import { isLegacyDocFile, legacyDocWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
 import { showCheckDurationNotice } from '@/utils/checkDurationNotice'
+import { apiErrorText } from '@/utils/apiError'
 
 // Configure DOMPurify to allow base64 images and table tags
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -117,17 +119,27 @@ async function handleDeleteDoc(docId: string) {
   }
 }
 
-async function handleStartReview() {
+// 开始审查：先弹窗选择检查项大类，确认后再启动
+const ruleDocModalOpen = ref(false)
+
+function handleStartReview() {
+  ruleDocModalOpen.value = true
+}
+
+async function onRuleDocsConfirm(selectedRuleDocs: string[]) {
   try {
-    await projectStore.startReview()
+    await projectStore.startReview(selectedRuleDocs)
     // 提示预计耗时，用户确认后再跳转审查执行页
     await showCheckDurationNotice()
     router.push({ name: 'review-execution', params: { id: projectId.value } })
   } catch (err) {
-    const error = err as { response?: { status?: number; data?: { detail?: unknown } } }
-    const detail = error.response?.data?.detail
-    if (error.response?.status === 402 && typeof detail === 'object' && detail && 'message' in detail) {
-      message.warning(String((detail as { message: unknown }).message))
+    const error = err as { response?: { status?: number } }
+    // 透传后端文案（402 余额不足 / 409 已有任务在执行等），让用户知道该做什么而不是盲目重试
+    const text = apiErrorText(err)
+    if (text && (error.response?.status === 402 || error.response?.status === 409)) {
+      message.warning(text)
+    } else if (text) {
+      message.error(text)
     } else {
       message.error('启动审查失败')
     }
@@ -339,6 +351,9 @@ function getStatusClass(status: string) {
         </button>
       </div>
     </main>
+
+    <!-- 检查项大类多选弹窗：确认后才开始检查 -->
+    <RuleDocSelectModal v-model:open="ruleDocModalOpen" @confirm="onRuleDocsConfirm" />
 
     <!-- Document Viewer Modal -->
     <div v-if="showDocViewer" class="modal-overlay" @click.self="closeDocViewer">

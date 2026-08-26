@@ -305,7 +305,7 @@ watch(
       <template v-if="!qr">
       <div class="promo-banner">
         <span class="promo-tag">重磅优惠</span>
-        <span class="promo-text">为庆祝标捷通智能标书检查服务上线，推出重磅优惠活动，充值满30元，赠送5元；满100元，赠送20元；满300元，赠送100元；满1000元，赠送500元！充值越多，赠送越多！活动随时下架，欢迎尽快充值！</span>
+        <span class="promo-text">为庆祝标捷通智能标书检查服务上线，推出重磅优惠活动，充值满50元，赠送5元；满100元，赠送20元；满300元，赠送100元；满1000元，赠送500元！充值越多，赠送越多！活动随时下架，欢迎尽快充值！</span>
       </div>
       <div class="purchase-body">
         <!-- 左侧：套餐选择区 -->

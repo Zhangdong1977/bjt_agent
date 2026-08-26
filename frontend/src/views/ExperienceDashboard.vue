@@ -192,9 +192,13 @@ async function loadDashboard(pid: string) {
   }
 }
 
+function isDuplicateProject(proj: ProjectFeedbackSummary) {
+  return proj.project_type === 'duplicate'
+}
+
 function goToProjectDetail(proj: ProjectFeedbackSummary) {
   router.push({
-    name: 'review-results',
+    name: proj.project_type === 'duplicate' ? 'duplicate-results' : 'review-results',
     params: { id: proj.project_id },
     query: { from: 'experience' },
   })
@@ -380,18 +384,20 @@ function formatDate(dateStr: string): string {
             <div class="empty-text">暂无项目</div>
           </div>
           <template v-else>
-            <table class="project-table">
+            <div class="table-scroll">
+              <table class="project-table">
               <thead>
                 <tr>
-                  <th>用户</th>
-                  <th>项目名称</th>
-                  <th>项目 ID</th>
+                  <th class="col-user">用户</th>
+                  <th class="col-name">项目名称</th>
+                  <th class="col-type">类型</th>
+                  <th class="col-id">项目 ID</th>
                   <th class="num-col">反馈总数</th>
                   <th class="num-col">已审核</th>
                   <th class="num-col">待审核</th>
-                  <th>创建时间</th>
-                  <th>状态</th>
-                  <th>操作</th>
+                  <th class="col-time">创建时间</th>
+                  <th class="col-status">状态</th>
+                  <th class="col-actions">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -400,9 +406,14 @@ function formatDate(dateStr: string): string {
                   :key="proj.project_id"
                   :class="['project-row', { 'project-row-deleted': proj.is_deleted }]"
                 >
-                  <td class="username-cell">{{ proj.username }}</td>
-                  <td class="project-name-cell">{{ proj.project_name }}</td>
-                  <td class="id-cell">{{ proj.project_id.substring(0, 8) }}…</td>
+                  <td class="username-cell" :title="proj.username">{{ proj.username }}</td>
+                  <td class="project-name-cell" :title="proj.project_name">{{ proj.project_name }}</td>
+                  <td class="type-cell">
+                    <span :class="['type-badge', isDuplicateProject(proj) ? 'type-duplicate' : 'type-review']">
+                      {{ isDuplicateProject(proj) ? '标书查重' : '标书检查' }}
+                    </span>
+                  </td>
+                  <td class="id-cell" :title="proj.project_id">{{ proj.project_id.substring(0, 8) }}…</td>
                   <td class="num-col">{{ proj.total_feedback }}</td>
                   <td class="num-col">{{ proj.reviewed_feedback }}</td>
                   <td class="num-col">
@@ -414,9 +425,9 @@ function formatDate(dateStr: string): string {
                   <td class="time-cell">{{ formatDate(proj.created_at) }}</td>
                   <td class="status-cell">
                     <span v-if="proj.is_deleted" class="status-badge status-deleted">已删除</span>
-                    <span v-else-if="proj.review_completed" class="status-badge status-completed">审核完成</span>
-                    <span v-else-if="proj.has_review" class="status-badge status-running">审核未完成</span>
-                    <span v-else-if="proj.has_documents" class="status-badge status-pending">待审核</span>
+                    <span v-else-if="proj.review_completed" class="status-badge status-completed">{{ isDuplicateProject(proj) ? '查重完成' : '审核完成' }}</span>
+                    <span v-else-if="proj.has_review" class="status-badge status-running">{{ isDuplicateProject(proj) ? '查重未完成' : '审核未完成' }}</span>
+                    <span v-else-if="proj.has_documents" class="status-badge status-pending">{{ isDuplicateProject(proj) ? '待查重' : '待审核' }}</span>
                     <span v-else class="status-badge status-empty">未上传文档</span>
                   </td>
                   <td class="action-cell">
@@ -426,6 +437,8 @@ function formatDate(dateStr: string): string {
                     >查看详情</button>
                     <button
                       class="row-action-btn feedback-btn"
+                      :disabled="isDuplicateProject(proj)"
+                      :title="isDuplicateProject(proj) ? '查重项目第一版暂不支持反馈处理' : undefined"
                       @click.stop="loadDashboard(proj.project_id)"
                     >反馈处理</button>
                     <button
@@ -437,7 +450,8 @@ function formatDate(dateStr: string): string {
                   </td>
                 </tr>
               </tbody>
-            </table>
+              </table>
+            </div>
 
             <!-- Pagination -->
             <div v-if="pagination.total > 0" class="pagination-bar">
@@ -1211,8 +1225,19 @@ function formatDate(dateStr: string): string {
   border-color: var(--sub);
 }
 
+/* 固定列宽：自动布局下长项目名（不换行、无宽度上限）会把表格撑到超出容器，
+   右侧「状态/操作」列被卡片 overflow:hidden 裁掉且无法滚动。
+   fixed 布局 + 按内容定宽，项目名称列独占剩余空间并出省略号，超窄时横向滚动兜底。 */
+.table-scroll {
+  overflow-x: auto;
+}
+
 .project-table {
   width: 100%;
+  /* 列宽预算合计 938px（<1600 隐藏 ID 后），min-width 保证「项目名称」列至少 ~150px
+     且 1366 笔记本内容区（1098px）恰好不用滚动；更窄时由 .table-scroll 出横向滚动条 */
+  min-width: 1090px;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 14px;
 }
@@ -1230,6 +1255,7 @@ function formatDate(dateStr: string): string {
   text-transform: uppercase;
   letter-spacing: 0.3px;
   border-bottom: 1px solid var(--line);
+  white-space: nowrap;
 }
 
 .project-table td {
@@ -1238,9 +1264,17 @@ function formatDate(dateStr: string): string {
   color: var(--text);
 }
 
+/* 各列定宽（含 16px×2 单元格内边距）；col-name 不设宽度，独占剩余空间 */
+.project-table th.col-user { width: 124px; }
+.project-table th.col-type { width: 96px; }
+.project-table th.col-id { width: 100px; }
+.project-table th.num-col { width: 80px; }
+.project-table th.col-time { width: 108px; }
+.project-table th.col-status { width: 110px; }
+.project-table th.col-actions { width: 260px; }
+
 .num-col {
   text-align: right;
-  width: 100px;
 }
 
 .project-row {
@@ -1259,7 +1293,6 @@ function formatDate(dateStr: string): string {
 .username-cell {
   color: var(--sub);
   font-weight: 500;
-  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1267,7 +1300,6 @@ function formatDate(dateStr: string): string {
 
 .project-name-cell {
   font-weight: 500;
-  max-width: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1277,7 +1309,9 @@ function formatDate(dateStr: string): string {
   font-family: monospace;
   font-size: 11px;
   color: var(--muted);
-  width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .action-cell {
@@ -1285,7 +1319,7 @@ function formatDate(dateStr: string): string {
 }
 
 .row-action-btn {
-  padding: 5px 12px;
+  padding: 5px 10px;
   border: 1px solid transparent;
   border-radius: var(--r);
   font-size: 12px;
@@ -1299,7 +1333,7 @@ function formatDate(dateStr: string): string {
 }
 
 .row-action-btn + .row-action-btn {
-  margin-left: 8px;
+  margin-left: 6px;
 }
 
 .detail-btn {
@@ -1353,6 +1387,26 @@ function formatDate(dateStr: string): string {
   font-size: 11px;
   font-weight: 600;
   border-radius: 10px;
+}
+
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 10px;
+}
+
+.type-review {
+  background: rgba(22, 119, 255, 0.12);
+  color: #1677ff;
+}
+
+.type-duplicate {
+  background: rgba(114, 46, 209, 0.12);
+  color: #722ed1;
 }
 
 .status-deleted {
@@ -1590,6 +1644,14 @@ function formatDate(dateStr: string): string {
   opacity: 0.8;
 }
 
+/* 视口 <1600（内容区约 <1330px）时列宽预算紧张，隐藏「项目 ID」列保项目名称可读 */
+@media (max-width: 1599px) {
+  .project-table th.col-id,
+  .project-table td.id-cell {
+    display: none;
+  }
+}
+
 @media (max-width: 767px) {
   .experience-dashboard {
     padding: 16px 12px;
@@ -1627,21 +1689,24 @@ function formatDate(dateStr: string): string {
     font-size: 12px;
   }
 
-  .username-cell {
-    max-width: 60px;
-  }
-
-  .project-name-cell {
-    max-width: 120px;
-  }
-
-  .id-cell {
+  /* 表头与单元格必须成对隐藏，否则表头 10 列、表体 8 列会整体错位 */
+  .project-table th.col-id,
+  .project-table td.id-cell,
+  .project-table th.col-time,
+  .project-table td.time-cell {
     display: none;
   }
 
-  .time-cell {
-    display: none;
+  /* 移动端列宽合计 708px（6px×2 内边距），min-width 保名称列下限，整体横向滚动 */
+  .project-table {
+    min-width: 820px;
   }
+
+  .project-table th.col-user { width: 88px; }
+  .project-table th.col-type { width: 88px; }
+  .project-table th.num-col { width: 64px; }
+  .project-table th.col-status { width: 96px; }
+  .project-table th.col-actions { width: 244px; }
 
   .pagination-bar {
     flex-direction: column;
@@ -1650,7 +1715,7 @@ function formatDate(dateStr: string): string {
   }
 }
 
-/* Large screens: extra breathing room */
+/* Large screens: extra breathing room（水平内边距保持 16px，否则固定列宽预算会溢出） */
 @media (min-width: 1400px) {
   .kpi-card {
     padding: 24px 32px;
@@ -1668,11 +1733,7 @@ function formatDate(dateStr: string): string {
 
   .project-table th,
   .project-table td {
-    padding: 14px 20px;
-  }
-
-  .username-cell {
-    max-width: 200px;
+    padding: 14px 16px;
   }
 }
 </style>

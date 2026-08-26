@@ -32,7 +32,20 @@ from .blind_check_task import BlindCheckTask
 from .vsto_tool_session import VstoToolSession
 from .vsto_tool_call import VstoToolCall
 from .blind_check_finding import BlindCheckFinding
+from .bid_draft_task import BidDraftTask
+from .bid_draft_section import BidDraftSection
+from .polish_task import PolishTask
 from backend.experience.models import ExperienceFeedback, ExperienceCase, ExperienceSkill, ExperienceClusterMembership
+
+# Billable top-level task registry: task kind -> ORM model. Shared by
+# task_lifecycle / billing / billing_tasks so new kinds register in one place.
+TASK_MODEL_BY_KIND = {
+    "review": ReviewTask,
+    "duplicate": ReviewTask,
+    "blind_check": BlindCheckTask,
+    "bid_draft": BidDraftTask,
+    "polish": PolishTask,
+}
 
 __all__ = [
     "Base",
@@ -77,6 +90,10 @@ __all__ = [
     "VstoToolSession",
     "VstoToolCall",
     "BlindCheckFinding",
+    "BidDraftTask",
+    "BidDraftSection",
+    "PolishTask",
+    "TASK_MODEL_BY_KIND",
     "ExperienceFeedback",
     "ExperienceCase",
     "ExperienceSkill",

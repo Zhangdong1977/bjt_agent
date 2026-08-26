@@ -51,6 +51,29 @@ class ReviewResponse(BaseModel):
     findings: list[ReviewResultResponse]
 
 
+class ReviewStartRequest(BaseModel):
+    """Request body for starting a review task."""
+
+    # 勾选的检查项大类（规则文档文件名）。None = 未指定（检查全部，兼容旧客户端）；
+    # 传空数组会被 API 拒绝。
+    selected_rule_docs: list[str] | None = None
+
+
+class RuleDocInfo(BaseModel):
+    """Schema for a check-item category (rule doc) shown in the start dialog."""
+
+    name: str
+    stem: str
+    # 是否默认勾选（当前除 E001 签字盖章检查外默认全选）
+    default_selected: bool
+
+
+class RuleDocsResponse(BaseModel):
+    """Schema for the rule-doc listing endpoint."""
+
+    rule_docs: list[RuleDocInfo]
+
+
 class ReviewTaskResponse(BaseModel):
     """Schema for review task status response."""
 
@@ -60,6 +83,7 @@ class ReviewTaskResponse(BaseModel):
     duplicate_mode: str = "pair"
     duplicate_algorithm_version: str | None = None
     duplicate_feature_snapshot: dict | None = None
+    selected_rule_docs: list[str] | None = None
     status: str
     celery_task_id: str | None
     started_at: datetime | None

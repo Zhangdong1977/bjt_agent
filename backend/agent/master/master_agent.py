@@ -32,6 +32,7 @@ class MasterAgent:
         cancel_event: Optional[asyncio.Event] = None,
         on_sub_agent_result: Optional[Callable] = None,
         max_concurrency: Optional[int] = None,
+        rule_doc_filter: Optional[list[str]] = None,
     ):
         self.project_id = project_id
         self.rule_library_path = rule_library_path
@@ -43,6 +44,8 @@ class MasterAgent:
         self.cancel_event = cancel_event
         self.on_sub_agent_result = on_sub_agent_result
         self._max_concurrency = max_concurrency or get_settings().max_sub_agent_concurrency
+        # 用户勾选的检查项大类（规则文档文件名列表）；None = 不过滤（检查全部）
+        self.rule_doc_filter = set(rule_doc_filter) if rule_doc_filter is not None else None
 
         self.scanner = RuleLibraryScannerTool()
         self._todo_items = []
@@ -86,6 +89,22 @@ class MasterAgent:
             return {"success": False, "error": scan_result.error}
 
         rule_docs = json.loads(scan_result.content)["rule_docs"]
+
+        # 按用户勾选的检查项大类过滤（规则库更新导致文件名对不上时忽略并告警）
+        if self.rule_doc_filter is not None:
+            library_names = {d["name"] for d in rule_docs}
+            dropped = self.rule_doc_filter - library_names
+            if dropped:
+                logger.warning(
+                    f"[MasterAgent.run] Selected rule docs not in library (ignored): {sorted(dropped)}"
+                )
+            rule_docs = [d for d in rule_docs if d["name"] in self.rule_doc_filter]
+            if not rule_docs:
+                error = "所选检查项大类在规则库中均不存在，请重新发起检查"
+                logger.error(f"[MasterAgent.run] {error}: filter={sorted(self.rule_doc_filter)}")
+                self._send_event("error", {"message": error})
+                return {"success": False, "error": error}
+
         self._send_event("master_scan_completed", {
             "total_docs": len(rule_docs),
             "rule_docs": [d["name"] for d in rule_docs],

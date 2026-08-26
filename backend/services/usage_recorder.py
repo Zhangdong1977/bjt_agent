@@ -33,6 +33,8 @@ def _resolve_llm_model(settings, provider: str) -> Optional[str]:
     """按当前 provider 取 settings 中配置的 model 名。"""
     if provider == "deepseek":
         return settings.deepseek_model
+    if provider == "tencent":
+        return settings.tencent_model
     if provider == "volcengine":
         return settings.volcengine_model
     if provider == "minimax":

@@ -22,7 +22,7 @@ celery_app = Celery(
     "bid_review_agent",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["backend.tasks.review_tasks", "backend.tasks.duplicate_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks", "backend.tasks.blind_check_tasks"],
+    include=["backend.tasks.review_tasks", "backend.tasks.duplicate_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks", "backend.tasks.blind_check_tasks", "backend.tasks.bid_draft_tasks", "backend.tasks.polish_tasks"],
 )
 
 # Ensure celery.current_app points to our app, so @shared_task binds correctly
@@ -65,6 +65,7 @@ celery_app.conf.update(
         "backend.tasks.review_tasks.run_review": {"queue": "review"},
         "backend.tasks.duplicate_tasks.run_duplicate_check": {"queue": "review"},
         "backend.tasks.review_tasks.merge_review_results": {"queue": "review"},
+        "backend.tasks.review_tasks.generate_overall_report": {"queue": "review"},
         "backend.tasks.document_parser.parse_document": {"queue": "parser"},
         "backend.tasks.feedback_tasks.process_feedback": {"queue": "review"},
         "backend.tasks.feedback_tasks.process_batch_feedback": {"queue": "review"},
@@ -72,6 +73,8 @@ celery_app.conf.update(
         "backend.tasks.experience_tasks.extract_experience": {"queue": "review"},
         "backend.tasks.experience_tasks.process_skill_extraction": {"queue": "review"},
         "backend.tasks.blind_check_tasks.run_blind_check": {"queue": "review"},
+        "backend.tasks.bid_draft_tasks.run_bid_draft": {"queue": "generation"},
+        "backend.tasks.polish_tasks.run_polish": {"queue": "review"},
         "backend.tasks.billing_tasks.poll_pending_recharge_orders": {"queue": "review"},
         "backend.tasks.billing_tasks.expire_credit_lots": {"queue": "review"},
         "backend.tasks.billing_tasks.settle_task_billing": {"queue": "review"},
@@ -132,6 +135,17 @@ celery_app.conf.update(
         "backend.tasks.blind_check_tasks.run_blind_check": {
             "time_limit": 1800,
             "soft_time_limit": 1740,
+        },
+        # 标书生成：长任务（分析→大纲→逐节），worker 侧 asyncio 上限 6600s，
+        # soft/hard 留梯度。跑在独立 generation 队列，不与 review 争抢。
+        "backend.tasks.bid_draft_tasks.run_bid_draft": {
+            "time_limit": 7200,
+            "soft_time_limit": 6900,
+        },
+        # 润色：单次 LLM 调用（worker 侧 asyncio 上限 240s）。
+        "backend.tasks.polish_tasks.run_polish": {
+            "time_limit": 300,
+            "soft_time_limit": 270,
         },
         # 充值轮询：扫一批 pending 订单 + 每条调一次交行查单（最多 ~10 条 × 5s 超时），
         # 给 90s 软超时 / 120s 硬超时兜底。
