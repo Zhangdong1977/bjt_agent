@@ -217,8 +217,8 @@ async def get_coupons(current_user: CurrentUser) -> list[CouponResponse]:
     return await list_user_coupons(current_user.username, include_all=True)
 
 
-@private_cloud_forbidden("优惠券兑换")
 @router.post("/coupons/redeem", response_model=CouponRedeemResponse)
+@private_cloud_forbidden("优惠券兑换")
 async def redeem_coupon(
     body: CouponRedeemRequest,
     current_user: CurrentUser,
@@ -242,8 +242,8 @@ async def redeem_coupon(
     return CouponRedeemResponse(coupon=redeemed, coupons=coupons)
 
 
-@private_cloud_forbidden("套餐购买")
 @router.post("/orders/preview", response_model=OrderPreviewResponse)
+@private_cloud_forbidden("套餐购买")
 async def preview_recharge_order(
     body: OrderPreviewRequest,
     db: DBSession,
@@ -258,8 +258,8 @@ async def preview_recharge_order(
     )
 
 
-@private_cloud_forbidden("套餐购买")
 @router.post("/orders", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
+@private_cloud_forbidden("套餐购买")
 async def create_recharge_order(
     body: OrderCreateRequest,
     db: DBSession,
@@ -404,8 +404,8 @@ async def list_orders(
     return OrderListResponse(orders=orders)
 
 
-@private_cloud_forbidden("充值支付")
 @router.get("/orders/{order_id}/pay-qrcode", response_model=PaymentQrResponse)
+@private_cloud_forbidden("充值支付")
 async def get_pay_qrcode(
     order_id: str,
     db: DBSession,

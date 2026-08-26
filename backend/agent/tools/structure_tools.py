@@ -662,17 +662,21 @@ class ImageOcrTool(BaseTool):
             else:
                 _ocr_endpoint = "local"
                 ocr_text = await asyncio.to_thread(self._run_ocr_local, ocr_path)
-            # OCR 按次计量（公有云：ai_usage_records；私有云模式额外上报共享配额池）
+            # OCR 按次计量：仅私有云模式（公有云保持原有口径——ImageOcrTool 历来不计量，
+            # 升级不得改变公有云用量看板数据；rapidocr 无单价，也不影响结算金额）
             try:
-                from backend.services.usage_recorder import record_ocr_usage
+                from backend.services.quota_client import is_private_cloud
 
-                record_ocr_usage(
-                    provider="rapidocr",
-                    endpoint=_ocr_endpoint,
-                    status="success",
-                    latency_ms=int((time.monotonic() - _ocr_started) * 1000),
-                    words_result_num=len(ocr_text.splitlines()) if ocr_text else 0,
-                )
+                if is_private_cloud():
+                    from backend.services.usage_recorder import record_ocr_usage
+
+                    record_ocr_usage(
+                        provider="rapidocr",
+                        endpoint=_ocr_endpoint,
+                        status="success",
+                        latency_ms=int((time.monotonic() - _ocr_started) * 1000),
+                        words_result_num=len(ocr_text.splitlines()) if ocr_text else 0,
+                    )
             except Exception as meter_exc:  # noqa: BLE001 - 计量失败不阻塞识别
                 logger.debug("ocr usage metering skipped: %s", meter_exc)
 

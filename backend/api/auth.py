@@ -411,9 +411,9 @@ async def refresh_token(request: RefreshTokenRequest, db: DBSession) -> Token:
     return Token(access_token=access_token, refresh_token=new_refresh_token)
 
 
-@private_cloud_forbidden("短信验证码")
 @router.post("/send-sms")
 @limiter.limit("1/minute")
+@private_cloud_forbidden("短信验证码")
 async def send_sms(request: Request, body: SendSmsRequest) -> dict:
     """站内注册·下发短信验证码。
 
@@ -462,9 +462,9 @@ async def send_sms(request: Request, body: SendSmsRequest) -> dict:
     return {"message": data.get("msg", "验证码已发送")}
 
 
-@private_cloud_forbidden("站内注册")
 @router.post("/register")
 @limiter.limit("5/minute")
+@private_cloud_forbidden("站内注册")
 async def register(request: Request, body: RegisterRequest) -> dict:
     """站内注册。先校验图形验证码，再转发到运营平台 ``/aiRegister``。
 
@@ -510,9 +510,9 @@ async def register(request: Request, body: RegisterRequest) -> dict:
     return {"message": "注册成功，请登录"}
 
 
-@private_cloud_forbidden("短信验证码")
 @router.post("/send-reset-sms")
 @limiter.limit("1/minute")
+@private_cloud_forbidden("短信验证码")
 async def send_reset_sms(request: Request, body: SendSmsRequest) -> dict:
     """重置密码·下发短信验证码。
 
@@ -561,9 +561,9 @@ async def send_reset_sms(request: Request, body: SendSmsRequest) -> dict:
     return {"message": data.get("msg", "验证码已发送")}
 
 
-@private_cloud_forbidden("短信重置密码")
 @router.post("/reset-password")
 @limiter.limit("5/minute")
+@private_cloud_forbidden("短信重置密码")
 async def reset_password(request: Request, body: ResetPasswordRequest) -> dict:
     """重置密码（未登录·凭短信验证码）。转发到运营平台 ``/aiResetPwd``。
 
