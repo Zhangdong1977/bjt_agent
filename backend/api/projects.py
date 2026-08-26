@@ -15,7 +15,7 @@ router = APIRouter(prefix="/projects", tags=["Projects"])
 async def list_projects(
     db: DBSession,
     current_user: CurrentUser,
-    project_type: str | None = Query(default=None, pattern="^(review|duplicate)$"),
+    project_type: str | None = Query(default=None, pattern="^(review|duplicate|bid_draft)$"),
 ) -> ProjectListResponse:
     """List non-deleted projects for the current user's history page."""
     query = select(Project).where(

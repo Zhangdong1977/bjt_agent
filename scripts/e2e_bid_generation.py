@@ -194,7 +194,7 @@ def main() -> None:
     # ---------- 2. 标书生成全链路 ----------
     proj = session.post(
         f"{BASE}/projects",
-        json={"name": "E2E标书生成联调", "project_type": "review"},
+        json={"name": "E2E标书生成联调", "project_type": "bid_draft"},
         headers=headers,
         timeout=60,
     )

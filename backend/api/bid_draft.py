@@ -87,6 +87,8 @@ async def create_task(
     ).scalar_one_or_none()
     if project is None or project.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="项目不存在或无权访问")
+    if project.project_type != "bid_draft":
+        raise HTTPException(status_code=400, detail="生成任务只能在标书生成项目上发起，请重新选择或新建项目")
     document = (
         await db.execute(select(Document).where(Document.id == body.tender_document_id))
     ).scalar_one_or_none()

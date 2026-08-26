@@ -424,7 +424,7 @@ export function getTokenClaims(): {
 
 // Projects API
 export const projectsApi = {
-  async list(projectType?: "review" | "duplicate"): Promise<Project[]> {
+  async list(projectType?: "review" | "duplicate" | "bid_draft"): Promise<Project[]> {
     const response = await apiClient.get("/projects", {
       params: projectType ? { project_type: projectType } : undefined,
     });
