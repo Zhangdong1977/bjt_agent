@@ -32,6 +32,7 @@ OUTLINE_MAX_NODES = 60
 OUTLINE_CONTEXT_MAX_CHARS = 4_000
 ANALYSIS_JSON_MAX_CHARS = 8_000
 SECTION_RESULT_MAX_CHARS = 24_000
+MERMAID_MAX_PER_SECTION = 2
 
 ANALYSIS_SYSTEM_PROMPT = (
     "你是招标文件解析专家，从招标文件文本中提取结构化要素。"
@@ -74,8 +75,16 @@ __OUTLINE_HINT__
 
 SECTION_SYSTEM_PROMPT = (
     "你是资深投标文件编写专家。撰写指定章节的正文，内容专业、具体、结构清晰、可直接用于投标文件。"
-    "只输出 Markdown 正文：不要输出本节标题（系统会自动添加），不要输出解释、前言或代码块围栏。"
+    "只输出 Markdown 正文：不要输出本节标题（系统会自动添加），不要输出解释或前言，"
+    "不要把整节内容包进代码块围栏（mermaid 图表除外）。"
     "严禁虚构公司的资质、业绩、项目、人员与数据；需要事实性内容时用“（请补充）”占位。"
+    "图表运用要求："
+    "①对比、参数、人员配置、职责分工、进度安排等结构化内容，优先用 Markdown 表格表达，不要堆砌长句；"
+    "②适合图示表达的内容（项目组织架构、实施/服务流程、应急处理流程、进度计划横道图、占比构成等）"
+    "用 mermaid 代码块（```mermaid 围栏）输出，语法必须严格合法（flowchart/gantt/pie/timeline 等），"
+    "节点与标签使用中文，整段代码块独占成块、前后留空行，每节 mermaid 图最多 2 张；"
+    "③图表涉及的名称、日期、数值必须与正文一致，同样严禁虚构；"
+    "④纯论述性内容保持文本段落，不要为凑图表而强行图示化。"
 )
 
 SECTION_USER_TEMPLATE = """## 项目招标要素（摘要）
@@ -97,12 +106,18 @@ class BidDraftCancelled(RuntimeError):
 
 
 def strip_code_fence(text: str) -> str:
-    """Remove a whole-output ``` fence if the model added one despite prompts."""
+    """Remove a whole-output ``` fence if the model added one despite prompts.
+
+    Only bare/markdown fences are stripped: a body that legitimately *is* a
+    ```mermaid block must keep its fence (it is a chart, not a wrapper).
+    """
     value = (text or "").strip()
     if value.startswith("```"):
         lines = value.splitlines()
         if len(lines) >= 2 and lines[-1].strip().startswith("```"):
-            value = "\n".join(lines[1:-1]).strip()
+            language = lines[0].strip()[3:].strip().lower()
+            if language in ("", "markdown", "md"):
+                value = "\n".join(lines[1:-1]).strip()
     return value
 
 
@@ -174,6 +189,45 @@ def normalize_outline(nodes: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+def extract_mermaid_fences(text: str) -> list[dict[str, int]]:
+    """Locate ```mermaid fenced blocks; returns char ranges including both fences.
+
+    Unterminated fences are ignored (the frontend falls back to code text).
+    """
+    fences: list[dict[str, int]] = []
+    lines = (text or "").splitlines(keepends=True)
+    offset = 0
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if stripped.startswith("```") and stripped[3:].strip().lower() == "mermaid":
+            end_offset = offset + len(lines[index])
+            closing = index + 1
+            while closing < len(lines) and not lines[closing].strip().startswith("```"):
+                end_offset += len(lines[closing])
+                closing += 1
+            if closing >= len(lines):
+                break
+            closing_line = lines[closing]
+            raw_end = end_offset + len(closing_line)
+            # Range covers both fences but not the newline after the closing one.
+            fences.append({"start": offset, "end": raw_end - (len(closing_line) - len(closing_line.rstrip("\r\n")))})
+            offset = raw_end
+            index = closing + 1
+            continue
+        offset += len(lines[index])
+        index += 1
+    return fences
+
+
+def clamp_mermaid_blocks(body: str, limit: int = MERMAID_MAX_PER_SECTION) -> str:
+    """Cap mermaid charts per section; extra ones become a plain placeholder note."""
+    fences = extract_mermaid_fences(body)
+    for fence in reversed(fences[limit:]):
+        body = body[: fence["start"]] + "（本节图表数量已达上限，多余图示已省略）" + body[fence["end"] :]
+    return body
 
 
 def _bound_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -358,6 +412,7 @@ class BidDraftAgent:
         body = strip_code_fence(await self._generate(SECTION_SYSTEM_PROMPT, user_prompt))
         if not body:
             raise RuntimeError(f"章节「{node['title']}」生成结果为空")
+        body = clamp_mermaid_blocks(body)
         level = max(1, min(6, int(node.get("level") or 1)))
         content = f"{'#' * level} {node['title']}\n\n{body}"[:SECTION_RESULT_MAX_CHARS]
 
