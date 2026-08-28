@@ -34,6 +34,9 @@ const projectStore = useProjectStore()
 const projectId = computed(() => route.params.id as string)
 const tenderDocs = computed(() => projectStore.documents.filter(d => d.doc_type === 'tender'))
 const bidDocs = computed(() => projectStore.documents.filter(d => d.doc_type === 'bid'))
+
+// 每类文档（招标/投标）的数量上限，与后端 settings.review_doc_role_limit 配套
+const MAX_DOCS_PER_TYPE = 20
 const hasParsedTender = computed(() => tenderDocs.value.some(d => d.status === 'parsed'))
 const hasParsedBid = computed(() => bidDocs.value.some(d => d.status === 'parsed'))
 
@@ -67,6 +70,12 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
   if (!files?.length) return
 
   for (const file of files) {
+    // 数量闸门：已达每类上限后续文件不再上传（串行循环内实时计数，含本批已传成功的）
+    const currentCount = docType === 'tender' ? tenderDocs.value.length : bidDocs.value.length
+    if (currentCount >= MAX_DOCS_PER_TYPE) {
+      message.warning(`每类文件最多 ${MAX_DOCS_PER_TYPE} 个，${file.name} 等余下文件未上传`)
+      break
+    }
     // .doc 旧版格式后端无法解析，提前拦截并给出友好提示
     if (isLegacyDocFile(file)) {
       message.warning(legacyDocWarning(file.name))
@@ -231,8 +240,8 @@ function getStatusClass(status: string) {
             </div>
 
             <!-- Upload area -->
-            <div v-if="tenderDocs.length >= 10" class="upload-limit">
-              已达上限（10个文件）
+            <div v-if="tenderDocs.length >= MAX_DOCS_PER_TYPE" class="upload-limit">
+              已达上限（{{ MAX_DOCS_PER_TYPE }}个文件）
             </div>
             <div v-else class="upload-area">
               <a-progress
@@ -313,8 +322,8 @@ function getStatusClass(status: string) {
             </div>
 
             <!-- Upload area -->
-            <div v-if="bidDocs.length >= 10" class="upload-limit">
-              已达上限（10个文件）
+            <div v-if="bidDocs.length >= MAX_DOCS_PER_TYPE" class="upload-limit">
+              已达上限（{{ MAX_DOCS_PER_TYPE }}个文件）
             </div>
             <div v-else class="upload-area">
               <a-progress

@@ -37,6 +37,9 @@ const projectName = ref('')
 const projectDesc = ref('')
 const submitting = ref(false)
 
+// 每类文档（招标/投标）的数量上限，与后端 settings.review_doc_role_limit 配套
+const MAX_DOCS_PER_TYPE = 20
+
 // 草稿文档（project_id === null）按类型分组
 const tenderDrafts = computed(() =>
   projectStore.documents.filter((d) => d.project_id === null && d.doc_type === 'tender')
@@ -101,6 +104,11 @@ const isUploadingBid = computed(() =>
   bidTempUploads.value.some((t) => t.status === 'uploading' || t.status === 'queued'),
 )
 
+// 某类文档当前占用数（已传草稿 + 上传中的临时卡），用于每类数量上限的入队闸门
+const docCountOf = (docType: 'tender' | 'bid') =>
+  (docType === 'tender' ? tenderDrafts.value : bidDrafts.value).length +
+  (docType === 'tender' ? tenderTempUploads.value : bidTempUploads.value).length
+
 function formatBytes(n: number): string {
   if (n < 1024) return n + ' B'
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
@@ -152,6 +160,17 @@ async function handleUpload(event: Event, docType: 'tender' | 'bid') {
     validFiles.push(file)
   }
   if (!validFiles.length) return
+
+  // 数量闸门：单次多选同样受每类上限约束，超出的文件不入队直接提示
+  const remaining = MAX_DOCS_PER_TYPE - docCountOf(docType)
+  if (validFiles.length > remaining) {
+    const skipped = validFiles.length - Math.max(remaining, 0)
+    message.warning(
+      `每类文件最多 ${MAX_DOCS_PER_TYPE} 个，已忽略超限的 ${skipped} 个文件`
+    )
+    if (remaining <= 0) return
+    validFiles.splice(remaining)
+  }
 
   // ② 一次性入队：所有文件先标为 queued，UI 立刻出现 N 张「等待中」卡
   const items: TempUploadItem[] = validFiles.map((file) => ({
@@ -457,7 +476,7 @@ function getStatusClass(status: string) {
             </div>
           </div>
 
-          <div v-if="tenderDrafts.length + tenderTempUploads.length >= 10" class="upload-limit">已达上限（10个文件）</div>
+          <div v-if="tenderDrafts.length + tenderTempUploads.length >= MAX_DOCS_PER_TYPE" class="upload-limit">已达上限（{{ MAX_DOCS_PER_TYPE }}个文件）</div>
           <div v-else class="upload-area">
             <button
               type="button"
@@ -543,7 +562,7 @@ function getStatusClass(status: string) {
             </div>
           </div>
 
-          <div v-if="bidDrafts.length + bidTempUploads.length >= 10" class="upload-limit">已达上限（10个文件）</div>
+          <div v-if="bidDrafts.length + bidTempUploads.length >= MAX_DOCS_PER_TYPE" class="upload-limit">已达上限（{{ MAX_DOCS_PER_TYPE }}个文件）</div>
           <div v-else class="upload-area">
             <button
               type="button"

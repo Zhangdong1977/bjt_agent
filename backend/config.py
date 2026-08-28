@@ -218,6 +218,11 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 1024  # Single-file limit: 1 GiB
     max_upload_size_bytes: int = 1024 * 1024 * 1024  # 1 GiB in bytes
 
+    # 标书检查项目每类文档（tender 招标 / bid 投标）的数量上限，草稿上传与
+    # 关联到项目两处闸门共用；前端 CheckView/ProjectView 的「已达上限」提示
+    # 与之配套。env: REVIEW_DOC_ROLE_LIMIT。
+    review_doc_role_limit: int = 20
+
     # 单连接上传限速（字节/秒）；0 表示不限速。env: UPLOAD_BYTES_PER_SEC。
     # 后端流式分块读取 + 时间补偿实现：因 nginx proxy_request_buffering off，
     # 后端读慢会 TCP 反压到浏览器，端到端限速成立。默认 4 MiB/s（1GiB ≈ 256s）。
