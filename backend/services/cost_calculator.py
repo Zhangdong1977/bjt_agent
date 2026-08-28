@@ -10,9 +10,10 @@
 
 DeepSeek 上下文缓存拆分计价：命中输入约为未命中输入的 1/30，必须分开计；
 其它厂商暂无缓存拆分，hit=0、miss=prompt_tokens 兜底（见 _llm_cost）。
-DeepSeek 官方价目表分高峰/空闲双档（2026-08 调价）：高峰 = 北京时间
-9:00-12:00、14:00-18:00，其余空闲（官方未区分工作日/周末）；按调用时刻
-选档见 _is_peak_beijing，调用方不传 at 则取当前时刻。
+DeepSeek 官方价目表分高峰/空闲双档（2026-08 调价），本计费口径定高峰 =
+北京时间周一至周五 9:00-12:00、14:00-18:00，其余空闲（含整个周末；
+与官方"不分工作日/周末"的差异是业务决策，周末差价由平台吸收）；按调用
+时刻选档见 _is_peak_beijing，调用方不传 at 则取当前时刻。
 """
 
 from datetime import datetime, timedelta, timezone
@@ -21,7 +22,7 @@ from typing import Optional
 # —— DeepSeek（按百万 token）—— 来源 api-docs.deepseek.com/zh-cn 公开价目表（2026-08-17 核对）
 #    三档：缓存命中输入 hit / 缓存未命中输入 miss / 输出 output
 #    2026-08 官方调价为高峰/空闲双档（空闲价 = 高峰价的一半，元/百万 token）：
-#      高峰（北京 9:00-12:00、14:00-18:00）：命中 0.10 / 未命中 3.0 / 输出 9.0
+#      高峰（北京周一至周五 9:00-12:00、14:00-18:00）：命中 0.10 / 未命中 3.0 / 输出 9.0
 #      空闲（其余时段）：                    命中 0.05 / 未命中 1.5 / 输出 4.5
 _DEEPSEEK_FLASH_TIERS = {
     "peak":    {"hit": 0.10 / 1_000_000, "miss": 3.0 / 1_000_000, "output": 9.0 / 1_000_000},
@@ -79,11 +80,14 @@ _BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def _is_peak_beijing(at: Optional[datetime]) -> bool:
-    """高峰时段：北京时间 9:00-12:00、14:00-18:00（DeepSeek 官方与腾讯
-    TokenHub 原厂直供的 deepseek-v4-flash 双档价目共用同一时段定义）。
+    """高峰时段：北京时间**周一至周五** 9:00-12:00、14:00-18:00，其余空闲
+    （DeepSeek 官方与腾讯 TokenHub 原厂直供的 deepseek-v4-flash 双档价目
+    共用同一时段定义）。
 
-    官方未明确端点归属与工作日/周末之分，按 [起, 止) 半开区间实现：
-    12:00 / 18:00 整点起计空闲，周末同时段照常计高峰。
+    官方价目不区分工作日/周末，周末同时段上游仍按高峰价向我们结算；
+    2026-08-28 起计费口径主动收窄为仅工作日计高峰（周末按空闲对用户
+    计费，差价由平台吸收，业务决策）。
+    按 [起, 止) 半开区间实现：12:00 / 18:00 整点起计空闲。
     at 为空取当前时刻（≈ ai_usage_records 写入时刻，即调用发生时刻）；
     朴素 datetime 按 UTC 解释，避免依赖宿主机时区。
     """
@@ -92,7 +96,7 @@ def _is_peak_beijing(at: Optional[datetime]) -> bool:
     elif at.tzinfo is None:
         at = at.replace(tzinfo=timezone.utc)
     local = at.astimezone(_BEIJING_TZ)
-    return 9 <= local.hour < 12 or 14 <= local.hour < 18
+    return local.weekday() < 5 and (9 <= local.hour < 12 or 14 <= local.hour < 18)
 
 
 def _llm_cost(
