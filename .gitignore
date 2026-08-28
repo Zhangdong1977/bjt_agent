@@ -68,3 +68,4 @@ nul
 
 # 本地构建产物打包（frontend dist 的 tar 备份）
 bjt-frontend-*.tar.gz
+models/

@@ -72,6 +72,9 @@ def _client(timeout: float) -> httpx.AsyncClient:
         base_url=settings.operate_api_base_url.rstrip("/"),
         timeout=timeout or settings.operate_api_timeout_seconds,
         headers={"X-Internal-Token": settings.operate_internal_token},
+        # 私有云后台通常在内网/本机：显式绕过系统代理（与 api/auth.py 转发一致）。
+        # 否则客户端开了系统代理（如 clash）时 httpx 会把 127.0.0.1/内网请求发往代理导致断连。
+        trust_env=False,
     )
 
 
