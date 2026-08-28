@@ -272,6 +272,14 @@ do_start() {
     log "========================================"
     echo ""
 
+    # ---- 集群模式警告（2026-08-28 事故教训）----
+    # Phase 4 后 prod 枢纽只跑 beat + RAG。本脚本会全量拉起计算角色
+    # （review/parser/generation worker + backend），与 3 节点真 worker 重复抢任务；
+    # prod 不挂 NFS，被抢走的解析任务会全部误判「文件不存在」失败。
+    # 仅单机回滚模式（集群整体放弃、nginx upstream 已改回 127.0.0.1:8001）才允许这样用。
+    warn "集群模式下 prod 禁止全量 start（会起假 worker 抢任务，2026-08-28 事故）"
+    warn "若 prod 只需恢复 beat/RAG，请逐个手动启动对应服务；单机回滚模式才继续"
+
     # Start celery workers first
     start_celery_review
     sleep 1

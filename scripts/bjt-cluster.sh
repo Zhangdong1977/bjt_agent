@@ -314,6 +314,25 @@ stop_by_pattern() {
 do_start() {
     load_config
 
+    # ---- 主机防呆（2026-08-28 事故教训）----
+    # prod 枢纽(bjt-check)不挂 NFS、workspace 为空目录，误在其上执行本脚本会拉起
+    # 与真节点抢任务的"假 worker"：解析任务被抢走后因看不到文件全部误判
+    # 「文件不存在，请重新上传」失败（当日 22 个任务全败）。启动前校验本机
+    # IP 必须包含 node config 声明的 NODE_IP，不匹配直接拒绝。
+    local node_ip="${NODE_IP:-}"
+    if [ -z "$node_ip" ]; then
+        warn "node config 未声明 NODE_IP，跳过主机校验（建议在 deploy/node-configs/*.env 补上）"
+    else
+        local my_ips
+        my_ips="$(hostname -I 2>/dev/null || true)"
+        if ! echo " $my_ips " | grep -qw "$node_ip"; then
+            error "本机 IP [$my_ips] 不含 $NODE_NAME 声明的 NODE_IP=$node_ip"
+            error "拒绝在非 $NODE_NAME 机器上启动计算角色（防 prod/枢纽误起假 worker，2026-08-28 事故）"
+            error "prod 单机回滚模式请用 bjt-proc.sh 并参照集群维护手册，不要用本脚本"
+            exit 1
+        fi
+    fi
+
     log "========================================"
     log "  Starting BJT Node: $NODE_NAME"
     log "  Role: ${NODE_ROLE:-unknown}"
