@@ -53,6 +53,7 @@ pnpm-debug.log*
 # Environment
 .env.local
 .env.*.local
+.env.*-backup
 .planning
 docs/rules/
 temp/
