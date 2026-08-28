@@ -162,7 +162,7 @@ class TestDocumentUpload:
         )
 
         assert response.status_code == 400
-        assert "文档类型不正确" in response.json()["detail"]
+        assert "文档类型与项目类型不匹配" in response.json()["detail"]
 
 
 class TestDocumentList:
@@ -401,3 +401,103 @@ class TestDocumentInteriorAccess:
             headers=interior_auth_headers,
         )
         assert resp.status_code == 404
+
+
+class TestDocumentRoleLimit:
+    """Per-doc-type count limit for review projects (settings.review_doc_role_limit).
+
+    Covers the three gates: project upload, draft upload, and draft attach.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_parse_dispatch(self, monkeypatch):
+        """No-op celery dispatch so tests never touch a real broker."""
+        from backend.tasks.document_parser import parse_document
+
+        monkeypatch.setattr(parse_document, "delay", lambda *args, **kwargs: None)
+
+    async def _upload_to_project(self, client, auth_headers, project_id, doc_type, index):
+        files = {"file": (f"file_{index}.pdf", create_test_pdf(), "application/pdf")}
+        return await client.post(
+            f"/api/projects/{project_id}/documents?doc_type={doc_type}",
+            files=files,
+            headers=auth_headers,
+        )
+
+    async def _upload_draft(self, client, auth_headers, doc_type, index):
+        files = {"file": (f"draft_{index}.pdf", create_test_pdf(), "application/pdf")}
+        return await client.post(
+            f"/api/documents/upload?doc_type={doc_type}",
+            files=files,
+            headers=auth_headers,
+        )
+
+    @pytest.mark.asyncio
+    async def test_project_upload_rejects_beyond_limit(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """The 21st tender upload to one review project is rejected with 400."""
+        from backend.config import get_settings
+
+        limit = get_settings().review_doc_role_limit
+        project = await create_test_project(client, auth_headers, "Limit Test Project")
+
+        for i in range(limit):
+            response = await self._upload_to_project(
+                client, auth_headers, project["id"], "tender", i
+            )
+            assert response.status_code == 201, f"upload {i} failed: {response.text}"
+
+        extra = await self._upload_to_project(
+            client, auth_headers, project["id"], "tender", limit
+        )
+        assert extra.status_code == 400
+        assert f"该类型文档已达上限（{limit}个）" in extra.json()["detail"]
+
+        # Other doc types are unaffected by a full tender slot.
+        bid = await self._upload_to_project(client, auth_headers, project["id"], "bid", 0)
+        assert bid.status_code == 201
+
+    @pytest.mark.asyncio
+    async def test_draft_upload_rejects_beyond_limit(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """The 21st tender draft upload is rejected with 400."""
+        from backend.config import get_settings
+
+        limit = get_settings().review_doc_role_limit
+        for i in range(limit):
+            response = await self._upload_draft(client, auth_headers, "tender", i)
+            assert response.status_code == 201, f"draft {i} failed: {response.text}"
+
+        extra = await self._upload_draft(client, auth_headers, "tender", limit)
+        assert extra.status_code == 400
+        assert f"该类型文档已达上限（{limit}个）" in extra.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_attach_rejects_beyond_limit(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """Attaching one more tender to a full review project is rejected."""
+        from backend.config import get_settings
+
+        limit = get_settings().review_doc_role_limit
+        project = await create_test_project(client, auth_headers, "Attach Limit Project")
+
+        for i in range(limit):
+            draft = (await self._upload_draft(client, auth_headers, "tender", i)).json()
+            response = await client.post(
+                f"/api/documents/{draft['id']}/attach",
+                params={"project_id": project["id"]},
+                headers=auth_headers,
+            )
+            assert response.status_code == 200, f"attach {i} failed: {response.text}"
+
+        extra_draft = (await self._upload_draft(client, auth_headers, "tender", limit)).json()
+        response = await client.post(
+            f"/api/documents/{extra_draft['id']}/attach",
+            params={"project_id": project["id"]},
+            headers=auth_headers,
+        )
+        assert response.status_code == 400
+        assert f"该类型文档已达上限（{limit}个）" in response.json()["detail"]
