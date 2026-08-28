@@ -312,14 +312,17 @@ stop_by_pattern() {
 
 # ---- Actions ----
 do_start() {
-    load_config
-
     # ---- 主机防呆（2026-08-28 事故教训）----
     # prod 枢纽(bjt-check)不挂 NFS、workspace 为空目录，误在其上执行本脚本会拉起
     # 与真节点抢任务的"假 worker"：解析任务被抢走后因看不到文件全部误判
     # 「文件不存在，请重新上传」失败（当日 22 个任务全败）。启动前校验本机
     # IP 必须包含 node config 声明的 NODE_IP，不匹配直接拒绝。
-    local node_ip="${NODE_IP:-}"
+    # 注意：必须放在 load_config 之前——load_config 内含 conda 激活，非交互
+    # shell 下会先失败，防呆就永远跑不到。
+    local node_ip=""
+    if [ -n "$NODE_CONFIG" ] && [ -f "$NODE_CONFIG" ]; then
+        node_ip="$(grep -E '^NODE_IP=' "$NODE_CONFIG" | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+    fi
     if [ -z "$node_ip" ]; then
         warn "node config 未声明 NODE_IP，跳过主机校验（建议在 deploy/node-configs/*.env 补上）"
     else
@@ -332,6 +335,8 @@ do_start() {
             exit 1
         fi
     fi
+
+    load_config
 
     log "========================================"
     log "  Starting BJT Node: $NODE_NAME"
