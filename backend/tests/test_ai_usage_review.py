@@ -68,8 +68,8 @@ cost_mod = _load_module_by_path(
 )
 estimate_cost = cost_mod.estimate_cost
 
-# —— DeepSeek 双档计价时刻（官方 2026-08 价目：高峰=北京 9:00-12:00、14:00-18:00）——
-# 北京 20:00（UTC 12:00）= 空闲；北京 10:00（UTC 02:00）= 高峰。显式传 at 保证确定性。
+# —— DeepSeek 双档计价时刻（计费口径：高峰=北京周一至周五 9:00-12:00、14:00-18:00）——
+# 2026-08-17 是周一。北京 20:00（UTC 12:00）= 空闲；北京 10:00（UTC 02:00）= 高峰。显式传 at 保证确定性。
 from datetime import datetime, timezone as _tz
 
 AT_OFFPEAK = datetime(2026, 8, 17, 12, 0, tzinfo=_tz.utc)   # 北京 20:00
@@ -140,6 +140,11 @@ BOUNDARIES = [
     ("北京18:00 整算空闲", datetime(2026, 8, 17, 10, 0, tzinfo=_tz.utc), 1.5),
     ("北京8:59 算空闲", datetime(2026, 8, 17, 0, 59, 30, tzinfo=_tz.utc), 1.5),
     ("北京3:00 凌晨算空闲（跨日）", datetime(2026, 8, 16, 19, 0, tzinfo=_tz.utc), 1.5),
+    # 周末一律空闲（2026-08-28 起计费口径：高峰仅限周一至周五；8-22 周六、8-23 周日）
+    ("北京周六10:00 算空闲（周末不计高峰）", datetime(2026, 8, 22, 2, 0, tzinfo=_tz.utc), 1.5),
+    ("北京周六15:00 算空闲（周末不计高峰）", datetime(2026, 8, 22, 7, 0, tzinfo=_tz.utc), 1.5),
+    ("北京周日9:00 整算空闲（周末不计高峰）", datetime(2026, 8, 23, 1, 0, tzinfo=_tz.utc), 1.5),
+    ("北京周日17:59 算空闲（周末不计高峰）", datetime(2026, 8, 23, 9, 59, 30, tzinfo=_tz.utc), 1.5),
 ]
 for label, dt, want in BOUNDARIES:
     got = _miss_at(dt)
