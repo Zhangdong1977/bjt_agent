@@ -25,6 +25,8 @@ import {
 import { documentsApi, projectsApi } from "@/api/client";
 import type { Document, Project } from "@/types";
 import { useVstoBridge } from "@/composables/useVstoBridge";
+import { prepareChartAssets, splitMermaidFences } from "@/utils/chartAssets";
+import MermaidFigure from "@/components/MermaidFigure.vue";
 import { useBillingStore } from "@/stores/billing";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 import iconWallet from "@/assets/images/ui/common-icon-wallet.png";
@@ -76,9 +78,16 @@ const inserted = ref(false);
 const staleSnapshot = ref(false);
 const insertMessage = ref("");
 const insertError = ref("");
+const renderingCharts = ref(false);
+const chartFailures = ref(0);
 
 const selectedSection = ref<BidDraftSectionContent | null>(null);
 const regeneratingNode = ref("");
+
+// 章节预览：按 ```mermaid 围栏拆分，图表内联渲染，其余保持原文本展示。
+const sectionSegments = computed(() =>
+  selectedSection.value?.content ? splitMermaidFences(selectedSection.value.content) : [],
+);
 
 // 详细时间线步骤流：SSE 事件逐条记录，内部/外部用户均完整显示
 // （产品要求：标书生成不做 review 那类按 interior_user 的详情过滤）。
@@ -426,6 +435,8 @@ function trackTask(next: BidDraftTask) {
   staleSnapshot.value = false;
   insertMessage.value = "";
   insertError.value = "";
+  renderingCharts.value = false;
+  chartFailures.value = 0;
   step.value = "running";
   detailSteps.value = [];
   pushStep("info", isRegenTask.value ? "单节重生成任务已提交" : "标书生成任务已提交");
@@ -628,19 +639,38 @@ async function insertToWord(atCurrentCursor: boolean) {
   inserting.value = true;
   insertError.value = "";
   insertMessage.value = "";
+  chartFailures.value = 0;
   try {
-    const result = await bridge.insertMarkdown(assembledContent.value, {
+    let content = assembledContent.value;
+    let images: Record<string, string> | undefined;
+    if (content.includes("```mermaid")) {
+      // mermaid 图在 WebView2 内渲染为 PNG 随桥消息发给插件（服务端无渲染环境）
+      renderingCharts.value = true;
+      try {
+        const payload = await prepareChartAssets(content);
+        content = payload.content;
+        images = payload.images;
+        chartFailures.value = payload.failedCount;
+      } finally {
+        renderingCharts.value = false;
+      }
+    }
+    const result = await bridge.insertMarkdown(content, {
       label: isRegenTask.value ? "AI 标书生成（单节）" : "AI 标书生成",
       snapshotId: atCurrentCursor ? null : bridge.documentContext.value?.snapshot_id || null,
       anchor: "cursor",
       // 全量标书逐标题写入 Word 实测约 4s/标题、60 节 ≈ 6-7 分钟（2026-08-25
       // 真机日志：20:12:55→20:19:17），60s 默认超时会在写完前误报"插件未响应"。
       timeoutMs: 15 * 60_000,
+      images,
     });
     if (result.success === true) {
       inserted.value = true;
       staleSnapshot.value = false;
       insertMessage.value = "已写入 Word 当前光标处，可按 Ctrl+Z 一次撤销本次生成内容";
+      if (chartFailures.value > 0) {
+        insertMessage.value += `；${chartFailures.value} 张图表渲染失败，已按代码文本插入`;
+      }
     } else if (String(result.code || "") === "snapshot_stale") {
       staleSnapshot.value = true;
       insertError.value = "Word 文档在生成期间已修改，请点击「重新定位插入点并写入」";
@@ -732,6 +762,8 @@ function restart() {
   staleSnapshot.value = false;
   insertMessage.value = "";
   insertError.value = "";
+  renderingCharts.value = false;
+  chartFailures.value = 0;
 }
 
 onMounted(() => {
@@ -910,7 +942,8 @@ onUnmounted(() => {
         <div v-if="insertMessage" class="applied-tip">{{ insertMessage }}</div>
         <div v-if="insertError" class="error">{{ insertError }}</div>
         <p v-if="inserting" class="hint inserting-hint">
-          正在逐标题写入 Word，大文档约需数分钟，请勿在写入期间点击/编辑 Word 窗口（会导致"应用程序正在使用中"而中断）…
+          <template v-if="renderingCharts">正在渲染图表（组织架构/流程/进度等图示）…</template>
+          <template v-else>正在逐标题写入 Word，大文档约需数分钟，请勿在写入期间点击/编辑 Word 窗口（会导致"应用程序正在使用中"而中断）…</template>
         </p>
         <div class="actions">
           <button class="primary" :disabled="inserting || inserted" @click="insertToWord(staleSnapshot)">
@@ -939,7 +972,13 @@ onUnmounted(() => {
             <button class="ghost-btn" @click="selectedSection = null">关闭</button>
           </div>
         </div>
-        <pre class="modal-body">{{ selectedSection.content || "（暂无内容）" }}</pre>
+        <div class="modal-body">
+          <template v-for="(segment, index) in sectionSegments" :key="index">
+            <pre v-if="segment.kind === 'text' && segment.content.trim()" class="modal-pre">{{ segment.content }}</pre>
+            <MermaidFigure v-else-if="segment.kind === 'mermaid'" :code="segment.content" />
+          </template>
+          <p v-if="!sectionSegments.length" class="modal-empty">（暂无内容）</p>
+        </div>
       </div>
     </div>
   </main>
@@ -982,7 +1021,7 @@ onUnmounted(() => {
 .applied-tip{margin-bottom:10px;padding:9px 10px;border-radius:7px;background:#f6ffed;color:#3d9b18;font-size:11px}
 .error{margin-top:11px;padding:9px 10px;border:1px solid #ffccc7;border-radius:7px;background:#fff1f0;color:#c53030;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
 .inserting-hint{color:#c58608}
-.modal-mask{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(0,0,0,.38)}.modal-card{display:flex;flex-direction:column;width:min(680px,100%);max-height:80vh;background:#fff;border-radius:12px;overflow:hidden}.modal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid #f0f0f0}.modal-head strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#333;font-size:13px}.modal-body{flex:1;margin:0;padding:14px;overflow-y:auto;color:#444;font-size:11px;line-height:1.75;white-space:pre-wrap;word-break:break-word}
+.modal-mask{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(0,0,0,.38)}.modal-card{display:flex;flex-direction:column;width:min(680px,100%);max-height:80vh;background:#fff;border-radius:12px;overflow:hidden}.modal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid #f0f0f0}.modal-head strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#333;font-size:13px}.modal-body{flex:1;overflow-y:auto;padding:14px}.modal-pre{margin:0 0 4px;color:#444;font-size:11px;line-height:1.75;white-space:pre-wrap;word-break:break-word}.modal-empty{margin:0;color:#999;font-size:11px}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(215,4,26,.07)}50%{box-shadow:0 0 0 6px rgba(215,4,26,.03)}}
 @media (max-width:560px){.bid-draft-view{padding:0 8px 28px}.brand-line{margin:0 -8px}.panel-header{min-height:56px}.panel-logo{width:96px}.metric-pill{height:27px;min-width:80px;padding-left:30px;font-size:10px}.card{padding:14px 12px;margin-bottom:9px;border-radius:9px}.hero-card h1{font-size:19px}.document-state{align-items:flex-start;flex-wrap:wrap}.document-name{flex-basis:100%;margin-left:14px}.new-project{flex-direction:column}.actions{flex-direction:column}.actions button{width:100%}}
 @media (max-width:390px){.panel-header{align-items:flex-start;flex-direction:column;padding:10px 3px}.account-strip{width:100%}.metric-pill{flex:1}}

@@ -115,3 +115,42 @@ def test_normalize_outline_strips_numeric_title_prefix():
     # 无分隔符的编号暂不剥（保守），但不影响 node_id 编号语义
     assert outline[2]["title"] == "10.2其他需要补充的材料"
     assert outline[3]["title"] == "2024年度业绩一览"
+
+
+def test_strip_code_fence_keeps_mermaid_fence():
+    # 整节就是一张 mermaid 图时不能把围栏剥掉（剥掉会丢图表语义）
+    body = "```mermaid\nflowchart TD\n  A[开始] --> B[结束]\n```"
+    assert strip_code_fence(body) == body
+    # 模型误包 markdown 围栏仍然照剥
+    assert strip_code_fence("```markdown\n正文\n```") == "正文"
+
+
+def test_extract_mermaid_fences_and_clamp():
+    from backend.agent.bid_draft_agent import clamp_mermaid_blocks, extract_mermaid_fences
+
+    body = (
+        "前置说明文字。\n\n"
+        "```mermaid\nflowchart TD\n  A --> B\n```\n\n"
+        "中间文字。\n\n"
+        "```mermaid\npie\n  title 占比\n```\n\n"
+        "更多文字。\n\n"
+        "```mermaid\nflowchart LR\n  C --> D\n```\n"
+    )
+    fences = extract_mermaid_fences(body)
+    assert len(fences) == 3
+    for fence in fences:
+        assert body[fence["start"] : fence["end"]].startswith("```mermaid")
+        assert body[fence["start"] : fence["end"]].endswith("```")
+
+    clamped = clamp_mermaid_blocks(body, limit=2)
+    assert "flowchart LR" not in clamped
+    assert clamped.count("```mermaid") == 2
+    assert "已省略" in clamped
+    # 普通（非 mermaid）代码块不受影响
+    mixed = "```\n普通代码\n```\n\n```mermaid\nflowchart TD\n  A --> B\n```"
+    assert clamp_mermaid_blocks(mixed, limit=0) .count("```mermaid") == 0
+    assert "普通代码" in clamp_mermaid_blocks(mixed, limit=0)
+    # 未闭合围栏忽略、不改写
+    unterminated = "```mermaid\nflowchart TD\n  A --> B"
+    assert extract_mermaid_fences(unterminated) == []
+    assert clamp_mermaid_blocks(unterminated) == unterminated

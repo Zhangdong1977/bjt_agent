@@ -166,7 +166,7 @@ def _document_role_limit(project_type: str, doc_type: str) -> int:
     """Return a fail-closed per-project/draft limit for one document role."""
 
     if project_type != "duplicate":
-        return 10
+        return settings.review_doc_role_limit
     if doc_type in {"duplicate_left", "duplicate_right"}:
         return 1
     if doc_type == "duplicate_bid":
@@ -622,6 +622,21 @@ async def upload_draft_document(
                 detail=f"{side}仅允许上传一份文件，请先删除原文件",
             )
 
+    if doc_type in {"tender", "bid"}:
+        existing_result = await db.execute(
+            select(Document).where(
+                Document.owner_user_id == current_user.id,
+                Document.project_id.is_(None),
+                Document.doc_type == doc_type,
+            )
+        )
+        tender_bid_limit = _document_role_limit("review", doc_type)
+        if len(existing_result.scalars().all()) >= tender_bid_limit:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"该类型文档已达上限（{tender_bid_limit}个），请先删除后再上传",
+            )
+
     if doc_type in {"duplicate_bid", "duplicate_tender", "duplicate_public_reference"}:
         existing_result = await db.execute(
             select(Document).where(
@@ -728,20 +743,19 @@ async def attach_draft_document(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="文档类型与项目类型不匹配",
         )
-    if project.project_type == "duplicate":
-        existing_result = await db.execute(
-            select(Document).where(
-                Document.project_id == project_id,
-                Document.doc_type == document.doc_type,
-            )
+    existing_result = await db.execute(
+        select(Document).where(
+            Document.project_id == project_id,
+            Document.doc_type == document.doc_type,
         )
-        existing_count = len(existing_result.scalars().all())
-        role_limit = _document_role_limit(project.project_type, document.doc_type)
-        if existing_count >= role_limit:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"该查重文档角色已达上限（{role_limit} 份）",
-            )
+    )
+    existing_count = len(existing_result.scalars().all())
+    role_limit = _document_role_limit(project.project_type, document.doc_type)
+    if existing_count >= role_limit:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"该类型文档已达上限（{role_limit}个），请先删除后再上传",
+        )
 
     document.project_id = project_id
     try:

@@ -140,10 +140,18 @@ export function useVstoBridge() {
 
   /** 在锚点/光标处插入 Markdown；返回 code="snapshot_stale" 时可重试。
    * 全量标书写入按标题逐段进 Word，实测约 4s/标题、60 节 ≈ 6-7 分钟，
-   * timeoutMs 必须按内容规模给足（默认 60s 只适合小片段）。 */
+   * timeoutMs 必须按内容规模给足（默认 60s 只适合小片段）。
+   * images：图表附件（"bjt-chart://N" → PNG dataURL），Markdown 中以
+   * `![题注](bjt-chart://N)` 独立图片行引用；仅新版插件识别，旧插件按普通文本降级。 */
   function insertMarkdown(
     content: string,
-    options: { label?: string; snapshotId?: string | null; anchor?: "cursor" | "end"; timeoutMs?: number } = {},
+    options: {
+      label?: string;
+      snapshotId?: string | null;
+      anchor?: "cursor" | "end";
+      timeoutMs?: number;
+      images?: Record<string, string>;
+    } = {},
   ) {
     return request(
       {
@@ -152,6 +160,7 @@ export function useVstoBridge() {
         label: options.label || "AI 写入",
         snapshot_id: options.snapshotId ?? null,
         anchor: options.anchor || "cursor",
+        ...(options.images && Object.keys(options.images).length ? { images: options.images } : {}),
       },
       options.timeoutMs ?? 60_000,
     );
