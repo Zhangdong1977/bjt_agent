@@ -320,6 +320,51 @@ def test_pdf_overlong_finding_text_splits_across_pages():
     assert pdf_bytes[:5] == b"%PDF-"
 
 
+def test_pdf_overlong_md_table_chunk_renders():
+    """md 表格分块（行数少但单元格文本长）超页框不能让导出失败（LayoutError 回归）.
+
+    2026-09-01 生产事故：D001 业绩得分的 bid_content 含 11 行×5 列业绩核对表，
+    单元格文本长，_MD_TABLE_CHUNK_ROWS=12 行分块后嵌套表整体 724pt > 页框
+    671.8pt，卡片表单行超高无法分页 → LayoutError → 导出 500（用户重试 13 次
+    全败）。splitInRow=1 允许行内续排，修复后必须能出 PDF。
+    """
+    from backend.services.pdf_export import build_review_pdf
+
+    md_rows = [
+        "| 序号 | 项目名称（汇总表） | 签订时间 | 合同关键信息（扫描件） | 一致性 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for i in range(1, 11):
+        md_rows.append(
+            f"| {i} | 某单位{i}号项目后勤服务合同 | 2025-0{i % 9 + 1}-1{i % 9} "
+            f"| {'扫描件关键信息逐项核对说明文字很长，' * 8}（详见扫描件） "
+            f"| 名称不一致（汇总表缺「技术」二字） |"
+        )
+    groups = [{
+        "label": "D001 业绩得分检查",
+        "is_compliant": False,
+        "non_compliant_count": 1,
+        "findings": [{
+            "check_item_name": "评分标准业绩得分规则提取与确认",
+            "requirement_key": "req_1",
+            "requirement_content": "业绩汇总表与扫描件一致性核对。",
+            "bid_content": "经逐项核对业绩汇总表与合同扫描件：\n\n" + "\n".join(md_rows),
+            "is_compliant": False,
+            "severity": "major",
+            "location_page": 3,
+            "location_line": None,
+            "suggestion": "以扫描件为准更正汇总表。",
+            "explanation": "多项业绩的名称/业主与扫描件不一致。",
+        }],
+    }]
+    pdf_bytes = build_review_pdf(
+        "md 表格超页项目", None,
+        {"category_count": 1, "check_item_count": 1, "risk_item_count": 1},
+        groups,
+    )
+    assert pdf_bytes[:5] == b"%PDF-"
+
+
 # ---------------------------------------------------------------------------
 # PDF 书签目录（outline）：阅读器导航面板按 章节/大类/检查项 跳转
 # ---------------------------------------------------------------------------

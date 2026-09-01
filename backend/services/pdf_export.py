@@ -551,7 +551,10 @@ def _finding_card(
     if suggestion:
         rows.extend(_md_kv_rows("修改建议", suggestion, value_style, content_width))
 
-    tbl = Table(rows, colWidths=[content_width])
+    # splitInRow：md 表格分块（_MD_TABLE_CHUNK_ROWS）只按行数分块，单元格文本长时分块
+    # 整体可能超过一页（2026-09-01 生产 LayoutError：11 行×5 列业绩核对表 724pt >
+    # 页框 671.8pt）。卡片表的行是原子单位，默认只在行间分页，必须允许行内继续分页。
+    tbl = Table(rows, colWidths=[content_width], splitInRow=1)
     style = TableStyle([
         ("BOX", (0, 0), (-1, -1), 0.5, _LINE),
         ("INNERGRID", (0, 0), (-1, -1), 0.3, _LINE),
