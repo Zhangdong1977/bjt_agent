@@ -41,6 +41,8 @@ import type {
   PaymentQr,
   OrderStatus,
   ProfileUpdateRequest,
+  ApiKeyItem,
+  ApiKeyCreated,
   PublicAnnouncement,
   Announcement,
   AnnouncementManage,
@@ -332,6 +334,20 @@ export const profileApi = {
       new_password: newPassword,
       confirm_new_password: confirmNewPassword,
     });
+  },
+
+  async listApiKeys(): Promise<ApiKeyItem[]> {
+    const response = await apiClient.get("/profile/api-keys");
+    return response.data;
+  },
+
+  async createApiKey(name?: string): Promise<ApiKeyCreated> {
+    const response = await apiClient.post("/profile/api-keys", name ? { name } : {});
+    return response.data;
+  },
+
+  async revokeApiKey(keyId: string): Promise<void> {
+    await apiClient.delete(`/profile/api-keys/${keyId}`);
   },
 };
 
