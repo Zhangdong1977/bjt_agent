@@ -28,6 +28,11 @@ class Document(Base):
     )
     # owner_user_id：草稿文档（project_id IS NULL）的归属用户；关联项目后仍保留以备审计。
     owner_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # 上传通道：'web'（页面草稿，受草稿配额约束）/ 'api'（开放通道上传，
+    # 不计入 Web 草稿配额、不可被 Web attach，提交任务时直接归入隐式项目）
+    source: Mapped[str] = mapped_column(
+        String(20), default="web", server_default="web", nullable=False, index=True
+    )
     doc_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'tender' (招标书) or 'bid' (投标文件)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_path: Mapped[str] = mapped_column(String(500), nullable=False)

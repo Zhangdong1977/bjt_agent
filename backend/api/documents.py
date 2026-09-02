@@ -613,6 +613,8 @@ async def upload_draft_document(
                 Document.owner_user_id == current_user.id,
                 Document.project_id.is_(None),
                 Document.doc_type == doc_type,
+                # 只数 Web 草稿：开放通道（source='api'）的上传不占 Web 配额
+                Document.source == "web",
             )
         )
         if existing_result.scalars().first() is not None:
@@ -628,6 +630,7 @@ async def upload_draft_document(
                 Document.owner_user_id == current_user.id,
                 Document.project_id.is_(None),
                 Document.doc_type == doc_type,
+                Document.source == "web",
             )
         )
         tender_bid_limit = _document_role_limit("review", doc_type)
@@ -643,6 +646,7 @@ async def upload_draft_document(
                 Document.owner_user_id == current_user.id,
                 Document.project_id.is_(None),
                 Document.doc_type == doc_type,
+                Document.source == "web",
             )
         )
         if len(existing_result.scalars().all()) >= _document_role_limit("duplicate", doc_type):
@@ -692,11 +696,13 @@ async def list_draft_documents(
     db: DBSession,
     current_user: CurrentUser,
 ) -> DocumentListResponse:
-    """列出当前用户的所有草稿文档（project_id IS NULL）。"""
+    """列出当前用户的所有草稿文档（project_id IS NULL，仅 Web 通道上传）。"""
     result = await db.execute(
-        select(Document)
-        .where(Document.owner_user_id == current_user.id, Document.project_id.is_(None))
-        .order_by(Document.created_at.desc())
+        select(Document).where(
+            Document.owner_user_id == current_user.id,
+            Document.project_id.is_(None),
+            Document.source == "web",
+        ).order_by(Document.created_at.desc())
     )
     documents = result.scalars().all()
     return DocumentListResponse(documents=documents)
@@ -732,8 +738,12 @@ async def attach_draft_document(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=DOCUMENT_NOT_FOUND,
         )
-    # 仅允许归属当前用户的草稿文档被关联
-    if document.owner_user_id != current_user.id or document.project_id is not None:
+    # 仅允许归属当前用户的草稿文档被关联；开放通道（API）上传的文档不进 Web 项目
+    if (
+        document.owner_user_id != current_user.id
+        or document.project_id is not None
+        or (document.source or "web") != "web"
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="该文档不可关联（非草稿或不属于当前用户）",

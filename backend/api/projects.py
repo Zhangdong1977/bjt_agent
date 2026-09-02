@@ -19,7 +19,10 @@ async def list_projects(
 ) -> ProjectListResponse:
     """List non-deleted projects for the current user's history page."""
     query = select(Project).where(
-        Project.user_id == current_user.id, Project.is_deleted.is_(False)
+        Project.user_id == current_user.id,
+        Project.is_deleted.is_(False),
+        # 开放通道（API）隐式创建的项目不进 Web 历史列表
+        Project.source == "web",
     )
     if project_type:
         query = query.where(Project.project_type == project_type)

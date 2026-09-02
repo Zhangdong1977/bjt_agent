@@ -839,6 +839,11 @@ class BidReviewAgent(BaseAgent):
                     select(ReviewTask).where(ReviewTask.id == self._task_id)
                 )
                 task = result.scalar_one_or_none()
+                if task is not None and getattr(task, "client_channel", "web") == "api":
+                    # 开放通道（API key 客户端）没有浏览器会话可发心跳，
+                    # 豁免前端心跳超时；API 取消与 agent 总超时兜底仍然生效。
+                    self._heartbeat_fail_count = 0
+                    return True
                 if not task or not task.last_heartbeat:
                     self._heartbeat_fail_count = 0
                     return True  # No heartbeat yet, assume OK

@@ -21,6 +21,7 @@ from .vsto_tools import router as vsto_tools_router
 from .admin_sales import router as admin_sales_router
 from .bid_draft import router as bid_draft_router
 from .polish import router as polish_router
+from .open import router as open_router
 
 __all__ = [
     "auth_router",
@@ -45,4 +46,5 @@ __all__ = [
     "admin_sales_router",
     "bid_draft_router",
     "polish_router",
+    "open_router",
 ]

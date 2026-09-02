@@ -44,6 +44,11 @@ class ReviewTask(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(nullable=True)
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)  # Track frontend heartbeat - if no heartbeat for 20+ seconds, agent will cancel
+    # 任务发起通道：'web'（浏览器，受前端心跳超时约束）/ 'api'（开放通道，
+    # 无浏览器会话，agent 侧豁免心跳超时取消，仅保留 API 取消与总超时兜底）
+    client_channel: Mapped[str] = mapped_column(
+        String(20), default="web", server_default="web", nullable=False
+    )
     max_concurrency: Mapped[int] = mapped_column(Integer, default=2, server_default="2", nullable=False)
     billing_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     # Business lifecycle and billing lifecycle are deliberately independent.

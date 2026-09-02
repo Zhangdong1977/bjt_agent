@@ -49,38 +49,9 @@ _TASK_QUEUES = {
 }
 
 
-async def authorize_billable_task_start(
-    db: AsyncSession,
-    *,
-    user_id: str,
-    operation_name: str,
-):
-    """Lock the wallet and validate balance plus account-level concurrency.
+async def count_unsettled_tasks(db: AsyncSession, *, user_id: str) -> int:
+    """Count billable top-level tasks that are running or awaiting settlement."""
 
-    The wallet row is the per-account serialization point, so concurrent API
-    workers cannot both pass the active-task count and create paid work.
-    """
-
-    wallet = await ensure_wallet(db, user_id, for_update=True)
-    await expire_user_lots(db, wallet)
-    available = decimal_value(wallet.recharge_balance_points) + decimal_value(
-        wallet.gift_balance_points
-    )
-    if available <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={
-                "code": "INSUFFICIENT_BALANCE",
-                "message": f"余额不足，请先充值后再发起{operation_name}",
-                "balance_wen": wallet.balance_wen,
-                "available_points": float(available),
-            },
-        )
-
-    # Keep the account closed until the previous task is fully settled, not
-    # merely until its business status becomes terminal.  Otherwise a billing
-    # outage would let a user run tasks one-by-one against a stale positive
-    # wallet and accumulate unbounded debt despite the active-task limit.
     review_count = (
         await db.execute(
             select(func.count(ReviewTask.id))
@@ -116,13 +87,59 @@ async def authorize_billable_task_start(
             )
         )
     ).scalar_one()
-    unsettled_count = (
+    return (
         int(review_count or 0)
         + int(blind_count or 0)
         + int(bid_draft_count or 0)
         + int(polish_count or 0)
     )
-    limit = max(1, int(get_settings().billing_max_active_tasks_per_user))
+
+
+async def authorize_billable_task_start(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    operation_name: str,
+    max_active_tasks: int | None = None,
+):
+    """Lock the wallet and validate balance plus account-level concurrency.
+
+    The wallet row is the per-account serialization point, so concurrent API
+    workers cannot both pass the active-task count and create paid work.
+
+    ``max_active_tasks`` optionally overrides the account-level limit — used by
+    the open API channel where the per-key quota replaces the default.
+    """
+
+    wallet = await ensure_wallet(db, user_id, for_update=True)
+    await expire_user_lots(db, wallet)
+    available = decimal_value(wallet.recharge_balance_points) + decimal_value(
+        wallet.gift_balance_points
+    )
+    if available <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": "INSUFFICIENT_BALANCE",
+                "message": f"余额不足，请先充值后再发起{operation_name}",
+                "balance_wen": wallet.balance_wen,
+                "available_points": float(available),
+            },
+        )
+
+    # Keep the account closed until the previous task is fully settled, not
+    # merely until its business status becomes terminal.  Otherwise a billing
+    # outage would let a user run tasks one-by-one against a stale positive
+    # wallet and accumulate unbounded debt despite the active-task limit.
+    unsettled_count = await count_unsettled_tasks(db, user_id=user_id)
+    limit = max(
+        1,
+        int(
+            max_active_tasks
+            if max_active_tasks is not None
+            else get_settings().billing_max_active_tasks_per_user
+        ),
+    )
     if unsettled_count >= limit:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
