@@ -609,7 +609,7 @@ onMounted(() => {
             <section class="panel">
               <h2>API Key（Skill / 开放接入）</h2>
               <p class="api-key-intro">
-                用于 WorkBuddy 等智能体技能包（Skill）或开放 API 客户端调用 AI 标书检查/查重。
+                用于 WorkBuddy 技能「标捷通·AI标书检查与查重」或其他开放 API 客户端调用 AI 标书检查/查重。
                 Key 只在生成时完整展示一次，请立即复制保存；任务按点计费，与网页端同一账户余额。
               </p>
               <div class="api-key-toolbar">
@@ -750,7 +750,7 @@ onMounted(() => {
           </a-button>
         </div>
         <p class="api-key-intro">
-          在 WorkBuddy 技能（bjt-agent 标书检查与查重）中的用法：把 Key 粘贴到对话里让助手保存，
+          在 WorkBuddy 技能「标捷通·AI标书检查与查重」中的用法：把 Key 粘贴到对话里让助手保存，
           或按技能内 references/usage.md 配置。
         </p>
       </a-modal>
