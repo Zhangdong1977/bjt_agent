@@ -223,6 +223,16 @@ class Settings(BaseSettings):
     # 与之配套。env: REVIEW_DOC_ROLE_LIMIT。
     review_doc_role_limit: int = 20
 
+    # —— 开放 API 通道（/api/v1/open，WorkBuddy skill 等第三方客户端）——
+    # 总开关：关闭时整层 404。env: OPEN_API_ENABLED。
+    open_api_enabled: bool = False
+    # 每用户未关联项目的 source='api' 文档数量上限（防滥用）。env: OPEN_API_MAX_UNATTACHED_DOCUMENTS。
+    open_api_max_unattached_documents: int = 50
+    # 对外报告链接前缀（签名 share 链接拼绝对地址用）。env: PUBLIC_BASE_URL。
+    public_base_url: str = "https://check.aibjt.com:30002"
+    # 开放通道每分钟请求上限（按 API key 维度限流）。env: OPEN_API_RATE_PER_MINUTE。
+    open_api_rate_per_minute: int = 60
+
     # 单连接上传限速（字节/秒）；0 表示不限速。env: UPLOAD_BYTES_PER_SEC。
     # 后端流式分块读取 + 时间补偿实现：因 nginx proxy_request_buffering off，
     # 后端读慢会 TCP 反压到浏览器，端到端限速成立。默认 4 MiB/s（1GiB ≈ 256s）。

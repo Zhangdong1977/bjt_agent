@@ -28,6 +28,7 @@ from .sales import (
 )
 from .announcement import SystemAnnouncement, SystemAnnouncementRead
 from .system_maintenance import SystemMaintenance, MAINTENANCE_ROW_ID
+from .api_key import ApiKey
 from .blind_check_task import BlindCheckTask
 from .vsto_tool_session import VstoToolSession
 from .vsto_tool_call import VstoToolCall
@@ -86,6 +87,7 @@ __all__ = [
     "SystemAnnouncementRead",
     "SystemMaintenance",
     "MAINTENANCE_ROW_ID",
+    "ApiKey",
     "BlindCheckTask",
     "VstoToolSession",
     "VstoToolCall",
