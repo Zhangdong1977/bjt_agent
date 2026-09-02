@@ -3,7 +3,14 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { message } from "ant-design-vue";
 import { billingApi, profileApi } from "@/api/client";
 import { useAuthStore } from "@/stores/auth";
-import type { BillingOrder, ConsumptionAllocation, ConsumptionRecord, Coupon, User } from "@/types";
+import type {
+  ApiKeyItem,
+  BillingOrder,
+  ConsumptionAllocation,
+  ConsumptionRecord,
+  Coupon,
+  User,
+} from "@/types";
 
 const authStore = useAuthStore();
 const isInterior = computed(() => authStore.isInteriorUser);
@@ -295,10 +302,100 @@ async function showAllocations(record: ConsumptionRecord) {
   allocationOpen.value = true;
 }
 
+// ---- API Key（Skill/开放接入）----
+const apiKeys = ref<ApiKeyItem[]>([]);
+const apiKeyCreating = ref(false);
+const apiKeyCreateOpen = ref(false);
+const apiKeyName = ref("");
+const createdKey = ref<ApiKeyItem | null>(null);
+const createdKeyValue = ref("");
+const keyCopied = ref(false);
+
+const apiKeyColumns = [
+  { title: "名称", dataIndex: "name", width: 140 },
+  { title: "Key 前缀", dataIndex: "key_prefix", width: 150 },
+  { title: "并发任务上限", dataIndex: "max_active_tasks", width: 110 },
+  { title: "创建时间", dataIndex: "created_at", width: 170 },
+  { title: "最近使用", dataIndex: "last_used_at", width: 170 },
+  { title: "状态", dataIndex: "status", width: 90 },
+  { title: "操作", dataIndex: "actions", width: 90 },
+];
+
+const apiKeyRows = computed(() =>
+  apiKeys.value.map((item, index) => ({
+    ...item,
+    index: index + 1,
+    status: item.revoked_at ? "已吊销" : "有效",
+  })),
+);
+
+const activeKeyCount = computed(
+  () => apiKeys.value.filter((item) => !item.revoked_at).length,
+);
+
+function apiKeyStatusClass(revoked: boolean) {
+  return revoked ? "badge-warning" : "badge-success";
+}
+
+async function loadApiKeys() {
+  apiKeys.value = await profileApi.listApiKeys();
+}
+
+async function openCreateKey() {
+  apiKeyName.value = "";
+  await loadApiKeys();
+  apiKeyCreateOpen.value = true;
+}
+
+async function createApiKey() {
+  apiKeyCreating.value = true;
+  try {
+    const created = await profileApi.createApiKey(apiKeyName.value.trim() || undefined);
+    createdKey.value = created;
+    createdKeyValue.value = created.api_key;
+    keyCopied.value = false;
+    apiKeyCreateOpen.value = false;
+    await loadApiKeys();
+  } catch (err) {
+    message.error(getApiErrorMessage(err, "API Key 生成失败"));
+  } finally {
+    apiKeyCreating.value = false;
+  }
+}
+
+async function copyCreatedKey() {
+  try {
+    await navigator.clipboard.writeText(createdKeyValue.value);
+    keyCopied.value = true;
+    message.success("已复制到剪贴板");
+  } catch {
+    message.warning("复制失败，请手动选中复制");
+  }
+}
+
+function closeCreatedKeyModal() {
+  createdKey.value = null;
+  createdKeyValue.value = "";
+}
+
+async function revokeApiKey(record: ApiKeyItem) {
+  const confirmed = window.confirm(
+    `确定吊销 API Key「${record.name}」（${record.key_prefix}…）吗？\n使用该 Key 的 Skill/客户端调用将立即失效，且不可恢复。`,
+  );
+  if (!confirmed) return;
+  try {
+    await profileApi.revokeApiKey(record.id);
+    message.success("API Key 已吊销");
+    await loadApiKeys();
+  } catch (err) {
+    message.error(getApiErrorMessage(err, "吊销失败"));
+  }
+}
+
 async function loadAll() {
   loading.value = true;
   try {
-    await Promise.all([loadProfile(), loadOrders(), loadConsumptions(), loadCoupons()]);
+    await Promise.all([loadProfile(), loadOrders(), loadConsumptions(), loadCoupons(), loadApiKeys()]);
   } finally {
     loading.value = false;
   }
@@ -507,6 +604,64 @@ onMounted(() => {
           </a-tabs>
         </a-tab-pane>
 
+        <a-tab-pane key="api-keys" tab="API Key（Skill 接入）">
+          <div class="api-key-panel">
+            <section class="panel">
+              <h2>API Key（Skill / 开放接入）</h2>
+              <p class="api-key-intro">
+                用于 WorkBuddy 等智能体技能包（Skill）或开放 API 客户端调用 AI 标书检查/查重。
+                Key 只在生成时完整展示一次，请立即复制保存；任务按点计费，与网页端同一账户余额。
+              </p>
+              <div class="api-key-toolbar">
+                <a-button
+                  type="primary"
+                  :loading="apiKeyCreating"
+                  :disabled="activeKeyCount >= 3"
+                  @click="openCreateKey"
+                >
+                  生成新 Key{{ activeKeyCount >= 3 ? "（已达上限 3 个）" : `（${activeKeyCount}/3）` }}
+                </a-button>
+              </div>
+              <a-table
+                :columns="apiKeyColumns"
+                :data-source="apiKeyRows"
+                row-key="id"
+                size="middle"
+                :pagination="false"
+              >
+                <template #bodyCell="{ column, record }">
+                  <template v-if="column.dataIndex === 'key_prefix'">
+                    <code class="api-key-prefix">{{ record.key_prefix }}…</code>
+                  </template>
+                  <template v-else-if="column.dataIndex === 'created_at'">
+                    {{ formatDateTime(record.created_at) }}
+                  </template>
+                  <template v-else-if="column.dataIndex === 'last_used_at'">
+                    {{ formatDateTime(record.last_used_at) }}
+                  </template>
+                  <template v-else-if="column.dataIndex === 'status'">
+                    <span :class="['badge', apiKeyStatusClass(!!record.revoked_at)]">
+                      {{ record.status }}
+                    </span>
+                  </template>
+                  <template v-else-if="column.dataIndex === 'actions'">
+                    <a-button
+                      v-if="!record.revoked_at"
+                      type="link"
+                      size="small"
+                      danger
+                      @click="revokeApiKey(record)"
+                    >
+                      吊销
+                    </a-button>
+                    <span v-else>-</span>
+                  </template>
+                </template>
+              </a-table>
+            </section>
+          </div>
+        </a-tab-pane>
+
         <a-tab-pane key="coupons" tab="优惠券">
           <div class="coupon-toolbar">
             <a-input
@@ -557,6 +712,47 @@ onMounted(() => {
           <a-table-column title="折合收入" data-index="folded_income_yuan"><template #default="{ text }">￥{{ Number(text || 0).toFixed(2) }}</template></a-table-column>
           <a-table-column title="该批次到期时间" data-index="expires_at"><template #default="{ text }">{{ formatDateTime(text) }}</template></a-table-column>
         </a-table>
+      </a-modal>
+      <a-modal
+        v-model:open="apiKeyCreateOpen"
+        title="生成 API Key"
+        :confirm-loading="apiKeyCreating"
+        ok-text="生成"
+        cancel-text="取消"
+        @ok="createApiKey"
+      >
+        <a-form layout="vertical">
+          <a-form-item label="Key 名称（可选，便于辨识用途，如 workbuddy-skill）">
+            <a-input v-model:value="apiKeyName" placeholder="default" :maxlength="100" />
+          </a-form-item>
+          <p class="api-key-intro">
+            Key 只在生成后完整展示一次。生成前请确认账户已可登录本平台并有可用点数。
+          </p>
+        </a-form>
+      </a-modal>
+
+      <a-modal
+        :open="createdKey !== null"
+        title="API Key 已生成（仅此一次完整展示）"
+        :mask-closable="false"
+        :closable="true"
+        :footer="null"
+        @cancel="closeCreatedKeyModal"
+      >
+        <p class="api-key-intro">
+          请立即复制保存。关闭本窗口后将无法再次查看完整 Key；若遗失只能吊销后重新生成
+          （重置后旧 Key 立即失效）。
+        </p>
+        <div class="api-key-created">
+          <code class="api-key-value">{{ createdKeyValue }}</code>
+          <a-button type="primary" size="small" @click="copyCreatedKey">
+            {{ keyCopied ? "已复制" : "复制" }}
+          </a-button>
+        </div>
+        <p class="api-key-intro">
+          在 WorkBuddy 技能（bjt-agent 标书检查与查重）中的用法：把 Key 粘贴到对话里让助手保存，
+          或按技能内 references/usage.md 配置。
+        </p>
       </a-modal>
     </a-spin>
   </div>
@@ -697,6 +893,38 @@ onMounted(() => {
 .coupon-code-input {
   width: 320px;
   max-width: 100%;
+}
+
+.api-key-panel {
+  max-width: 960px;
+}
+
+.api-key-intro {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.api-key-toolbar {
+  margin-bottom: 14px;
+}
+
+.api-key-prefix,
+.api-key-value {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.88rem;
+}
+
+.api-key-created {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg2, #f6f8fa);
+  word-break: break-all;
 }
 
 @media (max-width: 576px) {

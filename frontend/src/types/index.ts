@@ -18,6 +18,21 @@ export interface Token {
   token_type: string;
 }
 
+// API Key（Skill/开放接入）——明文只在创建响应出现一次，列表只回前缀
+export interface ApiKeyItem {
+  id: string;
+  name: string;
+  key_prefix: string;
+  max_active_tasks: number;
+  created_at: string;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+}
+
+export interface ApiKeyCreated extends ApiKeyItem {
+  api_key: string;
+}
+
 export interface Captcha {
   captcha_id: string;
   image: string;

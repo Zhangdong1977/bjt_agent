@@ -1,6 +1,9 @@
 """User profile API routes."""
 
+import secrets
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import select
 import httpx
 
 from backend.api.deps import (
@@ -9,11 +12,25 @@ from backend.api.deps import (
     get_token_claims,
     oauth2_scheme,
 )
+from backend.api.open import hash_api_key
 from backend.config import get_settings
-from backend.schemas.profile import PasswordChangeRequest, ProfileResponse, ProfileUpdateRequest
+from backend.middleware.rate_limit import limiter
+from backend.models import ApiKey
+from backend.schemas.profile import (
+    ApiKeyCreatedResponse,
+    ApiKeyCreateRequest,
+    ApiKeyItem,
+    PasswordChangeRequest,
+    ProfileResponse,
+    ProfileUpdateRequest,
+)
+from backend.utils.time_utils import utc_now
 
 router = APIRouter(prefix="/profile", tags=["Profile"])
 settings = get_settings()
+
+# 每用户同时可持有的有效（未吊销）API Key 数量
+MAX_ACTIVE_API_KEYS_PER_USER = 3
 
 
 @router.get("/me", response_model=ProfileResponse)
@@ -115,3 +132,92 @@ async def change_password(
             detail=data.get("msg") or "密码修改失败",
         )
     return None
+
+
+# ---------------------------------------------------------------------------
+# API Key 管理（Skill/开放接入）：供个人中心「API Key」页签调用。
+# 明文 Key 只在创建响应里出现一次；列表仅返回前缀；吊销即失效。
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api-keys", response_model=list[ApiKeyItem])
+async def list_api_keys(
+    db: DBSession,
+    current_user: CurrentUser,
+) -> list[ApiKeyItem]:
+    """List the current user's API keys (active first, newest first)."""
+    rows = (
+        await db.execute(
+            select(ApiKey)
+            .where(ApiKey.user_id == current_user.id)
+            .order_by(ApiKey.revoked_at.is_not(None), ApiKey.created_at.desc())
+        )
+    ).scalars().all()
+    return [ApiKeyItem.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/api-keys", response_model=ApiKeyCreatedResponse, status_code=status.HTTP_201_CREATED
+)
+@limiter.limit("10/minute")
+async def create_api_key(
+    request: Request,
+    db: DBSession,
+    current_user: CurrentUser,
+    body: ApiKeyCreateRequest | None = None,
+) -> ApiKeyCreatedResponse:
+    """Create a new API key. The plaintext key is returned exactly once."""
+    active_count = (
+        await db.execute(
+            select(ApiKey).where(
+                ApiKey.user_id == current_user.id, ApiKey.revoked_at.is_(None)
+            )
+        )
+    ).scalars()
+    if len(active_count.all()) >= MAX_ACTIVE_API_KEYS_PER_USER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"有效 API Key 数量已达上限（{MAX_ACTIVE_API_KEYS_PER_USER} 个），请先吊销不再使用的 Key",
+        )
+
+    raw_key = f"bjt_live_{secrets.token_hex(20)}"
+    row = ApiKey(
+        user_id=current_user.id,
+        name=(body.name if body and body.name and body.name.strip() else "default").strip(),
+        key_prefix=raw_key[:12],
+        key_hash=hash_api_key(raw_key),
+        max_active_tasks=1,
+    )
+    db.add(row)
+    await db.flush()
+    return ApiKeyCreatedResponse(
+        id=row.id,
+        name=row.name,
+        key_prefix=row.key_prefix,
+        max_active_tasks=row.max_active_tasks,
+        created_at=row.created_at,
+        api_key=raw_key,
+    )
+
+
+@router.delete("/api-keys/{key_id}")
+async def revoke_api_key(
+    key_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+) -> dict:
+    """Revoke one of the current user's API keys (takes effect immediately)."""
+    row = (
+        await db.execute(select(ApiKey).where(ApiKey.id == key_id))
+    ).scalar_one_or_none()
+    if row is None or row.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="API Key 不存在"
+        )
+    if row.revoked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="该 API Key 已被吊销"
+        )
+    row.revoked_at = utc_now()
+    await db.flush()
+    return {"msg": "API Key 已吊销，使用该 Key 的调用将立即失效"}
