@@ -73,6 +73,12 @@ export async function getBidDraftTask(taskId: string) {
   return response.data;
 }
 
+/** 当前用户最近一条生成任务（无任务时后端 404）。页面重开恢复上下文用。 */
+export async function getLatestBidDraftTask() {
+  const response = await apiClient.get<BidDraftTask>("/bid-draft/tasks/latest");
+  return response.data;
+}
+
 export async function cancelBidDraftTask(taskId: string) {
   const response = await apiClient.post<BidDraftTask>(
     `/bid-draft/tasks/${encodeURIComponent(taskId)}/cancel`,

@@ -230,6 +230,35 @@ def clamp_mermaid_blocks(body: str, limit: int = MERMAID_MAX_PER_SECTION) -> str
     return body
 
 
+def close_unterminated_mermaid_fence(body: str) -> str:
+    """LLM 偶发漏写 ```mermaid 围栏闭合（2026-09-03 真机 10.2 节实测）：
+    未闭合围栏会让前端扫描器把后续正文吞进"图块"，且各节拼装 assembled 后
+    级联吃掉后续章节的围栏（图块数骤减、parse 失败）。修复：文末仍有未闭合
+    的 mermaid 围栏时，在其后第一个 markdown 标题行前补闭合围栏（无标题则
+    退化到文末闭合）。"""
+    lines = body.splitlines()
+    open_idx: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if open_idx is None:
+                if stripped[3:].strip().lower() == "mermaid":
+                    open_idx = index
+            else:
+                open_idx = None
+    if open_idx is None:
+        return body
+    close_at = len(lines)
+    for index in range(open_idx + 1, len(lines)):
+        if re.match(r"#{1,6}\s+\S", lines[index].strip()):
+            close_at = index
+            break
+    while close_at > open_idx + 1 and not lines[close_at - 1].strip():
+        close_at -= 1
+    lines = lines[:close_at] + ["```"] + lines[close_at:]
+    return "\n".join(lines) + ("\n" if body.endswith("\n") else "")
+
+
 def _bound_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
     def _strings(value: Any, limit: int, max_items: int) -> list[str]:
         if not isinstance(value, list):
@@ -412,7 +441,7 @@ class BidDraftAgent:
         body = strip_code_fence(await self._generate(SECTION_SYSTEM_PROMPT, user_prompt))
         if not body:
             raise RuntimeError(f"章节「{node['title']}」生成结果为空")
-        body = clamp_mermaid_blocks(body)
+        body = clamp_mermaid_blocks(close_unterminated_mermaid_fence(body))
         level = max(1, min(6, int(node.get("level") or 1)))
         content = f"{'#' * level} {node['title']}\n\n{body}"[:SECTION_RESULT_MAX_CHARS]
 

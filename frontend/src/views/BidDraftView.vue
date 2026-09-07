@@ -16,6 +16,7 @@ import {
   getBidDraftAssembled,
   getBidDraftSectionContent,
   getBidDraftTask,
+  getLatestBidDraftTask,
   listBidDraftSections,
   regenerateBidDraftSection,
   type BidDraftSectionContent,
@@ -50,6 +51,8 @@ const PHASE_INDEX: Record<string, number> = {
 };
 
 const step = ref<"setup" | "running" | "done">("setup");
+// 最近任务的本地记忆（同机同用户），供 TaskPane/Word 重开后恢复到进度页或完成页
+const LAST_TASK_KEY = "bjt.bidDraft.lastTaskId";
 const projects = ref<Project[]>([]);
 const loadingProjects = ref(false);
 const projectId = ref("");
@@ -80,6 +83,8 @@ const insertMessage = ref("");
 const insertError = ref("");
 const renderingCharts = ref(false);
 const chartFailures = ref(0);
+// 插件逐块写入进度（新插件 bjt.vsto.insert.progress 上报；旧插件无此消息保持 null）
+const insertProgress = ref<{ done: number; total: number } | null>(null);
 
 const selectedSection = ref<BidDraftSectionContent | null>(null);
 const regeneratingNode = ref("");
@@ -425,6 +430,8 @@ function trackTask(next: BidDraftTask) {
   stopTaskPoll();
   taskId.value = next.id;
   task.value = next;
+  // 记住最近任务，页面重开（TaskPane 关闭/Word 重启）后可恢复查看/写入
+  try { localStorage.setItem(LAST_TASK_KEY, next.id); } catch { /* 隐私模式等场景忽略 */ }
   sections.value = [];
   progressStep.value = 1;
   progressMessage.value = "任务已提交，等待智能体开始…";
@@ -437,6 +444,7 @@ function trackTask(next: BidDraftTask) {
   insertError.value = "";
   renderingCharts.value = false;
   chartFailures.value = 0;
+  insertProgress.value = null;
   step.value = "running";
   detailSteps.value = [];
   pushStep("info", isRegenTask.value ? "单节重生成任务已提交" : "标书生成任务已提交");
@@ -585,7 +593,7 @@ function startTaskPoll(id: string) {
   }, 3_000);
 }
 
-async function finishTask() {
+async function finishTask(autoInsertOnCompleted = true) {
   if (step.value === "done") return;
   stopTaskStream();
   stopTaskPoll();
@@ -609,7 +617,48 @@ async function finishTask() {
     taskErrorMessage.value = friendlyError(error, "读取任务结果失败");
   }
   void billingStore.fetchWallet().catch(() => undefined);
-  if (task.value?.status === "completed") void autoInsert();
+  // 恢复场景（页面重开）不自动写入：上次运行可能已写过，再写会整篇重复；
+  // 由用户在「写入 Word」卡片手动触发
+  if (autoInsertOnCompleted && task.value?.status === "completed") void autoInsert();
+}
+
+/** 页面重开时恢复最近任务：进行中 → 回进度页续看（SSE+轮询）；已结束 → 进完成页。
+ * 优先用 localStorage 记住的 taskId；无记忆时兜底取该用户最近一条任务（限 48h 内，
+ * 旧任务不强行恢复，避免每次打开都落在历史结果页）。 */
+async function tryRestoreLastTask() {
+  let saved = "";
+  try { saved = localStorage.getItem(LAST_TASK_KEY) || ""; } catch { /* ignore */ }
+  if (!saved) {
+    try {
+      const latest = await getLatestBidDraftTask();
+      const createdAt = Date.parse(latest.created_at || "");
+      if (!Number.isFinite(createdAt) || Date.now() - createdAt > 48 * 3600_000) return;
+      saved = latest.id;
+    } catch {
+      return;
+    }
+  }
+  try {
+    const latest = await getBidDraftTask(saved);
+    taskId.value = saved;
+    task.value = latest;
+    if (latest.status === "pending" || latest.status === "running") {
+      step.value = "running";
+      progressStep.value = latest.outline && latest.outline.length ? 3 : 2;
+      progressMessage.value = "已恢复正在进行的生成任务…";
+      detailSteps.value = [];
+      void listenTask(saved);
+      startTaskPoll(saved);
+    } else {
+      await finishTask(false);
+    }
+  } catch (error) {
+    // 仅任务确定不存在/无权限时清除记忆；网络瞬断保留，下次打开仍可恢复
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 404 || status === 403) {
+      try { localStorage.removeItem(LAST_TASK_KEY); } catch { /* ignore */ }
+    }
+  }
 }
 
 async function autoInsert() {
@@ -640,6 +689,7 @@ async function insertToWord(atCurrentCursor: boolean) {
   insertError.value = "";
   insertMessage.value = "";
   chartFailures.value = 0;
+  insertProgress.value = null;
   try {
     let content = assembledContent.value;
     let images: Record<string, string> | undefined;
@@ -659,10 +709,14 @@ async function insertToWord(atCurrentCursor: boolean) {
       label: isRegenTask.value ? "AI 标书生成（单节）" : "AI 标书生成",
       snapshotId: atCurrentCursor ? null : bridge.documentContext.value?.snapshot_id || null,
       anchor: "cursor",
-      // 全量标书逐标题写入 Word 实测约 4s/标题、60 节 ≈ 6-7 分钟（2026-08-25
-      // 真机日志：20:12:55→20:19:17），60s 默认超时会在写完前误报"插件未响应"。
+      // 静态超时只是兜底：新插件每写完一个 Markdown 块回 progress 消息续期计时器
+      // （2026-09-07 真机：含 16 张图的全量写入 12:36→13:06 共 29.5 分钟，15 分钟
+      // 静态超时在第 15 分钟误报"插件未响应"而插件仍在正常写入）。
       timeoutMs: 15 * 60_000,
       images,
+      onProgress: (done, total) => {
+        insertProgress.value = { done, total };
+      },
     });
     if (result.success === true) {
       inserted.value = true;
@@ -681,6 +735,7 @@ async function insertToWord(atCurrentCursor: boolean) {
     insertError.value = friendlyError(error, "写入 Word 失败，请从 Word 插件中打开本页");
   } finally {
     inserting.value = false;
+    insertProgress.value = null;
   }
 }
 
@@ -750,6 +805,7 @@ async function cancelTask() {
 
 function restart() {
   step.value = "setup";
+  try { localStorage.removeItem(LAST_TASK_KEY); } catch { /* ignore */ }
   taskId.value = "";
   task.value = null;
   sections.value = [];
@@ -764,11 +820,13 @@ function restart() {
   insertError.value = "";
   renderingCharts.value = false;
   chartFailures.value = 0;
+  insertProgress.value = null;
 }
 
 onMounted(() => {
   void billingStore.fetchWallet().catch(() => undefined);
   void loadProjects();
+  void tryRestoreLastTask();
 });
 
 onUnmounted(() => {
@@ -943,6 +1001,10 @@ onUnmounted(() => {
         <div v-if="insertError" class="error">{{ insertError }}</div>
         <p v-if="inserting" class="hint inserting-hint">
           <template v-if="renderingCharts">正在渲染图表（组织架构/流程/进度等图示）…</template>
+          <template v-else-if="insertProgress">
+            插件正在写入 Word（{{ insertProgress.done }}/{{ insertProgress.total }} 块，含图表时可能长达数十分钟），
+            请勿在写入期间点击/编辑 Word 窗口（会导致"应用程序正在使用中"而中断）…
+          </template>
           <template v-else>正在逐标题写入 Word，大文档约需数分钟，请勿在写入期间点击/编辑 Word 窗口（会导致"应用程序正在使用中"而中断）…</template>
         </p>
         <div class="actions">
@@ -953,6 +1015,7 @@ onUnmounted(() => {
             <template v-else>写入 Word</template>
           </button>
           <button class="secondary" :disabled="inserting" @click="copyAll">复制全文</button>
+          <button class="secondary" :disabled="inserting" @click="restart">新建生成任务</button>
         </div>
         <p class="hint">写入为一次整体插入，按一次 Ctrl+Z 即可全部撤销。</p>
       </section>

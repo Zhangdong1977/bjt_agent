@@ -154,3 +154,46 @@ def test_extract_mermaid_fences_and_clamp():
     unterminated = "```mermaid\nflowchart TD\n  A --> B"
     assert extract_mermaid_fences(unterminated) == []
     assert clamp_mermaid_blocks(unterminated) == unterminated
+
+
+def test_close_unterminated_mermaid_fence():
+    from backend.agent.bid_draft_agent import (
+        close_unterminated_mermaid_fence,
+        extract_mermaid_fences,
+    )
+
+    # 真机样本（10.2 节）：图后忘写闭合围栏，紧跟空行 + markdown 标题 + 正文
+    body = (
+        "```mermaid\n"
+        "flowchart TD\n"
+        "    A[故障发生与报修] --> B{故障分级评估}\n"
+        "    C1 --> D[远程诊断]\n"
+        "\n"
+        "## 五、软件补丁升级与版本管理服务\n"
+        "\n"
+        "正文内容。\n"
+    )
+    fixed = close_unterminated_mermaid_fence(body)
+    fences = extract_mermaid_fences(fixed)
+    assert len(fences) == 1
+    block = fixed[fences[0]["start"] : fences[0]["end"]]
+    assert block.endswith("```")
+    # 标题与正文不能被吞进图块（吞进会在前端 parse 失败 + 级联吃掉后续围栏）
+    assert "## 五、" not in block
+    assert "flowchart TD" in block
+    assert "## 五、软件补丁升级与版本管理服务" in fixed
+    assert "正文内容。" in fixed
+
+    # 无后续标题时退化为文末闭合
+    tail_only = "```mermaid\nflowchart TD\n  A --> B"
+    fixed_tail = close_unterminated_mermaid_fence(tail_only)
+    assert fixed_tail.endswith("```")
+    assert len(extract_mermaid_fences(fixed_tail)) == 1
+
+    # 已闭合 / 无 mermaid 的内容原样返回
+    closed = "```mermaid\nflowchart TD\n  A --> B\n```\n\n正文"
+    assert close_unterminated_mermaid_fence(closed) == closed
+    assert close_unterminated_mermaid_fence("普通正文，无围栏") == "普通正文，无围栏"
+    # 普通 ``` 围栏不闭合（非 mermaid，不属于本修复职责）
+    plain = "```\n普通代码\n"
+    assert close_unterminated_mermaid_fence(plain) == plain
