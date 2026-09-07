@@ -51,7 +51,13 @@ export function useVstoBridge() {
   const documentContext = ref<VstoDocumentContext | null>(null);
   const pending = new Map<
     string,
-    { resolve: (value: VstoBridgeResult) => void; reject: (reason: Error) => void; timer: number }
+    {
+      resolve: (value: VstoBridgeResult) => void;
+      reject: (reason: Error) => void;
+      timer: number;
+      timeoutMs: number;
+      onProgress?: (done: number, total: number) => void;
+    }
   >();
   let listener: ((event: MessageEvent) => void) | null = null;
 
@@ -95,6 +101,22 @@ export function useVstoBridge() {
       return;
     }
 
+    if (type === "bjt.vsto.insert.progress") {
+      const requestId = String(payload.request_id || "");
+      const entry = pending.get(requestId);
+      if (entry) {
+        // 插件仍在逐块写入（全量标书实测 30 分钟量级）：续期超时计时器，
+        // 只在"距上次进度 timeoutMs 仍无消息"时才判定插件无响应。
+        window.clearTimeout(entry.timer);
+        entry.timer = window.setTimeout(() => {
+          pending.delete(requestId);
+          entry.reject(new Error("Word 插件未响应，请确认插件版本已更新后重试"));
+        }, entry.timeoutMs);
+        entry.onProgress?.(Number(payload.done) || 0, Number(payload.total) || 0);
+      }
+      return;
+    }
+
     if (RESULT_TYPES.has(type)) {
       const requestId = String(payload.request_id || "");
       const entry = pending.get(requestId);
@@ -117,6 +139,7 @@ export function useVstoBridge() {
   function request(
     message: Record<string, unknown>,
     timeoutMs = 20_000,
+    onProgress?: (done: number, total: number) => void,
   ): Promise<VstoBridgeResult> {
     return new Promise((resolve, reject) => {
       if (!webview()) {
@@ -128,7 +151,7 @@ export function useVstoBridge() {
         pending.delete(requestId);
         reject(new Error("Word 插件未响应，请确认插件版本已更新后重试"));
       }, timeoutMs);
-      pending.set(requestId, { resolve, reject, timer });
+      pending.set(requestId, { resolve, reject, timer, timeoutMs, onProgress });
       post({ ...message, request_id: requestId });
     });
   }
@@ -139,11 +162,21 @@ export function useVstoBridge() {
   }
 
   /** 在锚点/光标处插入 Markdown；返回 code="snapshot_stale" 时可重试。
-   * 全量标书写入按标题逐段进 Word，实测约 4s/标题、60 节 ≈ 6-7 分钟，
-   * timeoutMs 必须按内容规模给足（默认 60s 只适合小片段）。 */
+   * 全量标书写入按标题逐段进 Word，实测可达 30 分钟（含逐张插图表），timeoutMs
+   * 必须按内容规模给足；新插件每写完一块会回 progress 消息续期超时并触发
+   * onProgress，静态超时只在插件彻底停摆（无任何进度）时兜底。
+   * images：图表附件（"bjt-chart://N" → PNG dataURL），Markdown 中以
+   * `![题注](bjt-chart://N)` 独立图片行引用；仅新版插件识别，旧插件按普通文本降级。 */
   function insertMarkdown(
     content: string,
-    options: { label?: string; snapshotId?: string | null; anchor?: "cursor" | "end"; timeoutMs?: number } = {},
+    options: {
+      label?: string;
+      snapshotId?: string | null;
+      anchor?: "cursor" | "end";
+      timeoutMs?: number;
+      images?: Record<string, string>;
+      onProgress?: (done: number, total: number) => void;
+    } = {},
   ) {
     return request(
       {
@@ -152,8 +185,10 @@ export function useVstoBridge() {
         label: options.label || "AI 写入",
         snapshot_id: options.snapshotId ?? null,
         anchor: options.anchor || "cursor",
+        ...(options.images && Object.keys(options.images).length ? { images: options.images } : {}),
       },
       options.timeoutMs ?? 60_000,
+      options.onProgress,
     );
   }
 

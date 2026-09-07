@@ -68,3 +68,8 @@ nul
 
 # 本地构建产物打包（frontend dist 的 tar 备份）
 bjt-frontend-*.tar.gz
+
+# WorkBuddy skill 包运行时产物（skill/bjt-bid-review 为发布内容，凭证与产物不入库）
+skill/bjt-bid-review/config.json
+skill/bjt-bid-review/bjt-files/
+skill/**/__pycache__/
