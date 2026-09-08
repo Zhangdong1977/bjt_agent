@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import BlindCheckView from "@/views/BlindCheckView.vue";
 import BidDraftView from "@/views/BidDraftView.vue";
+import BidWizardView from "@/views/BidWizardView.vue";
 import PolishView from "@/views/PolishView.vue";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 
@@ -15,6 +16,7 @@ const SSO_RESULT = "bjt.vsto.sso.result";
 const TARGETS: Record<string, { component: Component; title: string; entering: string }> = {
   "/vsto/blind-check": { component: BlindCheckView, title: "暗标合规检查", entering: "正在进入暗标合规检查…" },
   "/vsto/bid-draft": { component: BidDraftView, title: "AI 标书生成", entering: "正在进入 AI 标书生成…" },
+  "/vsto/bid-wizard": { component: BidWizardView, title: "AI编标", entering: "正在进入 AI编标…" },
   "/vsto/polish": { component: PolishView, title: "AI 扩写润色", entering: "正在进入 AI 扩写润色…" },
 };
 

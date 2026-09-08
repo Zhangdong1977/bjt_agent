@@ -155,6 +155,9 @@ def _document_artifacts_response(
 
 
 def _allowed_doc_types(project_type: str, duplicate_mode: str = "pair") -> set[str]:
+    if project_type == "bid_wizard":
+        # AI编标：招标文件（1 份）+ 素材（0..N，均走向导自己的上传端点）
+        return {"tender", "material"}
     if project_type != "duplicate":
         return REVIEW_DOC_TYPES
     if duplicate_mode == "batch":
@@ -165,6 +168,12 @@ def _allowed_doc_types(project_type: str, duplicate_mode: str = "pair") -> set[s
 def _document_role_limit(project_type: str, doc_type: str) -> int:
     """Return a fail-closed per-project/draft limit for one document role."""
 
+    if project_type == "bid_wizard":
+        if doc_type == "tender":
+            return 1
+        if doc_type == "material":
+            return settings.bid_wizard_material_max_count
+        return 0
     if project_type != "duplicate":
         return settings.review_doc_role_limit
     if doc_type in {"duplicate_left", "duplicate_right"}:

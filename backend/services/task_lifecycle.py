@@ -36,16 +36,20 @@ _TASK_NAMES = {
     "blind_check": "backend.tasks.blind_check_tasks.run_blind_check",
     "bid_draft": "backend.tasks.bid_draft_tasks.run_bid_draft",
     "polish": "backend.tasks.polish_tasks.run_polish",
+    "bid_wizard_index": "backend.tasks.bid_wizard_tasks.run_bid_wizard_index",
+    "bid_wizard_write": "backend.tasks.bid_wizard_tasks.run_bid_wizard_write",
 }
 
-# Outbox delivery queue per kind. bid_draft runs on a dedicated "generation"
-# queue so long generation runs cannot starve review/duplicate workers.
+# Outbox delivery queue per kind. bid_draft / bid_wizard_* run on a dedicated
+# "generation" queue so long generation runs cannot starve review/duplicate workers.
 _TASK_QUEUES = {
     "review": "review",
     "duplicate": "review",
     "blind_check": "review",
     "polish": "review",
     "bid_draft": "generation",
+    "bid_wizard_index": "generation",
+    "bid_wizard_write": "generation",
 }
 
 
@@ -87,11 +91,40 @@ async def count_unsettled_tasks(db: AsyncSession, *, user_id: str) -> int:
             )
         )
     ).scalar_one()
+    from backend.models import BidWizardIndexTask, BidWizardQaTask, BidWritingTask
+
+    wizard_qa_count = (
+        await db.execute(
+            select(func.count(BidWizardQaTask.id)).where(
+                BidWizardQaTask.user_id == user_id,
+                BidWizardQaTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    wizard_index_count = (
+        await db.execute(
+            select(func.count(BidWizardIndexTask.id)).where(
+                BidWizardIndexTask.user_id == user_id,
+                BidWizardIndexTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    wizard_write_count = (
+        await db.execute(
+            select(func.count(BidWritingTask.id)).where(
+                BidWritingTask.user_id == user_id,
+                BidWritingTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
     return (
         int(review_count or 0)
         + int(blind_count or 0)
         + int(bid_draft_count or 0)
         + int(polish_count or 0)
+        + int(wizard_qa_count or 0)
+        + int(wizard_index_count or 0)
+        + int(wizard_write_count or 0)
     )
 
 

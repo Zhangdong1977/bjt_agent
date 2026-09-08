@@ -37,6 +37,7 @@ const RESULT_TYPES = new Set([
   "bjt.vsto.selection.result",
   "bjt.vsto.insert.result",
   "bjt.vsto.selection.replace.result",
+  "bjt.vsto.section.replace.result",
 ]);
 
 function newRequestId(prefix: string) {
@@ -205,6 +206,79 @@ export function useVstoBridge() {
     );
   }
 
+  /** AI编标：在书签锚点后插入本章 Markdown，插件写完把锚点书签推进到本章末尾，
+   * 并按 sectionBookmarks 打章首/章尾书签对（ADR-0001 逐章写入）。
+   * 旧插件不认识 anchor_bookmark，按未知字段忽略后走光标插入——发版同步后不存在。 */
+  function insertSection(
+    content: string,
+    options: {
+      anchorBookmark: string;
+      sectionStartBookmark: string;
+      sectionEndBookmark: string;
+      label?: string;
+      images?: Record<string, string>;
+      timeoutMs?: number;
+      onProgress?: (done: number, total: number) => void;
+    },
+  ) {
+    return request(
+      {
+        type: "bjt.vsto.insert",
+        content,
+        label: options.label || "AI 撰写",
+        snapshot_id: null,
+        anchor: "bookmark",
+        anchor_bookmark: options.anchorBookmark,
+        section_bookmarks: {
+          start: options.sectionStartBookmark,
+          end: options.sectionEndBookmark,
+        },
+        ...(options.images && Object.keys(options.images).length
+          ? { images: options.images }
+          : {}),
+      },
+      options.timeoutMs ?? 10 * 60_000,
+      options.onProgress,
+    );
+  }
+
+  /** AI编标：单章重生成的落 Word 路径——按书签对删旧章插新章，同一撤销单元；
+   * 书签被用户删除时回 code="bookmark_missing"，页面引导重新定位。 */
+  function sectionReplace(
+    startBookmark: string,
+    endBookmark: string,
+    content: string,
+    options: {
+      sectionStartBookmark?: string;
+      sectionEndBookmark?: string;
+      label?: string;
+      images?: Record<string, string>;
+      timeoutMs?: number;
+    } = {},
+  ) {
+    return request(
+      {
+        type: "bjt.vsto.section.replace",
+        start_bookmark: startBookmark,
+        end_bookmark: endBookmark,
+        content,
+        label: options.label || "AI 重写本章",
+        ...(options.sectionStartBookmark && options.sectionEndBookmark
+          ? {
+              section_bookmarks: {
+                start: options.sectionStartBookmark,
+                end: options.sectionEndBookmark,
+              },
+            }
+          : {}),
+        ...(options.images && Object.keys(options.images).length
+          ? { images: options.images }
+          : {}),
+      },
+      options.timeoutMs ?? 10 * 60_000,
+    );
+  }
+
   onMounted(() => {
     const bridge = webview();
     if (!bridge) return;
@@ -224,5 +298,15 @@ export function useVstoBridge() {
     if (bridge && listener) bridge.removeEventListener("message", listener);
   });
 
-  return { available, contextReady, documentContext, requestSelection, insertMarkdown, replaceSelection, postBridge: post };
+  return {
+    available,
+    contextReady,
+    documentContext,
+    requestSelection,
+    insertMarkdown,
+    replaceSelection,
+    insertSection,
+    sectionReplace,
+    postBridge: post,
+  };
 }

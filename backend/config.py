@@ -56,6 +56,16 @@ class Settings(BaseSettings):
     # after this grace period, allowing late usage writes to land first.
     billing_orphan_finalize_grace_seconds: int = 300
 
+    # AI编标（bid-wizard）功能开关：enabled / disabled / whitelist。默认 disabled——
+    # 发版即暗启动，白名单表 bid_wizard_whitelist 配合 whitelist 模式放量（doc 20 §4.1）。
+    # env: BID_WIZARD_ACCESS_MODE
+    bid_wizard_access_mode: str = "disabled"
+    # 素材索引任务的并发上限：素材常批量上传， authorize_billable_task_start 用它覆盖
+    # 默认的 1，避免"传第二份素材被 409"（余额检查仍生效）。env: BID_WIZARD_INDEX_MAX_ACTIVE
+    bid_wizard_index_max_active_tasks: int = 5
+    # 素材池上限（份）与单份素材大小上限（MB）——对齐 documents 既有约束风格。
+    bid_wizard_material_max_count: int = 200
+
     # Database
     database_url: str = ""  # Must be set via environment variable
 

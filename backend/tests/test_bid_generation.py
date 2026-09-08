@@ -54,12 +54,19 @@ def test_multiplier_fallback_for_new_kinds():
         blind_check_multiplier=None,
         bid_draft_multiplier=None,
         polish_multiplier=Decimal("0"),
+        bid_wizard_qa_multiplier=None,
+        bid_wizard_index_multiplier=None,
+        bid_wizard_write_multiplier=Decimal("1.5"),
     )
     # Unset bid_draft falls back to the global multiplier.
     assert multiplier_for_task(config, "bid_draft") == Decimal("4")
     # A configured 0 means "free feature" and must NOT fall back to global.
     assert multiplier_for_task(config, "polish") == Decimal("0")
     assert multiplier_for_task(config, "duplicate") == Decimal("2")
+    # AI编标三 kind：未配置走全局，配置值生效
+    assert multiplier_for_task(config, "bid_wizard_qa") == Decimal("4")
+    assert multiplier_for_task(config, "bid_wizard_index") == Decimal("4")
+    assert multiplier_for_task(config, "bid_wizard_write") == Decimal("1.5")
 
 
 def test_dispatch_registry_queues():

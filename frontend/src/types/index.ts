@@ -208,11 +208,13 @@ export interface ProfileUpdateRequest {
 }
 
 // Project types
+export type ProjectType = "review" | "duplicate" | "bid_draft" | "bid_wizard";
+
 export interface Project {
   id: string;
   name: string;
   description: string | null;
-  project_type: "review" | "duplicate" | "bid_draft";
+  project_type: ProjectType;
   duplicate_mode?: "pair" | "batch";
   user_id: string;
   status: string;
@@ -226,7 +228,7 @@ export interface Project {
 export interface CreateProjectRequest {
   name: string;
   description?: string;
-  project_type?: "review" | "duplicate" | "bid_draft";
+  project_type?: ProjectType;
   duplicate_mode?: "pair" | "batch";
 }
 

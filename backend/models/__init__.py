@@ -36,6 +36,15 @@ from .blind_check_finding import BlindCheckFinding
 from .bid_draft_task import BidDraftTask
 from .bid_draft_section import BidDraftSection
 from .polish_task import PolishTask
+from .bid_wizard import (
+    BidWizard,
+    BidWizardMaterial,
+    BidWizardIndexTask,
+    BidWizardQaTask,
+    BidWritingTask,
+    BidWizardSection,
+    BidWizardWhitelist,
+)
 from backend.experience.models import ExperienceFeedback, ExperienceCase, ExperienceSkill, ExperienceClusterMembership
 
 # Billable top-level task registry: task kind -> ORM model. Shared by
@@ -46,6 +55,9 @@ TASK_MODEL_BY_KIND = {
     "blind_check": BlindCheckTask,
     "bid_draft": BidDraftTask,
     "polish": PolishTask,
+    "bid_wizard_qa": BidWizardQaTask,
+    "bid_wizard_index": BidWizardIndexTask,
+    "bid_wizard_write": BidWritingTask,
 }
 
 __all__ = [
@@ -95,6 +107,13 @@ __all__ = [
     "BidDraftTask",
     "BidDraftSection",
     "PolishTask",
+    "BidWizard",
+    "BidWizardMaterial",
+    "BidWizardIndexTask",
+    "BidWizardQaTask",
+    "BidWritingTask",
+    "BidWizardSection",
+    "BidWizardWhitelist",
     "TASK_MODEL_BY_KIND",
     "ExperienceFeedback",
     "ExperienceCase",

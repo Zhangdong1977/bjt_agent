@@ -499,7 +499,16 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
     have been incurred before the terminal business status was reached.
     """
 
-    if task_kind not in {"review", "duplicate", "blind_check", "bid_draft", "polish"}:
+    if task_kind not in {
+        "review",
+        "duplicate",
+        "blind_check",
+        "bid_draft",
+        "polish",
+        "bid_wizard_qa",
+        "bid_wizard_index",
+        "bid_wizard_write",
+    }:
         raise ValueError(f"unsupported task kind: {task_kind}")
     model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
     try:
@@ -543,6 +552,16 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
                 user_id = task.user_id
                 project_id = None
                 project_name = "AI 润色"
+            elif task_kind == "bid_wizard_qa":
+                project = None
+                user_id = task.user_id
+                project_id = None
+                project_name = "AI编标问答"
+            elif task_kind == "bid_wizard_index":
+                project = None
+                user_id = task.user_id
+                project_id = None
+                project_name = "AI编标素材索引"
             else:
                 project = (
                     await db.execute(select(Project).where(Project.id == task.project_id))
