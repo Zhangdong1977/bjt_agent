@@ -83,10 +83,11 @@ class WizardMaterialIndexResponse(BaseModel):
 
 
 class WizardEstimateResponse(BaseModel):
-    """上传前预估：只给量级（token 估算），计费按实际用量结算。"""
+    """上传前预估：token 量级 + 约点数（null=价目缺失，前端退回 token 提示）。"""
 
     chars: int
     estimated_tokens: int
+    estimated_points: int | None = None
 
 
 # ------------------------------------------------------------------ questionnaire / requirements

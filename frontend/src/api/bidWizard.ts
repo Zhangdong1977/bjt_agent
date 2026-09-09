@@ -142,7 +142,7 @@ export async function getWizardAccess() {
 }
 
 export async function estimateIndexCost(bytes: number) {
-  return request<{ chars: number; estimated_tokens: number }>(
+  return request<{ chars: number; estimated_tokens: number; estimated_points: number | null }>(
     "get",
     `/bid-wizard/estimate?bytes=${encodeURIComponent(bytes)}`,
   );
@@ -231,6 +231,14 @@ export function uploadMaterial(
 
 export async function deleteTender(wizardId: string) {
   return request<Wizard>("delete", `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/tender`);
+}
+
+/** AI 解读招标文件（同步微任务）：招标要素 + suggested_materials 建议补素材。 */
+export async function analyzeTenderDocument(wizardId: string) {
+  return request<Wizard>(
+    "post",
+    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/analysis`,
+  );
 }
 
 export async function listMaterials(wizardId: string) {

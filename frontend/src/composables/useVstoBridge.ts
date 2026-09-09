@@ -38,6 +38,7 @@ const RESULT_TYPES = new Set([
   "bjt.vsto.insert.result",
   "bjt.vsto.selection.replace.result",
   "bjt.vsto.section.replace.result",
+  "bjt.vsto.bookmark.create.result",
 ]);
 
 function newRequestId(prefix: string) {
@@ -242,8 +243,18 @@ export function useVstoBridge() {
     );
   }
 
+  /** AI编标：在当前 Word 光标处创建/重建插入锚点书签（§5.6 初始锚点；
+   * 书签被删后的「重新定位插入点」软降级复用同一消息）。 */
+  function createBookmark(name: string, options: { timeoutMs?: number } = {}) {
+    return request(
+      { type: "bjt.vsto.bookmark.create", name },
+      options.timeoutMs ?? 15_000,
+    );
+  }
+
   /** AI编标：单章重生成的落 Word 路径——按书签对删旧章插新章，同一撤销单元；
-   * 书签被用户删除时回 code="bookmark_missing"，页面引导重新定位。 */
+   * 书签被用户删除时回 code="bookmark_missing"，页面引导重新定位。
+   * anchorBookmark：锚点书签落在被删范围内时由插件推进到新章末尾（可选）。 */
   function sectionReplace(
     startBookmark: string,
     endBookmark: string,
@@ -251,6 +262,7 @@ export function useVstoBridge() {
     options: {
       sectionStartBookmark?: string;
       sectionEndBookmark?: string;
+      anchorBookmark?: string;
       label?: string;
       images?: Record<string, string>;
       timeoutMs?: number;
@@ -263,6 +275,7 @@ export function useVstoBridge() {
         end_bookmark: endBookmark,
         content,
         label: options.label || "AI 重写本章",
+        ...(options.anchorBookmark ? { anchor_bookmark: options.anchorBookmark } : {}),
         ...(options.sectionStartBookmark && options.sectionEndBookmark
           ? {
               section_bookmarks: {
@@ -307,6 +320,7 @@ export function useVstoBridge() {
     replaceSelection,
     insertSection,
     sectionReplace,
+    createBookmark,
     postBridge: post,
   };
 }

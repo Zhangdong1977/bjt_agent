@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { Modal, Tag } from "ant-design-vue";
 import {
+  analyzeTenderDocument,
   cancelWritingTask,
   confirmSpec,
   createWizard,
@@ -228,17 +229,19 @@ function onUploadMaterials(event: Event) {
   input.value = "";
   if (!files.length || !wizard.value) return;
   void withBusy("material", async () => {
-    // 上传前预估确认（决策 17a）：粗估量级、实际按用量计费
+    // 上传前预估确认（决策 17a）：token 量级 + 约点数，实际按用量计费
     const estimate = await estimateIndexCost(
       files.reduce((sum, file) => sum + file.size, 0),
     ).catch(() => null);
-    const tokensText = estimate
-      ? `预计索引消耗约 ${(estimate.estimated_tokens / 1000).toFixed(1)} 千 token`
-      : "按实际用量计费";
+    let costText = "按实际用量计费";
+    if (estimate) {
+      costText = `预计索引消耗约 ${(estimate.estimated_tokens / 1000).toFixed(1)} 千 token`;
+      if (estimate.estimated_points != null) costText += `（约 ${estimate.estimated_points} 点）`;
+    }
     const confirmed = await new Promise<boolean>((resolve) => {
       Modal.confirm({
         title: "确认上传素材？",
-        content: `已选 ${files.length} 份素材，${tokensText}（上传后自动建立索引，费用计入账户）`,
+        content: `已选 ${files.length} 份素材，${costText}（上传后自动建立索引，费用计入账户）`,
         okText: "上传并索引",
         cancelText: "取消",
         onOk: () => resolve(true),
@@ -311,6 +314,38 @@ const indexSummary = computed(() => {
   const failed = materials.value.filter((item) => item.index_status === "failed").length;
   return { indexed, indexing, failed };
 });
+
+/** AI 招标解读（§4.2：解读后驱动用户补素材）。 */
+interface SuggestedMaterial {
+  name: string;
+  reason?: string;
+}
+const analysis = computed<Record<string, unknown> | null>(
+  () => (wizard.value?.analysis as Record<string, unknown>) || null,
+);
+const analysisBasic = computed(
+  () => (analysis.value?.basic as Record<string, string> | undefined) || null,
+);
+const analysisRequirements = computed<string[]>(() => {
+  const raw = analysis.value?.tender_requirements;
+  return Array.isArray(raw) ? (raw as unknown[]).map(String).slice(0, 5) : [];
+});
+const suggestedMaterials = computed<SuggestedMaterial[]>(() => {
+  const raw = analysis.value?.suggested_materials;
+  if (!Array.isArray(raw)) return [];
+  return (raw as SuggestedMaterial[]).filter((item) => item && typeof item.name === "string");
+});
+
+function onAnalyzeTender() {
+  if (!wizard.value) return;
+  if (!tenderReady.value) {
+    pageError.value = "招标文件尚未解析完成，请稍候";
+    return;
+  }
+  void withBusy("analysis", async () => {
+    wizard.value = await analyzeTenderDocument(wizard.value!.id);
+  });
+}
 
 // =============================================================== 阶段 2：需求确认
 
@@ -416,6 +451,67 @@ function moveNode(index: number, delta: number) {
   markSpecDirty();
 }
 
+// ---- 拖拽排序（§4.2：同级章节拖拽；跨级移动不在 M1）----
+let dragIndex = -1;
+const dragOverIndex = ref(-1);
+
+/** 节点的父节点下标（最近的更浅层级节点；顶级返回 -1）。 */
+function parentIndexOf(index: number): number {
+  const level = specNodes.value[index].level;
+  if (level <= 1) return -1;
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (specNodes.value[i].level < level) return i;
+  }
+  return -1;
+}
+
+/** 节点子树的最后一个下标（含自身）。 */
+function subtreeEndOf(index: number): number {
+  const level = specNodes.value[index].level;
+  let end = index;
+  for (let i = index + 1; i < specNodes.value.length && specNodes.value[i].level > level; i += 1) {
+    end = i;
+  }
+  return end;
+}
+
+function onSpecDragStart(index: number, event: DragEvent) {
+  dragIndex = index;
+  if (event.dataTransfer) {
+    event.dataTransfer.setData("text/plain", String(index)); // Firefox 需 setData 才触发拖拽
+    event.dataTransfer.effectAllowed = "move";
+  }
+}
+
+function onSpecDragOver(targetIndex: number, event: DragEvent) {
+  if (dragIndex < 0 || dragIndex === targetIndex) return;
+  if (parentIndexOf(dragIndex) !== parentIndexOf(targetIndex)) return; // 仅同级
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  dragOverIndex.value = targetIndex;
+}
+
+function onSpecDragLeave() {
+  dragOverIndex.value = -1;
+}
+
+function onSpecDrop(targetIndex: number, event: DragEvent) {
+  const from = dragIndex;
+  dragIndex = -1;
+  dragOverIndex.value = -1;
+  event.preventDefault();
+  if (from < 0 || from === targetIndex) return;
+  if (parentIndexOf(from) !== parentIndexOf(targetIndex)) return;
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const before = event.clientY < rect.top + rect.height / 2;
+  // 「拖到下半区」= 放到目标节点子树之后（仍与其同级）
+  let insertAt = before ? targetIndex : subtreeEndOf(targetIndex) + 1;
+  const [moved] = specNodes.value.splice(from, 1);
+  if (from < insertAt) insertAt -= 1;
+  specNodes.value.splice(insertAt, 0, moved);
+  markSpecDirty();
+}
+
 function addChart(node: WizardSpecNode) {
   if (!node.charts) node.charts = [];
   node.charts.push({ type: "table", title: "新图表", points: "" });
@@ -500,6 +596,7 @@ const eventLog = ref<{ time: string; text: string; kind: "info" | "ok" | "error"
 const awaitingWrite = ref<string[]>([]); // 逐章确认模式待写入队列（node_id 顺序）
 const writingNode = ref("");
 const writeError = ref("");
+const anchorLost = ref(false); // 插入锚点失效（书签被删/文档结构变化）→ 显示「重新定位插入点」
 const taskRunning = computed(() =>
   Boolean(task.value && !["completed", "failed", "cancelled"].includes(task.value.status)),
 );
@@ -568,10 +665,38 @@ function toggleNode(nodeId: string) {
 
 function onStartWriting() {
   if (!wizard.value || !selectedNodes.value.size) return;
+  if (!bridge.available.value) {
+    pageError.value = "撰写需要 Word 插件环境，请从 Word 的任务面板打开本页";
+    return;
+  }
   void withBusy("writing", async () => {
+    // §5.6 初始锚点：点「开始撰写」时在 Word 光标处打锚点书签，逐章插入都锚定其后
+    const anchored = await bridge.createBookmark(ANCHOR_BOOKMARK);
+    if (!anchored.success) {
+      throw new Error(anchored.error || "创建插入锚点失败，请在 Word 中点击插入起始位置后重试");
+    }
+    anchorLost.value = false;
     const created = await createWritingTask(wizard.value!.id, Array.from(selectedNodes.value));
     trackTask(created);
   });
+}
+
+/** 锚点失效的软降级（§8）：在 Word 光标处重建锚点书签，然后补写待写入队列。 */
+async function repositionAnchor() {
+  if (busy.value) return;
+  writeError.value = "";
+  try {
+    const result = await bridge.createBookmark(ANCHOR_BOOKMARK);
+    if (!result.success) throw new Error(result.error || "重建插入锚点失败，请重试");
+    anchorLost.value = false;
+    pushLog("ok", "已重新定位插入点，继续写入待写章节");
+    const queue = [...awaitingWrite.value];
+    for (const nodeId of queue) {
+      await writeSection(nodeId);
+    }
+  } catch (error) {
+    writeError.value = error instanceof Error ? error.message : "重建插入锚点失败，请重试";
+  }
 }
 
 function trackTask(next: WizardWritingTask) {
@@ -582,6 +707,7 @@ function trackTask(next: WizardWritingTask) {
   sections.value = [];
   awaitingWrite.value = [];
   writeError.value = "";
+  anchorLost.value = false;
   writingNode.value = "";
   eventLog.value = [];
   pushLog("info", next.continue_of ? "单章重生成任务已提交" : "撰写任务已提交");
@@ -604,39 +730,49 @@ function stopTaskPoll() {
 }
 
 async function listenTask(id: string) {
-  const headers: HeadersInit = { Accept: "text/event-stream" };
-  const token = wizardToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
   stopTaskStream();
   const controller = new AbortController();
   streamController = controller;
-  try {
-    const response = await fetch(wizardStreamUrl(id), { headers, signal: controller.signal });
-    if (!response.ok || !response.body) throw new Error(`SSE 连接失败（${response.status}）`);
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buffer = "";
-    while (true) {
-      const result = await reader.read();
-      if (result.done) break;
-      buffer += decoder.decode(result.value, { stream: true });
-      const blocks = buffer.split("\n\n");
-      buffer = blocks.pop() || "";
-      blocks.forEach((block) => {
-        const line = block.split("\n").find((item) => item.startsWith("data:"));
-        if (!line) return;
-        try {
-          handleTaskEvent(JSON.parse(line.slice(5).trim()) as Record<string, unknown>);
-        } catch {
-          /* ignore replay noise */
-        }
-      });
+  let lastEventId = "";
+  // §4.3 断线重连：记录服务端 id: 行，重连带 Last-Event-ID 增量回放；
+  // 任务终态即停；5s 轮询兜底仍在跑
+  while (!controller.signal.aborted && taskRunning.value) {
+    try {
+      const headers: Record<string, string> = { Accept: "text/event-stream" };
+      const token = wizardToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
+      if (lastEventId) headers["Last-Event-ID"] = lastEventId;
+      const response = await fetch(wizardStreamUrl(id), { headers, signal: controller.signal });
+      if (!response.ok || !response.body) throw new Error(`SSE 连接失败（${response.status}）`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        buffer += decoder.decode(result.value, { stream: true });
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() || "";
+        blocks.forEach((block) => {
+          const lines = block.split("\n");
+          const idLine = lines.find((item) => item.startsWith("id:"));
+          if (idLine) lastEventId = idLine.slice(3).trim();
+          const line = lines.find((item) => item.startsWith("data:"));
+          if (!line) return;
+          try {
+            handleTaskEvent(JSON.parse(line.slice(5).trim()) as Record<string, unknown>);
+          } catch {
+            /* ignore replay noise */
+          }
+        });
+      }
+    } catch {
+      /* 退避后重连；轮询兜底仍在跑 */
     }
-  } catch {
-    /* 轮询兜底仍在跑 */
-  } finally {
-    if (streamController === controller) streamController = null;
+    if (controller.signal.aborted || !taskRunning.value) break;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
+  if (streamController === controller) streamController = null;
 }
 
 function handleTaskEvent(event: Record<string, unknown>) {
@@ -724,7 +860,8 @@ async function writeSection(nodeId: string) {
     });
     if (!result.success) {
       if (result.code === "snapshot_stale" || result.code === "bookmark_missing") {
-        writeError.value = "Word 插入锚点失效（文档结构变化或书签被删），已生成的章节可稍后在列表中重新写入";
+        anchorLost.value = true;
+        writeError.value = "Word 插入锚点失效（文档结构变化或书签被删）；请重新定位插入点后继续写入";
       } else {
         writeError.value = result.error || "写入 Word 失败";
       }
@@ -801,6 +938,7 @@ async function replaceSectionInWord(nodeId: string) {
     const result = await bridge.sectionReplace(marks.start, marks.end, prepared.content, {
       sectionStartBookmark: marks.start,
       sectionEndBookmark: marks.end,
+      anchorBookmark: ANCHOR_BOOKMARK, // 锚点落在被删范围内时由插件推进到新章末尾
       label: `AI 重写：${displayTitle(nodeId, content.title)}`,
       images: prepared.images,
     });
@@ -938,6 +1076,40 @@ onUnmounted(() => {
           <p class="hint">建议上传：类似业绩合同、公司资质证书、拟投入人员证书、历史技术方案、售后服务案例等。AI 将自动分段索引，供问卷与撰写引用。</p>
         </div>
 
+        <div v-if="tenderReady" class="card">
+          <h3>AI 招标解读</h3>
+          <template v-if="analysis">
+            <div
+              v-if="analysisBasic && (analysisBasic.project_name || analysisBasic.budget || analysisBasic.bid_deadline)"
+              class="analysis-basic"
+            >
+              <span v-if="analysisBasic.project_name">项目：{{ analysisBasic.project_name }}</span>
+              <span v-if="analysisBasic.budget">预算：{{ analysisBasic.budget }}</span>
+              <span v-if="analysisBasic.bid_deadline">截止：{{ analysisBasic.bid_deadline }}</span>
+            </div>
+            <ul v-if="analysisRequirements.length" class="analysis-reqs">
+              <li v-for="(item, index) in analysisRequirements" :key="index">{{ item }}</li>
+            </ul>
+            <div v-if="suggestedMaterials.length" class="analysis-suggest">
+              <strong>根据招标要素建议补充：</strong>
+              <span
+                v-for="(item, index) in suggestedMaterials"
+                :key="index"
+                class="suggest-chip"
+                :title="item.reason || ''"
+              >{{ item.name }}</span>
+            </div>
+            <p v-if="!analysisRequirements.length && !suggestedMaterials.length" class="hint">解读结果较简略，可直接进入下一步。</p>
+            <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="onAnalyzeTender">重新解读</button>
+          </template>
+          <template v-else>
+            <p class="hint">解读招标要素（项目/预算/截止/关键要求），并给出建议补充的素材清单，帮你把素材备齐。</p>
+            <button type="button" class="primary" :disabled="Boolean(busy)" @click="onAnalyzeTender">
+              {{ busy === "analysis" ? "AI 正在解读（最长 2 分钟）…" : "AI 解读招标文件" }}
+            </button>
+          </template>
+        </div>
+
         <div class="card">
           <h3>② 公司素材（素材池）</h3>
           <div class="material-summary">
@@ -1072,8 +1244,21 @@ onUnmounted(() => {
                 {{ busy === "spec" ? "AI 修改中…" : "AI 修改" }}
               </button>
             </div>
+            <p class="hint" style="margin:0 0 8px">同级章节可拖拽排序（拖到目标卡片上半区=插到它前面，下半区=插到它子树之后）。</p>
             <ul class="spec-tree">
-              <li v-for="(node, index) in specNodes" :key="`${index}-${node.title}`" class="spec-node" :style="{ paddingLeft: `${(node.level - 1) * 16}px` }">
+              <li
+                v-for="(node, index) in specNodes"
+                :key="`${index}-${node.title}`"
+                class="spec-node"
+                :class="{ 'drag-over': dragOverIndex === index }"
+                :style="{ paddingLeft: `${(node.level - 1) * 16}px` }"
+                draggable="true"
+                @dragstart="onSpecDragStart(index, $event)"
+                @dragover="onSpecDragOver(index, $event)"
+                @dragleave="onSpecDragLeave"
+                @drop="onSpecDrop(index, $event)"
+                @dragend="onSpecDragLeave"
+              >
                 <div class="spec-line">
                   <input v-model="node.title" class="spec-title" @input="markSpecDirty">
                   <button type="button" class="link-btn" @click="moveNode(index, -1)">↑</button>
@@ -1142,6 +1327,7 @@ onUnmounted(() => {
               <label class="radio"><input v-model="writeMode" type="radio" value="confirm">逐章确认（每章预览后手动写入）</label>
             </div>
             <button type="button" class="primary" :disabled="Boolean(busy)" @click="onStartWriting">开始撰写</button>
+            <p class="hint">点「开始撰写」会在 Word 当前光标处建立插入锚点——请先在 Word 中点击要开始插入的位置。</p>
           </template>
           <template v-else>
             <div class="writing-head">
@@ -1151,7 +1337,10 @@ onUnmounted(() => {
               <span>已写入 {{ writtenCount }} / {{ sections.length }} 章</span>
               <button v-if="taskRunning" type="button" class="ghost" :disabled="Boolean(busy)" @click="onCancelTask">取消撰写</button>
             </div>
-            <div v-if="writeError" class="wiz-error">{{ writeError }}</div>
+            <div v-if="writeError" class="wiz-error">
+              {{ writeError }}
+              <button v-if="anchorLost" type="button" class="link-btn" :disabled="Boolean(busy)" @click="repositionAnchor">重新定位插入点</button>
+            </div>
             <div ref="logScrollRef" class="event-log">
               <div v-for="log in eventLog" :key="`${log.time}-${log.text}`" class="log-line" :class="log.kind">
                 <span class="log-time">{{ log.time }}</span>{{ log.text }}
@@ -1245,6 +1434,10 @@ onUnmounted(() => {
 .upload-btn:hover{border-color:#d7041a;color:#d7041a}
 .upload-btn.disabled{opacity:.5;pointer-events:none}
 .material-summary{display:flex;gap:14px;color:#777;margin-bottom:8px}
+.analysis-basic{display:flex;gap:16px;flex-wrap:wrap;color:#555;font-size:12px;margin-bottom:6px}
+.analysis-reqs{margin:4px 0 8px;padding-left:18px;color:#666;font-size:12px;line-height:1.8}
+.analysis-suggest{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:4px 0 8px;font-size:12px}
+.suggest-chip{padding:2px 10px;border:1px solid #ffd6d0;border-radius:999px;background:#fff5f4;color:#b80015;cursor:default}
 .material-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
 .material-row,.section-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 8px;border:1px solid #f0f0f0;border-radius:7px}
 .link-btn{border:0;background:transparent;color:#1677ff;cursor:pointer;padding:0 2px;font-size:12px}
@@ -1271,6 +1464,7 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .spec-revise input{flex:1}
 .spec-tree{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
 .spec-node{border:1px solid #f0f0f0;border-radius:9px;padding:9px 11px}
+.spec-node.drag-over{outline:2px dashed #d7041a;outline-offset:1px}
 .spec-line{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .spec-title{flex:1;min-width:140px;border:1px solid #e5e5e5;border-radius:6px;padding:5px 8px;font-size:13px;font-weight:600}
 .spec-summary{margin:7px 0 5px;resize:vertical}

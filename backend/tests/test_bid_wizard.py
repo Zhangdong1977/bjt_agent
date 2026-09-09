@@ -7,9 +7,11 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from backend.agent.bid_wizard_agent import (
+    _bound_suggested_materials,
     build_chart_plan_text,
     build_material_index_text,
     build_requirements_text,
+    estimate_index_points,
     estimate_tokens,
     merge_questionnaire_answers,
     normalize_questionnaire,
@@ -42,6 +44,10 @@ def test_split_material_chunks_by_headings_and_size():
     assert all(len(chunk["text"]) <= 500 for chunk in chunks)
     headings = [chunk["heading"] for chunk in chunks]
     assert "业绩" in headings and "资质" in headings
+    # location = 标题路径（§5.3 frontmatter「原文定位」），子标题带父级链
+    assert chunks[0]["location"] == "公司简介"
+    performance = next(chunk for chunk in chunks if chunk["heading"] == "业绩")
+    assert performance["location"] == "公司简介 > 业绩"
 
 
 def test_split_material_chunks_empty_and_numbering():
@@ -50,21 +56,59 @@ def test_split_material_chunks_empty_and_numbering():
     chunks = split_material_chunks("第一段。\n\n第二段。")
     assert [chunk["no"] for chunk in chunks] == [1]
     assert "第一段" in chunks[0]["text"] and "第二段" in chunks[0]["text"]
+    # 无标题的段落回退为「第 N 段」定位
+    assert chunks[0]["location"] == "第1段"
 
 
 def test_render_index_and_chunk_files():
-    chunks = [{"no": 1, "heading": "业绩", "text": "某智慧园区项目，合同额 1200 万。"}]
+    chunks = [
+        {"no": 1, "heading": "业绩", "location": "公司简介 > 业绩", "text": "某智慧园区项目，合同额 1200 万。"}
+    ]
     metas = {1: {"summary": "智慧园区业绩", "keywords": ["智慧园区", "1200万"]}}
     index_md = render_index_markdown(chunks, metas)
     assert "智慧园区业绩" in index_md and "1200万" in index_md
     chunk_file = render_chunk_file(chunks[0], metas[1])
     assert chunk_file.startswith("<!--")
+    assert "location: 公司简介 > 业绩" in chunk_file
     assert "某智慧园区项目" in chunk_file
 
 
 def test_estimate_tokens_magnitude():
     assert estimate_tokens(10_000) == 7_000
     assert estimate_tokens(0) == 1
+
+
+def test_estimate_index_points_positive_and_monotonic():
+    small = estimate_index_points(1_000, Decimal("1"))
+    large = estimate_index_points(100_000, Decimal("1"))
+    # 价目缺失的环境允许 None；有值则必须为正且随 token 量级不减
+    if small is not None:
+        assert small >= 1
+    if small is not None and large is not None:
+        assert large >= small
+    # 倍率放大点数（同口径线性）
+    if small is not None:
+        doubled = estimate_index_points(1_000, Decimal("2"))
+        assert doubled is not None and doubled >= small
+
+
+def test_bound_suggested_materials_shape_and_bounds():
+    items = _bound_suggested_materials(
+        [
+            {"name": "类似业绩合同", "reason": "资格要求近三年类似业绩不少于 2 项"},
+            {"name": "", "reason": "空名丢弃"},
+            "not-a-dict",
+            *[
+                {"name": f"素材{i}", "reason": "x" * 500}
+                for i in range(10)  # 超出 8 项截断
+            ],
+        ]
+    )
+    assert len(items) == 8
+    assert items[0] == {"name": "类似业绩合同", "reason": "资格要求近三年类似业绩不少于 2 项"}
+    assert all(len(item["reason"]) <= 200 for item in items)
+    assert _bound_suggested_materials(None) == []
+    assert _bound_suggested_materials(["x"]) == []
 
 
 # ------------------------------------------------------------------ 问卷与需求

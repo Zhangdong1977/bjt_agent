@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -219,6 +220,48 @@ def estimate_tokens(chars: int) -> int:
     return max(1, int((chars or 0) * ESTIMATE_TOKENS_PER_CHAR))
 
 
+def current_llm_for_pricing() -> tuple[str, Optional[str]]:
+    """(provider, model) mirroring llm_factory's selection, for pre-billing estimates."""
+    from backend.config import get_settings
+
+    settings = get_settings()
+    provider = (settings.llm_provider or "minimax").strip().lower()
+    model = {
+        "volcengine": settings.volcengine_model,
+        "deepseek": settings.deepseek_model,
+        "tencent": settings.tencent_model,
+    }.get(provider, settings.mini_agent_model)
+    return provider, model
+
+
+def estimate_index_points(estimated_tokens: int, multiplier: Decimal | float) -> Optional[int]:
+    """token→点数线性预估（上传前确认弹窗显示「约 X 点」，§4.2/story 7）。
+
+    口径：索引=1 次 LLM 调用/素材——prompt≈全文 tokens，completion≈元数据输出，
+    按 prompt 的 8%、下限 200 tokens 粗估；点数 = cost×10×倍率（与结算同公式），
+    **向上取整**（预估略保守，小素材也至少显示 1 点）。
+    价目缺失（provider 无费率）返回 None，前端退回 token 量级提示。
+    """
+    from backend.services.billing import sales_points_for
+    from backend.services.cost_calculator import estimate_cost
+
+    provider, model = current_llm_for_pricing()
+    completion = max(200, int((estimated_tokens or 0) * 0.08))
+    cost = estimate_cost(
+        provider=provider,
+        model=model,
+        prompt_tokens=max(1, int(estimated_tokens or 0)),
+        completion_tokens=completion,
+        status="success",
+    )
+    if cost is None:
+        return None
+    points = sales_points_for(cost, multiplier)
+    if points <= 0:
+        return None
+    return int(points.to_integral_value(rounding=ROUND_CEILING))
+
+
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 
@@ -229,34 +272,49 @@ def split_material_chunks(
 
     解析产物是 markdown：按标题分块、按段落打包到 max_chars 附近；单段超长硬切。
     分段文本由代码确定性生成（可回溯原文），LLM 只负责摘要/关键词（见 INDEX_META_*）。
+    每段携带 location（标题路径，§5.3 frontmatter 的「原文定位」）。
     """
-    units: list[tuple[str, str]] = []  # (heading, paragraph)
+    units: list[tuple[str, str, str]] = []  # (heading, location, paragraph)
+    stack: list[tuple[int, str]] = []  # (heading level, heading) 栈 → 标题路径
     heading = ""
+    location = ""
     buffer: list[str] = []
     for raw_line in (markdown or "").splitlines():
         match = _HEADING_RE.match(raw_line.strip())
         if match:
             if buffer:
-                units.append((heading, "\n".join(buffer).strip()))
+                units.append((heading, location, "\n".join(buffer).strip()))
                 buffer = []
+            level = len(match.group(1))
             heading = match.group(2).strip()[:200]
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, heading))
+            location = " > ".join(text for _, text in stack)[:300]
             continue
         buffer.append(raw_line)
     if buffer:
-        units.append((heading, "\n".join(buffer).strip()))
+        units.append((heading, location, "\n".join(buffer).strip()))
 
     chunks: list[dict[str, Any]] = []
 
-    def _emit(heading: str, text: str) -> None:
+    def _emit(heading: str, location: str, text: str) -> None:
         text = text.strip()
         if text and len(chunks) < MATERIAL_MAX_CHUNKS:
-            chunks.append({"no": len(chunks) + 1, "heading": heading, "text": text})
+            chunks.append(
+                {
+                    "no": len(chunks) + 1,
+                    "heading": heading,
+                    "location": location or f"第{len(chunks) + 1}段",
+                    "text": text,
+                }
+            )
 
-    for heading, paragraph in units:
+    for heading, location, paragraph in units:
         if not paragraph:
             continue
         if len(paragraph) <= max_chars:
-            _emit(heading, paragraph)
+            _emit(heading, location, paragraph)
             continue
         # oversized paragraph: hard split on sentence boundaries
         start = 0
@@ -265,7 +323,7 @@ def split_material_chunks(
             cut = max(window.rfind("。"), window.rfind("；"), window.rfind("\n"))
             if cut < max_chars // 2:
                 cut = max_chars
-            _emit(heading, paragraph[start : start + cut])
+            _emit(heading, location, paragraph[start : start + cut])
             start += cut
     return chunks
 
@@ -276,6 +334,7 @@ def render_chunk_file(chunk: dict[str, Any], meta: dict[str, Any]) -> str:
         f"<!-- bid-wizard-material\n"
         f"no: {chunk['no']}\n"
         f"heading: {str(chunk.get('heading') or '')[:200]}\n"
+        f"location: {str(chunk.get('location') or '')[:300]}\n"
         f"summary: {str(meta.get('summary') or '')[:200]}\n"
         f"keywords: {keywords}\n"
         f"-->\n"
@@ -518,6 +577,29 @@ def parse_chunk_ref_mapping(
 
 # ------------------------------------------------------------------ llm helpers
 
+WIZARD_ANALYSIS_EXTRA_INSTRUCTION = (
+    "\n\n另外，请在输出的 JSON 对象中增加 suggested_materials 字段："
+    '[{"name": "建议投标人补充上传的素材名称", "reason": "对应哪条招标要求/评分标准"}]，'
+    "最多 8 项，聚焦招标文件明确要求、但投标公司通常需要另行准备原件的证明材料"
+    "（如类似业绩合同、人员证书、厂家授权函、检测报告等）。"
+)
+
+
+def _bound_suggested_materials(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    items: list[dict[str, str]] = []
+    for entry in raw:
+        if len(items) >= 8:
+            break
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()[:100]
+        if not name:
+            continue
+        items.append({"name": name, "reason": str(entry.get("reason") or "").strip()[:200]})
+    return items
+
 
 class WizardLLM:
     """Thin instrumented client wrapper shared by sync and celery flows."""
@@ -543,15 +625,24 @@ class WizardLLM:
 
 
 async def analyze_tender(llm: WizardLLM, tender_markdown: str) -> dict[str, Any]:
-    """招标要素提取（复用 V1 tender_analysis 的 prompt 与口径）。"""
+    """招标要素提取（复用 V1 tender_analysis 的 prompt 与口径）。
+
+    向导侧在 user prompt 末尾追加 instructed 字段 suggested_materials
+    （§4.2：AI 解读招标文件后建议补充哪些素材），V1 内核 prompt 保持零改动；
+    _bound_analysis 是字段白名单，该字段从原始输出单独提取归一。
+    """
     tender_text = (tender_markdown or "")[:ANALYSIS_CONTEXT_MAX_CHARS]
     if len(tender_markdown or "") > ANALYSIS_CONTEXT_MAX_CHARS:
         tender_text += "\n…（后文已截断）"
-    user_prompt = ANALYSIS_USER_TEMPLATE.replace("__TENDER_TEXT__", tender_text)
-    analysis = await llm.generate_json(ANALYSIS_SYSTEM_PROMPT, user_prompt)
-    if not isinstance(analysis, dict):
+    user_prompt = (ANALYSIS_USER_TEMPLATE + WIZARD_ANALYSIS_EXTRA_INSTRUCTION).replace(
+        "__TENDER_TEXT__", tender_text
+    )
+    raw = await llm.generate_json(ANALYSIS_SYSTEM_PROMPT, user_prompt)
+    if not isinstance(raw, dict):
         raise RuntimeError("招标要素提取结果不是 JSON 对象")
-    return _bound_analysis(analysis)
+    analysis = _bound_analysis(raw)
+    analysis["suggested_materials"] = _bound_suggested_materials(raw.get("suggested_materials"))
+    return analysis
 
 
 async def generate_questionnaire(
@@ -806,6 +897,35 @@ class BidWizardWriteAgent:
                 setattr(row, key, value)
             await db.commit()
 
+    async def _load_prev_sections(
+        self, wizard_id: str, spec: list[dict[str, Any]]
+    ) -> list[tuple[str, str, Optional[str]]]:
+        """跨任务 run 的已生成/已写入章节（§5.3：标题+摘要，保持前后章呼应、支撑断点续作）。
+
+        title/summary 建行时拷贝自 spec（撰写中 spec 锁定，跨 run 稳定），
+        按大纲顺序输出；同一 node 多个 run 的行取任一版本即可。
+        """
+        async with self.session_factory() as db:
+            rows = (
+                await db.execute(
+                    select(BidWizardSection.node_id, BidWizardSection.title, BidWizardSection.summary)
+                    .join(BidWritingTask, BidWritingTask.id == BidWizardSection.task_id)
+                    .where(
+                        BidWritingTask.wizard_id == wizard_id,
+                        BidWizardSection.status.in_(("written", "generated")),
+                    )
+                )
+            ).all()
+        by_node = {str(node_id): (str(title or ""), summary) for node_id, title, summary in rows}
+        ordered: list[tuple[str, str, Optional[str]]] = []
+        for node in spec:
+            entry = by_node.get(str(node.get("node_id")))
+            if entry is not None:
+                ordered.append(
+                    (str(node.get("node_id")), entry[0] or str(node.get("title") or ""), entry[1])
+                )
+        return ordered
+
     async def _generate_section(
         self,
         node: dict[str, Any],
@@ -814,7 +934,7 @@ class BidWizardWriteAgent:
         requirements_text: str,
         spec: list[dict[str, Any]],
         material_refs: list[str],
-        prev_sections: list[tuple[str, str]],
+        prev_sections: list[tuple[str, str, Optional[str]]],
     ) -> dict[str, Any]:
         self._publish("section_started", {"node_id": node["node_id"], "title": node["title"]})
         await self._set_section_status(node["node_id"], status="generating")
@@ -823,8 +943,14 @@ class BidWizardWriteAgent:
         material_chunks = read_material_chunks_text(
             get_settings().workspace_path, self._wizard_id, material_refs
         )
+        prev_items = [item for item in prev_sections if item[0] != node["node_id"]][-12:]
         prev_text = (
-            "\n".join(f"- {node_id} {title}" for node_id, title in prev_sections[-12:])
+            "\n".join(
+                f"- {node_id} {title}：{str(summary or '').strip()[:80]}"
+                if str(summary or "").strip()
+                else f"- {node_id} {title}"
+                for node_id, title, summary in prev_items
+            )
             or "（本章节之前没有已完成的章节）"
         )
         analysis_json = json.dumps(analysis, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]
@@ -889,10 +1015,10 @@ class BidWizardWriteAgent:
             self.llm, material_entries=material_entries, spec_scope=spec_scope
         )
         requirements_text = build_requirements_text(context["requirements"])
+        prev_sections = await self._load_prev_sections(wizard.id, spec)
 
         done: list[dict[str, Any]] = []
         failed: list[str] = []
-        prev_sections: list[tuple[str, str]] = []
         for node in spec_scope:
             self._check_cancel()
             try:
@@ -905,7 +1031,7 @@ class BidWizardWriteAgent:
                     prev_sections=prev_sections,
                 )
                 done.append(result)
-                prev_sections.append((node["node_id"], node["title"]))
+                prev_sections.append((node["node_id"], node["title"], node.get("summary")))
             except BidWizardCancelled:
                 raise
             except Exception as exc:

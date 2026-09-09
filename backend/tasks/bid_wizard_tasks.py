@@ -23,7 +23,13 @@ from backend.agent.bid_wizard_agent import (
 )
 from backend.celery_app import celery_app
 from backend.config import get_settings
-from backend.models import BidWizardMaterial, BidWritingTask, Document, User
+from backend.models import (
+    BidWizardIndexTask,
+    BidWizardMaterial,
+    BidWritingTask,
+    Document,
+    User,
+)
 from backend.utils.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -118,32 +124,44 @@ async def _run_index(index_task_id: str) -> dict[str, Any]:
     try:
         from backend.services.task_lifecycle import claim_task_for_execution
 
+        # 上传后立即建索引任务，但 parse_document 还在 parser 队列跑——
+        # 未解析完先自重试等待（决策 17a：上传即自动索引）。
+        # 等待检查必须放在认领**之前**：若先认领（pending→running）再抛 _AwaitParse，
+        # autoretry 重入时 claim 只接受 pending，会把重试拒成 ignored、任务行永久卡住。
         async with session_factory() as db:
-            task = await claim_task_for_execution(
-                db, task_kind="bid_wizard_index", task_id=index_task_id
-            )
-            if task is None:
-                return {"status": "ignored", "message": "任务不存在、已结束或已由其他 worker 认领"}
-            material = (
+            task_row = (
                 await db.execute(
-                    select(BidWizardMaterial).where(BidWizardMaterial.id == task.material_id)
+                    select(BidWizardIndexTask).where(BidWizardIndexTask.id == index_task_id)
                 )
             ).scalar_one_or_none()
+            if task_row is None:
+                return {"status": "ignored", "message": "任务不存在或已删除"}
+            material = (
+                await db.execute(
+                    select(BidWizardMaterial).where(BidWizardMaterial.id == task_row.material_id)
+                )
+            ).scalar_one_or_none()
+            if material is None:
+                raise RuntimeError("素材已删除")
             document = (
                 await db.execute(select(Document).where(Document.id == material.document_id))
             ).scalar_one_or_none()
             user = (
-                await db.execute(select(User).where(User.id == task.user_id))
+                await db.execute(select(User).where(User.id == task_row.user_id))
             ).scalar_one_or_none()
-
-        # 上传后立即建索引任务，但 parse_document 还在 parser 队列跑——
-        # 未解析完先自重试等待（决策 17a：上传即自动索引）。
         if document is None:
             raise RuntimeError("素材文档不存在")
         if document.status in ("pending", "parsing"):
             raise _AwaitParse()
         if document.status != "parsed" or not document.parsed_markdown_path:
             raise RuntimeError(f"素材解析未成功（状态 {document.status}），请删除后重新上传")
+
+        async with session_factory() as db:
+            task = await claim_task_for_execution(
+                db, task_kind="bid_wizard_index", task_id=index_task_id
+            )
+            if task is None:
+                return {"status": "ignored", "message": "任务不存在、已结束或已由其他 worker 认领"}
         markdown = _resolve(document.parsed_markdown_path).read_text(
             encoding="utf-8", errors="replace"
         )
@@ -275,6 +293,46 @@ class _AwaitParse(RuntimeError):
     """Document still parsing; the celery wrapper retries after a countdown."""
 
 
+async def _mark_index_wait_timeout(index_task_id: str) -> dict[str, Any]:
+    """解析等待重试耗尽：把任务行标 failed，避免行永久停在 pending."""
+    message = "等待文档解析超时，请重试建立索引"
+    session_factory, engine = _new_session_factory()
+    try:
+        async with session_factory() as db:
+            task_row = (
+                await db.execute(
+                    select(BidWizardIndexTask).where(BidWizardIndexTask.id == index_task_id)
+                )
+            ).scalar_one_or_none()
+            if (
+                task_row is not None
+                and task_row.status not in ("completed", "failed", "cancelled")
+            ):
+                task_row.status = "failed"
+                task_row.error_message = message
+                task_row.completed_at = utc_now()
+                material_row = (
+                    await db.execute(
+                        select(BidWizardMaterial).where(
+                            BidWizardMaterial.id == task_row.material_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if material_row is not None:
+                    material_row.index_status = "failed"
+                    material_row.index_error = message
+                await db.commit()
+        return {"status": "error", "message": message}
+    finally:
+        from backend.services.task_lifecycle import finalize_task_usage
+
+        try:
+            await finalize_task_usage("bid_wizard_index", index_task_id)
+        except Exception:
+            logger.exception("Could not finalize bid-wizard index usage: task=%s", index_task_id)
+        await engine.dispose()
+
+
 @celery_app.task(
     bind=True,
     name="backend.tasks.bid_wizard_tasks.run_bid_wizard_index",
@@ -283,7 +341,12 @@ class _AwaitParse(RuntimeError):
 )
 def run_bid_wizard_index(self, index_task_id: str) -> dict[str, Any]:
     """Celery entry point: LLM 分段索引一份素材."""
-    return asyncio.run(_run_index(index_task_id))
+    try:
+        return asyncio.run(_run_index(index_task_id))
+    except _AwaitParse:
+        if self.request.retries < _INDEX_RETRY_MAX:
+            raise  # 交给 autoretry 按 countdown 重试
+        return asyncio.run(_mark_index_wait_timeout(index_task_id))
 
 
 # ------------------------------------------------------------------ write

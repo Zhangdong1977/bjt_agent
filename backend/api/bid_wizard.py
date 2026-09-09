@@ -90,6 +90,23 @@ async def _owned_wizard(wizard_id: str, current_user, db: DBSession) -> BidWizar
     return wizard
 
 
+async def _guard_writing_idle(db: DBSession, wizard: BidWizard) -> None:
+    """决策 14：撰写中 spec 锁定——有进行中的撰写任务时禁止改 Spec/需求/阶段。"""
+    row = (
+        await db.execute(
+            select(BidWritingTask.id).where(
+                BidWritingTask.wizard_id == wizard.id,
+                BidWritingTask.status.in_(("pending", "running")),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="撰写任务进行中，Spec 已锁定；请等任务结束或取消后再修改",
+        )
+
+
 def _resolve_workspace_path(raw_path: str) -> Path:
     path = Path(raw_path)
     if not path.is_absolute():
@@ -173,6 +190,19 @@ async def _run_qa_task(
     sales_config = await authorize_billable_task_start(
         db, user_id=current_user.id, operation_name="AI编标问答"
     )
+    # 任务行去重（§5.4 失败重试幂等）：同向导同类 QA 任务进行中时拒绝重复发起，
+    # 防双击/网络重试造成并行双计费。
+    running = (
+        await db.execute(
+            select(BidWizardQaTask.id).where(
+                BidWizardQaTask.wizard_id == wizard.id,
+                BidWizardQaTask.action == action,
+                BidWizardQaTask.status == "running",
+            )
+        )
+    ).scalar_one_or_none()
+    if running is not None:
+        raise HTTPException(status_code=409, detail="同类任务正在处理中，请稍候再试")
     qa = BidWizardQaTask(
         wizard_id=wizard.id,
         user_id=current_user.id,
@@ -259,16 +289,27 @@ async def get_access(db: DBSession, current_user: CurrentUser) -> WizardAccessRe
 
 
 @router.get("/estimate", response_model=WizardEstimateResponse)
-async def estimate_index_cost(bytes_size: int = Query(..., ge=1, le=2_147_483_647)) -> WizardEstimateResponse:
-    """上传前预估：由文件字节数粗估正文字数与 token 量级（决策 17a 的确认弹窗用）。
+async def estimate_index_cost(
+    db: DBSession, bytes_size: int = Query(..., ge=1, le=2_147_483_647)
+) -> WizardEstimateResponse:
+    """上传前预估：字数→token 量级→约 X 点（决策 17a 的确认弹窗用）。
 
-    office/pdf 是压缩容器，按 ~0.4 的文本占比粗估；只作量级提示，
-    实际计费按索引任务的真实用量结算。
+    office/pdf 是压缩容器，按 ~0.4 的文本占比粗估；点数按 1 次索引调用的
+    假设口径线性换算（见 agent.estimate_index_points），实际计费按真实用量结算；
+    价目缺失时 estimated_points 为 null，前端退回 token 量级提示。
     """
     chars = max(1_000, int(bytes_size * 0.4))
-    from backend.agent.bid_wizard_agent import estimate_tokens
+    from backend.agent.bid_wizard_agent import estimate_index_points, estimate_tokens
+    from backend.services.sales import get_sales_config, multiplier_for_task
 
-    return WizardEstimateResponse(chars=chars, estimated_tokens=estimate_tokens(chars))
+    tokens = estimate_tokens(chars)
+    sales_config = await get_sales_config(db)
+    multiplier = multiplier_for_task(sales_config, "bid_wizard_index")
+    return WizardEstimateResponse(
+        chars=chars,
+        estimated_tokens=tokens,
+        estimated_points=estimate_index_points(tokens, multiplier),
+    )
 
 
 # ------------------------------------------------------------------ wizard
@@ -351,6 +392,7 @@ async def update_wizard_stage(
     target = body.stage
     if _STAGE_ORDER[target] == _STAGE_ORDER[wizard.stage]:
         return wizard
+    await _guard_writing_idle(db, wizard)
     if _STAGE_ORDER[target] < _STAGE_ORDER[wizard.stage]:
         # 回退：下游产物标记过期（决策 19）
         if _STAGE_ORDER[target] <= _STAGE_ORDER["material"]:
@@ -414,6 +456,40 @@ async def delete_tender(wizard_id: str, db: DBSession, current_user: CurrentUser
     if document is not None:
         await db.delete(document)
     _mark_downstream_stale(wizard)
+    await db.commit()
+    await db.refresh(wizard)
+    return wizard
+
+
+@router.post("/wizards/{wizard_id}/analysis", response_model=WizardResponse)
+async def analyze_wizard_tender(
+    wizard_id: str, db: DBSession, current_user: CurrentUser
+) -> BidWizard:
+    """同步微任务：AI 解读招标文件 → 招标要素 + suggested_materials（§4.2 阶段 1 建议补素材）。
+
+    问卷生成会复用已存的 analysis（不重复计费）；重新解读会覆盖旧结果。
+    """
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    await _require_access(db, current_user)
+    document = await _wizard_tender_document(db, wizard)
+    if document is None:
+        raise HTTPException(status_code=400, detail="请先上传招标文件")
+    if document.status != "parsed" or not document.parsed_markdown_path:
+        raise HTTPException(status_code=409, detail="招标文件尚未解析完成，请稍候")
+    markdown_path = document.parsed_markdown_path
+
+    async def runner() -> dict[str, Any]:
+        from backend.agent.bid_wizard_agent import WizardLLM, analyze_tender
+
+        llm = WizardLLM(timeout=_QA_TIMEOUT_SECONDS)
+        markdown = _resolve_workspace_path(markdown_path).read_text(
+            encoding="utf-8", errors="replace"
+        )
+        return await analyze_tender(llm, markdown)
+
+    wizard.analysis = await _run_qa_task(
+        db, wizard, current_user, action="tender_analysis", runner=runner
+    )
     await db.commit()
     await db.refresh(wizard)
     return wizard
@@ -726,6 +802,7 @@ async def save_requirements(
     wizard = await _owned_wizard(wizard_id, current_user, db)
     if not isinstance(wizard.questionnaire, dict) or not wizard.questionnaire.get("questions"):
         raise HTTPException(status_code=400, detail="请先生成问卷")
+    await _guard_writing_idle(db, wizard)
     from backend.agent.bid_wizard_agent import merge_questionnaire_answers
 
     merged = merge_questionnaire_answers(
@@ -751,6 +828,7 @@ async def generate_spec(wizard_id: str, db: DBSession, current_user: CurrentUser
     await _require_access(db, current_user)
     if wizard.requirements is None:
         raise HTTPException(status_code=400, detail="请先完成需求确认（保存问卷答案）")
+    await _guard_writing_idle(db, wizard)
 
     wizard_ref = wizard
 
@@ -788,6 +866,7 @@ async def save_spec(
 ) -> BidWizard:
     """手工编辑保存：规范化编号/钳制参数；确认状态重置。"""
     wizard = await _owned_wizard(wizard_id, current_user, db)
+    await _guard_writing_idle(db, wizard)
     from backend.agent.bid_wizard_agent import normalize_spec
 
     spec = normalize_spec([node.model_dump() for node in body.spec])
@@ -810,6 +889,7 @@ async def revise_spec(
     await _require_access(db, current_user)
     if not isinstance(wizard.spec, list) or not wizard.spec:
         raise HTTPException(status_code=400, detail="请先生成编写大纲")
+    await _guard_writing_idle(db, wizard)
 
     current_spec = wizard.spec
     instruction = body.instruction
@@ -836,6 +916,7 @@ async def rollback_spec(wizard_id: str, db: DBSession, current_user: CurrentUser
     wizard = await _owned_wizard(wizard_id, current_user, db)
     if not isinstance(wizard.spec_previous, list) or not wizard.spec_previous:
         raise HTTPException(status_code=404, detail="没有可回退的大纲版本")
+    await _guard_writing_idle(db, wizard)
     wizard.spec, wizard.spec_previous = wizard.spec_previous, wizard.spec
     wizard.spec_confirmed_at = None
     await db.commit()
