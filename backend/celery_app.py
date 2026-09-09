@@ -77,6 +77,7 @@ celery_app.conf.update(
         "backend.tasks.polish_tasks.run_polish": {"queue": "review"},
         "backend.tasks.bid_wizard_tasks.run_bid_wizard_index": {"queue": "generation"},
         "backend.tasks.bid_wizard_tasks.run_bid_wizard_write": {"queue": "generation"},
+        "backend.tasks.bid_wizard_tasks.cleanup_wizard_workspace": {"queue": "review"},
         "backend.tasks.billing_tasks.poll_pending_recharge_orders": {"queue": "review"},
         "backend.tasks.billing_tasks.expire_credit_lots": {"queue": "review"},
         "backend.tasks.billing_tasks.settle_task_billing": {"queue": "review"},

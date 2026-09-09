@@ -166,6 +166,41 @@ export async function updateWizardStage(wizardId: string, stage: WizardStage) {
   });
 }
 
+/** 归档当前向导（数据保留，不再被 /wizards/active 恢复）——项目列表页「归档」动作。 */
+export async function archiveWizard(wizardId: string) {
+  return request<Wizard>("post", `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/archive`);
+}
+
+/** 恢复归档：status 回 active、回归档前 stage 断点（决策 28，可逆动作）。 */
+export async function restoreWizard(wizardId: string) {
+  return request<Wizard>("post", `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/restore`);
+}
+
+/** 删除项目（决策 29）：仅已归档可删；软删 project + 异步清理 workspace；计费流水不动。 */
+export async function deleteWizard(wizardId: string) {
+  return request<Wizard>("delete", `/bid-wizard/wizards/${encodeURIComponent(wizardId)}`);
+}
+
+export interface WizardListItem {
+  wizard_id: string;
+  project_id: string;
+  project_name: string;
+  stage: string;
+  status: string;
+  tender_filename: string | null;
+  latest_writing_task: { id: string; status: string } | null;
+  updated_at: string;
+  created_at: string;
+}
+
+/** 项目列表页聚合（§4.0）：进行中 + 已归档两组，updated_at 倒序。 */
+export async function listWizards() {
+  return request<{ active: WizardListItem[]; archived: WizardListItem[] }>(
+    "get",
+    "/bid-wizard/wizards",
+  );
+}
+
 /** multipart 上传（招标文件/素材共用；走 XHR 以便带上进度回调）。 */
 function uploadFile(
   path: string,
@@ -231,6 +266,14 @@ export function uploadMaterial(
 
 export async function deleteTender(wizardId: string) {
   return request<Wizard>("delete", `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/tender`);
+}
+
+/** 删除一份招标文件（多文件口径：正文 + 补遗/澄清可并存，逐份删除）。 */
+export async function deleteTenderDocument(wizardId: string, documentId: string) {
+  return request<Wizard>(
+    "delete",
+    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/tender/${encodeURIComponent(documentId)}`,
+  );
 }
 
 /** AI 解读招标文件（同步微任务）：招标要素 + suggested_materials 建议补素材。 */
@@ -375,6 +418,75 @@ export async function cancelWritingTask(taskId: string) {
 
 export function wizardStreamUrl(taskId: string) {
   return `${API_BASE}/bid-wizard/writing-tasks/${encodeURIComponent(taskId)}/stream`;
+}
+
+/** 客户端素材上传端点完整地址（插件桥转发用，§5.6 material.upload）。 */
+export function materialUploadUrl(wizardId: string) {
+  return `${API_BASE}/bid-wizard/wizards/${encodeURIComponent(wizardId)}/materials/upload`;
+}
+
+/** 移除全部 AI 内容后的服务端状态回退（决策 31）：written → generated。 */
+export async function resetWrittenSections(wizardId: string) {
+  return request<{ reset_count: number }>(
+    "post",
+    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/sections/reset-written`,
+  );
+}
+
+/** 跨任务取每个 node 的最新章节行（「重新写入 Word」批量动作的权威清单）。 */
+export async function listLatestSections(wizardId: string) {
+  return request<
+    Array<{ task_id: string; node_id: string; title: string; status: string; word_count: number | null }>
+  >("get", `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/sections/latest`);
+}
+
+// ---- 多轮追问（决策 32：追问侧栏 + AI 主动反问）----
+
+export interface WizardFollowup {
+  id: string;
+  question: string;
+  why?: string | null;
+  status?: string | null;
+}
+
+/** 追问侧栏提问（每轮一次 bid_wizard_qa 计费）。 */
+export async function askSidebarQuestion(wizardId: string, question: string) {
+  return request<{ answer: string }>(
+    "post",
+    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/qa/ask`,
+    { question },
+  );
+}
+
+/** 采纳追问问答对并入编写需求 supplementals（不计费）。 */
+export async function adoptSidebarAnswer(wizardId: string, question: string, answer: string) {
+  return request<Wizard>(
+    "post",
+    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/qa/adopt`,
+    { question, answer },
+  );
+}
+
+/** AI 主动反问：检测已保存需求的缺口（≤3 条、单轮、计费一次）。 */
+export async function generateFollowups(wizardId: string) {
+  return request<{ followups: WizardFollowup[] }>(
+    "post",
+    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/requirements/followups`,
+  );
+}
+
+/** 反问作答/跳过（answered 并入补充说明；不计费、幂等）。 */
+export async function answerFollowup(
+  wizardId: string,
+  followupId: string,
+  action: "answered" | "skipped",
+  answer: string | null,
+) {
+  return request<Wizard>(
+    "post",
+    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/requirements/followup-answer`,
+    { followup_id: followupId, action, answer },
+  );
 }
 
 export function wizardToken() {

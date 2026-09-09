@@ -18,7 +18,7 @@ from starlette import status
 
 from backend.config import get_settings
 from backend.models import init_db, close_db
-from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, review_rule_docs_router, duplicate_check_router, duplicate_check_capabilities_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, admin_sales_router, profile_router, billing_router, announcements_router, system_status_router, blind_check_router, vsto_tools_router, bid_draft_router, polish_router, bid_wizard_router, open_router
+from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, review_rule_docs_router, duplicate_check_router, duplicate_check_capabilities_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, admin_sales_router, admin_bid_wizard_router, profile_router, billing_router, announcements_router, system_status_router, blind_check_router, vsto_tools_router, bid_draft_router, polish_router, bid_wizard_router, open_router
 from backend.api.events import router as events_router
 from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
@@ -157,8 +157,29 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Stale task cleanup failed: {e}")
 
+    # outbox 自愈清扫器（TASK_OUTBOX_SWEEPER_KINDS 非空时启用，本地联调拓扑专用）：
+    # 共享预发布 PG 时，预发布旧版 beat 会把本地新建的未知 kind 行 KeyError 打进
+    # retry 死循环；本循环定期只重派白名单 kind，保证任务最终送达。
+    sweeper_kinds = [k.strip() for k in settings.task_outbox_sweeper_kinds.split(",") if k.strip()]
+    sweeper_task: asyncio.Task | None = None
+    if sweeper_kinds:
+        from backend.services.task_lifecycle import dispatch_pending_task_outbox
+
+        async def _outbox_sweeper_loop() -> None:
+            logger.info("[outbox-sweeper] enabled kinds=%s interval=15s", sweeper_kinds)
+            while True:
+                try:
+                    await dispatch_pending_task_outbox(kinds=sweeper_kinds)
+                except Exception as exc:
+                    logger.warning("[outbox-sweeper] sweep failed: %s", exc)
+                await asyncio.sleep(15)
+
+        sweeper_task = asyncio.create_task(_outbox_sweeper_loop())
+
     yield
     # Shutdown
+    if sweeper_task is not None:
+        sweeper_task.cancel()
     await close_db()
 
 
@@ -196,6 +217,7 @@ app.include_router(feedback_router, prefix=settings.api_prefix)
 app.include_router(experience_router, prefix=settings.api_prefix)
 app.include_router(admin_router, prefix=settings.api_prefix)
 app.include_router(admin_sales_router, prefix=settings.api_prefix)
+app.include_router(admin_bid_wizard_router, prefix=settings.api_prefix)
 app.include_router(profile_router, prefix=settings.api_prefix)
 app.include_router(billing_router, prefix=settings.api_prefix)
 app.include_router(announcements_router, prefix=settings.api_prefix)

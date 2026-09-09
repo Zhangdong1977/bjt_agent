@@ -43,6 +43,7 @@ from .bid_wizard import (
     BidWizardQaTask,
     BidWritingTask,
     BidWizardSection,
+    BidWizardSetting,
     BidWizardWhitelist,
 )
 from backend.experience.models import ExperienceFeedback, ExperienceCase, ExperienceSkill, ExperienceClusterMembership
@@ -113,6 +114,7 @@ __all__ = [
     "BidWizardQaTask",
     "BidWritingTask",
     "BidWizardSection",
+    "BidWizardSetting",
     "BidWizardWhitelist",
     "TASK_MODEL_BY_KIND",
     "ExperienceFeedback",

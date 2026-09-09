@@ -233,8 +233,6 @@ async def _run_index(index_task_id: str) -> dict[str, Any]:
                 chunk_count=len(chunks),
             )
             async with session_factory() as db:
-                from backend.models import BidWizardIndexTask
-
                 task_row = (
                     await db.execute(
                         select(BidWizardIndexTask).where(BidWizardIndexTask.id == index_task_id)
@@ -253,8 +251,6 @@ async def _run_index(index_task_id: str) -> dict[str, Any]:
         logger.exception("bid-wizard index task %s failed", index_task_id)
         try:
             async with session_factory() as db:
-                from backend.models import BidWizardIndexTask
-
                 task_row = (
                     await db.execute(
                         select(BidWizardIndexTask).where(BidWizardIndexTask.id == index_task_id)
@@ -499,3 +495,35 @@ async def _run_write(task_id: str) -> dict[str, Any]:
 def run_bid_wizard_write(self, task_id: str) -> dict[str, Any]:
     """Celery entry point: 逐章撰写."""
     return asyncio.run(_run_write(task_id))
+
+
+# ------------------------------------------------------------------ cleanup
+
+
+@celery_app.task(name="backend.tasks.bid_wizard_tasks.cleanup_wizard_workspace")
+def cleanup_wizard_workspace(wizard_id: str, user_id: str, project_id: str) -> dict[str, Any]:
+    """删除项目后的异步物理清理（决策 29，不进计费）：索引/撰写产物目录 + 项目上传目录。
+
+    NFS 上删目录可能耗时，故不放在 API 请求内；纯文件系统操作，无需 DB 会话。
+    """
+    import shutil
+
+    root = Path(get_settings().workspace_path).resolve()
+    targets = [
+        root / "bid-wizard" / wizard_id,
+        root / str(user_id) / project_id,
+    ]
+    removed: list[str] = []
+    for target in targets:
+        try:
+            resolved = target.resolve()
+            if root not in resolved.parents:
+                logger.warning("bid-wizard cleanup skipped outside workspace: %s", resolved)
+                continue
+            if resolved.exists():
+                shutil.rmtree(resolved, ignore_errors=True)
+                removed.append(str(resolved))
+        except Exception:
+            logger.exception("bid-wizard cleanup failed: %s", target)
+    logger.info("bid-wizard cleanup done wizard=%s removed=%s", wizard_id, removed)
+    return {"wizard_id": wizard_id, "removed": removed}

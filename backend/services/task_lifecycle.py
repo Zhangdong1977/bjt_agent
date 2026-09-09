@@ -259,22 +259,29 @@ async def dispatch_task_outbox(outbox_id: str) -> bool:
         return False
 
 
-async def dispatch_pending_task_outbox(*, limit: int = 50) -> dict[str, int]:
+async def dispatch_pending_task_outbox(
+    *, limit: int = 50, kinds: list[str] | None = None
+) -> dict[str, int]:
     now = utc_now()
+    query = (
+        select(TaskDispatchOutbox.id)
+        .where(
+            TaskDispatchOutbox.status.in_(("pending", "retry")),
+            or_(
+                TaskDispatchOutbox.next_attempt_at.is_(None),
+                TaskDispatchOutbox.next_attempt_at <= now,
+            ),
+        )
+    )
+    if kinds:
+        # kind 白名单：本地联调清扫器只重派本环境认识的 kind，避免抢共享库里
+        # 其他环境（旧版预发布等）自己会派发的行。
+        query = query.where(TaskDispatchOutbox.task_kind.in_(kinds))
     async with async_session_factory() as db:
         ids = list(
             (
                 await db.execute(
-                    select(TaskDispatchOutbox.id)
-                    .where(
-                        TaskDispatchOutbox.status.in_(("pending", "retry")),
-                        or_(
-                            TaskDispatchOutbox.next_attempt_at.is_(None),
-                            TaskDispatchOutbox.next_attempt_at <= now,
-                        ),
-                    )
-                    .order_by(TaskDispatchOutbox.created_at.asc())
-                    .limit(limit)
+                    query.order_by(TaskDispatchOutbox.created_at.asc()).limit(limit)
                 )
             ).scalars()
         )

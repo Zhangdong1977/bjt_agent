@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Awaitable, Callable
@@ -27,6 +28,7 @@ from backend.models import (
     BidWizardMaterial,
     BidWizardQaTask,
     BidWizardSection,
+    BidWizardSetting,
     BidWizardWhitelist,
     BidWritingTask,
     Document,
@@ -36,17 +38,27 @@ from backend.schemas.bid_wizard import (
     QuestionnaireAnswer,
     RequirementsUpdate,
     SectionWrittenResponse,
+    SectionsResetWrittenResponse,
     SpecRevise,
     SpecUpdate,
     WizardAccessResponse,
     WizardCreate,
     WizardEstimateResponse,
+    WizardFollowupAnswer,
+    WizardFollowupsResponse,
+    WizardListItem,
+    WizardListResponse,
     WizardMaterialIndexResponse,
     WizardMaterialResponse,
+    WizardQaAdopt,
+    WizardQaAsk,
+    WizardQaAskResponse,
     WizardResponse,
     WizardSectionContentResponse,
+    WizardSectionLatestResponse,
     WizardSectionResponse,
     WizardStageUpdate,
+    WritingTaskBrief,
     WritingTaskCreate,
     WritingTaskResponse,
 )
@@ -59,15 +71,34 @@ router = APIRouter(prefix="/bid-wizard", tags=["Bid Wizard"])
 
 _STAGE_ORDER = {"material": 0, "requirement": 1, "outline": 2, "writing": 3}
 _TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
-_QA_TIMEOUT_SECONDS = 120
+_QA_TIMEOUT_SECONDS = 120  # 轻交互（AI 修订 / 追问 / 反问）
+# 重交互（解读 / 问卷 / Spec 生成）：2026-09-09 联调实测，9 份素材索引 + 11k 解读
+# 的问卷生成在 TokenHub 上 >120s，被一刀切超时打成「AI 处理超时」——按动作分级放宽。
+_QA_HEAVY_TIMEOUT_SECONDS = 300
+# 默认项目名「AI编标 YYYY-MM-DD」（决策 26：仍是默认名时，传招标文件后自动改用文件名）
+_DEFAULT_PROJECT_NAME_RE = re.compile(r"^AI编标 \d{4}-\d{2}-\d{2}$")
 
 
 # ------------------------------------------------------------------ helpers
 
 
-async def _require_access(db: DBSession, current_user) -> None:
-    """Feature gate: enabled / whitelist / disabled (env BID_WIZARD_ACCESS_MODE)."""
+async def _effective_access_mode(db: DBSession) -> str:
+    """开关模式（决策 36）：bid_wizard_settings DB 行优先，env 降为安装初始值/回退。
+
+    env 是进程级缓存（lru_cache get_settings），改了要重启；DB 行每次请求直读，
+    运营台经 internal API 推送后即时生效。"""
+    row = (
+        await db.execute(select(BidWizardSetting).where(BidWizardSetting.id == "default"))
+    ).scalar_one_or_none()
+    if row is not None and row.mode in ("enabled", "whitelist", "disabled"):
+        return row.mode
     mode = (get_settings().bid_wizard_access_mode or "disabled").strip().lower()
+    return mode if mode in ("enabled", "whitelist", "disabled") else "disabled"
+
+
+async def _require_access(db: DBSession, current_user) -> None:
+    """Feature gate: enabled / whitelist / disabled（DB 优先，见 _effective_access_mode）."""
+    mode = await _effective_access_mode(db)
     if mode == "enabled":
         return
     if mode == "whitelist":
@@ -82,8 +113,13 @@ async def _require_access(db: DBSession, current_user) -> None:
 
 
 async def _owned_wizard(wizard_id: str, current_user, db: DBSession) -> BidWizard:
+    # join 过滤软删项目（决策 29：删除后向导的一切端点 404，审计数据仍在库）
     wizard = (
-        await db.execute(select(BidWizard).where(BidWizard.id == wizard_id))
+        await db.execute(
+            select(BidWizard)
+            .join(Project, Project.id == BidWizard.project_id)
+            .where(BidWizard.id == wizard_id, Project.is_deleted.is_(False))
+        )
     ).scalar_one_or_none()
     if wizard is None or wizard.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="向导不存在或无权访问")
@@ -122,15 +158,50 @@ def _mark_downstream_stale(wizard: BidWizard) -> None:
         wizard.spec_stale = True
 
 
-async def _wizard_tender_document(db: DBSession, wizard: BidWizard) -> Document | None:
-    return (
+async def _wizard_tender_documents(db: DBSession, wizard: BidWizard) -> list[Document]:
+    """向导的全部招标文件（2026-09-09 联调改多文件口径：正文 + 补遗/澄清等可传多份）."""
+    rows = (
         await db.execute(
-            select(Document).where(
+            select(Document)
+            .where(
                 Document.project_id == wizard.project_id,
                 Document.doc_type == "tender",
             )
+            .order_by(Document.created_at.asc())
         )
-    ).scalar_one_or_none()
+    ).scalars().all()
+    return list(rows)
+
+
+async def _require_parsed_tenders(db: DBSession, wizard: BidWizard) -> list[Document]:
+    """解读/问卷消费前的齐备校验：至少一份、无解析中、无解析失败."""
+    documents = await _wizard_tender_documents(db, wizard)
+    if not documents:
+        raise HTTPException(status_code=400, detail="请先上传招标文件")
+    parsing = [item for item in documents if item.status in ("pending", "parsing")]
+    if parsing:
+        raise HTTPException(status_code=409, detail="招标文件尚未解析完成，请稍候")
+    failed = next((item for item in documents if item.status != "parsed"), None)
+    if failed is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"招标文件《{failed.original_filename}》解析失败，请删除后重新上传",
+        )
+    return documents
+
+
+def _merged_tender_markdown(documents: list[Document]) -> str:
+    """合并多份招标文件的解析产物（多份时按文件名分节，交由 analyze_tender 统一截断）."""
+    parts: list[str] = []
+    for document in documents:
+        markdown = _resolve_workspace_path(document.parsed_markdown_path or "").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        if len(documents) > 1:
+            parts.append(f"# 来源文件：{document.original_filename}\n\n{markdown}")
+        else:
+            parts.append(markdown)
+    return "\n\n".join(parts)
 
 
 async def _store_wizard_document(
@@ -179,6 +250,7 @@ async def _run_qa_task(
     *,
     action: str,
     runner: Callable[[], Awaitable[Any]],
+    timeout_seconds: int = _QA_TIMEOUT_SECONDS,
 ) -> Any:
     """Synchronous micro task: authorize → row → UsageContext → LLM → finalize（结束即结算）."""
     from backend.services.sales import multiplier_for_task
@@ -236,7 +308,7 @@ async def _run_qa_task(
     result: Any = None
     try:
         try:
-            result = await asyncio.wait_for(runner(), timeout=_QA_TIMEOUT_SECONDS)
+            result = await asyncio.wait_for(runner(), timeout=timeout_seconds)
             qa.status = "completed"
         except HTTPException as exc:
             qa.status = "failed"
@@ -274,9 +346,7 @@ async def _run_qa_task(
 
 @router.get("/access", response_model=WizardAccessResponse)
 async def get_access(db: DBSession, current_user: CurrentUser) -> WizardAccessResponse:
-    mode = (get_settings().bid_wizard_access_mode or "disabled").strip().lower()
-    if mode not in ("enabled", "whitelist", "disabled"):
-        mode = "disabled"
+    mode = await _effective_access_mode(db)
     enabled = mode == "enabled"
     if mode == "whitelist":
         row = (
@@ -363,11 +433,16 @@ async def create_wizard(
 
 @router.get("/wizards/active", response_model=WizardResponse)
 async def get_active_wizard(db: DBSession, current_user: CurrentUser) -> BidWizard:
-    """入口恢复：当前用户最近一个活动向导（跨项目，断点续作）。"""
+    """入口恢复：当前用户最近一个活动向导（跨项目，断点续作；软删项目不返回）。"""
     wizard = (
         await db.execute(
             select(BidWizard)
-            .where(BidWizard.user_id == current_user.id, BidWizard.status == "active")
+            .join(Project, Project.id == BidWizard.project_id)
+            .where(
+                BidWizard.user_id == current_user.id,
+                BidWizard.status == "active",
+                Project.is_deleted.is_(False),
+            )
             .order_by(BidWizard.created_at.desc())
             .limit(1)
         )
@@ -375,6 +450,68 @@ async def get_active_wizard(db: DBSession, current_user: CurrentUser) -> BidWiza
     if wizard is None:
         raise HTTPException(status_code=404, detail="当前没有进行中的 AI编标 向导")
     return wizard
+
+
+@router.get("/wizards", response_model=WizardListResponse)
+async def list_wizards(db: DBSession, current_user: CurrentUser) -> WizardListResponse:
+    """项目列表页聚合（§4.0）：进行中 + 已归档两组，updated_at 倒序，软删项目不显示。"""
+    await _require_access(db, current_user)
+    rows = (
+        await db.execute(
+            select(BidWizard, Project)
+            .join(Project, Project.id == BidWizard.project_id)
+            .where(BidWizard.user_id == current_user.id, Project.is_deleted.is_(False))
+            .order_by(BidWizard.updated_at.desc())
+        )
+    ).all()
+
+    project_ids = {project.id for _, project in rows}
+    tender_by_project: dict[str, str] = {}
+    if project_ids:
+        tender_rows = (
+            await db.execute(
+                select(Document.project_id, Document.original_filename)
+                .where(Document.project_id.in_(project_ids), Document.doc_type == "tender")
+                .order_by(Document.created_at.desc())
+            )
+        ).all()
+        for project_id, filename in tender_rows:  # 最新一行先到先得
+            if filename:
+                tender_by_project.setdefault(project_id, filename)
+
+    wizard_ids = {wizard.id for wizard, _ in rows}
+    latest_task_by_wizard: dict[str, BidWritingTask] = {}
+    if wizard_ids:
+        task_rows = (
+            await db.execute(
+                select(BidWritingTask)
+                .where(BidWritingTask.wizard_id.in_(wizard_ids))
+                .order_by(BidWritingTask.created_at.desc())
+            )
+        ).scalars().all()
+        for task in task_rows:
+            latest_task_by_wizard.setdefault(task.wizard_id, task)
+
+    def _item(wizard: BidWizard, project: Project) -> WizardListItem:
+        latest = latest_task_by_wizard.get(wizard.id)
+        return WizardListItem(
+            wizard_id=wizard.id,
+            project_id=project.id,
+            project_name=project.name,
+            stage=wizard.stage,
+            status=wizard.status,
+            tender_filename=tender_by_project.get(project.id),
+            latest_writing_task=(
+                WritingTaskBrief(id=latest.id, status=latest.status) if latest else None
+            ),
+            updated_at=wizard.updated_at,
+            created_at=wizard.created_at,
+        )
+
+    return WizardListResponse(
+        active=[_item(w, p) for w, p in rows if w.status == "active"],
+        archived=[_item(w, p) for w, p in rows if w.status == "archived"],
+    )
 
 
 @router.get("/wizards/{wizard_id}", response_model=WizardResponse)
@@ -408,6 +545,77 @@ async def update_wizard_stage(
     return wizard
 
 
+@router.post("/wizards/{wizard_id}/archive", response_model=WizardResponse)
+async def archive_wizard(wizard_id: str, db: DBSession, current_user: CurrentUser) -> BidWizard:
+    """归档向导：数据保留在云端，但不再被入口 ``/wizards/active`` 恢复（「新建项目」的支撑端点）。"""
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    if wizard.status != "active":
+        raise HTTPException(status_code=400, detail="向导已结束，无需归档")
+    running = (
+        await db.execute(
+            select(BidWritingTask.id).where(
+                BidWritingTask.wizard_id == wizard.id,
+                BidWritingTask.status.in_(("pending", "running")),
+            )
+        )
+    ).scalar_one_or_none()
+    if running is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="撰写任务进行中，请等待完成或取消后再新建项目",
+        )
+    wizard.status = "archived"
+    await db.commit()
+    await db.refresh(wizard)
+    return wizard
+
+
+@router.post("/wizards/{wizard_id}/restore", response_model=WizardResponse)
+async def restore_wizard(wizard_id: str, db: DBSession, current_user: CurrentUser) -> BidWizard:
+    """恢复归档（决策 28）：status 回 active、回归档前 stage 断点；可逆动作，无守卫冲突——
+    归档时已挡撰写中，per-project 唯一索引也不冲突（归档向导本就是该项目唯一向导）。"""
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    if wizard.status != "archived":
+        raise HTTPException(status_code=400, detail="向导未归档，无需恢复")
+    wizard.status = "active"
+    await db.commit()
+    await db.refresh(wizard)
+    return wizard
+
+
+@router.delete("/wizards/{wizard_id}", response_model=WizardResponse)
+async def delete_wizard(wizard_id: str, db: DBSession, current_user: CurrentUser) -> BidWizard:
+    """删除项目（决策 29）：仅已归档可删（先归档再删，两级缓冲）；软删 project（审计保留，
+    向导/素材/任务行原样但经联查不可见）+ 异步物理清理 workspace；计费流水不动。"""
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    if wizard.status != "archived":
+        raise HTTPException(status_code=400, detail="请先归档项目后再删除")
+    running = (
+        await db.execute(
+            select(BidWritingTask.id).where(
+                BidWritingTask.wizard_id == wizard.id,
+                BidWritingTask.status.in_(("pending", "running")),
+            )
+        )
+    ).scalar_one_or_none()
+    if running is not None:
+        raise HTTPException(status_code=409, detail="撰写任务进行中，请等待完成或取消后再删除")
+    project = (
+        await db.execute(select(Project).where(Project.id == wizard.project_id))
+    ).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    project.is_deleted = True
+    project.deleted_at = utc_now()
+    project.deleted_by_user_id = current_user.id
+    await db.commit()
+    from backend.tasks.bid_wizard_tasks import cleanup_wizard_workspace
+
+    cleanup_wizard_workspace.delay(wizard.id, current_user.id, project.id)
+    await db.refresh(wizard)
+    return wizard
+
+
 # ------------------------------------------------------------------ 素材准备
 
 
@@ -420,12 +628,24 @@ async def upload_tender(
     current_user: CurrentUser,
     file: UploadFile = File(...),
 ) -> WizardMaterialResponse:
+    """上传一份招标文件；支持多份（正文 + 补遗/澄清等，格式同标书检查：pdf/docx/doc/xlsx）.
+
+    任意招标文件变化（新增/删除）都清空旧解读（wizard.analysis）：解读基于
+    全部招标文件的合并内容，而问卷生成会静默复用 analysis，不清会导致文件集
+    变化后问卷仍基于旧招标要素生成。
+    """
     wizard = await _owned_wizard(wizard_id, current_user, db)
     await _require_access(db, current_user)
-    existing = await _wizard_tender_document(db, wizard)
-    if existing is not None:
-        raise HTTPException(status_code=400, detail="招标文件已存在，请先删除后重新上传")
+    wizard.analysis = None
     document = await _store_wizard_document(db, wizard, current_user, file, doc_type="tender")
+    # 决策 26：项目名仍是默认名（AI编标 YYYY-MM-DD）时，自动改用招标文件名（去扩展名）
+    project = (
+        await db.execute(select(Project).where(Project.id == wizard.project_id))
+    ).scalar_one_or_none()
+    if project is not None and _DEFAULT_PROJECT_NAME_RE.match(project.name or ""):
+        stem = Path(file.filename or "").stem.strip()
+        if stem:
+            project.name = stem[:200]
     _mark_downstream_stale(wizard)
     await db.commit()
     await db.refresh(document)
@@ -450,11 +670,37 @@ async def upload_tender(
 
 
 @router.delete("/wizards/{wizard_id}/tender", response_model=WizardResponse)
-async def delete_tender(wizard_id: str, db: DBSession, current_user: CurrentUser) -> BidWizard:
+async def delete_all_tenders(wizard_id: str, db: DBSession, current_user: CurrentUser) -> BidWizard:
+    """删除全部招标文件（清空口径）。逐份删除请用 DELETE /tender/{document_id}."""
     wizard = await _owned_wizard(wizard_id, current_user, db)
-    document = await _wizard_tender_document(db, wizard)
-    if document is not None:
+    for document in await _wizard_tender_documents(db, wizard):
         await db.delete(document)
+    wizard.analysis = None
+    _mark_downstream_stale(wizard)
+    await db.commit()
+    await db.refresh(wizard)
+    return wizard
+
+
+@router.delete("/wizards/{wizard_id}/tender/{document_id}", response_model=WizardResponse)
+async def delete_tender_document(
+    wizard_id: str, document_id: str, db: DBSession, current_user: CurrentUser
+) -> BidWizard:
+    """删除一份招标文件；剩余文件集变化同样清空旧解读."""
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    document = (
+        await db.execute(
+            select(Document).where(
+                Document.id == document_id,
+                Document.project_id == wizard.project_id,
+                Document.doc_type == "tender",
+            )
+        )
+    ).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=404, detail="招标文件不存在")
+    await db.delete(document)
+    wizard.analysis = None
     _mark_downstream_stale(wizard)
     await db.commit()
     await db.refresh(wizard)
@@ -467,28 +713,27 @@ async def analyze_wizard_tender(
 ) -> BidWizard:
     """同步微任务：AI 解读招标文件 → 招标要素 + suggested_materials（§4.2 阶段 1 建议补素材）。
 
-    问卷生成会复用已存的 analysis（不重复计费）；重新解读会覆盖旧结果。
+    多份招标文件合并解读（正文+补遗/澄清）；问卷生成会复用已存的 analysis
+    （不重复计费）；重新解读会覆盖旧结果。
     """
     wizard = await _owned_wizard(wizard_id, current_user, db)
     await _require_access(db, current_user)
-    document = await _wizard_tender_document(db, wizard)
-    if document is None:
-        raise HTTPException(status_code=400, detail="请先上传招标文件")
-    if document.status != "parsed" or not document.parsed_markdown_path:
-        raise HTTPException(status_code=409, detail="招标文件尚未解析完成，请稍候")
-    markdown_path = document.parsed_markdown_path
+    documents = await _require_parsed_tenders(db, wizard)
+    tender_markdown = _merged_tender_markdown(documents)
 
     async def runner() -> dict[str, Any]:
         from backend.agent.bid_wizard_agent import WizardLLM, analyze_tender
 
-        llm = WizardLLM(timeout=_QA_TIMEOUT_SECONDS)
-        markdown = _resolve_workspace_path(markdown_path).read_text(
-            encoding="utf-8", errors="replace"
-        )
-        return await analyze_tender(llm, markdown)
+        llm = WizardLLM(timeout=_QA_HEAVY_TIMEOUT_SECONDS)
+        return await analyze_tender(llm, tender_markdown)
 
     wizard.analysis = await _run_qa_task(
-        db, wizard, current_user, action="tender_analysis", runner=runner
+        db,
+        wizard,
+        current_user,
+        action="tender_analysis",
+        runner=runner,
+        timeout_seconds=_QA_HEAVY_TIMEOUT_SECONDS,
     )
     await db.commit()
     await db.refresh(wizard)
@@ -746,15 +991,11 @@ async def generate_questionnaire(
     """同步微任务：确保招标要素 → 生成结构化问卷（含素材依据建议答案）。"""
     wizard = await _owned_wizard(wizard_id, current_user, db)
     await _require_access(db, current_user)
-    document = await _wizard_tender_document(db, wizard)
-    if document is None:
-        raise HTTPException(status_code=400, detail="请先上传招标文件")
-    if document.status != "parsed" or not document.parsed_markdown_path:
-        raise HTTPException(status_code=409, detail="招标文件尚未解析完成，请稍候")
+    documents = await _require_parsed_tenders(db, wizard)
 
     wizard_id_ref = wizard.id
     analysis_ref = wizard.analysis if isinstance(wizard.analysis, dict) and wizard.analysis else None
-    markdown_path = document.parsed_markdown_path
+    tender_markdown = None if analysis_ref is not None else _merged_tender_markdown(documents)
 
     async def runner() -> dict[str, Any]:
         from backend.agent.bid_wizard_agent import (
@@ -765,13 +1006,10 @@ async def generate_questionnaire(
             _load_material_index_rows,
         )
 
-        llm = WizardLLM(timeout=_QA_TIMEOUT_SECONDS)
+        llm = WizardLLM(timeout=_QA_HEAVY_TIMEOUT_SECONDS)
         analysis = analysis_ref
         if analysis is None:
-            markdown = _resolve_workspace_path(markdown_path).read_text(
-                encoding="utf-8", errors="replace"
-            )
-            analysis = await analyze_tender(llm, markdown)
+            analysis = await analyze_tender(llm, tender_markdown or "")
         material_entries = await _load_material_index_rows(db, wizard_id_ref)
         return {
             "analysis": analysis,
@@ -782,7 +1020,14 @@ async def generate_questionnaire(
             ),
         }
 
-    payload = await _run_qa_task(db, wizard, current_user, action="questionnaire", runner=runner)
+    payload = await _run_qa_task(
+        db,
+        wizard,
+        current_user,
+        action="questionnaire",
+        runner=runner,
+        timeout_seconds=_QA_HEAVY_TIMEOUT_SECONDS,
+    )
     wizard.analysis = payload["analysis"]
     wizard.questionnaire = payload["questionnaire"]
     # 重新生成问卷 = 需求基于当前素材；旧作答作废、Spec 需重生成
@@ -808,9 +1053,174 @@ async def save_requirements(
     merged = merge_questionnaire_answers(
         wizard.questionnaire, [answer.model_dump() for answer in body.answers]
     )
+    # 追问侧栏采纳对与反问补答（supplementals）跨保存保留：重答问卷不丢补充说明
+    previous = wizard.requirements if isinstance(wizard.requirements, dict) else {}
+    for key in ("supplementals", "followups"):
+        if isinstance(previous.get(key), list):
+            merged[key] = previous[key]
     wizard.requirements = merged
     wizard.requirements_stale = False
     # 答案变了 → 基于旧答案的 Spec 过期（决策 19）
+    if wizard.spec:
+        wizard.spec_stale = True
+    await db.commit()
+    await db.refresh(wizard)
+    return wizard
+
+
+# ------------------------------------------------------------------ 多轮追问（决策 32）
+
+
+@router.post("/wizards/{wizard_id}/qa/ask", response_model=WizardQaAskResponse)
+async def ask_sidebar_question(
+    wizard_id: str, body: WizardQaAsk, db: DBSession, current_user: CurrentUser
+) -> WizardQaAskResponse:
+    """追问侧栏（决策 32a）：自由提问，AI 基于招标要素+已确认需求+素材索引作答；每轮一次 qa 计费。"""
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    await _require_access(db, current_user)
+    if not await _wizard_tender_documents(db, wizard):
+        raise HTTPException(status_code=400, detail="请先上传招标文件")
+    question = body.question.strip()
+    wizard_ref = wizard
+
+    async def runner() -> str:
+        from backend.agent.bid_wizard_agent import (
+            WizardLLM,
+            _load_material_index_rows,
+            answer_sidebar_question,
+            build_material_index_text,
+            build_requirements_text,
+        )
+
+        llm = WizardLLM(timeout=_QA_TIMEOUT_SECONDS)
+        material_entries = await _load_material_index_rows(db, wizard_ref.id)
+        return await answer_sidebar_question(
+            llm,
+            question=question,
+            analysis=wizard_ref.analysis if isinstance(wizard_ref.analysis, dict) else {},
+            requirements_text=build_requirements_text(wizard_ref.requirements),
+            material_index_text=build_material_index_text(material_entries),
+        )
+
+    answer = await _run_qa_task(db, wizard, current_user, action="qa_ask", runner=runner)
+    return WizardQaAskResponse(answer=str(answer))
+
+
+@router.post("/wizards/{wizard_id}/qa/adopt", response_model=WizardResponse)
+async def adopt_sidebar_answer(
+    wizard_id: str, body: WizardQaAdopt, db: DBSession, current_user: CurrentUser
+) -> BidWizard:
+    """采纳追问问答对并入编写需求 supplementals（决策 32a）；无 LLM 不计费。"""
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    if not isinstance(wizard.requirements, dict) or not wizard.requirements:
+        raise HTTPException(status_code=400, detail="请先保存问卷答案，再采纳追问补充说明")
+    await _guard_writing_idle(db, wizard)
+    requirements = dict(wizard.requirements)
+    supplementals = [
+        item for item in requirements.get("supplementals") or [] if isinstance(item, dict)
+    ]
+    question = body.question.strip()[:2_000]
+    answer = body.answer.strip()[:4_000]
+    if not any(
+        str(item.get("question")) == question and str(item.get("answer")) == answer
+        for item in supplementals
+    ):
+        supplementals.append(
+            {"question": question, "answer": answer, "adopted_at": utc_now().isoformat()}
+        )
+        requirements["supplementals"] = supplementals
+        wizard.requirements = requirements
+        if wizard.spec:
+            wizard.spec_stale = True
+        await db.commit()
+    await db.refresh(wizard)
+    return wizard
+
+
+@router.post("/wizards/{wizard_id}/requirements/followups", response_model=WizardFollowupsResponse)
+async def generate_followups(
+    wizard_id: str, db: DBSession, current_user: CurrentUser
+) -> WizardFollowupsResponse:
+    """AI 主动反问（决策 32b/Q19）：检测已保存需求的缺口 → ≤3 条追问卡片。
+    单轮：已有未处理追问时不重复检测（前端只在保存后自动触发一次）。"""
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    await _require_access(db, current_user)
+    if not isinstance(wizard.requirements, dict) or not wizard.requirements:
+        raise HTTPException(status_code=400, detail="请先保存问卷答案")
+    await _guard_writing_idle(db, wizard)
+    existing = wizard.requirements.get("followups")
+    if isinstance(existing, list) and existing:
+        return WizardFollowupsResponse(followups=existing)
+    wizard_ref = wizard
+
+    async def runner() -> list[dict[str, Any]]:
+        from backend.agent.bid_wizard_agent import (
+            WizardLLM,
+            _load_material_index_rows,
+            build_material_index_text,
+            build_requirements_text,
+            generate_followup_questions,
+        )
+
+        llm = WizardLLM(timeout=_QA_TIMEOUT_SECONDS)
+        material_entries = await _load_material_index_rows(db, wizard_ref.id)
+        return await generate_followup_questions(
+            llm,
+            analysis=wizard_ref.analysis if isinstance(wizard_ref.analysis, dict) else {},
+            requirements_text=build_requirements_text(wizard_ref.requirements),
+            material_index_text=build_material_index_text(material_entries),
+        )
+
+    followups = await _run_qa_task(db, wizard, current_user, action="followups", runner=runner)
+    requirements = dict(wizard.requirements)
+    requirements["followups"] = followups
+    wizard.requirements = requirements
+    await db.commit()
+    await db.refresh(wizard)
+    return WizardFollowupsResponse(followups=followups)
+
+
+@router.post(
+    "/wizards/{wizard_id}/requirements/followup-answer", response_model=WizardResponse
+)
+async def answer_followup(
+    wizard_id: str, body: WizardFollowupAnswer, db: DBSession, current_user: CurrentUser
+) -> BidWizard:
+    """反问作答/跳过（Q19：非阻塞、不计费）：answered 并入 supplementals，卡片标记已处理。"""
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    if not isinstance(wizard.requirements, dict):
+        raise HTTPException(status_code=400, detail="请先保存问卷答案")
+    await _guard_writing_idle(db, wizard)
+    followups = [
+        item for item in wizard.requirements.get("followups") or [] if isinstance(item, dict)
+    ]
+    target = next((item for item in followups if str(item.get("id")) == body.followup_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="追问不存在或已被处理")
+    if target.get("status"):
+        await db.refresh(wizard)
+        return wizard  # 幂等：已处理过的重复提交直接返回
+    requirements = dict(wizard.requirements)
+    if body.action == "answered":
+        answer = (body.answer or "").strip()[:4_000]
+        if not answer:
+            raise HTTPException(status_code=400, detail="回答内容不能为空，可选择跳过")
+        supplementals = [
+            item for item in requirements.get("supplementals") or [] if isinstance(item, dict)
+        ]
+        supplementals.append(
+            {
+                "question": str(target.get("question") or "")[:2_000],
+                "answer": answer,
+                "source": "followup",
+            }
+        )
+        requirements["supplementals"] = supplementals
+        target["status"] = "answered"
+    else:
+        target["status"] = "skipped"
+    requirements["followups"] = followups
+    wizard.requirements = requirements
     if wizard.spec:
         wizard.spec_stale = True
     await db.commit()
@@ -841,7 +1251,7 @@ async def generate_spec(wizard_id: str, db: DBSession, current_user: CurrentUser
             generate_spec as gen_spec,
         )
 
-        llm = WizardLLM(timeout=_QA_TIMEOUT_SECONDS)
+        llm = WizardLLM(timeout=_QA_HEAVY_TIMEOUT_SECONDS)
         material_entries = await _load_material_index_rows(db, wizard_ref.id)
         return await gen_spec(
             llm,
@@ -850,7 +1260,14 @@ async def generate_spec(wizard_id: str, db: DBSession, current_user: CurrentUser
             material_index_text=build_material_index_text(material_entries),
         )
 
-    spec = await _run_qa_task(db, wizard, current_user, action="spec_generate", runner=runner)
+    spec = await _run_qa_task(
+        db,
+        wizard,
+        current_user,
+        action="spec_generate",
+        runner=runner,
+        timeout_seconds=_QA_HEAVY_TIMEOUT_SECONDS,
+    )
     wizard.spec = spec
     wizard.spec_previous = None
     wizard.spec_stale = False
@@ -1144,6 +1561,75 @@ async def regenerate_writing_section(
         billing_status="pending",
     )
     return await _dispatch_writing_task(db, new_task)
+
+
+@router.post(
+    "/wizards/{wizard_id}/sections/reset-written",
+    response_model=SectionsResetWrittenResponse,
+)
+async def reset_written_sections(
+    wizard_id: str, db: DBSession, current_user: CurrentUser
+) -> SectionsResetWrittenResponse:
+    """移除全部 AI 内容后的服务端状态回退（决策 31）：该向导全部任务中 written 章节
+    回到 generated（written_at 清空），供「重新写入 Word」批量动作消费。
+    守卫：撰写任务进行中不允许回退（移除按钮此时本就置灰，双保险）。"""
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    await _guard_writing_idle(db, wizard)
+    task_rows = (
+        await db.execute(select(BidWritingTask.id).where(BidWritingTask.wizard_id == wizard.id))
+    ).scalars().all()
+    reset_count = 0
+    if task_rows:
+        sections = (
+            await db.execute(
+                select(BidWizardSection).where(
+                    BidWizardSection.task_id.in_(task_rows),
+                    BidWizardSection.status == "written",
+                )
+            )
+        ).scalars().all()
+        for row in sections:
+            row.status = "generated"
+            row.written_at = None
+            reset_count += 1
+        await db.commit()
+    return SectionsResetWrittenResponse(reset_count=reset_count)
+
+
+@router.get(
+    "/wizards/{wizard_id}/sections/latest",
+    response_model=list[WizardSectionLatestResponse],
+)
+async def list_latest_sections(
+    wizard_id: str, db: DBSession, current_user: CurrentUser
+) -> list[WizardSectionLatestResponse]:
+    """跨任务取每个 node 的最新章节行（「重新写入 Word」的权威清单）：
+    同一 node 出现在多个任务（单章重生成）时取最新任务的那行，并按大纲序返回。"""
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    rows = (
+        await db.execute(
+            select(BidWizardSection, BidWritingTask)
+            .join(BidWritingTask, BidWritingTask.id == BidWizardSection.task_id)
+            .where(BidWritingTask.wizard_id == wizard.id)
+            .order_by(BidWritingTask.created_at.desc())
+        )
+    ).all()
+    latest_by_node: dict[str, tuple[BidWritingTask, BidWizardSection]] = {}
+    for section, task_row in rows:  # 最新任务先到先得
+        latest_by_node.setdefault(section.node_id, (task_row, section))
+    ordered = sorted(
+        latest_by_node.values(), key=lambda pair: _node_sort_key(pair[1].node_id)
+    )
+    return [
+        WizardSectionLatestResponse(
+            task_id=task_row.id,
+            node_id=section.node_id,
+            title=section.title,
+            status=section.status,
+            word_count=section.word_count,
+        )
+        for task_row, section in ordered
+    ]
 
 
 @router.post("/writing-tasks/{task_id}/cancel", response_model=WritingTaskResponse)

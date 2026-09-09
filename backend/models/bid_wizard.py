@@ -240,3 +240,18 @@ class BidWizardWhitelist(Base):
 
     def __repr__(self) -> str:
         return f"<BidWizardWhitelist(user_id={self.user_id})>"
+
+
+class BidWizardSetting(Base):
+    """Feature-access mode（决策 36）：单行 'default'；DB 优先、env 为安装初始值/回退。"""
+
+    __tablename__ = "bid_wizard_settings"
+
+    id: Mapped[str] = mapped_column(String(20), primary_key=True, default="default")
+    # enabled / whitelist / disabled
+    mode: Mapped[str] = mapped_column(
+        String(20), default="disabled", server_default="disabled", nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<BidWizardSetting(id={self.id}, mode={self.mode})>"

@@ -428,6 +428,14 @@ def build_requirements_text(requirements: dict[str, Any] | None) -> str:
         label = str(question.get("question") or "")[:200]
         flag = "（AI 推断，请确认）" if question.get("inferred") and question.get("action") == "adopted" else ""
         lines.append(f"- [{topic}] {label}：{effective[:500]}{flag}")
+    # 补充说明（决策 32：追问侧栏采纳对 + AI 主动反问的补答），与问卷答案同权重进上下文
+    for item in (requirements or {}).get("supplementals") or []:
+        if not isinstance(item, dict):
+            continue
+        supplemental_q = str(item.get("question") or "").strip()
+        supplemental_a = str(item.get("answer") or "").strip()
+        if supplemental_q and supplemental_a:
+            lines.append(f"- [补充说明] {supplemental_q[:200]}：{supplemental_a[:500]}")
     if not lines:
         return "无"
     return "\n".join(lines)[:SPEC_CONTEXT_MAX_CHARS]
@@ -695,6 +703,67 @@ async def revise_spec(
     if not spec:
         raise RuntimeError("Spec 修订结果为空，请重试")
     return spec
+
+
+async def answer_sidebar_question(
+    llm: WizardLLM,
+    *,
+    question: str,
+    analysis: dict[str, Any],
+    requirements_text: str,
+    material_index_text: str,
+) -> str:
+    """追问侧栏（决策 32a）：基于招标要素+已确认需求+素材索引回答用户自由提问。"""
+    system_prompt = (
+        "你是资深投标编写顾问。请基于给定的招标要素、已确认的编写需求与公司素材索引，"
+        "回答用户关于本次投标的提问。优先引用素材索引中的真实内容（可注明出处素材名），"
+        "素材与需求未覆盖的部分如实说明并给出建议写法。回答用中文，500 字以内，不要编造事实。"
+    )
+    user_prompt = (
+        f"招标要素：\n{json.dumps(analysis or {}, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]}\n\n"
+        f"已确认的编写需求：\n{(requirements_text or '无')[:SPEC_CONTEXT_MAX_CHARS]}\n\n"
+        f"素材索引：\n{material_index_text or '（无素材）'}\n\n"
+        f"用户提问：{(question or '').strip()[:2_000]}"
+    )
+    answer = await llm.generate(system_prompt, user_prompt)
+    if not answer:
+        raise RuntimeError("AI 未能回答该问题，请换个问法重试")
+    return answer[:4_000]
+
+
+async def generate_followup_questions(
+    llm: WizardLLM,
+    *,
+    analysis: dict[str, Any],
+    requirements_text: str,
+    material_index_text: str,
+) -> list[dict[str, Any]]:
+    """AI 主动反问（决策 32b/Q19）：对照招标要素检测已保存需求的关键缺口，≤3 条、单轮。"""
+    system_prompt = (
+        "你是投标需求评审专家。对照招标文件要素与用户已确认的编写需求，找出最多 3 个"
+        "会显著影响标书质量的关键信息缺口（如资质、业绩、人员、实施边界、服务承诺等）。"
+        '只输出 JSON：{"followups": [{"question": "...", "why": "..."}]}。'
+        "question 是向用户追问的具体问题（一句话、可直接回答）；why 一句话说明为什么关键。"
+        "没有实质缺口时输出空数组。不要重复用户已回答或素材已覆盖的信息。"
+    )
+    user_prompt = (
+        f"招标要素：\n{json.dumps(analysis or {}, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]}\n\n"
+        f"已确认的编写需求：\n{(requirements_text or '无')[:SPEC_CONTEXT_MAX_CHARS]}\n\n"
+        f"素材索引：\n{material_index_text or '（无素材）'}"
+    )
+    payload = await llm.generate_json(system_prompt, user_prompt)
+    raw = payload.get("followups") if isinstance(payload, dict) else payload
+    followups: list[dict[str, Any]] = []
+    for index, item in enumerate(raw if isinstance(raw, list) else []):
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()[:500]
+        if not question:
+            continue
+        followups.append(
+            {"id": f"fu{index + 1}", "question": question, "why": str(item.get("why") or "").strip()[:500]}
+        )
+    return followups[:3]
 
 
 # ------------------------------------------------------- material index io

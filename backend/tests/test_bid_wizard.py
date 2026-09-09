@@ -1,9 +1,12 @@
 """Unit tests for AI编标（bid-wizard）primitives.
 
-风格照 test_bid_generation.py：纯函数 + 注册表断言（HTTP 层由 E2E 覆盖）。
+风格照 test_bid_generation.py：纯函数 + 注册表断言（HTTP 层由 E2E 覆盖；
+文末 TestWizardLifecycleApi 为 2026-09-09 联调缺陷的 API 层回归，用 conftest 的 client/auth_headers）。
 """
 
+import pytest
 from decimal import Decimal
+from sqlalchemy import select
 from types import SimpleNamespace
 
 from backend.agent.bid_wizard_agent import (
@@ -22,7 +25,13 @@ from backend.agent.bid_wizard_agent import (
     render_index_markdown,
     split_material_chunks,
 )
-from backend.models import TASK_MODEL_BY_KIND, BidWritingTask, BidWizardIndexTask, BidWizardQaTask
+from backend.models import (
+    TASK_MODEL_BY_KIND,
+    BidWizardSection,
+    BidWritingTask,
+    BidWizardIndexTask,
+    BidWizardQaTask,
+)
 from backend.services.sales import multiplier_for_task
 from backend.services.task_lifecycle import _TASK_NAMES, _TASK_QUEUES
 
@@ -274,3 +283,476 @@ def test_celery_routes_wizard_tasks():
     assert routes["backend.tasks.bid_wizard_tasks.run_bid_wizard_write"] == {"queue": "generation"}
     annotations = celery_app.conf.task_annotations
     assert annotations["backend.tasks.bid_wizard_tasks.run_bid_wizard_write"]["time_limit"] == 7200
+
+
+# ------------------------------------------------------------------ API 层：向导生命周期回归
+# 2026-09-09 真机联调反馈缺陷的回归：
+# 1) 招标文件集变化（增/删/换）后旧解读（wizard.analysis）必须清空——问卷生成会
+#    静默复用它，不清会导致文件集变化后问卷仍基于旧招标要素生成；
+#    （2026-09-09 二轮联调改多文件口径：正文 + 补遗/澄清并存，上传为追加语义）
+# 2) 需要「新建项目」闭环：归档当前向导后 /wizards/active 不再恢复老向导。
+
+
+class TestWizardLifecycleApi:
+    @pytest.fixture(autouse=True)
+    def _stub_parse_dispatch(self, monkeypatch):
+        from backend.tasks.document_parser import parse_document
+
+        monkeypatch.setattr(parse_document, "delay", lambda *args, **kwargs: None)
+
+    @pytest.fixture(autouse=True)
+    def _enable_access(self, monkeypatch):
+        from backend.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "bid_wizard_access_mode", "enabled")
+
+    @staticmethod
+    async def _create_wizard(client, auth_headers) -> dict:
+        response = await client.post("/api/bid-wizard/wizards", json={}, headers=auth_headers)
+        assert response.status_code == 201
+        return response.json()
+
+    async def _set_analysis(self, wizard_id: str, payload: dict) -> None:
+        from backend.models import BidWizard, async_session_factory, engine
+
+        async with async_session_factory() as session:
+            wizard = (
+                await session.execute(select(BidWizard).where(BidWizard.id == wizard_id))
+            ).scalar_one()
+            wizard.analysis = payload
+            await session.commit()
+        await engine.dispose()
+
+    @staticmethod
+    def _pdf_files(name: str) -> dict:
+        return {"file": (name, b"%PDF-1.4\n% regression test tender\n", "application/pdf")}
+
+    async def test_upload_second_tender_appends_and_clears_analysis(self, client, auth_headers):
+        wizard = await self._create_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+
+        first = await client.post(f"{base}/tender", files=self._pdf_files("tender_a.pdf"), headers=auth_headers)
+        assert first.status_code == 201
+        await self._set_analysis(wizard["id"], {"basic": {"project_name": "旧标书"}})
+
+        # 多文件口径（2026-09-09 联调改）：追加第二份（补遗/澄清）不再替换，两份并存
+        second = await client.post(f"{base}/tender", files=self._pdf_files("tender_b.pdf"), headers=auth_headers)
+        assert second.status_code == 201
+        assert second.json()["document_id"] != first.json()["document_id"]
+
+        detail = (await client.get(base, headers=auth_headers)).json()
+        assert detail["analysis"] is None  # 文件集变化 → 旧解读清空，解读卡回到初始态
+
+        docs = (
+            await client.get(f"/api/projects/{wizard['project_id']}/documents", headers=auth_headers)
+        ).json()["documents"]
+        tenders = [item for item in docs if item["doc_type"] == "tender"]
+        assert sorted(item["original_filename"] for item in tenders) == [
+            "tender_a.pdf",
+            "tender_b.pdf",
+        ]
+
+    async def test_delete_single_tender_document(self, client, auth_headers):
+        wizard = await self._create_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+
+        first = await client.post(f"{base}/tender", files=self._pdf_files("tender_a.pdf"), headers=auth_headers)
+        second = await client.post(f"{base}/tender", files=self._pdf_files("tender_b.pdf"), headers=auth_headers)
+        await self._set_analysis(wizard["id"], {"basic": {"project_name": "旧标书"}})
+
+        removed = await client.delete(
+            f"{base}/tender/{first.json()['document_id']}", headers=auth_headers
+        )
+        assert removed.status_code == 200
+        assert removed.json()["analysis"] is None
+
+        docs = (
+            await client.get(f"/api/projects/{wizard['project_id']}/documents", headers=auth_headers)
+        ).json()["documents"]
+        tenders = [item for item in docs if item["doc_type"] == "tender"]
+        assert [item["original_filename"] for item in tenders] == ["tender_b.pdf"]
+
+        # 已删除的文件再删 → 404
+        missing = await client.delete(
+            f"{base}/tender/{first.json()['document_id']}", headers=auth_headers
+        )
+        assert missing.status_code == 404
+
+    async def test_delete_tender_clears_analysis(self, client, auth_headers):
+        wizard = await self._create_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+
+        upload = await client.post(f"{base}/tender", files=self._pdf_files("tender_a.pdf"), headers=auth_headers)
+        assert upload.status_code == 201
+        await self._set_analysis(wizard["id"], {"basic": {"project_name": "旧标书"}})
+
+        removed = await client.delete(f"{base}/tender", headers=auth_headers)
+        assert removed.status_code == 200
+        assert removed.json()["analysis"] is None
+
+    async def test_archive_then_active_returns_new_wizard(self, client, auth_headers):
+        wizard_a = await self._create_wizard(client, auth_headers)
+
+        archived = await client.post(
+            f"/api/bid-wizard/wizards/{wizard_a['id']}/archive", headers=auth_headers
+        )
+        assert archived.status_code == 200
+        assert archived.json()["status"] == "archived"
+
+        # 归档后入口不再恢复老向导（无活动向导 → 404）
+        active = await client.get("/api/bid-wizard/wizards/active", headers=auth_headers)
+        assert active.status_code == 404
+
+        # 新建后入口恢复到新向导
+        wizard_b = await self._create_wizard(client, auth_headers)
+        assert wizard_b["id"] != wizard_a["id"]
+        active_new = await client.get("/api/bid-wizard/wizards/active", headers=auth_headers)
+        assert active_new.status_code == 200
+        assert active_new.json()["id"] == wizard_b["id"]
+
+    async def test_archive_blocked_while_writing(self, client, auth_headers):
+        from backend.models import BidWizard, BidWritingTask, async_session_factory, engine
+
+        wizard = await self._create_wizard(client, auth_headers)
+        async with async_session_factory() as session:
+            row = (
+                await session.execute(select(BidWizard).where(BidWizard.id == wizard["id"]))
+            ).scalar_one()
+            session.add(
+                BidWritingTask(
+                    wizard_id=row.id,
+                    project_id=row.project_id,
+                    user_id=row.user_id,
+                    selected_nodes=["1"],
+                    status="running",
+                    billing_multiplier=Decimal("1"),
+                    billing_status="pending",
+                )
+            )
+            await session.commit()
+        await engine.dispose()
+
+        blocked = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/archive", headers=auth_headers
+        )
+        assert blocked.status_code == 409
+
+
+# ------------------------------------------------------------------ API 层：项目管理（2026-09-09 第二轮 grilling 决策 25-29）
+
+
+class TestProjectManagementApi:
+    @pytest.fixture(autouse=True)
+    def _stub_parse_dispatch(self, monkeypatch):
+        from backend.tasks.document_parser import parse_document
+
+        monkeypatch.setattr(parse_document, "delay", lambda *args, **kwargs: None)
+
+    @pytest.fixture(autouse=True)
+    def _enable_access(self, monkeypatch):
+        from backend.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "bid_wizard_access_mode", "enabled")
+
+    @pytest.fixture(autouse=True)
+    def _stub_cleanup_dispatch(self, monkeypatch):
+        from backend.tasks.bid_wizard_tasks import cleanup_wizard_workspace
+
+        calls: list[tuple] = []
+        monkeypatch.setattr(cleanup_wizard_workspace, "delay", lambda *a: calls.append(a))
+        self.cleanup_calls = calls
+
+    @staticmethod
+    async def _create_wizard(client, auth_headers, name: str | None = None) -> dict:
+        response = await client.post(
+            "/api/bid-wizard/wizards", json={"project_name": name}, headers=auth_headers
+        )
+        assert response.status_code == 201
+        return response.json()
+
+    @staticmethod
+    def _pdf_files(name: str) -> dict:
+        return {"file": (name, b"%PDF-1.4\n% project list test\n", "application/pdf")}
+
+    async def test_list_wizards_groups_and_orders(self, client, auth_headers):
+        wizard_a = await self._create_wizard(client, auth_headers, name="园区项目")
+        wizard_b = await self._create_wizard(client, auth_headers, name="医院项目")
+        upload = await client.post(
+            f"/api/bid-wizard/wizards/{wizard_b['id']}/tender",
+            files=self._pdf_files("医院弱电招标.pdf"),
+            headers=auth_headers,
+        )
+        assert upload.status_code == 201
+
+        listed = (await client.get("/api/bid-wizard/wizards", headers=auth_headers)).json()
+        assert [item["project_name"] for item in listed["active"]] == ["医院项目", "园区项目"]
+        by_name = {item["project_name"]: item for item in listed["active"]}
+        assert by_name["医院项目"]["tender_filename"] == "医院弱电招标.pdf"
+        assert by_name["园区项目"]["tender_filename"] is None
+        assert listed["archived"] == []
+
+        archived = await client.post(
+            f"/api/bid-wizard/wizards/{wizard_b['id']}/archive", headers=auth_headers
+        )
+        assert archived.status_code == 200
+        listed2 = (await client.get("/api/bid-wizard/wizards", headers=auth_headers)).json()
+        assert [item["project_name"] for item in listed2["active"]] == ["园区项目"]
+        assert [item["project_name"] for item in listed2["archived"]] == ["医院项目"]
+
+    async def test_restore_archived_wizard_keeps_stage(self, client, auth_headers):
+        wizard = await self._create_wizard(client, auth_headers, name="待恢复")
+        await client.post(f"/api/bid-wizard/wizards/{wizard['id']}/stage", json={"stage": "requirement"}, headers=auth_headers)
+        await client.post(f"/api/bid-wizard/wizards/{wizard['id']}/archive", headers=auth_headers)
+
+        restored = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/restore", headers=auth_headers
+        )
+        assert restored.status_code == 200
+        assert restored.json()["status"] == "active"
+        assert restored.json()["stage"] == "requirement"  # 回归档前断点
+
+        double = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/restore", headers=auth_headers
+        )
+        assert double.status_code == 400  # 未归档无需恢复
+
+    async def test_delete_requires_archive_first(self, client, auth_headers):
+        wizard = await self._create_wizard(client, auth_headers)
+        blocked = await client.delete(f"/api/bid-wizard/wizards/{wizard['id']}", headers=auth_headers)
+        assert blocked.status_code == 400
+
+    async def test_delete_soft_deletes_and_hides_everywhere(self, client, auth_headers):
+        from backend.models import Project, async_session_factory, engine
+
+        wizard = await self._create_wizard(client, auth_headers, name="要删除")
+        wizard_id = wizard["id"]
+        project_id = wizard["project_id"]
+        await client.post(f"/api/bid-wizard/wizards/{wizard_id}/archive", headers=auth_headers)
+
+        removed = await client.delete(f"/api/bid-wizard/wizards/{wizard_id}", headers=auth_headers)
+        assert removed.status_code == 200
+
+        listed = (await client.get("/api/bid-wizard/wizards", headers=auth_headers)).json()
+        assert listed["active"] == [] and listed["archived"] == []
+        assert (await client.get(f"/api/bid-wizard/wizards/{wizard_id}", headers=auth_headers)).status_code == 404
+        assert (await client.get("/api/bid-wizard/wizards/active", headers=auth_headers)).status_code == 404
+
+        # 软删审计保留：project 行还在且带删除标记；清理任务被派发
+        async with async_session_factory() as session:
+            project = (await session.execute(select(Project).where(Project.id == project_id))).scalar_one()
+            assert project.is_deleted is True
+            assert project.deleted_by_user_id is not None
+        await engine.dispose()
+        assert self.cleanup_calls and self.cleanup_calls[0][0] == wizard_id
+
+    async def test_tender_upload_renames_default_project_name_only(self, client, auth_headers):
+        default = await self._create_wizard(client, auth_headers)  # 默认名 AI编标 日期
+        custom = await self._create_wizard(client, auth_headers, name="我起的名字")
+
+        for wizard, expect in ((default, "智慧园区招标文件"), (custom, "我起的名字")):
+            upload = await client.post(
+                f"/api/bid-wizard/wizards/{wizard['id']}/tender",
+                files=self._pdf_files("智慧园区招标文件.pdf"),
+                headers=auth_headers,
+            )
+            assert upload.status_code == 201
+
+        listed = (await client.get("/api/bid-wizard/wizards", headers=auth_headers)).json()
+        names = {item["project_name"] for item in listed["active"]}
+        assert names == {"智慧园区招标文件", "我起的名字"}
+
+
+# ------------------------------------------------------------------ API 层：移除全部 AI 内容配套端点（决策 31）
+
+
+class TestSectionsResetAndLatestApi:
+    @pytest.fixture(autouse=True)
+    def _enable_access(self, monkeypatch):
+        from backend.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "bid_wizard_access_mode", "enabled")
+
+    @staticmethod
+    async def _seed_task(wizard: dict, status: str, sections: list[dict]):
+        from backend.models import BidWritingTask, async_session_factory, engine
+
+        async with async_session_factory() as session:
+            task = BidWritingTask(
+                wizard_id=wizard["id"],
+                project_id=wizard["project_id"],
+                user_id=wizard["user_id"] if "user_id" in wizard else None,
+                selected_nodes=[s["node_id"] for s in sections],
+                status=status,
+                billing_multiplier=Decimal("1"),
+                billing_status="pending",
+            )
+            if task.user_id is None:
+                from backend.models import BidWizard
+
+                row = (
+                    await session.execute(select(BidWizard).where(BidWizard.id == wizard["id"]))
+                ).scalar_one()
+                task.user_id = row.user_id
+            session.add(task)
+            await session.flush()
+            for item in sections:
+                session.add(
+                    BidWizardSection(
+                        task_id=task.id,
+                        node_id=item["node_id"],
+                        title=item.get("title", item["node_id"]),
+                        status=item["status"],
+                        written_at=item.get("written_at"),
+                    )
+                )
+            await session.commit()
+        await engine.dispose()
+
+    async def test_reset_written_and_latest(self, client, auth_headers):
+        from backend.utils.time_utils import utc_now
+
+        wizard = (
+            await client.post(
+                "/api/bid-wizard/wizards", json={"project_name": "移除测试"}, headers=auth_headers
+            )
+        ).json()
+        await self._seed_task(
+            wizard,
+            status="completed",
+            sections=[
+                {"node_id": "1", "status": "written", "written_at": utc_now()},
+                {"node_id": "2", "status": "generated"},
+            ],
+        )
+
+        latest = (
+            await client.get(
+                f"/api/bid-wizard/wizards/{wizard['id']}/sections/latest", headers=auth_headers
+            )
+        ).json()
+        assert [row["node_id"] for row in latest] == ["1", "2"]
+
+        reset = (
+            await client.post(
+                f"/api/bid-wizard/wizards/{wizard['id']}/sections/reset-written",
+                headers=auth_headers,
+            )
+        ).json()
+        assert reset["reset_count"] == 1
+        latest2 = (
+            await client.get(
+                f"/api/bid-wizard/wizards/{wizard['id']}/sections/latest", headers=auth_headers
+            )
+        ).json()
+        assert all(row["status"] == "generated" for row in latest2)
+
+    async def test_reset_blocked_while_writing(self, client, auth_headers):
+        wizard = (
+            await client.post("/api/bid-wizard/wizards", json={}, headers=auth_headers)
+        ).json()
+        await self._seed_task(
+            wizard, status="running", sections=[{"node_id": "1", "status": "written", "written_at": None}]
+        )
+        blocked = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/sections/reset-written", headers=auth_headers
+        )
+        assert blocked.status_code == 409
+
+
+# ------------------------------------------------------------------ 多轮追问（决策 32）
+
+
+def test_build_requirements_text_includes_supplementals():
+    text = build_requirements_text(
+        {
+            "questions": [
+                {
+                    "topic": "公司",
+                    "question": "公司资质？",
+                    "effective_answer": "ISO9001",
+                    "action": "adopted",
+                    "inferred": False,
+                }
+            ],
+            "supplementals": [
+                {"question": "业绩怎么突出", "answer": "引用两个千万级合同"},
+                {"question": "", "answer": "无效条目应被忽略"},
+            ],
+        }
+    )
+    assert "ISO9001" in text
+    assert "[补充说明] 业绩怎么突出：引用两个千万级合同" in text
+    assert "无效条目" not in text
+
+
+def test_generate_followup_questions_bounds_and_ids():
+    import asyncio
+
+    from backend.agent.bid_wizard_agent import generate_followup_questions
+
+    class FakeLLM:
+        async def generate_json(self, system_prompt, user_prompt):
+            return {
+                "followups": [
+                    {"question": f"问题{i}", "why": f"原因{i}"} for i in range(6)
+                ]
+                + [{"question": ""}, {"question": "有效"}]
+            }
+
+    followups = asyncio.run(
+        generate_followup_questions(
+            FakeLLM(), analysis={}, requirements_text="无", material_index_text=""
+        )
+    )
+    assert len(followups) == 3  # 上限 3 条（Q19）
+    assert [item["id"] for item in followups] == ["fu1", "fu2", "fu3"]
+    assert followups[0]["question"] == "问题0"
+
+
+# ------------------------------------------------------------------ 开关 DB 化（决策 36）
+
+
+class TestAccessModeDbPriority:
+    @pytest.fixture(autouse=True)
+    def _enable_env(self, monkeypatch):
+        from backend.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "bid_wizard_access_mode", "enabled")
+
+    @staticmethod
+    async def _set_mode(mode: str | None) -> None:
+        from backend.models import BidWizardSetting, async_session_factory, engine
+
+        async with async_session_factory() as session:
+            if mode is None:
+                await session.execute(
+                    __import__("sqlalchemy").delete(BidWizardSetting).where(True)
+                )
+            else:
+                row = (
+                    await session.execute(
+                        select(BidWizardSetting).where(BidWizardSetting.id == "default")
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    session.add(BidWizardSetting(id="default", mode=mode))
+                else:
+                    row.mode = mode
+            await session.commit()
+        await engine.dispose()
+
+    async def test_db_row_overrides_env(self, client, auth_headers):
+        await self._set_mode("disabled")
+        access = (
+            await client.get("/api/bid-wizard/access", headers=auth_headers)
+        ).json()
+        assert access["enabled"] is False and access["mode"] == "disabled"
+
+        await self._set_mode("enabled")
+        access2 = (
+            await client.get("/api/bid-wizard/access", headers=auth_headers)
+        ).json()
+        assert access2["enabled"] is True and access2["mode"] == "enabled"
+
+        # 还原：清掉 DB 行回退 env，避免影响同库其他用例
+        await self._set_mode(None)

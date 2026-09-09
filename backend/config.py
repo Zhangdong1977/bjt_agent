@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # 素材池上限（份）与单份素材大小上限（MB）——对齐 documents 既有约束风格。
     bid_wizard_material_max_count: int = 200
 
+    # outbox 自愈清扫器（本地联调拓扑专用，默认关闭）：共享预发布 PG 时，预发布旧版
+    # beat 每 10s 扫共享 outbox 表，遇到它不认识的 kind（如 bid_wizard_*）会 KeyError
+    # 把行打进 retry 死循环；本开关让 backend 进程定期只重派白名单 kind 的行，保证新
+    # kind 任务最终送达。生产/预发布不配此 env（走各自的 celery beat 全量重派）。
+    # env: TASK_OUTBOX_SWEEPER_KINDS（逗号分隔，如 bid_wizard_index,bid_wizard_write）
+    task_outbox_sweeper_kinds: str = ""
+
     # Database
     database_url: str = ""  # Must be set via environment variable
 

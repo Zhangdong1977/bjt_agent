@@ -19,6 +19,7 @@ from .system_status import router as system_status_router
 from .blind_check import router as blind_check_router
 from .vsto_tools import router as vsto_tools_router
 from .admin_sales import router as admin_sales_router
+from .admin_bid_wizard import router as admin_bid_wizard_router
 from .bid_draft import router as bid_draft_router
 from .polish import router as polish_router
 from .bid_wizard import router as bid_wizard_router
@@ -45,6 +46,7 @@ __all__ = [
     "blind_check_router",
     "vsto_tools_router",
     "admin_sales_router",
+    "admin_bid_wizard_router",
     "bid_draft_router",
     "polish_router",
     "bid_wizard_router",

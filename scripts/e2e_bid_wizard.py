@@ -247,6 +247,19 @@ def main() -> None:
     )
     record("wizard: tender parsed", (doc or {}).get("status") == "parsed", f"status={(doc or {}).get('status')}")
 
+    # 项目管理（决策 25/26）：列表聚合 + 上传招标文件后默认名自动改用文件名
+    listed = session.get(f"{BASE}/bid-wizard/wizards", headers=headers, timeout=30).json() or {}
+    this_item = next(
+        (it for it in listed.get("active", []) if it.get("wizard_id") == wizard_id), None
+    )
+    record(
+        "pm: list endpoint groups + tender auto-rename",
+        bool(this_item)
+        and this_item.get("project_name") == "tender-e2e"
+        and this_item.get("tender_filename") == "tender-e2e.pdf",
+        f"item={this_item}",
+    )
+
     # ---------- 2. AI 解读（suggested_materials） ----------
     analyzed = session.post(f"{BASE}/bid-wizard/wizards/{wizard_id}/analysis", headers=headers, timeout=180)
     analysis = analyzed.json().get("analysis") if analyzed.status_code == 200 else None
@@ -371,6 +384,37 @@ def main() -> None:
     print("waiting 20s for billing settlement ...", flush=True)
     time.sleep(20)
     verify_billing(wizard_id)
+
+    # ---------- 8. 项目管理生命周期（决策 28/29：归档→恢复→删除） ----------
+    archived = session.post(f"{BASE}/bid-wizard/wizards/{wizard_id}/archive", headers=headers, timeout=30)
+    record("pm: archive", archived.status_code == 200 and archived.json().get("status") == "archived",
+           f"code={archived.status_code}")
+
+    listed2 = session.get(f"{BASE}/bid-wizard/wizards", headers=headers, timeout=30).json() or {}
+    in_archived = any(it.get("wizard_id") == wizard_id for it in listed2.get("archived", []))
+    not_in_active = not any(it.get("wizard_id") == wizard_id for it in listed2.get("active", []))
+    record("pm: archived moved to archived group", in_archived and not_in_active, f"active={len(listed2.get('active', []))} archived={len(listed2.get('archived', []))}")
+
+    restored = session.post(f"{BASE}/bid-wizard/wizards/{wizard_id}/restore", headers=headers, timeout=30)
+    record("pm: restore keeps stage", restored.status_code == 200
+           and restored.json().get("status") == "active"
+           and restored.json().get("stage") == wizard.get("stage"),
+           f"code={restored.status_code} body={restored.text[:160]}")
+
+    rearchived = session.post(f"{BASE}/bid-wizard/wizards/{wizard_id}/archive", headers=headers, timeout=30)
+    deleted = session.delete(f"{BASE}/bid-wizard/wizards/{wizard_id}", headers=headers, timeout=30)
+    record("pm: delete after archive", rearchived.status_code == 200 and deleted.status_code == 200,
+           f"archive={rearchived.status_code} delete={deleted.status_code}")
+
+    listed3 = session.get(f"{BASE}/bid-wizard/wizards", headers=headers, timeout=30).json() or {}
+    gone = not any(
+        it.get("wizard_id") == wizard_id
+        for it in listed3.get("active", []) + listed3.get("archived", [])
+    )
+    detail_404 = session.get(f"{BASE}/bid-wizard/wizards/{wizard_id}", headers=headers, timeout=30).status_code == 404
+    record("pm: deleted hidden from list + detail 404", gone and detail_404,
+           f"gone={gone} detail404={detail_404}")
+
     _summary()
 
 

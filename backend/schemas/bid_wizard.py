@@ -53,6 +53,34 @@ class WizardStageUpdate(BaseModel):
     stage: WizardStage
 
 
+class WritingTaskBrief(BaseModel):
+    """列表页「撰写中」徽标用的最新撰写任务摘要（决策 25）。"""
+
+    id: str
+    status: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WizardListItem(BaseModel):
+    """项目列表页单行（§4.0）：向导 + 项目名 + 招标文件名 + 撰写状态聚合。"""
+
+    wizard_id: str
+    project_id: str
+    project_name: str
+    stage: str
+    status: str
+    tender_filename: str | None
+    latest_writing_task: WritingTaskBrief | None
+    updated_at: datetime
+    created_at: datetime
+
+
+class WizardListResponse(BaseModel):
+    active: list[WizardListItem]
+    archived: list[WizardListItem]
+
+
 # ------------------------------------------------------------------ materials
 
 
@@ -102,6 +130,36 @@ class QuestionnaireAnswer(BaseModel):
 
 class RequirementsUpdate(BaseModel):
     answers: list[QuestionnaireAnswer] = Field(min_length=0, max_length=QUESTIONNAIRE_MAX_QUESTIONS)
+
+
+class WizardQaAsk(BaseModel):
+    """追问侧栏提问（决策 32a）。"""
+
+    question: str = Field(min_length=1, max_length=2_000)
+
+
+class WizardQaAskResponse(BaseModel):
+    answer: str
+
+
+class WizardQaAdopt(BaseModel):
+    """采纳追问问答对并入编写需求（supplementals）。"""
+
+    question: str = Field(min_length=1, max_length=2_000)
+    answer: str = Field(min_length=1, max_length=4_000)
+
+
+class WizardFollowupsResponse(BaseModel):
+    """AI 主动反问（决策 32b）：≤3 条缺口追问。"""
+
+    followups: list[dict[str, Any]]
+
+
+class WizardFollowupAnswer(BaseModel):
+    followup_id: str = Field(min_length=1, max_length=100)
+    # answered（并入补充说明）/ skipped
+    action: Literal["answered", "skipped"]
+    answer: str | None = Field(default=None, max_length=4_000)
 
 
 # ------------------------------------------------------------------ spec
@@ -179,3 +237,21 @@ class SectionWrittenResponse(BaseModel):
     node_id: str
     status: str
     written_at: datetime
+
+
+class SectionsResetWrittenResponse(BaseModel):
+    """移除全部 AI 内容后服务端章节状态回退（决策 31）。"""
+
+    reset_count: int
+
+
+class WizardSectionLatestResponse(BaseModel):
+    """跨任务取每个 node 的最新章节行（「重新写入 Word」批量动作的权威清单）。"""
+
+    task_id: str
+    node_id: str
+    title: str
+    status: str
+    word_count: int | None
+
+    model_config = ConfigDict(from_attributes=True)
