@@ -55,6 +55,7 @@ import type { Document } from "@/types";
 import { useVstoBridge } from "@/composables/useVstoBridge";
 import { prepareChartAssets, splitMermaidFences } from "@/utils/chartAssets";
 import { renderMarkdown } from "@/utils/markdown";
+import StatusDot from "@/components/StatusDot.vue";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 
 const bridge = useVstoBridge();
@@ -610,6 +611,26 @@ const indexSummary = computed(() => {
   return { indexed, indexing, failed };
 });
 
+/** 素材池卡片级汇总灯：全绿=就绪，在途=呼吸，有失败=红。 */
+const materialPoolStatus = computed<{ tone: "running" | "done" | "error"; text: string } | null>(() => {
+  if (!materials.value.length) return null;
+  if (indexSummary.value.failed) return { tone: "error", text: `${indexSummary.value.failed} 份索引失败` };
+  const inFlight =
+    indexSummary.value.indexing > 0 ||
+    materials.value.some((item) => item.doc_status === "pending" || item.doc_status === "parsing");
+  if (inFlight) return { tone: "running", text: "索引进行中（后台执行，可离开此页）" };
+  return { tone: "done", text: "素材就绪" };
+});
+
+/** 阶段导航的「后台仍在推进」呼吸点：挂在当前阶段上（解析/索引在途或任一交互任务运行中）。 */
+const stageLive = computed(() => {
+  if (stageIndex.value === 0) {
+    const parsing = tenderDocs.value.some((item) => item.status === "pending" || item.status === "parsing");
+    if (parsing || indexSummary.value.indexing > 0) return true;
+  }
+  return Boolean(busy.value);
+});
+
 /** AI 招标解读（§4.2：解读后驱动用户补素材）。 */
 interface SuggestedMaterial {
   name: string;
@@ -818,13 +839,24 @@ const supplementMaterialIds = ref<string[]>([]); // 本次会话补充上传的�
 const supplementBindings = ref<Record<string, string[]>>({}); // 问题 id → 本次会话为该问题补充的素材 id（反馈⑲：进度就地显示在问题卡下方）
 const reqActionError = ref(""); // 就近展示（页顶 pageError 在任务面板里易滚出视野，反馈⑨教训）
 
-function materialStageLabel(item: WizardMaterial): { text: string; color: string } {
-  if (item.doc_status === "pending" || item.doc_status === "parsing") return { text: "解析中", color: "blue" };
-  if (item.index_status === "pending" || item.index_status === "indexing") return { text: "索引中", color: "blue" };
-  if (item.index_status === "indexed") {
-    return { text: item.chunk_count ? `已索引（${item.chunk_count} 段）` : "已索引", color: "green" };
+/** 素材行状态灯（替代 Tag 色块）：解析/索引中呼吸，失败红，已索引绿。 */
+function materialStatus(item: WizardMaterial): { tone: "running" | "waiting" | "done" | "error"; text: string } {
+  if (item.doc_status === "pending" || item.doc_status === "parsing") {
+    return { tone: "running", text: item.doc_status === "pending" ? "排队解析" : "解析中" };
   }
-  return { text: "索引失败", color: "red" };
+  if (item.index_status === "indexing") return { tone: "running", text: "AI 索引中" };
+  if (item.index_status === "pending") return { tone: "waiting", text: "排队索引" };
+  if (item.index_status === "indexed") {
+    return { tone: "done", text: item.chunk_count ? `已索引（${item.chunk_count} 段）` : "已索引" };
+  }
+  return { tone: "error", text: "索引失败" };
+}
+
+/** 招标文件行状态灯：扫描件解析分钟级，呼吸灯表「在推进」。 */
+function tenderDocStatus(doc: Document): { tone: "running" | "done" | "error"; text: string } {
+  if (doc.status === "parsed") return { tone: "done", text: "解析完成" };
+  if (doc.status === "failed") return { tone: "error", text: "解析失败" };
+  return { tone: "running", text: doc.status === "pending" ? "排队解析" : "解析中" };
 }
 
 // 就地进展面板条目 = 本次补充的素材 ∪ 任何仍在解析/索引的在途素材（含从素材准备阶段带来的，刷新页面也不丢）。
@@ -1313,7 +1345,8 @@ function onGenerateSpec() {
 
 function onReviseSpec() {
   if (!wizard.value || !reviseInstruction.value.trim()) return;
-  void withBusy("spec", async () => {
+  // busy 名与生成区分开：状态条文案随动作而定（生成=编排结构，修订=按指令改结构）
+  void withBusy("specRevise", async () => {
     wizard.value = await apiReviseSpec(wizard.value!.id, reviseInstruction.value.trim());
     loadSpecFromWizard();
     reviseInstruction.value = "";
@@ -1805,6 +1838,45 @@ async function replaceSectionInWord(nodeId: string) {
 
 const writtenCount = computed(() => sections.value.filter((item) => item.status === "written").length);
 const generatedCount = computed(() => sections.value.filter((item) => item.status === "generated").length);
+/** 已写入 Word 的累计字数（真实计数代替时间预估）。 */
+const writtenWords = computed(() =>
+  sections.value
+    .filter((item) => item.status === "written")
+    .reduce((sum, item) => sum + (item.word_count || 0), 0),
+);
+
+const TASK_STATUS_TEXT: Record<string, string> = {
+  pending: "排队中",
+  running: "撰写中",
+  completed: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+const taskStatusText = computed(() => TASK_STATUS_TEXT[task.value?.status || ""] || "撰写任务");
+const taskTone = computed<"running" | "waiting" | "done" | "error" | "idle">(() => {
+  const status = task.value?.status;
+  if (status === "completed") return "done";
+  if (status === "failed") return "error";
+  if (status === "running") return "running";
+  if (status === "pending") return "waiting";
+  return "idle";
+});
+
+/** 章节行状态灯：generated=橙（待写入），写入 Word 期间该行升级为蓝呼吸。 */
+const SECTION_STATUS_TEXT: Record<string, string> = {
+  pending: "排队中",
+  generating: "生成中",
+  generated: "待写入",
+  written: "已写入",
+  failed: "失败",
+};
+function sectionTone(status: string): "waiting" | "running" | "done" | "error" | "todo" {
+  if (status === "written") return "done";
+  if (status === "failed") return "error";
+  if (status === "generating") return "running";
+  if (status === "generated") return "todo";
+  return "waiting";
+}
 
 /** 移除全部 AI 内容（决策 31）：插件书签范围整删（单一撤销单元）→ 服务端 written 回退。 */
 function onRemoveAllSections() {
@@ -2065,6 +2137,7 @@ onUnmounted(() => {
         >
           <span class="stage-no">{{ index < stageIndex ? "✓" : index + 1 }}</span>
           <span>{{ stage.title }}</span>
+          <StatusDot v-if="index === stageIndex && stageLive" tone="running" class="stage-live-dot" />
         </button>
       </nav>
 
@@ -2074,9 +2147,7 @@ onUnmounted(() => {
           <h3>① 招标文件（必传一份，可多份）</h3>
           <div v-for="doc in tenderDocs" :key="doc.id" class="doc-line">
             <span class="doc-name">{{ doc.original_filename }}</span>
-            <Tag :color="doc.status === 'parsed' ? 'green' : doc.status === 'failed' ? 'red' : 'blue'">
-              {{ doc.status === "parsed" ? "解析完成" : doc.status === "failed" ? "解析失败" : "解析中…" }}
-            </Tag>
+            <StatusDot :tone="tenderDocStatus(doc).tone">{{ tenderDocStatus(doc).text }}</StatusDot>
             <button
               type="button"
               class="link-btn"
@@ -2140,17 +2211,22 @@ onUnmounted(() => {
               class="hint"
             >解读结果较简略，可直接进入下一步。</p>
             <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="onAnalyzeTender">重新解读</button>
+            <div v-if="busy === 'analysis'" class="status-row">
+              <StatusDot tone="running">正在重新通读招标文件，更新解读结果…</StatusDot>
+            </div>
           </template>
           <template v-else>
             <p class="hint">解读招标要素（项目/预算/截止/关键要求），并给出建议补充的素材清单，帮你把素材备齐。</p>
-            <button type="button" class="primary" :disabled="Boolean(busy)" @click="onAnalyzeTender">
-              {{ busy === "analysis" ? "AI 正在解读（最长 5 分钟）…（招标文件较大时耗时较长，请勿关闭页面）" : "AI 解读招标文件" }}
-            </button>
+            <button type="button" class="primary" :disabled="Boolean(busy)" @click="onAnalyzeTender">AI 解读招标文件</button>
+            <div v-if="busy === 'analysis'" class="status-row">
+              <StatusDot tone="running">正在通读招标文件，提取项目信息、关键要求与评分标准…</StatusDot>
+              <span class="hint" style="margin:0">处理期间请保持页面打开</span>
+            </div>
           </template>
         </div>
 
         <div class="card">
-          <h3>② 公司素材（素材池）</h3>
+          <h3>② 公司素材（素材池）<StatusDot v-if="materialPoolStatus" :tone="materialPoolStatus.tone" class="h3-dot">{{ materialPoolStatus.text }}</StatusDot></h3>
           <div class="material-summary">
             <span>已索引 {{ indexSummary.indexed }}</span>
             <span v-if="indexSummary.indexing">索引中 {{ indexSummary.indexing }}</span>
@@ -2233,9 +2309,7 @@ onUnmounted(() => {
             <li v-for="item in materials" :key="item.id" class="material-row">
               <span class="doc-name">{{ item.original_filename }}</span>
               <Tag v-if="item.category" color="default">{{ item.category }}</Tag>
-              <Tag :color="item.index_status === 'indexed' ? 'green' : item.index_status === 'failed' ? 'red' : 'blue'">
-                {{ { pending: "待索引", indexing: "索引中", indexed: `已索引${item.chunk_count ? `(${item.chunk_count} 段)` : ""}`, failed: "索引失败" }[item.index_status] || item.index_status }}
-              </Tag>
+              <StatusDot :tone="materialStatus(item).tone">{{ materialStatus(item).text }}</StatusDot>
               <button v-if="item.index_status === 'indexed'" type="button" class="link-btn" @click="viewMaterialIndex(item)">查看索引</button>
               <button v-if="item.index_status === 'failed'" type="button" class="link-btn" @click="reindexFailed(item)">重试索引</button>
               <button type="button" class="link-btn danger" @click="removeMaterial(item)">删除</button>
@@ -2276,17 +2350,27 @@ onUnmounted(() => {
           <h3>素材检查和需求确认</h3>
           <template v-if="!questionnaire.length">
             <p class="hint">AI 将检查您上传的素材，如有问题，AI 将向您提问并请您补充更多信息和素材（每个问题尽量附带素材依据的建议答案）。</p>
-            <button type="button" class="primary" :disabled="Boolean(busy) || !tenderReady" @click="onGenerateQuestionnaire">
-              {{ busy === "questionnaire" ? "AI 正在检查素材并整理问题（最长 5 分钟）…（素材较多时耗时较长，请勿关闭页面）" : "开始检查" }}
-            </button>
+            <button type="button" class="primary" :disabled="Boolean(busy) || !tenderReady" @click="onGenerateQuestionnaire">开始检查</button>
+            <div v-if="busy === 'questionnaire'" class="status-row">
+              <StatusDot tone="running">正在对照招标要求检查素材，整理需要你确认的问题…</StatusDot>
+              <span class="hint" style="margin:0">处理期间请保持页面打开</span>
+            </div>
+            <div v-if="busy === 'questionnaire'" class="q-skeleton" aria-hidden="true">
+              <div v-for="n in 3" :key="n" class="q-skeleton-card">
+                <div class="sk-line w60"></div>
+                <div class="sk-line w90"></div>
+                <div class="sk-line w40"></div>
+              </div>
+            </div>
           </template>
           <template v-else>
             <div class="req-toolbar">
               <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="pickSupplementMaterials(null)">补充素材</button>
-              <button type="button" class="ghost" :disabled="Boolean(busy) || !tenderReady" @click="onRecheck">
-                {{ busy === "recheck" ? "AI 再次检查中（最长 5 分钟）…" : "再次检查" }}
-              </button>
+              <button type="button" class="ghost" :disabled="Boolean(busy) || !tenderReady" @click="onRecheck">再次检查</button>
               <span class="hint" style="margin:0">补充新素材后点「再次检查」，AI 基于新素材发起下一轮提问（现有问答保留）。</span>
+            </div>
+            <div v-if="busy === 'recheck'" class="status-row">
+              <StatusDot tone="running">正在结合新补充的素材重新检查…</StatusDot>
             </div>
             <div v-if="supplementProgressItems.length" class="supplement-progress">
               <div class="sp-head">
@@ -2295,7 +2379,7 @@ onUnmounted(() => {
               </div>
               <div v-for="item in supplementProgressItems" :key="item.id" class="sp-row">
                 <span class="sp-name" :title="item.original_filename || ''">{{ item.original_filename }}</span>
-                <Tag :color="materialStageLabel(item).color">{{ materialStageLabel(item).text }}</Tag>
+                <StatusDot :tone="materialStatus(item).tone">{{ materialStatus(item).text }}</StatusDot>
                 <button
                   v-if="item.index_status === 'failed'"
                   type="button"
@@ -2327,7 +2411,7 @@ onUnmounted(() => {
                 <div v-if="ensureAnswerDraft(question).action === 'supplemented'" class="q-supplement">
                   <div v-for="item in qSupplementItems(question.id)" :key="item.id" class="sp-row">
                     <span class="sp-name" :title="item.original_filename || ''">{{ item.original_filename }}</span>
-                    <Tag :color="materialStageLabel(item).color">{{ materialStageLabel(item).text }}</Tag>
+                    <StatusDot :tone="materialStatus(item).tone">{{ materialStatus(item).text }}</StatusDot>
                     <button
                       v-if="item.index_status === 'failed'"
                       type="button"
@@ -2387,10 +2471,10 @@ onUnmounted(() => {
             </template>
             <div class="req-save-bar">
               <button type="button" class="ghost" :disabled="Boolean(busy)" @click="onSubmitRequirements">
-                {{ busy === "requirements" ? "保存中…" : busy === "followupRound" ? "AI 评估中…" : "保存作答" }}
+                {{ busy === "requirements" ? "保存中…" : "保存作答" }}
               </button>
               <!-- 追问反馈就近显示（反馈㉑）：卡片顶部的横幅在长问卷下离保存按钮太远，用户看不见 -->
-              <span v-if="busy === 'followupRound'" class="hint" style="margin:0;color:#2f6fdd">AI 正在评估本轮作答（最长 5 分钟），需要追问的问题会追加在上方…</span>
+              <StatusDot v-if="busy === 'followupRound'" tone="running">正在评估你的作答，需要追问的问题会追加在上方…</StatusDot>
               <span v-else-if="followupDone" class="hint" style="margin:0;color:#389e0d">AI 已确认需求充分，可进入编写大纲；补充新素材后仍可点「再次检查」。</span>
               <span v-else-if="saveHintText" class="hint" style="margin:0">{{ saveHintText }}</span>
             </div>
@@ -2409,9 +2493,10 @@ onUnmounted(() => {
               :disabled="Boolean(busy) || !tenderReady"
               @keydown.enter="onAskQuestion"
             >
-            <button type="button" class="primary" :disabled="Boolean(busy) || !tenderReady || !qaQuestion.trim()" @click="onAskQuestion">
-              {{ busy === "qaAsk" ? "AI 回答中（最长 2 分钟）…" : "提问" }}
-            </button>
+            <button type="button" class="primary" :disabled="Boolean(busy) || !tenderReady || !qaQuestion.trim()" @click="onAskQuestion">提问</button>
+          </div>
+          <div v-if="busy === 'qaAsk'" class="status-row" style="margin-top:8px">
+            <StatusDot tone="running">正在结合素材作答…</StatusDot>
           </div>
           <div v-for="(item, index) in qaHistory" :key="index" class="qa-item">
             <p class="qa-q">问：{{ item.question }}</p>
@@ -2446,9 +2531,17 @@ onUnmounted(() => {
         <div class="card">
           <template v-if="!specNodes.length">
             <p class="hint">AI 将根据编写需求、招标要素与素材索引生成大纲：目录结构＋每章摘要＋图表规划。</p>
-            <button type="button" class="primary" :disabled="Boolean(busy)" @click="onGenerateSpec">
-              {{ busy === "spec" ? "AI 正在生成大纲（最长 5 分钟）…（素材较多时耗时较长，请勿关闭页面）" : "生成编写大纲" }}
-            </button>
+            <button type="button" class="primary" :disabled="Boolean(busy)" @click="onGenerateSpec">生成编写大纲</button>
+            <div v-if="busy === 'spec'" class="status-row">
+              <StatusDot tone="running">正在检索素材并编排章节结构…</StatusDot>
+              <span class="hint" style="margin:0">处理期间请保持页面打开</span>
+            </div>
+            <div v-if="busy === 'spec'" class="spec-skeleton" aria-hidden="true">
+              <div v-for="n in 5" :key="n" class="sk-line" :style="{ width: `${52 + ((n * 17) % 44)}%`, marginLeft: `${(n % 3) * 22}px` }"></div>
+            </div>
+            <div v-else-if="indexingMaterials.length" class="status-row">
+              <StatusDot tone="waiting">{{ indexingSummary(indexingMaterials) }}；生成的大纲暂不包含这些素材，建议索引完成后再生成</StatusDot>
+            </div>
           </template>
           <template v-else>
             <div class="spec-toolbar">
@@ -2467,9 +2560,10 @@ onUnmounted(() => {
                 :disabled="Boolean(busy)"
                 @keydown.enter="onReviseSpec"
               >
-              <button type="button" class="primary" :disabled="Boolean(busy) || !reviseInstruction.trim()" @click="onReviseSpec">
-                {{ busy === "spec" ? "AI 修改中…" : "AI 修改" }}
-              </button>
+              <button type="button" class="primary" :disabled="Boolean(busy) || !reviseInstruction.trim()" @click="onReviseSpec">AI 修改</button>
+            </div>
+            <div v-if="busy === 'specRevise'" class="status-row" style="margin-top:0;margin-bottom:10px">
+              <StatusDot tone="running">正在按你的要求修改大纲，完成后可用「回退 AI 修订」对照旧版…</StatusDot>
             </div>
             <p class="hint" style="margin:0 0 8px">同级章节可拖拽排序（目标行上半区=插到它前面，下半区=插到它含子树之后）；点「编辑」展开摘要与图表计划，▾/▸ 折叠子树。</p>
             <div class="spec-tree" role="tree">
@@ -2586,10 +2680,9 @@ onUnmounted(() => {
           </template>
           <template v-else>
             <div class="writing-head">
-              <Tag :color="task.status === 'completed' ? 'green' : task.status === 'failed' ? 'red' : taskRunning ? 'blue' : 'default'">
-                {{ { pending: "排队中", running: "撰写中", completed: "已完成", failed: "失败", cancelled: "已取消" }[task.status] || task.status }}
-              </Tag>
-              <span>已写入 {{ writtenCount }} / {{ sections.length }} 章</span>
+              <StatusDot :tone="taskTone">{{ taskStatusText }}</StatusDot>
+              <span>已写入 {{ writtenCount }} / {{ sections.length }} 章<template v-if="writtenWords"> · {{ writtenWords.toLocaleString() }} 字</template></span>
+              <span v-if="taskRunning" class="hint" style="margin:0">撰写与写入在后台进行，可离开此页；重新进入会自动恢复进度</span>
               <button v-if="taskRunning" type="button" class="ghost" :disabled="Boolean(busy)" @click="onCancelTask">取消撰写</button>
             </div>
             <div v-if="!taskRunning && (generatedCount > 0 || writtenCount > 0)" class="writing-tools">
@@ -2620,15 +2713,14 @@ onUnmounted(() => {
             <ul class="section-list">
               <li v-for="section in sortedSections" :key="section.node_id" class="section-row">
                 <span class="doc-name">{{ section.node_id }} {{ displayTitle(section.node_id, section.title) }}</span>
-                <Tag :color="{ pending: 'default', generating: 'blue', generated: 'orange', written: 'green', failed: 'red' }[section.status]">
-                  {{ { pending: "待生成", generating: "生成中", generated: "待写入", written: "已写入", failed: "失败" }[section.status] || section.status }}
-                </Tag>
+                <StatusDot v-if="writingNode === section.node_id" tone="running">写入 Word 中…</StatusDot>
+                <StatusDot v-else :tone="sectionTone(section.status)">{{ SECTION_STATUS_TEXT[section.status] || section.status }}</StatusDot>
                 <button
                   v-if="section.status === 'generated' && !writingNode"
                   type="button"
                   class="link-btn"
                   @click="writeSection(section.node_id)"
-                >{{ writingNode === section.node_id ? "写入中…" : "写入 Word" }}</button>
+                >写入 Word</button>
                 <button type="button" class="link-btn" @click="previewSection(section.node_id)">预览</button>
                 <button
                   v-if="!taskRunning && (section.status === 'written' || section.status === 'generated')"
@@ -2821,13 +2913,26 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .chart-row input{flex:1}
 .pick-list{list-style:none;margin:0 0 10px;padding:0;max-height:300px;overflow:auto;display:flex;flex-direction:column;gap:4px}
 .mode-row{display:flex;gap:18px;margin:10px 0 14px}
-.writing-head{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+.writing-head{display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap}
 .event-log{max-height:180px;overflow:auto;border:1px solid #f0f0f0;border-radius:8px;padding:8px 10px;margin-bottom:10px;background:#fafafa}
 .log-line{font-size:12px;color:#555;line-height:1.8}
 .log-line.ok{color:#389e0d}
 .log-line.error{color:#cf1322}
 .log-time{color:#bbb;margin-right:8px}
 .section-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.status-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:#555}
+.h3-dot{margin-left:8px;font-weight:400;font-size:11px;color:#777;vertical-align:middle}
+.stage-live-dot{margin-left:2px}
+.q-skeleton{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.q-skeleton-card{border:1px solid #f0f0f0;border-radius:9px;padding:12px}
+.sk-line{height:12px;border-radius:6px;background:linear-gradient(90deg,#f0f0f0 25%,#e8e8e8 37%,#f0f0f0 63%);background-size:400% 100%;animation:sk-shimmer 1.4s ease infinite;margin-bottom:8px}
+.q-skeleton-card .sk-line:last-child,.spec-skeleton .sk-line:last-child{margin-bottom:0}
+.w60{width:60%}
+.w90{width:90%}
+.w40{width:40%}
+.spec-skeleton{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+@keyframes sk-shimmer{0%{background-position:100% 50%}100%{background-position:0 50%}}
+@media (prefers-reduced-motion:reduce){.sk-line{animation:none}}
 .index-md{max-height:420px;overflow:auto;font-size:13px;background:#fafafa;padding:10px 12px;border-radius:8px}
 .md-render{line-height:1.7;word-break:break-word}
 .md-render :deep(h1){font-size:16px;font-weight:700;margin:4px 0 10px}
