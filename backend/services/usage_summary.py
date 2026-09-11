@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-from backend.models import async_session_factory
+from backend.models import usage_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,7 @@ ON CONFLICT (id) DO UPDATE SET
 _MERGE_STATUS_SQL = text("""
 UPDATE ai_usage_task_summary s
 SET
+    task_type        = 'review',
     task_status      = r.status,
     started_at       = r.started_at,
     completed_at     = r.completed_at,
@@ -122,6 +123,7 @@ WHERE r.id = s.id AND s.id = :task_id
 _MERGE_BLIND_STATUS_SQL = text("""
 UPDATE ai_usage_task_summary s
 SET
+    task_type        = 'blind_check',
     task_status      = b.status,
     started_at       = b.started_at,
     completed_at     = b.completed_at,
@@ -194,6 +196,42 @@ ON CONFLICT (id) DO NOTHING
 """)
 
 
+def _extra_task_merge_sql(table: str, task_type: str):
+    """其余任务表（M2 AI编标三类 + 写通道两类）的状态维度合并模板。
+
+    这些表结构与 review_tasks 不同、没有预计算 duration_seconds，由
+    started_at/completed_at 现算。task_type 一并补齐——该列此前没有任何
+    写入方赋值，全表恒 NULL（2026-09-11 全流程复盘发现），运营侧按任务
+    类型统计 AI 用量会缺维度。
+    """
+    return text(f"""
+UPDATE ai_usage_task_summary s
+SET
+    task_type        = '{task_type}',
+    task_status      = t.status,
+    started_at       = t.started_at,
+    completed_at     = t.completed_at,
+    duration_seconds = CASE
+        WHEN t.started_at IS NOT NULL AND t.completed_at IS NOT NULL
+        THEN EXTRACT(EPOCH FROM (t.completed_at - t.started_at))::INTEGER
+        ELSE NULL
+    END,
+    error_message    = t.error_message,
+    updated_at       = now()
+FROM {table} t
+WHERE t.id = s.id AND s.id = :task_id
+""")
+
+
+_EXTRA_TASK_MERGES = (
+    _extra_task_merge_sql("bid_wizard_qa_tasks", "bid_wizard_qa"),
+    _extra_task_merge_sql("bid_wizard_index_tasks", "bid_wizard_index"),
+    _extra_task_merge_sql("bid_writing_tasks", "bid_wizard_write"),
+    _extra_task_merge_sql("bid_draft_tasks", "bid_draft"),
+    _extra_task_merge_sql("polish_tasks", "polish"),
+)
+
+
 async def refresh_task_summary(task_id: str, *, strict: bool = False) -> None:
     """重算并 upsert 指定 task 的用量汇总行。
 
@@ -203,7 +241,7 @@ async def refresh_task_summary(task_id: str, *, strict: bool = False) -> None:
     if not task_id:
         return
     try:
-        async with async_session_factory() as db:
+        async with usage_session_factory() as db:
             await db.execute(_UPSERT_SQL, {"task_id": task_id})
             # Aggregate SELECT has no usable id when a task made zero provider
             # calls. Materialize an explicit zero-cost audit row from either
@@ -212,6 +250,8 @@ async def refresh_task_summary(task_id: str, *, strict: bool = False) -> None:
             await db.execute(_INSERT_EMPTY_BLIND_SQL, {"task_id": task_id})
             await db.execute(_MERGE_STATUS_SQL, {"task_id": task_id})
             await db.execute(_MERGE_BLIND_STATUS_SQL, {"task_id": task_id})
+            for merge_sql in _EXTRA_TASK_MERGES:
+                await db.execute(merge_sql, {"task_id": task_id})
             await db.commit()
     except Exception as e:
         logger.warning(f"[usage-summary] refresh failed for task {task_id}: {e}")

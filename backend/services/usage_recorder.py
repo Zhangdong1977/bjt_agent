@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from backend.config import get_settings
-from backend.models import async_session_factory
+from backend.models import usage_session_factory
 from backend.models.ai_usage_record import AiUsageRecord
 from backend.services.usage_context import get_usage_context
 from backend.services.cost_calculator import estimate_cost
@@ -316,7 +316,9 @@ async def _write_one(record: AiUsageRecord) -> None:
     last_error: Exception | None = None
     for attempt in range(1, 4):
         try:
-            async with async_session_factory() as db:
+            # NullPool 短连接工厂：celery 每任务换 event loop，池化引擎的旧连接
+            # 在新 loop 首次收发必报 "Event loop is closed"（首笔 1/3 重试即此因）
+            async with usage_session_factory() as db:
                 db.add(record)
                 await db.commit()
             if record.task_id:

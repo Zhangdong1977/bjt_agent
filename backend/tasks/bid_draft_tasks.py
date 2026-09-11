@@ -212,7 +212,8 @@ async def _run_bid_draft(task_id: str) -> dict[str, Any]:
         )
 
         usage_token = set_usage_context(
-            UsageContext(**usage_identity, project_id=None, task_id=task_id, todo_id=None)
+            # BidDraftTask.project_id（用量汇总按项目统计依赖此字段）
+            UsageContext(**usage_identity, project_id=task.project_id, task_id=task_id, todo_id=None)
         )
         try:
             try:

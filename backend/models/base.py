@@ -6,6 +6,7 @@ from typing import AsyncGenerator
 from sqlalchemy import DateTime, event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.pool import NullPool
 
 from backend.config import get_settings
 from backend.utils.time_utils import utc_now
@@ -41,6 +42,29 @@ engine = create_async_engine(
 
 async_session_factory = async_sessionmaker(
     engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
+
+# 用量流水写入专用：NullPool 短连接引擎（跨 event loop 安全）。
+# celery prefork 每任务 asyncio.run() 新建 loop；跨 loop 复用上面这个池化引擎时，
+# 池内旧连接与池内部同步原语绑定已关闭的 loop，新 loop 首次收发报
+# "Event loop is closed"（pool_pre_ping 拦不住——该 RuntimeError 不是 DBAPI
+# 断连错误）。review/parser/wizard 任务各自"每任务新建引擎"规避，但
+# usage_recorder 的 fire-and-forget 写入与任务主流程并发、无法共享任务级
+# 引擎，故单独走无池化短连接：写入频率 = LLM 调用频率（任务级百次内），
+# 每次多建一条本机短连接的开销可忽略。
+usage_engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    poolclass=NullPool,
+    connect_args=_connect_args,
+)
+
+usage_session_factory = async_sessionmaker(
+    usage_engine,
     class_=AsyncSession,
     expire_on_commit=False,
     autocommit=False,
@@ -87,3 +111,4 @@ async def init_db() -> None:
 async def close_db() -> None:
     """Close database connections."""
     await engine.dispose()
+    await usage_engine.dispose()
