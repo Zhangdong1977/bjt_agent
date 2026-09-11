@@ -30,9 +30,10 @@ export interface WizardQuestion {
   suggested_answer?: string;
   source?: string;
   inferred?: boolean;
-  action?: "answered" | "adopted" | "skipped" | null;
+  action?: "answered" | "adopted" | "skipped" | "supplemented" | null;
   answer?: string | null;
   effective_answer?: string | null;
+  round?: number | null; // ≥2 为追问轮（首轮无此字段视为 1）
 }
 
 export interface Wizard {
@@ -41,7 +42,10 @@ export interface Wizard {
   stage: WizardStage;
   status: string;
   analysis?: Record<string, unknown> | null;
-  questionnaire?: { questions?: WizardQuestion[] } | null;
+  questionnaire?: {
+    questions?: WizardQuestion[];
+    followup?: { auto_rounds?: number; status?: "active" | "done" } | null;
+  } | null;
   requirements?: { questions?: WizardQuestion[] } | null;
   spec?: WizardSpecNode[] | null;
   spec_previous?: WizardSpecNode[] | null;
@@ -324,9 +328,20 @@ export async function generateQuestionnaire(wizardId: string) {
   );
 }
 
+/** 再次检查（反馈⑭）：保留现有问答，基于最新素材索引追加一轮 grill-me 追问。 */
+export async function generateQuestionnaireRound(
+  wizardId: string,
+  trigger: "manual" | "auto" = "manual",
+) {
+  return request<Wizard>(
+    "post",
+    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/questionnaire/round?trigger=${trigger}`,
+  );
+}
+
 export async function saveRequirements(
   wizardId: string,
-  answers: { question_id: string; action: "answered" | "adopted" | "skipped"; answer?: string | null }[],
+  answers: { question_id: string; action: "answered" | "adopted" | "skipped" | "supplemented"; answer?: string | null }[],
 ) {
   return request<Wizard>(
     "put",
@@ -420,9 +435,12 @@ export function wizardStreamUrl(taskId: string) {
   return `${API_BASE}/bid-wizard/writing-tasks/${encodeURIComponent(taskId)}/stream`;
 }
 
-/** 客户端素材上传端点完整地址（插件桥转发用，§5.6 material.upload）。 */
+/** 客户端素材上传端点完整地址（插件桥转发用，§5.6 material.upload）。
+ * 由插件 C# HttpClient 直连 POST，必须是绝对地址：生产构建 API_BASE 为相对 `/api`，
+ * 按页面 origin 补全；端点与页面本地上传同一条 POST /wizards/{id}/materials。 */
 export function materialUploadUrl(wizardId: string) {
-  return `${API_BASE}/bid-wizard/wizards/${encodeURIComponent(wizardId)}/materials/upload`;
+  const path = `${API_BASE}/bid-wizard/wizards/${encodeURIComponent(wizardId)}/materials`;
+  return new URL(path, window.location.origin).toString();
 }
 
 /** 移除全部 AI 内容后的服务端状态回退（决策 31）：written → generated。 */
@@ -440,14 +458,7 @@ export async function listLatestSections(wizardId: string) {
   >("get", `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/sections/latest`);
 }
 
-// ---- 多轮追问（决策 32：追问侧栏 + AI 主动反问）----
-
-export interface WizardFollowup {
-  id: string;
-  question: string;
-  why?: string | null;
-  status?: string | null;
-}
+// ---- 多轮追问（决策 32：追问侧栏；主动追问统一到问卷轮机制，反馈⑱）----
 
 /** 追问侧栏提问（每轮一次 bid_wizard_qa 计费）。 */
 export async function askSidebarQuestion(wizardId: string, question: string) {
@@ -464,28 +475,6 @@ export async function adoptSidebarAnswer(wizardId: string, question: string, ans
     "post",
     `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/qa/adopt`,
     { question, answer },
-  );
-}
-
-/** AI 主动反问：检测已保存需求的缺口（≤3 条、单轮、计费一次）。 */
-export async function generateFollowups(wizardId: string) {
-  return request<{ followups: WizardFollowup[] }>(
-    "post",
-    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/requirements/followups`,
-  );
-}
-
-/** 反问作答/跳过（answered 并入补充说明；不计费、幂等）。 */
-export async function answerFollowup(
-  wizardId: string,
-  followupId: string,
-  action: "answered" | "skipped",
-  answer: string | null,
-) {
-  return request<Wizard>(
-    "post",
-    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/requirements/followup-answer`,
-    { followup_id: followupId, action, answer },
   );
 }
 

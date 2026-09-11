@@ -9,7 +9,12 @@ from backend.agent.bid_draft_agent import OUTLINE_MAX_NODES
 
 WizardStage = Literal["material", "requirement", "outline", "writing"]
 
+# 待答问题上限：round 闸门按"未作答/待确认(supplemented)"计数——已答/已采纳/已跳过
+# 的问题不算待办、不阻断再次检查（2026-09-11 反馈⑯：20 题全已采纳仍被总数顶死）。
 QUESTIONNAIRE_MAX_QUESTIONS = 20
+# 跨轮累计问题总数上限：已答问题保留在卡片列表（可改答），轮次多了总数会涨，
+# 保存载荷与追加写入按此上限校验。
+QUESTIONNAIRE_TOTAL_MAX_QUESTIONS = 60
 SPEC_INSTRUCTION_MAX_CHARS = 2_000
 
 
@@ -123,13 +128,14 @@ class WizardEstimateResponse(BaseModel):
 
 class QuestionnaireAnswer(BaseModel):
     question_id: str = Field(min_length=1, max_length=100)
-    # answered（自定义回答）/ adopted（采纳建议答案）/ skipped
-    action: Literal["answered", "adopted", "skipped"]
+    # answered（自定义回答）/ adopted（采纳建议答案）/ skipped /
+    # supplemented（该问题已补充新素材关闭，答案待下一轮 AI 检查给出）
+    action: Literal["answered", "adopted", "skipped", "supplemented"]
     answer: str | None = Field(default=None, max_length=4_000)
 
 
 class RequirementsUpdate(BaseModel):
-    answers: list[QuestionnaireAnswer] = Field(min_length=0, max_length=QUESTIONNAIRE_MAX_QUESTIONS)
+    answers: list[QuestionnaireAnswer] = Field(min_length=0, max_length=QUESTIONNAIRE_TOTAL_MAX_QUESTIONS)
 
 
 class WizardQaAsk(BaseModel):
@@ -147,19 +153,6 @@ class WizardQaAdopt(BaseModel):
 
     question: str = Field(min_length=1, max_length=2_000)
     answer: str = Field(min_length=1, max_length=4_000)
-
-
-class WizardFollowupsResponse(BaseModel):
-    """AI 主动反问（决策 32b）：≤3 条缺口追问。"""
-
-    followups: list[dict[str, Any]]
-
-
-class WizardFollowupAnswer(BaseModel):
-    followup_id: str = Field(min_length=1, max_length=100)
-    # answered（并入补充说明）/ skipped
-    action: Literal["answered", "skipped"]
-    answer: str | None = Field(default=None, max_length=4_000)
 
 
 # ------------------------------------------------------------------ spec

@@ -234,7 +234,7 @@ const canStart = computed(() =>
   Boolean(projectId.value && tenderDoc.value?.status === "parsed" && !submitting.value && step.value === "setup"),
 );
 const bridgeStateText = computed(() =>
-  bridge.contextReady.value ? "已连接 Word 文档" : bridge.available.value ? "正在连接 Word 文档" : "未检测到 Word 插件（生成后可复制全文）",
+  bridge.contextReady.value ? "已连接文档" : bridge.available.value ? "正在连接 Word 文档" : "未检测到 Word 插件（生成后可复制全文）",
 );
 const analysis = computed(() => {
   const value = task.value?.analysis_result;

@@ -44,8 +44,6 @@ from backend.schemas.bid_wizard import (
     WizardAccessResponse,
     WizardCreate,
     WizardEstimateResponse,
-    WizardFollowupAnswer,
-    WizardFollowupsResponse,
     WizardListItem,
     WizardListResponse,
     WizardMaterialIndexResponse,
@@ -130,10 +128,12 @@ async def _guard_writing_idle(db: DBSession, wizard: BidWizard) -> None:
     """决策 14：撰写中 spec 锁定——有进行中的撰写任务时禁止改 Spec/需求/阶段。"""
     row = (
         await db.execute(
-            select(BidWritingTask.id).where(
+            select(BidWritingTask.id)
+            .where(
                 BidWritingTask.wizard_id == wizard.id,
                 BidWritingTask.status.in_(("pending", "running")),
             )
+            .limit(1)
         )
     ).scalar_one_or_none()
     if row is not None:
@@ -208,9 +208,25 @@ async def _store_wizard_document(
     db: DBSession, wizard: BidWizard, current_user, file: UploadFile, doc_type: str
 ) -> Document:
     """Store the upload under workspace/<user>/<project>/<doc_type>/（不提交，由调用方统一 commit）."""
-    from backend.api.documents import _save_upload_file, _validate_upload_file
+    from backend.api.documents import (
+        IMAGE_EXTENSIONS,
+        SUPPORTED_EXTENSIONS,
+        _decode_rfc2047_filename,
+        _save_upload_file,
+        _validate_upload_file,
+    )
 
-    _validate_upload_file(file)
+    # 客户端素材经 VSTO 插件（.NET Framework）转发上传，中文名到这里是 RFC 2047 编码串
+    file.filename = _decode_rfc2047_filename(file.filename)
+    if doc_type == "material":
+        # 素材放开图片（反馈⑩）：组织架构图/证书扫描件等，解析任务对整图走 OCR
+        _validate_upload_file(
+            file,
+            SUPPORTED_EXTENSIONS | IMAGE_EXTENSIONS,
+            "PDF、DOCX、DOC、XLSX 或图片（PNG/JPG/JPEG/BMP/WEBP）",
+        )
+    else:
+        _validate_upload_file(file)
     doc_dir = get_settings().workspace_path / str(current_user.id) / wizard.project_id / doc_type
     file_path = Path(await _save_upload_file(file, doc_dir, fsync=False))
     document = Document(
@@ -266,11 +282,13 @@ async def _run_qa_task(
     # 防双击/网络重试造成并行双计费。
     running = (
         await db.execute(
-            select(BidWizardQaTask.id).where(
+            select(BidWizardQaTask.id)
+            .where(
                 BidWizardQaTask.wizard_id == wizard.id,
                 BidWizardQaTask.action == action,
                 BidWizardQaTask.status == "running",
             )
+            .limit(1)
         )
     ).scalar_one_or_none()
     if running is not None:
@@ -282,6 +300,7 @@ async def _run_qa_task(
         status="running",
         billing_multiplier=multiplier_for_task(sales_config, "bid_wizard_qa"),
         billing_status="pending",
+        started_at=utc_now(),
     )
     db.add(qa)
     await db.commit()
@@ -330,6 +349,7 @@ async def _run_qa_task(
             ) from exc
     finally:
         reset_usage_context(usage_token)
+        qa.completed_at = utc_now()
         try:
             await db.commit()
         except Exception:
@@ -553,10 +573,12 @@ async def archive_wizard(wizard_id: str, db: DBSession, current_user: CurrentUse
         raise HTTPException(status_code=400, detail="向导已结束，无需归档")
     running = (
         await db.execute(
-            select(BidWritingTask.id).where(
+            select(BidWritingTask.id)
+            .where(
                 BidWritingTask.wizard_id == wizard.id,
                 BidWritingTask.status.in_(("pending", "running")),
             )
+            .limit(1)
         )
     ).scalar_one_or_none()
     if running is not None:
@@ -592,10 +614,12 @@ async def delete_wizard(wizard_id: str, db: DBSession, current_user: CurrentUser
         raise HTTPException(status_code=400, detail="请先归档项目后再删除")
     running = (
         await db.execute(
-            select(BidWritingTask.id).where(
+            select(BidWritingTask.id)
+            .where(
                 BidWritingTask.wizard_id == wizard.id,
                 BidWritingTask.status.in_(("pending", "running")),
             )
+            .limit(1)
         )
     ).scalar_one_or_none()
     if running is not None:
@@ -1040,6 +1064,175 @@ async def generate_questionnaire(
     return wizard
 
 
+@router.post("/wizards/{wizard_id}/questionnaire/round", response_model=WizardResponse)
+async def generate_questionnaire_round(
+    wizard_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+    trigger: str = Query(default="manual", pattern="^(auto|manual)$"),
+) -> BidWizard:
+    """多轮追问（反馈⑱统一口径）：保留现有问答与需求，AI 判断是否追加新一轮问题。
+
+    trigger=manual：用户点「再次检查」（补充素材后）；trigger=auto：保存作答后前端自动触发，
+    由 AI 判断是否需要追问（空列表=需求已充分，标记 done 不再自动追问）。
+    自动轮数受 bid_wizard_followup_max_rounds 封顶；manual 轮不占自动轮配额。
+    新补充素材索引未完成时拒绝——AI 只能读到已建索引的素材，空转追问会误导用户。
+    """
+    from backend.schemas.bid_wizard import (
+        QUESTIONNAIRE_MAX_QUESTIONS as _MAX_QUESTIONS,
+        QUESTIONNAIRE_TOTAL_MAX_QUESTIONS as _TOTAL_MAX_QUESTIONS,
+    )
+
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    await _require_access(db, current_user)
+    if not isinstance(wizard.questionnaire, dict) or not wizard.questionnaire.get("questions"):
+        raise HTTPException(status_code=400, detail="请先生成第一轮问题")
+    followup_state = wizard.questionnaire.get("followup") if isinstance(
+        wizard.questionnaire.get("followup"), dict
+    ) else {}
+    auto_rounds = int(followup_state.get("auto_rounds") or 0)
+    followup_status = str(followup_state.get("status") or "active")
+    if trigger == "auto":
+        if followup_status == "done":
+            raise HTTPException(status_code=400, detail="AI 已确认需求充分，无需自动追问")
+        max_auto = get_settings().bid_wizard_followup_max_rounds
+        if auto_rounds >= max_auto:
+            raise HTTPException(
+                status_code=400,
+                detail=f"已达最大自动追问轮数（{max_auto}），可继续补充素材后点「再次检查」",
+            )
+    questions_ref = [
+        item for item in wizard.questionnaire.get("questions") or [] if isinstance(item, dict)
+    ]
+    # 作答状态只持久化在 requirements（questionnaire 列是普通 JSON，merge 的原地改动不落库）。
+    # 闸门按"待答"计数：已答/已采纳/已跳过不算待办，不阻断再次检查（反馈⑯）。
+    requirements_ref = wizard.requirements if isinstance(wizard.requirements, dict) else {}
+    req_questions_ref = [
+        item for item in requirements_ref.get("questions") or [] if isinstance(item, dict)
+    ]
+    action_by_id = {str(item.get("id")): str(item.get("action") or "") for item in req_questions_ref}
+    open_count = sum(
+        1
+        for item in questions_ref
+        if action_by_id.get(str(item.get("id")), "" ) not in ("answered", "adopted", "skipped")
+    )
+    if open_count >= _MAX_QUESTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"待答问题已达上限（{_MAX_QUESTIONS}），请先作答、采纳或跳过部分问题，或直接进入下一步",
+        )
+    if len(questions_ref) >= _TOTAL_MAX_QUESTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"累计问题数已达上限（{_TOTAL_MAX_QUESTIONS}），请进入下一步开始编写",
+        )
+    await _guard_writing_idle(db, wizard)
+    unfinished = (
+        await db.execute(
+            select(BidWizardMaterial.id)
+            .where(
+                BidWizardMaterial.wizard_id == wizard.id,
+                BidWizardMaterial.index_status.in_(("pending", "indexing")),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if unfinished is not None:
+        raise HTTPException(status_code=409, detail="新素材还在建立索引，请稍后再点「再次检查」")
+
+    wizard_id_ref = wizard.id
+    analysis_ref = wizard.analysis if isinstance(wizard.analysis, dict) and wizard.analysis else None
+    documents = await _require_parsed_tenders(db, wizard)
+    tender_markdown = None if analysis_ref is not None else _merged_tender_markdown(documents)
+    # 已有问题的去重视图取 requirements（带作答状态标签）；questionnaire 里 requirements
+    # 还没有的题（上一轮追加后尚未保存）补在后面，避免 prompt 漏看导致重复提问。
+    _seen_ids = {str(item.get("id")) for item in req_questions_ref}
+    existing_view_ref = {
+        "questions": req_questions_ref
+        + [item for item in questions_ref if str(item.get("id")) not in _seen_ids]
+    }
+
+    async def runner() -> list[dict[str, Any]]:
+        from backend.agent.bid_wizard_agent import (
+            WizardLLM,
+            analyze_tender,
+            build_material_index_text,
+            build_requirements_text,
+            generate_questionnaire_round as gen_round,
+            _load_material_index_rows,
+            render_existing_questions_text,
+        )
+
+        llm = WizardLLM(timeout=_QA_HEAVY_TIMEOUT_SECONDS)
+        analysis = analysis_ref
+        if analysis is None:
+            analysis = await analyze_tender(llm, tender_markdown or "")
+        material_entries = await _load_material_index_rows(db, wizard_id_ref)
+        new_batch = await gen_round(
+            llm,
+            analysis=analysis,
+            requirements_text=build_requirements_text(requirements_ref),
+            material_index_text=build_material_index_text(material_entries),
+            existing_questions_text=render_existing_questions_text(existing_view_ref),
+        )
+        return new_batch["questions"]
+
+    new_questions = await _run_qa_task(
+        db,
+        wizard,
+        current_user,
+        action="questionnaire",  # 与首轮同 action：去重防并发双计费，计费倍率一致
+        runner=runner,
+        timeout_seconds=_QA_HEAVY_TIMEOUT_SECONDS,
+    )
+    questions = [
+        item for item in wizard.questionnaire.get("questions") or [] if isinstance(item, dict)
+    ]
+    if not new_questions:
+        # AI 判定需求已充分：标记追问结束，保存后不再自动触发（补充素材后「再次检查」仍可用）
+        wizard.questionnaire = {
+            **wizard.questionnaire,
+            "followup": {"auto_rounds": auto_rounds, "status": "done"},
+        }
+        wizard.requirements_stale = False
+        await db.commit()
+        await db.refresh(wizard)
+        return wizard
+    existing_ids = {str(item.get("id")) for item in questions}
+    next_round = max((int(item.get("round") or 1) for item in questions), default=1) + 1
+    appended: list[dict[str, Any]] = []
+    next_no = len(questions) + 1
+    for item in new_questions:
+        if len(questions) >= _TOTAL_MAX_QUESTIONS:
+            break
+        new_id = f"q{next_no}"
+        next_no += 1
+        while new_id in existing_ids:
+            new_id = f"q{next_no}"
+            next_no += 1
+        existing_ids.add(new_id)
+        item["id"] = new_id
+        item["round"] = next_round
+        questions.append(item)
+        appended.append(item)
+    if not appended:
+        raise HTTPException(status_code=502, detail="本轮未生成新问题，请稍后重试")
+    # 追问状态：auto 计数 +1；manual 出题说明有新信息，状态回 active（下一轮保存后可继续自动追问）
+    wizard.questionnaire = {
+        **wizard.questionnaire,
+        "questions": questions,
+        "followup": {
+            "auto_rounds": auto_rounds + (1 if trigger == "auto" else 0),
+            "status": "active",
+        },
+    }
+    # 本轮 AI 已看到最新素材索引：过期提示解除（新问题的作答仍走「保存作答」）
+    wizard.requirements_stale = False
+    await db.commit()
+    await db.refresh(wizard)
+    return wizard
+
+
 @router.put("/wizards/{wizard_id}/requirements", response_model=WizardResponse)
 async def save_requirements(
     wizard_id: str, body: RequirementsUpdate, db: DBSession, current_user: CurrentUser
@@ -1053,9 +1246,9 @@ async def save_requirements(
     merged = merge_questionnaire_answers(
         wizard.questionnaire, [answer.model_dump() for answer in body.answers]
     )
-    # 追问侧栏采纳对与反问补答（supplementals）跨保存保留：重答问卷不丢补充说明
+    # 追问侧栏采纳对（supplementals）跨保存保留：重答问卷不丢补充说明
     previous = wizard.requirements if isinstance(wizard.requirements, dict) else {}
-    for key in ("supplementals", "followups"):
+    for key in ("supplementals",):
         if isinstance(previous.get(key), list):
             merged[key] = previous[key]
     wizard.requirements = merged
@@ -1135,100 +1328,6 @@ async def adopt_sidebar_answer(
         await db.commit()
     await db.refresh(wizard)
     return wizard
-
-
-@router.post("/wizards/{wizard_id}/requirements/followups", response_model=WizardFollowupsResponse)
-async def generate_followups(
-    wizard_id: str, db: DBSession, current_user: CurrentUser
-) -> WizardFollowupsResponse:
-    """AI 主动反问（决策 32b/Q19）：检测已保存需求的缺口 → ≤3 条追问卡片。
-    单轮：已有未处理追问时不重复检测（前端只在保存后自动触发一次）。"""
-    wizard = await _owned_wizard(wizard_id, current_user, db)
-    await _require_access(db, current_user)
-    if not isinstance(wizard.requirements, dict) or not wizard.requirements:
-        raise HTTPException(status_code=400, detail="请先保存问卷答案")
-    await _guard_writing_idle(db, wizard)
-    existing = wizard.requirements.get("followups")
-    if isinstance(existing, list) and existing:
-        return WizardFollowupsResponse(followups=existing)
-    wizard_ref = wizard
-
-    async def runner() -> list[dict[str, Any]]:
-        from backend.agent.bid_wizard_agent import (
-            WizardLLM,
-            _load_material_index_rows,
-            build_material_index_text,
-            build_requirements_text,
-            generate_followup_questions,
-        )
-
-        llm = WizardLLM(timeout=_QA_TIMEOUT_SECONDS)
-        material_entries = await _load_material_index_rows(db, wizard_ref.id)
-        return await generate_followup_questions(
-            llm,
-            analysis=wizard_ref.analysis if isinstance(wizard_ref.analysis, dict) else {},
-            requirements_text=build_requirements_text(wizard_ref.requirements),
-            material_index_text=build_material_index_text(material_entries),
-        )
-
-    followups = await _run_qa_task(db, wizard, current_user, action="followups", runner=runner)
-    requirements = dict(wizard.requirements)
-    requirements["followups"] = followups
-    wizard.requirements = requirements
-    await db.commit()
-    await db.refresh(wizard)
-    return WizardFollowupsResponse(followups=followups)
-
-
-@router.post(
-    "/wizards/{wizard_id}/requirements/followup-answer", response_model=WizardResponse
-)
-async def answer_followup(
-    wizard_id: str, body: WizardFollowupAnswer, db: DBSession, current_user: CurrentUser
-) -> BidWizard:
-    """反问作答/跳过（Q19：非阻塞、不计费）：answered 并入 supplementals，卡片标记已处理。"""
-    wizard = await _owned_wizard(wizard_id, current_user, db)
-    if not isinstance(wizard.requirements, dict):
-        raise HTTPException(status_code=400, detail="请先保存问卷答案")
-    await _guard_writing_idle(db, wizard)
-    followups = [
-        item for item in wizard.requirements.get("followups") or [] if isinstance(item, dict)
-    ]
-    target = next((item for item in followups if str(item.get("id")) == body.followup_id), None)
-    if target is None:
-        raise HTTPException(status_code=404, detail="追问不存在或已被处理")
-    if target.get("status"):
-        await db.refresh(wizard)
-        return wizard  # 幂等：已处理过的重复提交直接返回
-    requirements = dict(wizard.requirements)
-    if body.action == "answered":
-        answer = (body.answer or "").strip()[:4_000]
-        if not answer:
-            raise HTTPException(status_code=400, detail="回答内容不能为空，可选择跳过")
-        supplementals = [
-            item for item in requirements.get("supplementals") or [] if isinstance(item, dict)
-        ]
-        supplementals.append(
-            {
-                "question": str(target.get("question") or "")[:2_000],
-                "answer": answer,
-                "source": "followup",
-            }
-        )
-        requirements["supplementals"] = supplementals
-        target["status"] = "answered"
-    else:
-        target["status"] = "skipped"
-    requirements["followups"] = followups
-    wizard.requirements = requirements
-    if wizard.spec:
-        wizard.spec_stale = True
-    await db.commit()
-    await db.refresh(wizard)
-    return wizard
-
-
-# ------------------------------------------------------------------ 编写大纲
 
 
 @router.post("/wizards/{wizard_id}/spec", response_model=WizardResponse)

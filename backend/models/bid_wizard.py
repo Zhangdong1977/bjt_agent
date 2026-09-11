@@ -7,7 +7,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -151,6 +151,10 @@ class BidWizardQaTask(Base):
     billing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     usage_finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     billing_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # reconcile_task_billing 对全部任务模型统一引用这两列（卡死扫描/孤儿结算），
+    # 缺列会让结算兜底整轮崩溃（2026-09-10 反馈⑭预发布事故，迁移 042 补列）
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:
         return f"<BidWizardQaTask(id={self.id}, action={self.action}, status={self.status})>"
@@ -251,6 +255,9 @@ class BidWizardSetting(Base):
     # enabled / whitelist / disabled
     mode: Mapped[str] = mapped_column(
         String(20), default="disabled", server_default="disabled", nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True
     )
 
     def __repr__(self) -> str:

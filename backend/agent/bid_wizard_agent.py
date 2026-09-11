@@ -392,7 +392,9 @@ def merge_questionnaire_answers(
     """Merge user answers into a stored questionnaire → 编写需求 JSON (pure).
 
     effective_answer：answered 取用户输入；adopted 取建议答案；skipped 置空
-    （skipped 的问题在下游 prompt 中整条省略，不进入编写需求）。
+    （skipped 的问题在下游 prompt 中整条省略，不进入编写需求）；
+    supplemented 表示用户已为该问题补充新素材（答案待下一轮检查，effective 同样置空，
+    但 build_requirements_text 会渲染显式标记供下一轮 prompt 识别）。
     """
     questions = list((questionnaire or {}).get("questions") or [])
     by_id = {str(item.get("id")): item for item in questions if isinstance(item, dict)}
@@ -401,7 +403,7 @@ def merge_questionnaire_answers(
         if question is None:
             continue
         action = answer.get("action")
-        if action not in ("answered", "adopted", "skipped"):
+        if action not in ("answered", "adopted", "skipped", "supplemented"):
             action = "skipped"
         user_answer = str(answer.get("answer") or "").strip()[:4_000] or None
         question["action"] = action
@@ -421,11 +423,15 @@ def build_requirements_text(requirements: dict[str, Any] | None) -> str:
     for question in (requirements or {}).get("questions") or []:
         if not isinstance(question, dict):
             continue
+        label = str(question.get("question") or "")[:200]
+        if question.get("action") == "supplemented":
+            # 已补充素材的问题：答案还没有（待下一轮检查），但要让下游 prompt 知道用户补了素材
+            lines.append(f"- [已补充素材] {label}：用户已为该问题补充新素材，答案待下一轮检查确认")
+            continue
         effective = str(question.get("effective_answer") or "").strip()
         if not effective:
             continue  # skipped / 未回答的不进入下游
         topic = str(question.get("topic") or "其他")
-        label = str(question.get("question") or "")[:200]
         flag = "（AI 推断，请确认）" if question.get("inferred") and question.get("action") == "adopted" else ""
         lines.append(f"- [{topic}] {label}：{effective[:500]}{flag}")
     # 补充说明（决策 32：追问侧栏采纳对 + AI 主动反问的补答），与问卷答案同权重进上下文
@@ -668,6 +674,83 @@ async def generate_questionnaire(
     return questionnaire
 
 
+ROUND_SYSTEM_PROMPT = (
+    "你是资深投标文件专家，正在主持一场针对投标编写需求的多轮追问（grill-me 式）："
+    "用户刚补充了新素材或完成了作答。由你判断是否需要新一轮提问："
+    "只问当前仍缺失或会实质影响标书质量、必须确认的信息；若已确认的需求加上素材足以支撑编写，"
+    "就返回空列表表示追问可以结束。只输出一个合法 JSON 对象，不要输出任何其他文字或代码块标记。"
+)
+
+ROUND_USER_TEMPLATE = """## 招标要素
+__ANALYSIS_JSON__
+
+## 当前编写需求（已确认问答；[已补充素材] 表示用户刚为此问题补充了新素材）
+__REQUIREMENTS_TEXT__
+
+## 公司素材索引（编号｜标题｜摘要｜关键词；已包含新补充素材）
+__MATERIAL_INDEX__
+
+## 已问过的问题（不要重复提问）
+__EXISTING_QUESTIONS__
+
+请输出新一轮问题 JSON（若判断无需追问，输出 {"questions": []}）：
+
+{"questions": [
+  {"topic": "主题（商务/技术/人员/业绩/交付/其他）",
+   "question": "向投标人提出的问题，一句话",
+   "why": "为什么需要这个信息（与招标要求的关联）",
+   "suggested_answer": "建议答案：优先采用素材索引中的真实事实（特别是新补充的素材），注明来源；素材中没有则留空字符串",
+   "source": "素材依据（如 '素材名#3'），推断时填 '推断'",
+   "inferred": false}
+]}
+
+规则：
+1. 是否追问由你判断：已确认的需求加上素材足以支撑标书编写时，返回空列表，不要为了凑数提问；
+2. 需要追问时输出 1-8 题，聚焦两类：标记[已补充素材]的问题若新素材已能回答，改问确认式问题（如「证书编号是否为 XX、有效期至 XX？」）并把素材中提取的具体事实写入 suggested_answer 与 source；
+3. 新素材仍回答不了的，换更具体的角度继续追问，不要原样重复已问过的问题；
+4. 已回答、已采纳或与素材无关的问题不再问；
+5. 素材没有依据的建议答案必须 inferred=true；严禁在答案里虚构公司资质、业绩、人员与数据。"""
+
+
+def render_existing_questions_text(questionnaire: dict[str, Any] | None) -> str:
+    """Render 已有问题清单（含作答状态）供新一轮 prompt 去重。"""
+    action_labels = {
+        "answered": "已自定义回答",
+        "adopted": "已采纳建议",
+        "skipped": "已跳过",
+        "supplemented": "已补充素材",
+    }
+    lines: list[str] = []
+    for question in (questionnaire or {}).get("questions") or []:
+        if not isinstance(question, dict):
+            continue
+        label = action_labels.get(str(question.get("action") or ""), "未回答")
+        text = str(question.get("question") or "")[:200]
+        lines.append(f"- [{question.get('topic') or '其他'}] {text}（{label}）")
+    return "\n".join(lines)[:SPEC_CONTEXT_MAX_CHARS]
+
+
+async def generate_questionnaire_round(
+    llm: WizardLLM,
+    *,
+    analysis: dict[str, Any],
+    requirements_text: str,
+    material_index_text: str,
+    existing_questions_text: str,
+) -> dict[str, Any]:
+    """再次检查/自动追问（多轮）：AI 判断是否需要新一轮；空列表=需求已充分、追问结束。"""
+    user_prompt = (
+        ROUND_USER_TEMPLATE.replace(
+            "__ANALYSIS_JSON__", json.dumps(analysis, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]
+        )
+        .replace("__REQUIREMENTS_TEXT__", (requirements_text or "无")[:SPEC_CONTEXT_MAX_CHARS])
+        .replace("__MATERIAL_INDEX__", material_index_text or "（无素材）")
+        .replace("__EXISTING_QUESTIONS__", existing_questions_text or "（无）")
+    )
+    payload = await llm.generate_json(ROUND_SYSTEM_PROMPT, user_prompt)
+    return normalize_questionnaire(payload)
+
+
 async def generate_spec(
     llm: WizardLLM,
     *,
@@ -729,41 +812,6 @@ async def answer_sidebar_question(
     if not answer:
         raise RuntimeError("AI 未能回答该问题，请换个问法重试")
     return answer[:4_000]
-
-
-async def generate_followup_questions(
-    llm: WizardLLM,
-    *,
-    analysis: dict[str, Any],
-    requirements_text: str,
-    material_index_text: str,
-) -> list[dict[str, Any]]:
-    """AI 主动反问（决策 32b/Q19）：对照招标要素检测已保存需求的关键缺口，≤3 条、单轮。"""
-    system_prompt = (
-        "你是投标需求评审专家。对照招标文件要素与用户已确认的编写需求，找出最多 3 个"
-        "会显著影响标书质量的关键信息缺口（如资质、业绩、人员、实施边界、服务承诺等）。"
-        '只输出 JSON：{"followups": [{"question": "...", "why": "..."}]}。'
-        "question 是向用户追问的具体问题（一句话、可直接回答）；why 一句话说明为什么关键。"
-        "没有实质缺口时输出空数组。不要重复用户已回答或素材已覆盖的信息。"
-    )
-    user_prompt = (
-        f"招标要素：\n{json.dumps(analysis or {}, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]}\n\n"
-        f"已确认的编写需求：\n{(requirements_text or '无')[:SPEC_CONTEXT_MAX_CHARS]}\n\n"
-        f"素材索引：\n{material_index_text or '（无素材）'}"
-    )
-    payload = await llm.generate_json(system_prompt, user_prompt)
-    raw = payload.get("followups") if isinstance(payload, dict) else payload
-    followups: list[dict[str, Any]] = []
-    for index, item in enumerate(raw if isinstance(raw, list) else []):
-        if not isinstance(item, dict):
-            continue
-        question = str(item.get("question") or "").strip()[:500]
-        if not question:
-            continue
-        followups.append(
-            {"id": f"fu{index + 1}", "question": question, "why": str(item.get("why") or "").strip()[:500]}
-        )
-    return followups[:3]
 
 
 # ------------------------------------------------------- material index io

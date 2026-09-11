@@ -11,6 +11,7 @@ import {
   deleteWizard,
   estimateIndexCost,
   generateQuestionnaire,
+  generateQuestionnaireRound,
   generateSpec,
   getLatestWritingTask,
   getMaterialIndex,
@@ -27,10 +28,7 @@ import {
   listLatestSections,
   restoreWizard,
   adoptSidebarAnswer as apiAdoptAnswer,
-  answerFollowup as apiAnswerFollowup,
   askSidebarQuestion as apiAskQuestion,
-  generateFollowups as apiGenerateFollowups,
-  type WizardFollowup,
   deleteMaterial as apiDeleteMaterial,
   createWritingTask,
   rollbackSpec as apiRollbackSpec,
@@ -56,6 +54,7 @@ import { documentsApi, projectsApi } from "@/api/client";
 import type { Document } from "@/types";
 import { useVstoBridge } from "@/composables/useVstoBridge";
 import { prepareChartAssets, splitMermaidFences } from "@/utils/chartAssets";
+import { renderMarkdown } from "@/utils/markdown";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 
 const bridge = useVstoBridge();
@@ -230,14 +229,17 @@ function friendlyError(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-async function withBusy(name: string, action: () => Promise<void>) {
-  if (busy.value) return;
+/** busy 互斥执行；返回是否完整执行（false = 撞锁或出错，错误已写 pageError）。 */
+async function withBusy(name: string, action: () => Promise<void>): Promise<boolean> {
+  if (busy.value) return false;
   busy.value = name;
   pageError.value = "";
   try {
     await action();
+    return true;
   } catch (error) {
     pageError.value = friendlyError(error, "操作失败，请稍后重试");
+    return false;
   } finally {
     busy.value = "";
   }
@@ -251,7 +253,7 @@ async function refreshWizard() {
 const stageIndex = computed(() => stageIndexOf[wizard.value?.stage || "material"] ?? 0);
 const bridgeStateText = computed(() =>
   bridge.contextReady.value
-    ? "已连接 Word 文档"
+    ? "已连接文档"
     : bridge.available.value
       ? "正在连接 Word 文档"
       : "未检测到 Word 插件桥（仍可完成前三阶段）",
@@ -487,16 +489,21 @@ function onUploadFromClient() {
   const picked = clientItems.value.filter(
     (item) => clientChecked.value.has(String(item.id)) && item.url,
   );
-  if (!picked.length) return;
+  if (!picked.length) {
+    clientError.value = "所选素材缺少本机文件路径，无法上传；请刷新列表后重新勾选";
+    return;
+  }
+  const skipped = clientChecked.value.size - picked.length;
   const items = picked.map((item) => ({
     id: String(item.id),
     url: item.url!,
     filename: item.original_filename || (item.url || "").split(/[\\/]/).pop() || String(item.id),
   }));
+  clientError.value = "";
   // 桥列表无文件大小，无法按字节预估（决策 17a 的预估弹窗退化为通用文案）
   Modal.confirm({
     title: "上传所选客户端素材？",
-    content: `已选 ${items.length} 份素材，上传后自动建立索引（按实际用量计费，费用计入账户）`,
+    content: `已选 ${items.length} 份素材${skipped ? `（另 ${skipped} 份缺少本机路径已跳过）` : ""}，上传后自动建立索引（按实际用量计费，费用计入账户）`,
     okText: "上传并索引",
     cancelText: "取消",
     onOk: () =>
@@ -524,15 +531,21 @@ function onUploadFromClient() {
           }
           const failed = rows.filter((row) => !row.success);
           if (failed.length) {
-            pageError.value = `${failed.length}/${rows.length} 份素材上传失败：${failed
+            const message = `${failed.length}/${rows.length} 份素材上传失败：${failed
               .slice(0, 3)
-              .map((row) => row.filename || "")
+              .map((row) => (row.filename ? `${row.filename}（${row.error || "未知原因"}）` : row.error || ""))
               .filter(Boolean)
-              .join("、")}`;
+              .join("；")}`;
+            pageError.value = message;
+            clientError.value = message;
           }
           clientChecked.value = new Set();
           await Promise.all([refreshWizard(), loadMaterials()]);
           startMaterialPoll();
+        } catch (error) {
+          // 页顶 pageError 在窄任务面板里常滚出视野，素材区就近再显示一份
+          clientError.value = error instanceof Error ? error.message : "上传失败，请稍后重试";
+          throw error;
         } finally {
           clientUploading.value = false;
         }
@@ -615,6 +628,17 @@ const analysisBasicEntries = computed<[string, string][]>(() => {
     .filter(([key]) => key !== "")
     .slice(0, 30);
 });
+/** 解读 basic 字段名 → 用户可读列名；模型偶发自造字段名时回落原样显示。 */
+const BASIC_FIELD_LABELS: Record<string, string> = {
+  project_name: "项目名称",
+  tendering_unit: "招标单位",
+  opening_date: "开标时间",
+  bid_deadline: "投标截止时间",
+  budget: "预算金额",
+};
+function basicFieldLabel(key: string): string {
+  return BASIC_FIELD_LABELS[key] || key;
+}
 function analysisStrings(field: string): string[] {
   const raw = analysis.value?.[field];
   return Array.isArray(raw) ? (raw as unknown[]).map(String).filter(Boolean).slice(0, 50) : [];
@@ -642,25 +666,76 @@ function onAnalyzeTender() {
 // =============================================================== 阶段 2：需求确认
 
 const questionnaire = ref<WizardQuestion[]>([]);
-type AnswerState = { action: "answered" | "adopted" | "skipped"; answer: string };
+type AnswerState = { action: "answered" | "adopted" | "skipped" | "supplemented"; answer: string };
 const answerDrafts = reactive<Record<string, AnswerState>>({});
+const savedAtText = ref(""); // 本会话最近一次保存作答的时刻（HH:MM，反馈⑰：保存按钮挪进问卷卡片后就近提示）
 
-const groupedQuestions = computed(() => {
-  const groups: { topic: string; items: WizardQuestion[] }[] = [];
-  for (const question of questionnaire.value) {
-    const group = groups.find((item) => item.topic === question.topic);
-    if (group) group.items.push(question);
-    else groups.push({ topic: question.topic, items: [question] });
+/** 有无未保存作答：与 requirements 已存状态逐题比对（未渲染过草稿的题视为未动过）。 */
+const hasUnsavedAnswers = computed(() =>
+  questionnaire.value.some((question) => {
+    const draft = answerDrafts[question.id];
+    if (!draft) return false;
+    const saved = savedAnswerFor(question.id);
+    const action = draft.action;
+    const answer = action === "answered" ? draft.answer.trim() : "";
+    if (!saved || !saved.action) {
+      const defaultAction = question.suggested_answer ? "adopted" : "skipped";
+      return action !== defaultAction || answer !== "";
+    }
+    if (saved.action !== action) return true;
+    const savedAnswer = saved.action === "answered" ? String(saved.answer || "").trim() : "";
+    return savedAnswer !== answer;
+  }),
+);
+
+const saveHintText = computed(() => {
+  if (hasUnsavedAnswers.value) {
+    return savedAtText.value ? `已保存 ${savedAtText.value}，有未保存的修改` : "有未保存的修改";
   }
-  return groups;
+  return savedAtText.value ? `已保存 ${savedAtText.value}` : "";
 });
+
+/** 按轮分组（反馈⑱）：round≥2 为追问轮，组头显示轮次；首轮沿用主题分组样式。 */
+const groupedRounds = computed(() => {
+  const rounds: { round: number; groups: { topic: string; items: WizardQuestion[] }[] }[] = [];
+  for (const question of questionnaire.value) {
+    const roundNo = question.round || 1;
+    let bucket = rounds.find((item) => item.round === roundNo);
+    if (!bucket) {
+      bucket = { round: roundNo, groups: [] };
+      rounds.push(bucket);
+    }
+    let group = bucket.groups.find((item) => item.topic === question.topic);
+    if (!group) {
+      group = { topic: question.topic, items: [] };
+      bucket.groups.push(group);
+    }
+    group.items.push(question);
+  }
+  rounds.sort((a, b) => a.round - b.round);
+  return rounds;
+});
+
+/** 已保存的作答（wizard.requirements.questions）——刷新/重进页面后恢复草稿。 */
+function savedAnswerFor(questionId: string): WizardQuestion | null {
+  const saved = wizard.value?.requirements as { questions?: WizardQuestion[] } | null;
+  return (saved?.questions || []).find((item) => item.id === questionId) || null;
+}
 
 function ensureAnswerDraft(question: WizardQuestion) {
   if (!answerDrafts[question.id]) {
-    answerDrafts[question.id] = {
-      action: question.suggested_answer ? "adopted" : "skipped",
-      answer: "",
-    };
+    const saved = savedAnswerFor(question.id);
+    if (saved?.action) {
+      answerDrafts[question.id] = {
+        action: saved.action,
+        answer: saved.action === "answered" ? saved.answer || "" : "",
+      };
+    } else {
+      answerDrafts[question.id] = {
+        action: question.suggested_answer ? "adopted" : "skipped",
+        answer: "",
+      };
+    }
   }
   return answerDrafts[question.id];
 }
@@ -678,60 +753,274 @@ function onGenerateQuestionnaire() {
   });
 }
 
+async function saveRequirementsInternal() {
+  const answers = questionnaire.value.map((question) => {
+    const draft = ensureAnswerDraft(question);
+    return {
+      question_id: question.id,
+      action: draft.action,
+      answer: draft.action === "answered" ? draft.answer : null,
+    };
+  });
+  wizard.value = await apiSaveRequirements(wizard.value!.id, answers);
+  const now = new Date();
+  savedAtText.value = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
+/** 索引未完成的素材（反馈㉓：保存作答与再次检查共用同一拦截口径）。 */
+const indexingMaterials = computed(() =>
+  materials.value.filter((item) => item.index_status === "pending" || item.index_status === "indexing"),
+);
+function indexingSummary(items: WizardMaterial[]): string {
+  return `${items.length} 份素材仍在索引中（${items
+    .slice(0, 3)
+    .map((item) => item.original_filename)
+    .join("、")}${items.length > 3 ? " 等" : ""}）`;
+}
+
 function onSubmitRequirements() {
   if (!wizard.value) return;
-  void withBusy("requirements", async () => {
-    const answers = questionnaire.value.map((question) => {
-      const draft = ensureAnswerDraft(question);
-      return {
-        question_id: question.id,
-        action: draft.action,
-        answer: draft.action === "answered" ? draft.answer : null,
-      };
+  // 索引未完成时保存没有意义：AI 追问轮看不了新素材，必被 409——前置拦截（反馈㉓）
+  const indexing = indexingMaterials.value;
+  if (indexing.length) {
+    Modal.warning({
+      title: "新素材还在建立索引",
+      content: `有 ${indexingSummary(indexing)}，完成后才能保存并触发 AI 追问。`,
     });
-    wizard.value = await apiSaveRequirements(wizard.value!.id, answers);
-    // 决策 32b：保存后自动触发缺口检测（非阻塞——检测期间可进入大纲；单轮，已有追问不重测）
-    if (!followups.value.length) triggerFollowups();
+    return;
+  }
+  const wasDirty = hasUnsavedAnswers.value;
+  // 必须等保存的 withBusy 结束（busy 清零）后再触发追问轮：autoFollowupRound 内部
+  // 也走 withBusy，busy 未清时会被守卫静默跳过（反馈⑱链路一度因此从未生效）
+  void withBusy("requirements", saveRequirementsInternal).then((ok) => {
+    if (wasDirty && ok) autoFollowupRound();
   });
 }
 
-// ---- 多轮追问（决策 32：追问侧栏 + AI 主动反问）----
+/** 进入编写大纲前先把未保存草稿落库（反馈⑰：此前直接跳转会静默丢弃改动）。 */
+function onEnterOutline() {
+  if (!wizard.value) return;
+  // gotoStage 开头有 busy 守卫：必须在保存的 withBusy 结束后再调，
+  // 在其回调内直调会被静默跳过（"点击无反应"事故根因）
+  void withBusy("requirements", async () => {
+    if (hasUnsavedAnswers.value) await saveRequirementsInternal();
+  }).then((ok) => {
+    if (ok) void gotoStage(2);
+  });
+}
 
-const followups = computed<WizardFollowup[]>(() => {
-  const requirements = wizard.value?.requirements as { followups?: WizardFollowup[] } | null;
-  return Array.isArray(requirements?.followups) ? requirements!.followups! : [];
+// ---- 补充素材 + 再次检查（反馈⑭）：就地上传；触发的问题关闭，其余问答保留 ----
+
+const supplementInput = ref<HTMLInputElement | null>(null);
+const supplementForQuestion = ref(""); // 本次上传触发的问题 id（空 = 阶段级入口，不关闭问题）
+const supplementInfo = ref("");
+const supplementMaterialIds = ref<string[]>([]); // 本次会话补充上传的素材 id（反馈⑮：就地显示索引进展）
+const supplementBindings = ref<Record<string, string[]>>({}); // 问题 id → 本次会话为该问题补充的素材 id（反馈⑲：进度就地显示在问题卡下方）
+const reqActionError = ref(""); // 就近展示（页顶 pageError 在任务面板里易滚出视野，反馈⑨教训）
+
+function materialStageLabel(item: WizardMaterial): { text: string; color: string } {
+  if (item.doc_status === "pending" || item.doc_status === "parsing") return { text: "解析中", color: "blue" };
+  if (item.index_status === "pending" || item.index_status === "indexing") return { text: "索引中", color: "blue" };
+  if (item.index_status === "indexed") {
+    return { text: item.chunk_count ? `已索引（${item.chunk_count} 段）` : "已索引", color: "green" };
+  }
+  return { text: "索引失败", color: "red" };
+}
+
+// 就地进展面板条目 = 本次补充的素材 ∪ 任何仍在解析/索引的在途素材（含从素材准备阶段带来的，刷新页面也不丢）。
+// 问题级补充的素材排除在外，改在对应问题卡下方显示（反馈⑲）。
+const supplementProgressItems = computed<WizardMaterial[]>(() => {
+  const boundIds = new Set<string>();
+  for (const ids of Object.values(supplementBindings.value)) {
+    for (const id of ids) boundIds.add(id);
+  }
+  const byId = new Map<string, WizardMaterial>();
+  for (const item of materials.value) {
+    if (boundIds.has(item.id)) continue;
+    if (
+      item.doc_status === "pending" ||
+      item.doc_status === "parsing" ||
+      item.index_status === "pending" ||
+      item.index_status === "indexing"
+    ) {
+      byId.set(item.id, item);
+    }
+  }
+  for (const id of supplementMaterialIds.value) {
+    if (boundIds.has(id)) continue;
+    const item = materials.value.find((entry) => entry.id === id);
+    if (item) byId.set(id, item);
+  }
+  const ordered: WizardMaterial[] = [];
+  for (const id of supplementMaterialIds.value) {
+    const item = byId.get(id);
+    if (item) {
+      ordered.push(item);
+      byId.delete(id);
+    }
+  }
+  ordered.push(...byId.values());
+  return ordered;
 });
+const supplementAllIndexed = computed(
+  () =>
+    supplementProgressItems.value.length > 0 &&
+    supplementProgressItems.value.every((item) => item.index_status === "indexed"),
+);
+const supplementHasFailed = computed(() => supplementProgressItems.value.some((item) => item.index_status === "failed"));
+
+// 问题级补充素材的就地进展（反馈⑲）：绑定只存在于本会话内存中，刷新后问题卡仅退回文字提示。
+const questionSupplementMap = computed<Record<string, WizardMaterial[]>>(() => {
+  const map: Record<string, WizardMaterial[]> = {};
+  for (const [questionId, ids] of Object.entries(supplementBindings.value)) {
+    map[questionId] = ids
+      .map((id) => materials.value.find((entry) => entry.id === id))
+      .filter((item): item is WizardMaterial => Boolean(item));
+  }
+  return map;
+});
+function qSupplementItems(questionId: string): WizardMaterial[] {
+  return questionSupplementMap.value[questionId] || [];
+}
+function qSupplementAllIndexed(questionId: string): boolean {
+  const items = qSupplementItems(questionId);
+  return items.length > 0 && items.every((item) => item.index_status === "indexed");
+}
+function qSupplementHasFailed(questionId: string): boolean {
+  return qSupplementItems(questionId).some((item) => item.index_status === "failed");
+}
+
+function pickSupplementMaterials(questionId: string | null) {
+  if (!wizard.value || busy.value) return;
+  supplementForQuestion.value = questionId || "";
+  supplementInput.value?.click();
+}
+
+function onSupplementFilesChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files || []);
+  input.value = "";
+  if (!files.length || !wizard.value) return;
+  const targetQuestion = supplementForQuestion.value
+    ? questionnaire.value.find((item) => item.id === supplementForQuestion.value) || null
+    : null;
+  void withBusy("supplement", async () => {
+    reqActionError.value = "";
+    try {
+      // 上传前预估确认（决策 17a），与素材准备阶段同口径
+      const estimate = await estimateIndexCost(
+        files.reduce((sum, file) => sum + file.size, 0),
+      ).catch(() => null);
+      let costText = "按实际用量计费";
+      if (estimate) {
+        costText = `预计索引消耗约 ${(estimate.estimated_tokens / 1000).toFixed(1)} 千 token`;
+        if (estimate.estimated_points != null) costText += `（约 ${estimate.estimated_points} 点）`;
+      }
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Modal.confirm({
+          title: "确认补充素材？",
+          content: `${
+            targetQuestion ? "上传后该问题关闭，其余问题与作答保留。" : "上传后素材自动建立索引。"
+          }已选 ${files.length} 份素材，${costText}（费用计入账户）。索引完成后点「再次检查」，AI 将基于新素材发起下一轮提问。`,
+          okText: "上传并索引",
+          cancelText: "取消",
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false),
+        });
+      });
+      if (!confirmed) return;
+      const createdIds: string[] = [];
+      for (const file of files) {
+        const created = await apiUploadMaterial(wizard.value!.id, file, null);
+        createdIds.push(created.id);
+        supplementMaterialIds.value.push(created.id);
+      }
+      if (targetQuestion) {
+        supplementBindings.value = {
+          ...supplementBindings.value,
+          [targetQuestion.id]: [...(supplementBindings.value[targetQuestion.id] || []), ...createdIds],
+        };
+        const draft = ensureAnswerDraft(targetQuestion);
+        draft.action = "supplemented";
+        draft.answer = "";
+      } else {
+        supplementInfo.value = files.map((file) => file.name).join("、");
+      }
+      await Promise.all([refreshWizard(), loadMaterials()]);
+      startMaterialPoll();
+    } catch (error) {
+      reqActionError.value = friendlyError(error, "补充素材失败，请稍后重试");
+    }
+  });
+}
+
+function onRecheck() {
+  if (!wizard.value) return;
+  if (!tenderReady.value) {
+    pageError.value = "招标文件尚未解析完成，请稍候";
+    return;
+  }
+  const indexing = indexingMaterials.value;
+  if (indexing.length) {
+    Modal.warning({
+      title: "新素材还在建立索引",
+      content: `有 ${indexingSummary(indexing)}，完成后才能再次检查。`,
+    });
+    return;
+  }
+  void withBusy("recheck", async () => {
+    reqActionError.value = "";
+    try {
+      await saveRequirementsInternal(); // 先保存现有需求（含"已补充素材"状态）
+      wizard.value = await generateQuestionnaireRound(wizard.value!.id);
+      questionnaire.value = wizard.value.questionnaire?.questions || [];
+      for (const question of questionnaire.value) ensureAnswerDraft(question);
+      supplementInfo.value = "";
+    } catch (error) {
+      reqActionError.value = friendlyError(error, "再次检查失败，请稍后重试");
+    }
+  });
+}
+
+// ---- 多轮追问（决策 32：追问侧栏；主动追问统一到问卷轮，反馈⑱）----
+
 const supplementalCount = computed(() => {
   const requirements = wizard.value?.requirements as { supplementals?: unknown[] } | null;
   return Array.isArray(requirements?.supplementals) ? requirements!.supplementals!.length : 0;
 });
-const followupsLoading = ref(false); // 独立于 busy：检测不阻塞进入大纲（Q19 非阻塞）
-const followupDrafts = reactive<Record<string, string>>({});
 const qaQuestion = ref("");
 const qaHistory = ref<{ question: string; answer: string; adopted: boolean }[]>([]);
 
-function triggerFollowups() {
-  if (!wizard.value || followupsLoading.value) return;
-  followupsLoading.value = true;
-  apiGenerateFollowups(wizard.value.id)
-    .then(() => refreshWizard())
-    .catch((error) => {
-      pageError.value = friendlyError(error, "需求缺口检测失败，可稍后在需求页重试");
-    })
-    .finally(() => {
-      followupsLoading.value = false;
-    });
-}
+/** 追问状态（questionnaire.followup）：AI 是否确认需求充分、已用自动轮数。 */
+const followupState = computed(() => wizard.value?.questionnaire?.followup || null);
+const followupDone = computed(() => followupState.value?.status === "done");
 
-function onFollowupAnswer(followup: WizardFollowup, action: "answered" | "skipped") {
-  if (!wizard.value) return;
-  const answer = (followupDrafts[followup.id] || "").trim();
-  if (action === "answered" && !answer) {
-    pageError.value = "请输入回答，或选择跳过";
-    return;
-  }
-  void withBusy("followup", async () => {
-    wizard.value = await apiAnswerFollowup(wizard.value!.id, followup.id, action, answer || null);
+/** 保存作答后自动追问（反馈⑮⑱）：AI 判断是否需要新一轮；done/达上限/满待答时不触发。 */
+function autoFollowupRound() {
+  const current = wizard.value;
+  if (!current || followupDone.value) return;
+  const closed = new Set(["answered", "adopted", "skipped"]);
+  const openCount = questionnaire.value.filter((question) => {
+    const saved = savedAnswerFor(question.id);
+    return !(saved?.action && closed.has(saved.action));
+  }).length;
+  if (openCount >= 20) return; // 待答已满，后端也会拒，不白跑一次计费评估
+  const indexing = materials.value.some(
+    (item) => item.index_status === "pending" || item.index_status === "indexing",
+  );
+  if (indexing) return; // 新素材还在索引，AI 看不到：静默跳过，索引完成后由「再次检查」触发
+  void withBusy("followupRound", async () => {
+    try {
+      wizard.value = await generateQuestionnaireRound(current.id, "auto");
+      questionnaire.value = wizard.value.questionnaire?.questions || [];
+      for (const question of questionnaire.value) ensureAnswerDraft(question);
+    } catch (error) {
+      // 400=AI 已确认充分/达最大自动轮数、409=素材还在索引：静默；其余给就近提示
+      const status = (error as { status?: number }).status;
+      if (status !== 400 && status !== 409) {
+        reqActionError.value = friendlyError(error, "自动追问未完成，可点「再次检查」手动触发");
+      }
+    }
   });
 }
 
@@ -1013,7 +1302,7 @@ function addChart(node: WizardSpecNode) {
 function onGenerateSpec() {
   if (!wizard.value) return;
   if (wizard.value.requirements === null) {
-    pageError.value = "请先完成需求确认（保存问卷答案）";
+    pageError.value = "请先完成需求确认（保存 AI 提问的回答）";
     return;
   }
   void withBusy("spec", async () => {
@@ -1612,6 +1901,12 @@ function resetLocalState() {
   materials.value = [];
   questionnaire.value = [];
   for (const key of Object.keys(answerDrafts)) delete answerDrafts[key];
+  supplementForQuestion.value = "";
+  supplementInfo.value = "";
+  supplementMaterialIds.value = [];
+  supplementBindings.value = {};
+  savedAtText.value = "";
+  reqActionError.value = "";
   specNodes.value = [];
   specDirty.value = false;
   reviseInstruction.value = "";
@@ -1642,7 +1937,15 @@ onUnmounted(() => {
       <img :src="logoUrl" alt="标书审查智能体" class="wiz-logo">
       <div class="wiz-title">
         <h1>AI编标</h1>
-        <span class="bridge-state">{{ bridgeStateText }}</span>
+        <span class="bridge-state" :class="{ ok: bridge.contextReady.value }">
+          <span class="bridge-dot" />
+          <span>{{ bridgeStateText }}</span>
+          <span
+            v-if="bridge.documentContext.value?.document_name"
+            class="bridge-doc-name"
+            :title="bridge.documentContext.value.document_name"
+          >{{ bridge.documentContext.value.document_name }}</span>
+        </span>
       </div>
       <button
         v-if="view === 'wizard' && wizard"
@@ -1709,7 +2012,6 @@ onUnmounted(() => {
                   <Tag v-if="isWriting(item)" color="blue">撰写中</Tag>
                 </div>
                 <span class="project-meta">
-                  <span v-if="item.tender_filename" class="project-tender" :title="item.tender_filename">{{ item.tender_filename }}</span>
                   <span class="project-time">{{ formatTime(item.updated_at) }}</span>
                 </span>
                 <span class="project-actions">
@@ -1801,7 +2103,7 @@ onUnmounted(() => {
             <table v-if="analysisBasicEntries.length" class="kv-table">
               <tbody>
                 <tr v-for="[key, value] in analysisBasicEntries" :key="key">
-                  <th>{{ key }}</th>
+                  <th :title="key">{{ basicFieldLabel(key) }}</th>
                   <td>{{ value }}</td>
                 </tr>
               </tbody>
@@ -1868,8 +2170,9 @@ onUnmounted(() => {
             </div>
             <label class="upload-btn" :class="{ disabled: materialUploading || Boolean(busy) }">
               {{ materialUploading ? "上传中…" : "点击上传素材（可多选）" }}
-              <input type="file" multiple accept=".pdf,.docx,.doc,.xlsx,.txt,.md" hidden :disabled="materialUploading || Boolean(busy)" @change="onUploadMaterials">
+              <input type="file" multiple accept=".pdf,.docx,.doc,.xlsx,.png,.jpg,.jpeg,.bmp,.webp" hidden :disabled="materialUploading || Boolean(busy)" @change="onUploadMaterials">
             </label>
+            <p class="hint">支持 PDF / Word / Excel / 图片（PNG、JPG 等），图片将自动 OCR 识别文字后建立索引。</p>
           </template>
 
           <template v-else>
@@ -1938,7 +2241,7 @@ onUnmounted(() => {
               <button type="button" class="link-btn danger" @click="removeMaterial(item)">删除</button>
             </li>
           </ul>
-          <div v-if="wizard.requirements_stale" class="stale-tip">素材已变化：进入需求确认后请重新生成问卷。</div>
+          <div v-if="wizard.requirements_stale" class="stale-tip">素材已变化：进入需求确认后请重新检查素材。</div>
         </div>
 
         <div class="stage-actions">
@@ -1950,58 +2253,97 @@ onUnmounted(() => {
 
       <!-- ==================================================== 阶段 2：需求确认 -->
       <section v-else-if="stageIndex === 1" class="stage-panel">
+        <input
+          ref="supplementInput"
+          type="file"
+          multiple
+          accept=".pdf,.docx,.doc,.xlsx,.png,.jpg,.jpeg,.bmp,.webp"
+          hidden
+          :disabled="Boolean(busy)"
+          @change="onSupplementFilesChange"
+        >
         <div v-if="wizard.requirements_stale" class="stale-tip">
-          素材或招标文件已变化，当前问卷基于旧素材。
-          <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="onGenerateQuestionnaire">重新生成问卷</button>
-        </div>
-
-        <!-- AI 主动反问（决策 32b）：保存需求后自动检测，非阻塞、可跳过、单轮 -->
-        <div v-if="followups.length" class="card">
-          <h3>AI 追问（回答后并入编写需求，可跳过）</h3>
-          <div v-for="followup in followups" :key="followup.id" class="q-card followup-card">
-            <div class="q-head">
-              <strong>{{ followup.question }}</strong>
-              <Tag v-if="followup.status === 'answered'" color="green">已回答</Tag>
-              <Tag v-else-if="followup.status === 'skipped'" color="default">已跳过</Tag>
-            </div>
-            <p v-if="followup.why" class="q-why">为什么问：{{ followup.why }}</p>
-            <div v-if="!followup.status" class="q-actions">
-              <textarea
-                v-model="followupDrafts[followup.id]"
-                rows="2"
-                placeholder="输入你的回答"
-                :disabled="Boolean(busy)"
-              />
-              <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="onFollowupAnswer(followup, 'answered')">提交回答</button>
-              <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="onFollowupAnswer(followup, 'skipped')">跳过</button>
-            </div>
-          </div>
-        </div>
-        <div v-else-if="followupsLoading" class="card">
-          <p class="hint">AI 正在检查编写需求的缺口（不阻塞，可直接进入下一步）…</p>
+          <template v-if="wizard.requirements !== null">
+            素材已变化：现有问答保留，点「再次检查」让 AI 基于新素材发起下一轮提问。
+          </template>
+          <template v-else>
+            素材或招标文件已变化，当前问题基于旧素材。
+            <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="onGenerateQuestionnaire">重新检查素材</button>
+          </template>
         </div>
 
         <div class="card">
+          <h3>素材检查和需求确认</h3>
           <template v-if="!questionnaire.length">
-            <p class="hint">AI 将根据招标要素与素材索引生成结构化问卷（约 6-15 题），每题尽量附带素材依据的建议答案。</p>
+            <p class="hint">AI 将检查您上传的素材，如有问题，AI 将向您提问并请您补充更多信息和素材（每个问题尽量附带素材依据的建议答案）。</p>
             <button type="button" class="primary" :disabled="Boolean(busy) || !tenderReady" @click="onGenerateQuestionnaire">
-              {{ busy === "questionnaire" ? "AI 正在生成问卷（最长 5 分钟）…（素材较多时耗时较长，请勿关闭页面）" : "生成问卷" }}
+              {{ busy === "questionnaire" ? "AI 正在检查素材并整理问题（最长 5 分钟）…（素材较多时耗时较长，请勿关闭页面）" : "开始检查" }}
             </button>
           </template>
           <template v-else>
-            <div v-for="group in groupedQuestions" :key="group.topic" class="q-group">
+            <div class="req-toolbar">
+              <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="pickSupplementMaterials(null)">补充素材</button>
+              <button type="button" class="ghost" :disabled="Boolean(busy) || !tenderReady" @click="onRecheck">
+                {{ busy === "recheck" ? "AI 再次检查中（最长 5 分钟）…" : "再次检查" }}
+              </button>
+              <span class="hint" style="margin:0">补充新素材后点「再次检查」，AI 基于新素材发起下一轮提问（现有问答保留）。</span>
+            </div>
+            <div v-if="supplementProgressItems.length" class="supplement-progress">
+              <div class="sp-head">
+                <span>补充素材进展</span>
+                <span class="hint" style="margin:0">{{ supplementAllIndexed ? "全部完成" : "解析与索引自动进行，完成后即可「再次检查」" }}</span>
+              </div>
+              <div v-for="item in supplementProgressItems" :key="item.id" class="sp-row">
+                <span class="sp-name" :title="item.original_filename || ''">{{ item.original_filename }}</span>
+                <Tag :color="materialStageLabel(item).color">{{ materialStageLabel(item).text }}</Tag>
+                <button
+                  v-if="item.index_status === 'failed'"
+                  type="button"
+                  class="link-btn"
+                  :disabled="Boolean(busy)"
+                  @click="reindexFailed(item)"
+                >重试索引</button>
+              </div>
+              <p v-if="supplementAllIndexed" class="hint" style="margin:6px 0 0">新素材已全部索引完成，可点「再次检查」发起下一轮提问。</p>
+              <p v-else-if="supplementHasFailed" class="hint" style="margin:6px 0 0">有素材索引失败：点「重试索引」重试，或回到素材准备阶段删除后重新上传。</p>
+            </div>
+            <p v-else-if="supplementInfo" class="hint">已补充素材：{{ supplementInfo }}。</p>
+            <p v-if="reqActionError" class="wiz-error" style="margin:0 0 8px">{{ reqActionError }}</p>
+            <template v-for="round in groupedRounds" :key="round.round">
+              <h4 v-if="round.round > 1" class="round-head">第 {{ round.round }} 轮 · AI 追问</h4>
+              <div v-for="group in round.groups" :key="`${round.round}-${group.topic}`" class="q-group">
               <h4>{{ group.topic }}</h4>
               <div v-for="question in group.items" :key="question.id" class="q-card">
                 <div class="q-head">
                   <strong>{{ question.question }}</strong>
                   <Tag v-if="question.inferred" color="orange">推断，请确认</Tag>
+                  <Tag v-if="ensureAnswerDraft(question).action === 'supplemented'" color="blue">已补充素材，待再次检查</Tag>
                 </div>
                 <p v-if="question.why" class="q-why">为什么问：{{ question.why }}</p>
                 <p v-if="question.suggested_answer" class="q-suggest">
                   建议答案：{{ question.suggested_answer }}
                   <span v-if="question.source" class="q-source">（来源：{{ question.source }}）</span>
                 </p>
-                <div class="q-actions">
+                <div v-if="ensureAnswerDraft(question).action === 'supplemented'" class="q-supplement">
+                  <div v-for="item in qSupplementItems(question.id)" :key="item.id" class="sp-row">
+                    <span class="sp-name" :title="item.original_filename || ''">{{ item.original_filename }}</span>
+                    <Tag :color="materialStageLabel(item).color">{{ materialStageLabel(item).text }}</Tag>
+                    <button
+                      v-if="item.index_status === 'failed'"
+                      type="button"
+                      class="link-btn"
+                      :disabled="Boolean(busy)"
+                      @click="reindexFailed(item)"
+                    >重试索引</button>
+                  </div>
+                  <p class="hint" style="margin:6px 0 0">
+                    <template v-if="!qSupplementItems(question.id).length">已为该问题补充素材：点上方「再次检查」，AI 将基于新素材给出确认答案或继续追问。</template>
+                    <template v-else-if="qSupplementAllIndexed(question.id)">补充素材已索引完成，点上方「再次检查」，AI 将基于新素材给出确认答案或继续追问。</template>
+                    <template v-else-if="qSupplementHasFailed(question.id)">有素材索引失败：点「重试索引」重试，或回到素材准备阶段删除后重新上传。</template>
+                    <template v-else>解析与索引自动进行，完成后即可点上方「再次检查」。</template>
+                  </p>
+                </div>
+                <div v-else class="q-actions">
                   <label class="radio">
                     <input
                       v-model="ensureAnswerDraft(question).action"
@@ -2032,15 +2374,32 @@ onUnmounted(() => {
                     rows="2"
                     placeholder="输入你的回答"
                   />
+                  <button
+                    type="button"
+                    class="link-btn"
+                    :disabled="Boolean(busy)"
+                    title="上传新素材回答该问题；上传后本问题关闭，其余问题保留"
+                    @click="pickSupplementMaterials(question.id)"
+                  >补充素材</button>
                 </div>
               </div>
+            </div>
+            </template>
+            <div class="req-save-bar">
+              <button type="button" class="ghost" :disabled="Boolean(busy)" @click="onSubmitRequirements">
+                {{ busy === "requirements" ? "保存中…" : busy === "followupRound" ? "AI 评估中…" : "保存作答" }}
+              </button>
+              <!-- 追问反馈就近显示（反馈㉑）：卡片顶部的横幅在长问卷下离保存按钮太远，用户看不见 -->
+              <span v-if="busy === 'followupRound'" class="hint" style="margin:0;color:#2f6fdd">AI 正在评估本轮作答（最长 5 分钟），需要追问的问题会追加在上方…</span>
+              <span v-else-if="followupDone" class="hint" style="margin:0;color:#389e0d">AI 已确认需求充分，可进入编写大纲；补充新素材后仍可点「再次检查」。</span>
+              <span v-else-if="saveHintText" class="hint" style="margin:0">{{ saveHintText }}</span>
             </div>
           </template>
         </div>
         <!-- 追问侧栏（决策 32a）：自由提问，采纳并入编写需求 -->
         <div class="card">
-          <h3>向 AI 追问</h3>
-          <p class="hint" style="margin:0 0 8px">基于招标要素与已索引素材回答你的提问；采纳的问答会并入编写需求（{{ supplementalCount }} 条补充说明），供大纲与撰写参考。每次提问按问答微任务计费。</p>
+          <h3>额外的需求</h3>
+          <p class="hint" style="margin:0 0 8px">每条问答点「采纳并入需求」即时生效，无需统一保存。如果您有额外的需求，请告诉 AI；AI 将基于招标要素与已索引素材回答，采纳的问答会并入编写需求（{{ supplementalCount }} 条补充说明），供大纲与撰写参考。每次提问按问答微任务计费。</p>
           <div class="qa-input-row">
             <input
               v-model="qaQuestion"
@@ -2056,7 +2415,7 @@ onUnmounted(() => {
           </div>
           <div v-for="(item, index) in qaHistory" :key="index" class="qa-item">
             <p class="qa-q">问：{{ item.question }}</p>
-            <p class="qa-a">{{ item.answer }}</p>
+            <div class="qa-a md-render" v-html="renderMarkdown(item.answer)"></div>
             <button v-if="!item.adopted" type="button" class="link-btn" :disabled="Boolean(busy)" @click="onAdoptQaAnswer(item)">采纳并入需求</button>
             <Tag v-else color="green">已并入</Tag>
           </div>
@@ -2065,13 +2424,12 @@ onUnmounted(() => {
         <div v-if="questionnaire.length" class="stage-actions">
           <button type="button" class="ghost" :disabled="Boolean(busy)" @click="gotoStage(0)">上一步</button>
           <div class="action-group">
-            <button type="button" class="ghost" :disabled="Boolean(busy)" @click="onSubmitRequirements">保存需求</button>
             <button
               type="button"
               class="primary"
-              :disabled="Boolean(busy) || wizard.requirements === null"
-              @click="gotoStage(2)"
-            >进入编写大纲</button>
+              :disabled="Boolean(busy)"
+              @click="onEnterOutline"
+            >{{ busy === "requirements" && hasUnsavedAnswers ? "保存并进入…" : "进入编写大纲" }}</button>
           </div>
         </div>
         <div v-else class="stage-actions">
@@ -2298,7 +2656,7 @@ onUnmounted(() => {
       :footer="null"
       width="640px"
     >
-      <pre class="index-pre">{{ materialIndexModal.content }}</pre>
+      <div class="index-md md-render" v-html="renderMarkdown(materialIndexModal.content)"></div>
     </a-modal>
 
     <a-modal
@@ -2327,7 +2685,10 @@ onUnmounted(() => {
 .new-project-btn:disabled{opacity:.5;cursor:not-allowed}
 .wiz-logo{width:96px;object-fit:contain}
 .wiz-title h1{margin:0;font-size:18px}
-.bridge-state{color:#888;font-size:12px}
+.bridge-state{display:inline-flex;min-width:0;align-items:center;gap:7px;margin-top:4px;padding:5px 10px;border-radius:999px;background:#fafafa;color:#999;font-size:11px}
+.bridge-state.ok{background:#f6ffed;color:#3d9b18}
+.bridge-dot{width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:currentColor}
+.bridge-doc-name{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#555}
 .wiz-loading{padding:60px 16px;text-align:center;color:#888}
 .wiz-error{margin:8px 16px;padding:9px 12px;border:1px solid #ffccc7;border-radius:7px;background:#fff1f0;color:#c23b3b;font-size:12px;line-height:1.6}
 .guide-card{margin:40px auto;padding:28px;width:min(460px,calc(100vw - 28px));background:#fff;border:1px solid #e8e8e8;border-top:3px solid #d7041a;border-radius:12px;text-align:center}
@@ -2397,12 +2758,21 @@ button.primary:disabled{opacity:.5;cursor:not-allowed}
 button.ghost{padding:8px 16px;border:1px solid #d9d9d9;border-radius:7px;background:#fff;color:#555;cursor:pointer}
 button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .q-card{border:1px solid #f0f0f0;border-radius:9px;padding:10px 12px;margin-bottom:10px}
-.followup-card{border-color:#ffe58f;background:#fffbe6}
+.req-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.req-save-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px dashed #e5e6eb}
+.supplement-progress{border:1px solid #d6e6fb;background:#f7faff;border-radius:6px;padding:8px 10px;margin:0 0 10px}
+.supplement-progress .sp-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-weight:600;margin-bottom:4px}
+.supplement-progress .sp-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 0}
+.supplement-progress .sp-name{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.q-supplement{border:1px solid #d6e6fb;background:#f7faff;border-radius:6px;padding:8px 10px;margin-top:8px}
+.q-supplement .sp-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 0}
+.q-supplement .sp-name{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.round-head{margin:14px 0 6px;padding:4px 10px;background:#f0f7ff;border-left:3px solid #2f6fdd;font-size:13px}
 .qa-input-row{display:flex;gap:8px}
 .qa-input-row input{flex:1;border:1px solid #e5e5e5;border-radius:6px;padding:7px 10px;font-size:13px}
 .qa-item{border-top:1px dashed #f0f0f0;margin-top:10px;padding-top:10px}
 .qa-q{margin:0 0 4px;font-weight:600;font-size:12.5px}
-.qa-a{margin:0 0 6px;white-space:pre-wrap;color:#555;line-height:1.7;font-size:12.5px}
+.qa-a{margin:0 0 6px;color:#555;font-size:12.5px}
 .action-group{display:flex;gap:10px}
 .q-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .q-why{color:#999;margin:5px 0 0;font-size:12px}
@@ -2458,7 +2828,20 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .log-line.error{color:#cf1322}
 .log-time{color:#bbb;margin-right:8px}
 .section-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
-.index-pre{white-space:pre-wrap;word-break:break-all;max-height:420px;overflow:auto;font-size:12px;background:#fafafa;padding:10px;border-radius:8px}
+.index-md{max-height:420px;overflow:auto;font-size:13px;background:#fafafa;padding:10px 12px;border-radius:8px}
+.md-render{line-height:1.7;word-break:break-word}
+.md-render :deep(h1){font-size:16px;font-weight:700;margin:4px 0 10px}
+.md-render :deep(h2){font-size:14px;font-weight:700;margin:12px 0 6px}
+.md-render :deep(h3){font-size:13px;font-weight:700;margin:10px 0 4px}
+.md-render :deep(p){margin:6px 0}
+.md-render :deep(ul),.md-render :deep(ol){padding-left:1.5em;margin:6px 0}
+.md-render :deep(li){margin:3px 0}
+.md-render :deep(table){width:100%;border-collapse:collapse;margin:8px 0;font-size:12px}
+.md-render :deep(th),.md-render :deep(td){border:1px solid #e8e8e8;padding:5px 8px;text-align:left;vertical-align:top}
+.md-render :deep(th){background:#f0f0f0;font-weight:600;white-space:nowrap}
+.md-render :deep(code){background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:12px}
+.md-render :deep(blockquote){margin:6px 0;padding:4px 10px;border-left:3px solid #e8e8e8;color:#777}
+.md-render :deep(pre){white-space:pre-wrap;word-break:break-all;background:#f0f0f0;padding:8px;border-radius:6px;overflow:auto}
 .preview-body{max-height:60vh;overflow:auto}
 .preview-text{white-space:pre-wrap;font-family:inherit;font-size:12.5px;line-height:1.8;margin:0}
 .preview-mermaid{border-left:3px solid #d9d9d9;margin:6px 0;padding:4px 10px;color:#777}

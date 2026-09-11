@@ -38,7 +38,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 const running = computed(() => Boolean(taskId.value) && !finished.value);
 const bridgeStateText = computed(() =>
   bridge.contextReady.value
-    ? "已连接 Word 文档"
+    ? "已连接文档"
     : bridge.available.value
       ? "正在连接 Word 文档"
       : "未检测到 Word 插件（可粘贴文本使用）",

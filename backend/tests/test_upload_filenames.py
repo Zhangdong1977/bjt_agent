@@ -148,3 +148,60 @@ async def test_draft_upload_returns_invalid_filename_detail(client, auth_headers
 
     assert response.status_code == 400
     assert response.json()["detail"] == documents_api.FILENAME_INVALID_DETAIL
+
+
+def _dotnet_encoded_word(filename: str) -> str:
+    """.NET Framework MultipartFormDataContent 对非 ASCII filename 的编码形态。"""
+    import base64
+
+    return "=?utf-8?B?" + base64.b64encode(filename.encode("utf-8")).decode("ascii") + "?="
+
+
+def test_decode_rfc2047_filename_restores_dotnet_chinese_name():
+    encoded = _dotnet_encoded_word("公司简介.docx")
+
+    assert "?" in encoded and Path(encoded).suffix == ""
+    assert documents_api._decode_rfc2047_filename(encoded) == "公司简介.docx"
+
+
+def test_decode_rfc2047_filename_passes_plain_names_through():
+    assert documents_api._decode_rfc2047_filename("公司简介.docx") == "公司简介.docx"
+    assert documents_api._decode_rfc2047_filename("plain.pdf") == "plain.pdf"
+    assert documents_api._decode_rfc2047_filename("") == ""
+    assert documents_api._decode_rfc2047_filename(None) is None
+
+
+def test_validate_upload_file_accepts_decoded_dotnet_filename():
+    upload = _upload(_dotnet_encoded_word("组织架构与部门职责.pdf"))
+
+    with pytest.raises(HTTPException):
+        documents_api._validate_upload_file(upload)
+
+    upload.filename = documents_api._decode_rfc2047_filename(upload.filename)
+    documents_api._validate_upload_file(upload)
+
+    assert upload.filename == "组织架构与部门职责.pdf"
+
+
+def test_validate_upload_file_image_only_for_extended_set():
+    upload = _upload("组织架构图.png", data=b"\x89PNG\r\n\x1a\n")
+
+    with pytest.raises(HTTPException):
+        documents_api._validate_upload_file(upload)
+
+    documents_api._validate_upload_file(
+        upload,
+        documents_api.SUPPORTED_EXTENSIONS | documents_api.IMAGE_EXTENSIONS,
+        "PDF、DOCX、DOC、XLSX 或图片",
+    )
+
+
+def test_image_material_markdown_structure():
+    from backend.tasks.document_parser import _image_material_markdown
+
+    md = _image_material_markdown("组织架构图.png", "董事长\n总经理", "baidu_ocr")
+    assert md.startswith("# 组织架构图.png")
+    assert "baidu_ocr" in md and "董事长" in md and "总经理" in md
+
+    empty = _image_material_markdown("拓扑图.png", "", "rapidocr")
+    assert "未在图片中识别到文字内容" in empty

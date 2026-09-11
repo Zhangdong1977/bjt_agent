@@ -253,6 +253,19 @@ def test_dispatch_registry_wizard_kinds():
     assert "bid_wizard_qa" not in _TASK_NAMES
 
 
+def test_task_models_expose_reconcile_timestamps():
+    """reconcile 结算兜底对 TASK_MODEL_BY_KIND 全部模型统一引用 started_at/completed_at。
+
+    缺列会让兜底任务每轮 AttributeError 崩溃（2026-09-10 反馈⑭：BidWizardQaTask 缺列，
+    预发布 reconcile 自 M2 部署起每 2 分钟崩一次，异常悬挂任务无人回收）。
+    """
+    from backend.models import TASK_MODEL_BY_KIND
+
+    for kind, model in TASK_MODEL_BY_KIND.items():
+        assert hasattr(model, "started_at"), f"{kind}/{model.__name__} 缺 started_at"
+        assert hasattr(model, "completed_at"), f"{kind}/{model.__name__} 缺 completed_at"
+
+
 def test_task_model_registry_wizard_kinds():
     assert TASK_MODEL_BY_KIND["bid_wizard_qa"] is BidWizardQaTask
     assert TASK_MODEL_BY_KIND["bid_wizard_index"] is BidWizardIndexTask
@@ -685,30 +698,6 @@ def test_build_requirements_text_includes_supplementals():
     assert "无效条目" not in text
 
 
-def test_generate_followup_questions_bounds_and_ids():
-    import asyncio
-
-    from backend.agent.bid_wizard_agent import generate_followup_questions
-
-    class FakeLLM:
-        async def generate_json(self, system_prompt, user_prompt):
-            return {
-                "followups": [
-                    {"question": f"问题{i}", "why": f"原因{i}"} for i in range(6)
-                ]
-                + [{"question": ""}, {"question": "有效"}]
-            }
-
-    followups = asyncio.run(
-        generate_followup_questions(
-            FakeLLM(), analysis={}, requirements_text="无", material_index_text=""
-        )
-    )
-    assert len(followups) == 3  # 上限 3 条（Q19）
-    assert [item["id"] for item in followups] == ["fu1", "fu2", "fu3"]
-    assert followups[0]["question"] == "问题0"
-
-
 # ------------------------------------------------------------------ 开关 DB 化（决策 36）
 
 
@@ -741,18 +730,466 @@ class TestAccessModeDbPriority:
             await session.commit()
         await engine.dispose()
 
+    @staticmethod
+    async def _snapshot_rows() -> list[dict]:
+        from backend.models import BidWizardSetting, async_session_factory, engine
+
+        async with async_session_factory() as session:
+            rows = (await session.execute(select(BidWizardSetting))).scalars().all()
+            result = [{"id": r.id, "mode": r.mode} for r in rows]
+        await engine.dispose()
+        return result
+
+    @staticmethod
+    async def _restore_rows(before: list[dict]) -> None:
+        """还原到测试前状态——测试库可能是共享的预发布库，无条件清表会把线上开关行删掉
+        （2026-09-10 反馈⑭事故：全站 403 两次，均为测试套件收尾 _set_mode(None) 自伤）。"""
+        from backend.models import BidWizardSetting, async_session_factory, engine
+
+        keep_ids = {item["id"] for item in before}
+        async with async_session_factory() as session:
+            for row in (await session.execute(select(BidWizardSetting))).scalars().all():
+                if row.id not in keep_ids:
+                    await session.delete(row)
+            for item in before:
+                row = (
+                    await session.execute(
+                        select(BidWizardSetting).where(BidWizardSetting.id == item["id"])
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    session.add(BidWizardSetting(id=item["id"], mode=item["mode"]))
+                else:
+                    row.mode = item["mode"]
+            await session.commit()
+        await engine.dispose()
+
     async def test_db_row_overrides_env(self, client, auth_headers):
-        await self._set_mode("disabled")
-        access = (
-            await client.get("/api/bid-wizard/access", headers=auth_headers)
-        ).json()
-        assert access["enabled"] is False and access["mode"] == "disabled"
+        before = await self._snapshot_rows()
+        try:
+            await self._set_mode("disabled")
+            access = (
+                await client.get("/api/bid-wizard/access", headers=auth_headers)
+            ).json()
+            assert access["enabled"] is False and access["mode"] == "disabled"
 
-        await self._set_mode("enabled")
-        access2 = (
-            await client.get("/api/bid-wizard/access", headers=auth_headers)
-        ).json()
-        assert access2["enabled"] is True and access2["mode"] == "enabled"
+            await self._set_mode("enabled")
+            access2 = (
+                await client.get("/api/bid-wizard/access", headers=auth_headers)
+            ).json()
+            assert access2["enabled"] is True and access2["mode"] == "enabled"
+        finally:
+            # 还原到测试前快照（此前若为空表则删测试行；此前若有值则写回）
+            await self._restore_rows(before)
 
-        # 还原：清掉 DB 行回退 env，避免影响同库其他用例
-        await self._set_mode(None)
+
+# ------------------------------------------------------------------ 补充素材 + 再次检查（反馈⑭）
+
+
+def test_merge_questionnaire_answers_supplemented_action():
+    questionnaire = normalize_questionnaire(
+        {"questions": [
+            {"question": "证书编号？", "suggested_answer": "素材未提供", "inferred": False},
+        ]}
+    )
+    merged = merge_questionnaire_answers(
+        {"questions": questionnaire["questions"]},
+        [{"question_id": "q1", "action": "supplemented", "answer": None}],
+    )
+    question = merged["questions"][0]
+    assert question["action"] == "supplemented"
+    assert question["effective_answer"] is None  # 答案待下一轮检查给出
+
+
+def test_build_requirements_text_marks_supplemented():
+    requirements = {
+        "questions": [
+            {"topic": "资质", "question": "ISO9001 证书编号与有效期？",
+             "effective_answer": None, "action": "supplemented"},
+            {"topic": "交付", "question": "交付周期？",
+             "effective_answer": "50 天", "action": "answered"},
+        ]
+    }
+    text = build_requirements_text(requirements)
+    assert "[已补充素材] ISO9001 证书编号与有效期？" in text
+    assert "答案待下一轮检查确认" in text
+    assert "50 天" in text
+
+
+def test_render_existing_questions_text_labels_actions():
+    from backend.agent.bid_wizard_agent import render_existing_questions_text
+
+    text = render_existing_questions_text(
+        {"questions": [
+            {"topic": "资质", "question": "证书编号？", "action": "supplemented"},
+            {"topic": "交付", "question": "交付周期？", "action": "adopted"},
+            {"topic": "人员", "question": "项目经理？"},  # 未回答
+        ]}
+    )
+    assert "（已补充素材）" in text and "证书编号" in text
+    assert "（已采纳建议）" in text and "交付周期" in text
+    assert "（未回答）" in text and "项目经理" in text
+    assert render_existing_questions_text(None) == ""
+
+
+def test_generate_questionnaire_round_context_and_normalization():
+    import asyncio
+
+    from backend.agent.bid_wizard_agent import generate_questionnaire_round
+
+    captured = {}
+
+    class FakeLLM:
+        async def generate_json(self, system_prompt, user_prompt):
+            captured["system"] = system_prompt
+            captured["user"] = user_prompt
+            return {
+                "questions": [
+                    {"question": "证书编号是否为 ISO-2026-001？", "topic": "资质",
+                     "why": "★必备资格", "suggested_answer": "ISO-2026-001（证书扫描件提取）",
+                     "source": "证书扫描件#1", "inferred": False},
+                    {"question": ""},  # 空问题被丢弃
+                ]
+            }
+
+    questionnaire = asyncio.run(
+        generate_questionnaire_round(
+            FakeLLM(),
+            analysis={"project_name": "智慧园区"},
+            requirements_text="- [已补充素材] 证书编号？：用户已为该问题补充新素材，答案待下一轮检查确认",
+            material_index_text="【素材 d1｜证书扫描件】| 1 | 证书 | ISO-2026-001 |",
+            existing_questions_text="- [资质] 证书编号？（已补充素材）",
+        )
+    )
+    assert [q["id"] for q in questionnaire["questions"]] == ["q1"]
+    assert questionnaire["questions"][0]["source"] == "证书扫描件#1"
+    user = captured["user"]
+    assert "已补充素材" in user  # 需求文本中的补充标记进了 prompt
+    assert "智慧园区" in user  # 招标要素
+    assert "ISO-2026-001" in user  # 新素材索引事实进了上下文
+    assert "已问过的问题" in user
+
+    class EmptyLLM:
+        async def generate_json(self, system_prompt, user_prompt):
+            return {"questions": []}
+
+    # 反馈⑱：空轮=AI 判定需求已充分，是合法返回（不再报错）
+    empty = asyncio.run(
+        generate_questionnaire_round(
+            EmptyLLM(), analysis={}, requirements_text="",
+            material_index_text="", existing_questions_text="",
+        )
+    )
+    assert empty["questions"] == []
+
+
+class TestQuestionnaireRoundApi:
+    """再次检查端点（反馈⑭）：追加不覆盖、索引未完成 409。"""
+
+    @pytest.fixture(autouse=True)
+    def _stub_env(self, monkeypatch):
+        from backend.config import get_settings
+        from backend.tasks.document_parser import parse_document
+
+        monkeypatch.setattr(parse_document, "delay", lambda *args, **kwargs: None)
+        monkeypatch.setattr(get_settings(), "bid_wizard_access_mode", "enabled")
+
+        import backend.services.sales as sales_service
+        import backend.services.task_lifecycle as lifecycle
+
+        async def _fake_async(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(lifecycle, "authorize_billable_task_start", _fake_async)
+        monkeypatch.setattr(lifecycle, "finalize_task_usage", _fake_async)
+
+        def _fake_multiplier(config, task_kind):
+            from decimal import Decimal
+
+            return Decimal("1")
+
+        monkeypatch.setattr(sales_service, "multiplier_for_task", _fake_multiplier)
+
+    async def _prepare_wizard(self, client, auth_headers) -> dict:
+        """向导 + 已解析招标文件 + 第一轮问卷 + 已保存需求（q1 supplemented）。"""
+        created = (
+            await client.post("/api/bid-wizard/wizards", json={}, headers=auth_headers)
+        ).json()
+        await client.post(
+            f"/api/bid-wizard/wizards/{created['id']}/tender",
+            files={"file": ("tender.pdf", b"%PDF-1.4\n regression tender\n", "application/pdf")},
+            headers=auth_headers,
+        )
+        from backend.models import BidWizard, Document, async_session_factory, engine
+        from backend.agent.bid_wizard_agent import normalize_questionnaire
+
+        questionnaire = normalize_questionnaire(
+            {"questions": [
+                {"question": "ISO9001 证书编号？", "suggested_answer": "", "topic": "资质"},
+                {"question": "交付周期？", "suggested_answer": "45 天", "topic": "交付"},
+            ]}
+        )
+        async with async_session_factory() as session:
+            wizard = (
+                await session.execute(select(BidWizard).where(BidWizard.id == created["id"]))
+            ).scalar_one()
+            wizard.analysis = {"project_name": "回归测试"}
+            wizard.questionnaire = questionnaire
+            tender_documents = (
+                await session.execute(
+                    select(Document).where(
+                        Document.project_id == wizard.project_id,
+                        Document.doc_type == "tender",
+                    )
+                )
+            ).scalars().all()
+            for document in tender_documents:
+                document.status = "parsed"
+            await session.commit()
+        await engine.dispose()
+        saved = await client.put(
+            f"/api/bid-wizard/wizards/{created['id']}/requirements",
+            json={"answers": [
+                {"question_id": "q1", "action": "supplemented", "answer": None},
+                {"question_id": "q2", "action": "adopted", "answer": None},
+            ]},
+            headers=auth_headers,
+        )
+        assert saved.status_code == 200
+        assert saved.json()["requirements"]["questions"][0]["action"] == "supplemented"
+        return created
+
+    async def _add_material(self, wizard: dict, index_status: str) -> None:
+        from backend.models import (
+            BidWizard,
+            BidWizardMaterial,
+            Document,
+            async_session_factory,
+            engine,
+        )
+
+        async with async_session_factory() as session:
+            owner_id = (
+                await session.execute(select(BidWizard.user_id).where(BidWizard.id == wizard["id"]))
+            ).scalar_one()
+            document = Document(
+                project_id=wizard["project_id"],
+                doc_type="material",
+                original_filename="证书扫描件.pdf",
+                file_path="/tmp/cert.pdf",
+                status="parsed",
+            )
+            session.add(document)
+            await session.flush()
+            session.add(
+                BidWizardMaterial(
+                    wizard_id=wizard["id"],
+                    user_id=owner_id,
+                    document_id=document.id,
+                    index_status=index_status,
+                )
+            )
+            await session.commit()
+        await engine.dispose()
+
+    async def test_round_rejected_while_material_indexing(self, client, auth_headers):
+        wizard = await self._prepare_wizard(client, auth_headers)
+        # 两份在途素材：存在性检查必须容忍多行（2026-09-11 反馈㉒：scalar_one_or_none 撞多行 500）
+        await self._add_material(wizard, "indexing")
+        await self._add_material(wizard, "pending")
+        response = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/questionnaire/round",
+            headers=auth_headers,
+        )
+        assert response.status_code == 409
+        assert "索引" in response.json()["detail"]
+
+    async def test_round_appends_and_preserves(self, client, auth_headers, monkeypatch):
+        from backend.agent import bid_wizard_agent
+
+        class FakeLLM:
+            def __init__(self, timeout=None):
+                pass
+
+            async def generate_json(self, system_prompt, user_prompt):
+                assert "[已补充素材]" in user_prompt  # 补充标记进入新一轮 prompt
+                return {
+                    "questions": [
+                        {"question": "证书编号是否为 ISO-2026-001？", "topic": "资质",
+                         "why": "★必备", "suggested_answer": "ISO-2026-001",
+                         "source": "证书扫描件#1", "inferred": False},
+                    ]
+                }
+
+        monkeypatch.setattr(bid_wizard_agent, "WizardLLM", FakeLLM)
+        wizard = await self._prepare_wizard(client, auth_headers)
+        await self._add_material(wizard, "indexed")
+        response = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/questionnaire/round",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        ids = [item["id"] for item in body["questionnaire"]["questions"]]
+        assert ids == ["q1", "q2", "q3"]  # 追加续号、旧问题原样保留
+        assert body["requirements"]["questions"][0]["action"] == "supplemented"
+        assert body["requirements"]["questions"][1]["effective_answer"] == "45 天"
+        assert body["requirements_stale"] is False
+
+    async def _set_questionnaire(self, wizard_id: str, count: int) -> None:
+        """直接把向导问卷覆盖为 count 道题（q1..qN，不带作答状态）。
+
+        不走 normalize_questionnaire——它按单轮上限截断到 15 条，造不出 20 题。
+        """
+        from backend.models import BidWizard, async_session_factory, engine
+
+        questionnaire = {
+            "questions": [
+                {
+                    "id": f"q{index}",
+                    "question": f"回归问题 {index}？",
+                    "suggested_answer": f"建议 {index}",
+                    "topic": "资质",
+                    "why": "",
+                    "source": "",
+                    "inferred": False,
+                }
+                for index in range(1, count + 1)
+            ]
+        }
+        async with async_session_factory() as session:
+            row = (
+                await session.execute(select(BidWizard).where(BidWizard.id == wizard_id))
+            ).scalar_one()
+            row.questionnaire = questionnaire
+            row.requirements = None
+            await session.commit()
+        await engine.dispose()
+
+    async def test_round_open_cap_blocks_only_unanswered(self, client, auth_headers):
+        """20 道全未作答 → 拒绝（待答上限）；这是闸门本意：逼用户先处理存量问题。"""
+        wizard = await self._prepare_wizard(client, auth_headers)
+        await self._set_questionnaire(wizard["id"], 20)
+        response = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/questionnaire/round",
+            headers=auth_headers,
+        )
+        assert response.status_code == 400
+        assert "待答" in response.json()["detail"]
+
+    async def test_round_allowed_when_all_answered(self, client, auth_headers, monkeypatch):
+        """反馈⑯场景：20 道全部已作答（采纳/补充）→ 再次检查必须放行（总数不再是闸门）。"""
+        from backend.agent import bid_wizard_agent
+
+        class FakeLLM:
+            def __init__(self, timeout=None):
+                pass
+
+            async def generate_json(self, system_prompt, user_prompt):
+                assert "已采纳建议" in user_prompt  # 作答状态标签来自 requirements 视图
+                return {
+                    "questions": [
+                        {"question": "证书编号是否为 ISO-2026-009？", "topic": "资质",
+                         "why": "★必备", "suggested_answer": "ISO-2026-009",
+                         "source": "证书扫描件#2", "inferred": False},
+                    ]
+                }
+
+        monkeypatch.setattr(bid_wizard_agent, "WizardLLM", FakeLLM)
+        wizard = await self._prepare_wizard(client, auth_headers)
+        await self._set_questionnaire(wizard["id"], 20)
+        saved = await client.put(
+            f"/api/bid-wizard/wizards/{wizard['id']}/requirements",
+            json={"answers": [
+                {"question_id": f"q{index}", "action": "adopted", "answer": None}
+                for index in range(1, 20)
+            ] + [{"question_id": "q20", "action": "supplemented", "answer": None}]},
+            headers=auth_headers,
+        )
+        assert saved.status_code == 200  # 20 条作答载荷在新总上限内
+        await self._add_material(wizard, "indexed")
+        response = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/questionnaire/round",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        ids = [item["id"] for item in body["questionnaire"]["questions"]]
+        assert len(ids) == 21 and ids[-1] == "q21"  # 20 全终态 + 追加 1 题续号
+
+    async def test_round_auto_marks_done_on_empty(self, client, auth_headers, monkeypatch):
+        """AI 判定需求已充分（空轮）：trigger=auto 返回 200 并标记 done，不追加问题。"""
+        from backend.agent import bid_wizard_agent
+
+        class FakeLLM:
+            def __init__(self, timeout=None):
+                pass
+
+            async def generate_json(self, system_prompt, user_prompt):
+                assert "无需追问" in user_prompt  # prompt 明确允许空列表
+                return {"questions": []}
+
+        monkeypatch.setattr(bid_wizard_agent, "WizardLLM", FakeLLM)
+        wizard = await self._prepare_wizard(client, auth_headers)
+        response = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/questionnaire/round?trigger=auto",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["questionnaire"]["questions"]) == 2  # 原样保留
+        assert body["questionnaire"]["followup"] == {"auto_rounds": 0, "status": "done"}
+
+    async def test_round_auto_rejected_when_done_or_capped(self, client, auth_headers):
+        """done 状态或自动轮数达上限时，trigger=auto 直接拒绝（不再白跑计费评估）。"""
+        from backend.models import BidWizard, async_session_factory, engine
+
+        wizard = await self._prepare_wizard(client, auth_headers)
+        for followup in ({"auto_rounds": 0, "status": "done"}, {"auto_rounds": 5, "status": "active"}):
+            async with async_session_factory() as session:
+                row = (
+                    await session.execute(select(BidWizard).where(BidWizard.id == wizard["id"]))
+                ).scalar_one()
+                row.questionnaire = {**row.questionnaire, "followup": followup}
+                await session.commit()
+            await engine.dispose()
+            response = await client.post(
+                f"/api/bid-wizard/wizards/{wizard['id']}/questionnaire/round?trigger=auto",
+                headers=auth_headers,
+            )
+            assert response.status_code == 400
+
+    async def test_round_auto_appends_and_counts_round(self, client, auth_headers, monkeypatch):
+        """trigger=auto 追加问题：轮次标记 round=2、auto_rounds 计数 +1；manual 不占配额。"""
+        from backend.agent import bid_wizard_agent
+
+        class FakeLLM:
+            def __init__(self, timeout=None):
+                pass
+
+            async def generate_json(self, system_prompt, user_prompt):
+                return {
+                    "questions": [
+                        {"question": "自动追问：项目经理是谁？", "topic": "人员",
+                         "why": "★必备", "suggested_answer": "", "inferred": False},
+                    ]
+                }
+
+        monkeypatch.setattr(bid_wizard_agent, "WizardLLM", FakeLLM)
+        wizard = await self._prepare_wizard(client, auth_headers)
+        response = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/questionnaire/round?trigger=auto",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        questions = body["questionnaire"]["questions"]
+        assert questions[-1]["id"] == "q3" and questions[-1]["round"] == 2
+        assert questions[0].get("round") in (None, 1)  # 首轮无 round 字段
+        assert body["questionnaire"]["followup"] == {"auto_rounds": 1, "status": "active"}
+        manual = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/questionnaire/round",
+            headers=auth_headers,
+        )
+        assert manual.status_code == 200
+        assert manual.json()["questionnaire"]["followup"]["auto_rounds"] == 1  # manual 不占配额

@@ -51,7 +51,9 @@ class Settings(BaseSettings):
     billing_test_package_enabled: bool = False  # env: BILLING_TEST_PACKAGE_ENABLED
     # A user may run only this many billable top-level tasks at once.  This is
     # separate from the sub-agent concurrency inside one task.
-    billing_max_active_tasks_per_user: int = 1
+    # 2026-09-11 定为 3：=1 时结算异步窗口（秒级）内连发下一个任务必 409 扰人；
+    # 悬挂回收由 reconcile 兜底（迁移 042 修复后最迟 ~7 分钟），3 足以限流。
+    billing_max_active_tasks_per_user: int = 3
     # Terminal tasks whose worker disappeared are finalized by reconciliation
     # after this grace period, allowing late usage writes to land first.
     billing_orphan_finalize_grace_seconds: int = 300
@@ -65,6 +67,9 @@ class Settings(BaseSettings):
     bid_wizard_index_max_active_tasks: int = 5
     # 素材池上限（份）与单份素材大小上限（MB）——对齐 documents 既有约束风格。
     bid_wizard_material_max_count: int = 200
+    # 自动追问轮数上限：是否追问、问几轮由 AI 判断（返回空=结束），程序只封顶
+    # （2026-09-11 反馈⑱）。manual「再次检查」不占此配额。env: BID_WIZARD_FOLLOWUP_MAX_ROUNDS
+    bid_wizard_followup_max_rounds: int = 5
 
     # outbox 自愈清扫器（本地联调拓扑专用，默认关闭）：共享预发布 PG 时，预发布旧版
     # beat 每 10s 扫共享 outbox 表，遇到它不认识的 kind（如 bid_wizard_*）会 KeyError

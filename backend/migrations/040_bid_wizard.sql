@@ -150,8 +150,13 @@ CREATE TABLE IF NOT EXISTS bid_wizard_whitelist (
     id VARCHAR(36) PRIMARY KEY,
     user_id VARCHAR(36) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     note VARCHAR(500),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Base 模型自动注入 created_at+updated_at（models/base.py:56-57），
+-- 旧版 040 建表漏 updated_at 致 ORM 查询 500；已执行过旧版 040 的库靠本条补齐
+ALTER TABLE bid_wizard_whitelist
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE UNIQUE INDEX IF NOT EXISTS uq_bid_wizard_whitelist_user ON bid_wizard_whitelist(user_id);
 
 -- 向导倍率列（NULL = 走全局 sales_multiplier；运营台配置 UI 属 M2）

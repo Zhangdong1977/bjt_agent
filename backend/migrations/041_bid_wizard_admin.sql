@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS bid_wizard_settings (
     id          VARCHAR(20) PRIMARY KEY,
     mode        VARCHAR(20) NOT NULL DEFAULT 'disabled'
                 CHECK (mode IN ('enabled', 'whitelist', 'disabled')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

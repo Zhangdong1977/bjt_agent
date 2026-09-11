@@ -69,7 +69,7 @@ const canSubmit = computed(() => Boolean(
   && !running.value,
 ));
 const overallText = computed(() => ({ pass: "未发现明确违规", fail: "发现暗标风险", unknown: "存在待确认项目" } as Record<string, string>)[String(summary.value.overall)] || "检查完成");
-const bridgeStateText = computed(() => bridgeState.value === "ready" ? "已连接 Word 文档" : bridgeState.value === "busy" ? "正在读取 Word 文档" : "等待 Word 插件连接");
+const bridgeStateText = computed(() => bridgeState.value === "ready" ? "已连接文档" : bridgeState.value === "busy" ? "正在读取 Word 文档" : "等待 Word 插件连接");
 const coverageIncompleteTools = computed(() => {
   const value = summary.value.coverage_incomplete_tools;
   return Array.isArray(value) ? value.map((item) => String(item)) : [];
