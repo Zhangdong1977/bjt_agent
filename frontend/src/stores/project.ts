@@ -63,9 +63,12 @@ export const useProjectStore = defineStore("project", () => {
   async function fetchProjects() {
     loading.value = true;
     try {
-      // 检查网站（历史/我的项目）只展示检查与查重项目；标书生成项目仅在插件生成页可见
+      // 检查网站（历史/我的项目）只展示检查与查重项目；标书生成（bid_draft）
+      // 与 AI编标（bid_wizard）项目仅在插件对应页面可见
       const all = await projectsApi.list();
-      projects.value = all.filter((p) => p.project_type !== "bid_draft");
+      projects.value = all.filter(
+        (p) => p.project_type !== "bid_draft" && p.project_type !== "bid_wizard",
+      );
     } finally {
       loading.value = false;
     }

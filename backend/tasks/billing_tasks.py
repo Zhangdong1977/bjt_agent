@@ -329,6 +329,10 @@ async def _reconcile_task_billing_async() -> dict:
     )
     from backend.tasks.bid_draft_tasks import BID_DRAFT_MAX_RUNTIME_SECONDS
     from backend.tasks.polish_tasks import POLISH_MAX_RUNTIME_SECONDS
+    from backend.tasks.bid_wizard_tasks import (
+        BID_WIZARD_INDEX_MAX_RUNTIME_SECONDS,
+        BID_WIZARD_WRITE_MAX_RUNTIME_SECONDS,
+    )
     from backend.services.billing import settle_task_consumption
     from backend.services.usage_summary import refresh_task_summary
     from backend.utils.time_utils import utc_now
@@ -383,6 +387,10 @@ async def _reconcile_task_billing_async() -> dict:
             "blind_check": 25 * 60,
             "polish": POLISH_MAX_RUNTIME_SECONDS,
             "bid_draft": BID_DRAFT_MAX_RUNTIME_SECONDS,
+            # 同步问答微任务：请求内 asyncio 上限 120s（对账兜底取宽限值）
+            "bid_wizard_qa": 300,
+            "bid_wizard_index": BID_WIZARD_INDEX_MAX_RUNTIME_SECONDS,
+            "bid_wizard_write": BID_WIZARD_WRITE_MAX_RUNTIME_SECONDS,
         }
         stuck_tasks = []
         seen_models = set()

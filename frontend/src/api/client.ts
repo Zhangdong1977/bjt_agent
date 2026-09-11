@@ -440,7 +440,7 @@ export function getTokenClaims(): {
 
 // Projects API
 export const projectsApi = {
-  async list(projectType?: "review" | "duplicate" | "bid_draft"): Promise<Project[]> {
+  async list(projectType?: "review" | "duplicate" | "bid_draft" | "bid_wizard"): Promise<Project[]> {
     const response = await apiClient.get("/projects", {
       params: projectType ? { project_type: projectType } : undefined,
     });
@@ -454,6 +454,11 @@ export const projectsApi = {
 
   async create(data: CreateProjectRequest): Promise<Project> {
     const response = await apiClient.post("/projects", data);
+    return response.data;
+  },
+
+  async update(id: string, data: { name?: string; description?: string }): Promise<Project> {
+    const response = await apiClient.put(`/projects/${id}`, data);
     return response.data;
   },
 

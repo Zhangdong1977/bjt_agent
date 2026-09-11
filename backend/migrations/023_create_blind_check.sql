@@ -57,12 +57,21 @@ CREATE TABLE IF NOT EXISTS vsto_tool_calls (
     error_message TEXT,
     requested_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
-    answered_at TIMESTAMPTZ
+    answered_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ix_vsto_tool_calls_task_id ON vsto_tool_calls(task_id);
 CREATE INDEX IF NOT EXISTS ix_vsto_tool_calls_session_id ON vsto_tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS ix_vsto_tool_calls_status ON vsto_tool_calls(status);
 CREATE INDEX IF NOT EXISTS ix_vsto_tool_calls_expires_at ON vsto_tool_calls(expires_at);
+-- Base 模型自动注入 created_at+updated_at（models/base.py:56-57），
+-- 旧版 023 建 vsto_tool_calls 漏了这两列，首个工具调用 INSERT 即 UndefinedColumnError
+--（2026-09-11 生产暗标检查事故）；已执行过旧版 023 的库靠下面两条补齐。
+ALTER TABLE vsto_tool_calls
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE vsto_tool_calls
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 CREATE TABLE IF NOT EXISTS blind_check_findings (
     id VARCHAR(36) PRIMARY KEY,

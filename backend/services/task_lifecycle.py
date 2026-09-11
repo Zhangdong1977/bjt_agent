@@ -36,16 +36,20 @@ _TASK_NAMES = {
     "blind_check": "backend.tasks.blind_check_tasks.run_blind_check",
     "bid_draft": "backend.tasks.bid_draft_tasks.run_bid_draft",
     "polish": "backend.tasks.polish_tasks.run_polish",
+    "bid_wizard_index": "backend.tasks.bid_wizard_tasks.run_bid_wizard_index",
+    "bid_wizard_write": "backend.tasks.bid_wizard_tasks.run_bid_wizard_write",
 }
 
-# Outbox delivery queue per kind. bid_draft runs on a dedicated "generation"
-# queue so long generation runs cannot starve review/duplicate workers.
+# Outbox delivery queue per kind. bid_draft / bid_wizard_* run on a dedicated
+# "generation" queue so long generation runs cannot starve review/duplicate workers.
 _TASK_QUEUES = {
     "review": "review",
     "duplicate": "review",
     "blind_check": "review",
     "polish": "review",
     "bid_draft": "generation",
+    "bid_wizard_index": "generation",
+    "bid_wizard_write": "generation",
 }
 
 
@@ -87,11 +91,40 @@ async def count_unsettled_tasks(db: AsyncSession, *, user_id: str) -> int:
             )
         )
     ).scalar_one()
+    from backend.models import BidWizardIndexTask, BidWizardQaTask, BidWritingTask
+
+    wizard_qa_count = (
+        await db.execute(
+            select(func.count(BidWizardQaTask.id)).where(
+                BidWizardQaTask.user_id == user_id,
+                BidWizardQaTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    wizard_index_count = (
+        await db.execute(
+            select(func.count(BidWizardIndexTask.id)).where(
+                BidWizardIndexTask.user_id == user_id,
+                BidWizardIndexTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    wizard_write_count = (
+        await db.execute(
+            select(func.count(BidWritingTask.id)).where(
+                BidWritingTask.user_id == user_id,
+                BidWritingTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
     return (
         int(review_count or 0)
         + int(blind_count or 0)
         + int(bid_draft_count or 0)
         + int(polish_count or 0)
+        + int(wizard_qa_count or 0)
+        + int(wizard_index_count or 0)
+        + int(wizard_write_count or 0)
     )
 
 
@@ -226,22 +259,29 @@ async def dispatch_task_outbox(outbox_id: str) -> bool:
         return False
 
 
-async def dispatch_pending_task_outbox(*, limit: int = 50) -> dict[str, int]:
+async def dispatch_pending_task_outbox(
+    *, limit: int = 50, kinds: list[str] | None = None
+) -> dict[str, int]:
     now = utc_now()
+    query = (
+        select(TaskDispatchOutbox.id)
+        .where(
+            TaskDispatchOutbox.status.in_(("pending", "retry")),
+            or_(
+                TaskDispatchOutbox.next_attempt_at.is_(None),
+                TaskDispatchOutbox.next_attempt_at <= now,
+            ),
+        )
+    )
+    if kinds:
+        # kind 白名单：本地联调清扫器只重派本环境认识的 kind，避免抢共享库里
+        # 其他环境（旧版预发布等）自己会派发的行。
+        query = query.where(TaskDispatchOutbox.task_kind.in_(kinds))
     async with async_session_factory() as db:
         ids = list(
             (
                 await db.execute(
-                    select(TaskDispatchOutbox.id)
-                    .where(
-                        TaskDispatchOutbox.status.in_(("pending", "retry")),
-                        or_(
-                            TaskDispatchOutbox.next_attempt_at.is_(None),
-                            TaskDispatchOutbox.next_attempt_at <= now,
-                        ),
-                    )
-                    .order_by(TaskDispatchOutbox.created_at.asc())
-                    .limit(limit)
+                    query.order_by(TaskDispatchOutbox.created_at.asc()).limit(limit)
                 )
             ).scalars()
         )

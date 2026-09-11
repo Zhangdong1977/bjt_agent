@@ -23,6 +23,12 @@ const router = createRouter({
       meta: { title: "AI 标书生成" },
     },
     {
+      path: "/vsto/bid-wizard",
+      name: "vsto-bid-wizard-sso",
+      component: () => import("@/views/VstoSsoView.vue"),
+      meta: { title: "AI编标" },
+    },
+    {
       path: "/vsto/polish",
       name: "vsto-polish-sso",
       component: () => import("@/views/VstoSsoView.vue"),

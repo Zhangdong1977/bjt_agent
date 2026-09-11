@@ -22,7 +22,7 @@ celery_app = Celery(
     "bid_review_agent",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["backend.tasks.review_tasks", "backend.tasks.duplicate_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks", "backend.tasks.blind_check_tasks", "backend.tasks.bid_draft_tasks", "backend.tasks.polish_tasks"],
+    include=["backend.tasks.review_tasks", "backend.tasks.duplicate_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks", "backend.tasks.blind_check_tasks", "backend.tasks.bid_draft_tasks", "backend.tasks.polish_tasks", "backend.tasks.bid_wizard_tasks"],
 )
 
 # Ensure celery.current_app points to our app, so @shared_task binds correctly
@@ -75,6 +75,9 @@ celery_app.conf.update(
         "backend.tasks.blind_check_tasks.run_blind_check": {"queue": "review"},
         "backend.tasks.bid_draft_tasks.run_bid_draft": {"queue": "generation"},
         "backend.tasks.polish_tasks.run_polish": {"queue": "review"},
+        "backend.tasks.bid_wizard_tasks.run_bid_wizard_index": {"queue": "generation"},
+        "backend.tasks.bid_wizard_tasks.run_bid_wizard_write": {"queue": "generation"},
+        "backend.tasks.bid_wizard_tasks.cleanup_wizard_workspace": {"queue": "review"},
         "backend.tasks.billing_tasks.poll_pending_recharge_orders": {"queue": "review"},
         "backend.tasks.billing_tasks.expire_credit_lots": {"queue": "review"},
         "backend.tasks.billing_tasks.settle_task_billing": {"queue": "review"},
@@ -146,6 +149,16 @@ celery_app.conf.update(
         "backend.tasks.polish_tasks.run_polish": {
             "time_limit": 300,
             "soft_time_limit": 270,
+        },
+        # AI编标：素材索引（含等待解析的自重试，worker 侧 asyncio 上限 20min）。
+        "backend.tasks.bid_wizard_tasks.run_bid_wizard_index": {
+            "time_limit": 1500,
+            "soft_time_limit": 1440,
+        },
+        # AI编标：逐章撰写（长任务，与 bid_draft 同量级）。
+        "backend.tasks.bid_wizard_tasks.run_bid_wizard_write": {
+            "time_limit": 7200,
+            "soft_time_limit": 6900,
         },
         # 充值轮询：扫一批 pending 订单 + 每条调一次交行查单（最多 ~10 条 × 5s 超时），
         # 给 90s 软超时 / 120s 硬超时兜底。

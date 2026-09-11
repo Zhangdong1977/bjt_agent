@@ -53,6 +53,24 @@ FILENAME_TOO_LONG_DETAIL = "文件名过长，请缩短文件名后重新上传"
 FILENAME_INVALID_DETAIL = "文件名包含系统不支持的特殊字符，请修改文件名后重新上传"
 
 
+def _decode_rfc2047_filename(filename: str | None) -> str | None:
+    """还原 .NET Framework HttpClient 上传的非 ASCII 文件名。
+
+    MultipartFormDataContent 对含中文的 filename 输出 RFC 2047 encoded-word
+    （filename="=?utf-8?B?...?="），python-multipart 原样透传；不还原则
+    `?` 触发非法字符校验、扩展名也丢失，中文名素材全部被 400。
+    浏览器直传的 UTF-8 文件名不含 encoded-word，原样返回。
+    """
+    if not filename or "=?" not in filename or "?=" not in filename:
+        return filename
+    try:
+        from email.header import decode_header, make_header
+
+        return str(make_header(decode_header(filename)))
+    except Exception:
+        return filename
+
+
 def _validate_upload_filename(filename: str | None) -> str:
     """Reject names that cannot be stored reliably across supported filesystems."""
     if not filename or filename in {".", ".."}:
@@ -155,6 +173,9 @@ def _document_artifacts_response(
 
 
 def _allowed_doc_types(project_type: str, duplicate_mode: str = "pair") -> set[str]:
+    if project_type == "bid_wizard":
+        # AI编标：招标文件（1 份）+ 素材（0..N，均走向导自己的上传端点）
+        return {"tender", "material"}
     if project_type != "duplicate":
         return REVIEW_DOC_TYPES
     if duplicate_mode == "batch":
@@ -165,6 +186,12 @@ def _allowed_doc_types(project_type: str, duplicate_mode: str = "pair") -> set[s
 def _document_role_limit(project_type: str, doc_type: str) -> int:
     """Return a fail-closed per-project/draft limit for one document role."""
 
+    if project_type == "bid_wizard":
+        if doc_type == "tender":
+            return 1
+        if doc_type == "material":
+            return settings.bid_wizard_material_max_count
+        return 0
     if project_type != "duplicate":
         return settings.review_doc_role_limit
     if doc_type in {"duplicate_left", "duplicate_right"}:
@@ -517,10 +544,19 @@ async def delete_document(
 # ============================================================
 
 SUPPORTED_EXTENSIONS = {"pdf", "docx", "doc", "xlsx"}
+# 图片素材（AI编标 material 上传放开，反馈⑩）：解析任务对整图走 OCR（document_parser._parse_image_with_ocr）
+IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "bmp", "webp"}
 
 
-def _validate_upload_file(file: UploadFile) -> None:
-    """上传文件的通用校验：先大小，再校验文件名和扩展名。"""
+def _validate_upload_file(
+    file: UploadFile,
+    allowed_extensions: set[str] | None = None,
+    allowed_hint: str = "PDF、DOCX、DOC 或 XLSX",
+) -> None:
+    """上传文件的通用校验：先大小，再校验文件名和扩展名。
+
+    allowed_extensions 为 None 时用文档白名单；素材等放宽场景传入扩集
+    （如 SUPPORTED_EXTENSIONS | IMAGE_EXTENSIONS）并同步 allowed_hint 文案。"""
     file.file.seek(0, 2)
     file_size = file.file.tell()
     file.file.seek(0)
@@ -539,10 +575,11 @@ def _validate_upload_file(file: UploadFile) -> None:
 
     _validate_upload_filename(file.filename)
     file_ext = Path(file.filename).suffix.lower().lstrip(".")
-    if file_ext not in SUPPORTED_EXTENSIONS:
+    allowed = allowed_extensions if allowed_extensions is not None else SUPPORTED_EXTENSIONS
+    if file_ext not in allowed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"暂不支持 {file_ext or '未知'} 格式，请上传 PDF、DOCX、DOC 或 XLSX 文件",
+            detail=f"暂不支持 {file_ext or '未知'} 格式，请上传 {allowed_hint} 文件",
         )
 
 
