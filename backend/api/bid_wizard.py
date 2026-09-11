@@ -319,7 +319,8 @@ async def _run_qa_task(
             user_name=current_user.username or current_user.id,
             enterprise_name=current_user.enterprise_name,
             interior_user=bool(current_user.interior_user),
-            project_id=None,
+            # 用量/汇总的按项目统计依赖此字段（2026-09-11 复盘发现恒 NULL）
+            project_id=wizard.project_id,
             task_id=qa.id,
             todo_id=None,
         )

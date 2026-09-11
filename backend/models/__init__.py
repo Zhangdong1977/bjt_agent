@@ -1,5 +1,5 @@
 # Database models
-from .base import Base, get_db_session, engine, async_session_factory, init_db, close_db
+from .base import Base, get_db_session, engine, async_session_factory, usage_engine, usage_session_factory, init_db, close_db
 from .user import User
 from .project import Project
 from .document import Document

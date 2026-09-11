@@ -1193,3 +1193,84 @@ class TestQuestionnaireRoundApi:
         )
         assert manual.status_code == 200
         assert manual.json()["questionnaire"]["followup"]["auto_rounds"] == 1  # manual 不占配额
+
+
+class TestUsageLedgerFixes:
+    """2026-09-11 全流程复盘修复回归：用量汇总维度补齐 + 短素材索引短路。"""
+
+    async def test_task_summary_merges_wizard_dimensions(self, client, auth_headers):
+        created = (
+            await client.post("/api/bid-wizard/wizards", json={}, headers=auth_headers)
+        ).json()
+        from sqlalchemy import text as sa_text
+        import uuid as _uuid
+
+        from backend.models import BidWizard, BidWizardQaTask, async_session_factory, engine
+        from backend.models.ai_usage_record import AiUsageRecord
+        from backend.services.usage_summary import refresh_task_summary
+
+        qa_id = str(_uuid.uuid4())
+        from datetime import datetime, timezone
+
+        async with async_session_factory() as session:
+            wizard = (
+                await session.execute(select(BidWizard).where(BidWizard.id == created["id"]))
+            ).scalar_one()
+            session.add(
+                BidWizardQaTask(
+                    id=qa_id,
+                    wizard_id=wizard.id,
+                    user_id=wizard.user_id,
+                    action="questionnaire",
+                    status="completed",
+                    billing_multiplier=Decimal("1"),
+                    billing_status="settled",
+                    started_at=wizard.created_at,
+                    completed_at=wizard.updated_at,
+                )
+            )
+            session.add(
+                AiUsageRecord(
+                    usage_type="llm",
+                    provider="tencent",
+                    model="test-model",
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                    latency_ms=1,
+                    status="success",
+                    cost_cny=Decimal("0.001"),
+                    local_user_id=wizard.user_id,
+                    user_name="regression",
+                    project_id=wizard.project_id,
+                    task_id=qa_id,
+                    usage_date=datetime.now(timezone.utc).date(),
+                )
+            )
+            await session.commit()
+        try:
+            await refresh_task_summary(qa_id, strict=True)
+            async with async_session_factory() as session:
+                row = (
+                    await session.execute(
+                        sa_text(
+                            "SELECT task_type, task_status, project_id, duration_seconds "
+                            "FROM ai_usage_task_summary WHERE id = :tid"
+                        ),
+                        {"tid": qa_id},
+                    )
+                ).fetchone()
+            assert row is not None
+            assert row.task_type == "bid_wizard_qa"
+            assert row.task_status == "completed"
+            assert str(row.project_id) == created["project_id"]
+            assert row.duration_seconds is not None
+        finally:
+            await engine.dispose()
+
+    def test_index_meta_short_circuit(self):
+        from backend.tasks.bid_wizard_tasks import index_meta_llm_needed
+
+        assert index_meta_llm_needed("ISO9001 质量管理体系认证证书，有效期至 2027-08。") is False
+        assert index_meta_llm_needed("字" * 400) is True
+        assert index_meta_llm_needed("   \n\t ") is False

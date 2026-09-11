@@ -40,6 +40,15 @@ BID_WIZARD_INDEX_MAX_RUNTIME_SECONDS = 20 * 60
 _INDEX_RETRY_COUNTDOWN = 30
 _INDEX_RETRY_MAX = 20  # 30s × 20 ≈ 10 分钟等待解析完成
 
+# 索引 meta（分块摘要/关键词）LLM 调用的短内容阈值：几十字的证书扫描件解析产物
+# 走 LLM 只会得到模板化摘要（实测 50 字证书产出 ~1.5k completion tokens），
+# 总字数低于阈值时跳过该调用，索引文件按空 meta 回退原文渲染。
+_INDEX_META_MIN_CHARS = 400
+
+
+def index_meta_llm_needed(markdown: str) -> bool:
+    return len(markdown.strip()) >= _INDEX_META_MIN_CHARS
+
 _CANCEL_PREFIX = "bid-wizard:cancel:"
 _cancel_local: set[str] = set()
 
@@ -182,7 +191,8 @@ async def _run_index(index_task_id: str) -> dict[str, Any]:
             "interior_user": bool(user.interior_user) if user else False,
         }
         usage_token = set_usage_context(
-            UsageContext(**usage_identity, project_id=None, task_id=index_task_id, todo_id=None)
+            # document.project_id = 素材归属项目（用量汇总按项目统计依赖此字段）
+            UsageContext(**usage_identity, project_id=document.project_id, task_id=index_task_id, todo_id=None)
         )
 
         async def _mark_material(**fields: Any) -> None:
@@ -198,31 +208,33 @@ async def _run_index(index_task_id: str) -> dict[str, Any]:
 
         try:
             await _mark_material(index_status="indexing")
-            llm = WizardLLM()
             chunks = split_material_chunks(markdown)
             if not chunks:
                 raise RuntimeError("素材分段结果为空")
-            chunk_list = "\n\n".join(
-                f"#<no> {chunk['no']} {chunk.get('heading') or ''}\n{chunk['text'][:600]}"
-                for chunk in chunks
-            )
-            from backend.agent.bid_wizard_agent import (
-                INDEX_META_SYSTEM_PROMPT,
-                INDEX_META_USER_TEMPLATE,
-            )
-
-            metas_raw = await asyncio.wait_for(
-                llm.generate_json(
+            metas: dict[int, dict[str, Any]] = {}
+            if index_meta_llm_needed(markdown):
+                llm = WizardLLM()
+                chunk_list = "\n\n".join(
+                    f"#<no> {chunk['no']} {chunk.get('heading') or ''}\n{chunk['text'][:600]}"
+                    for chunk in chunks
+                )
+                from backend.agent.bid_wizard_agent import (
                     INDEX_META_SYSTEM_PROMPT,
-                    INDEX_META_USER_TEMPLATE.replace("__CHUNK_LIST__", chunk_list),
-                ),
-                timeout=240,
-            )
-            metas = {
-                int(item.get("no") or 0): item
-                for item in (metas_raw if isinstance(metas_raw, list) else [])
-                if isinstance(item, dict)
-            }
+                    INDEX_META_USER_TEMPLATE,
+                )
+
+                metas_raw = await asyncio.wait_for(
+                    llm.generate_json(
+                        INDEX_META_SYSTEM_PROMPT,
+                        INDEX_META_USER_TEMPLATE.replace("__CHUNK_LIST__", chunk_list),
+                    ),
+                    timeout=240,
+                )
+                metas = {
+                    int(item.get("no") or 0): item
+                    for item in (metas_raw if isinstance(metas_raw, list) else [])
+                    if isinstance(item, dict)
+                }
             write_material_index(
                 get_settings().workspace_path, task.wizard_id, material.document_id, chunks, metas
             )
@@ -436,7 +448,8 @@ async def _run_write(task_id: str) -> dict[str, Any]:
             "interior_user": bool(user.interior_user) if user else False,
         }
         usage_token = set_usage_context(
-            UsageContext(**usage_identity, project_id=None, task_id=task_id, todo_id=None)
+            # BidWritingTask.project_id = 向导归属项目（用量汇总按项目统计依赖此字段）
+            UsageContext(**usage_identity, project_id=task.project_id, task_id=task_id, todo_id=None)
         )
         try:
             try:
