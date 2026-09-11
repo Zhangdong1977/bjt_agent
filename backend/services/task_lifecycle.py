@@ -20,6 +20,7 @@ from backend.models import (
     ReviewTask,
     TaskDispatchOutbox,
     async_session_factory,
+    usage_session_factory,
 )
 from backend.services.billing import ensure_wallet
 from backend.services.sales import decimal_value, expire_user_lots, get_sales_config
@@ -336,7 +337,12 @@ async def finalize_task_usage(task_kind: str, task_id: str) -> bool:
         return False
 
     model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
-    async with async_session_factory() as db:
+    # NullPool 短连接：finalize 会被业务任务的 finally 在 celery worker 里直调
+    # （每任务 asyncio.run 换 loop），池化工厂 checkout 到上一 loop 的连接必报
+    # "Event loop is closed"（2026-09-11 409 事故：索引任务结算卡 pending 占闸门）。
+    # billing_tasks 侧的 settle/reconcile 因有 _run_with_global_engine 前后 dispose
+    # 保护不受此影响；outbox 派发（208/280）同理，保持池化不动。
+    async with usage_session_factory() as db:
         task = (
             await db.execute(select(model).where(model.id == task_id).with_for_update())
         ).scalar_one_or_none()
@@ -370,7 +376,8 @@ def enqueue_billing_settlement(task_kind: str, task_id: str, *, countdown: int =
 
 async def mark_billing_retry(task_kind: str, task_id: str, exc: Exception) -> None:
     model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
-    async with async_session_factory() as db:
+    # 同 finalize：celery 上下文直调，NullPool 防 "Event loop is closed"
+    async with usage_session_factory() as db:
         task = (
             await db.execute(select(model).where(model.id == task_id).with_for_update())
         ).scalar_one_or_none()

@@ -1274,3 +1274,71 @@ class TestUsageLedgerFixes:
         assert index_meta_llm_needed("ISO9001 质量管理体系认证证书，有效期至 2027-08。") is False
         assert index_meta_llm_needed("字" * 400) is True
         assert index_meta_llm_needed("   \n\t ") is False
+
+    def test_finalize_survives_poisoned_pool_across_loops(self):
+        """2026-09-11 409 事故回归：celery prefork 每任务 asyncio.run 换 loop，
+        finalize 第 3 步曾用池化工厂——池里残留上一 loop 的连接时 checkout 的
+        pre_ping 在已关 loop 上必抛 RuntimeError: Event loop is closed，结算卡
+        pending 占住并发闸门。先用 loop A 毒化池，再在全新 loop B/C 里 finalize，
+        必须全部成功（NullPool 工厂不依赖池状态）。"""
+        import asyncio
+        import uuid as _uuid
+
+        from sqlalchemy import select, text as sa_text2
+
+        from backend.models import BidWizard, BidWizardQaTask
+        from backend.models.base import engine, usage_session_factory, async_session_factory
+        from backend.services.task_lifecycle import finalize_task_usage
+
+        qa_id = str(_uuid.uuid4())
+
+        async def _setup() -> None:
+            async with usage_session_factory() as session:
+                wizard = (
+                    await session.execute(
+                        select(BidWizard).order_by(BidWizard.created_at.desc()).limit(1)
+                    )
+                ).scalar_one()
+                session.add(
+                    BidWizardQaTask(
+                        id=qa_id,
+                        wizard_id=wizard.id,
+                        user_id=wizard.user_id,
+                        action="questionnaire",
+                        status="completed",
+                        billing_multiplier=Decimal("1"),
+                        billing_status="pending",
+                        started_at=wizard.created_at,
+                        completed_at=wizard.updated_at,
+                    )
+                )
+                await session.commit()
+
+        async def _poison() -> None:
+            # 池化工厂在当前 loop 留一条连接；loop 关闭后它成为"跨 loop 残留"。
+            # 二次毒化时 checkout 自身可能先吃到上一次的残留而报错——那一次失败
+            # 恰好把毒化连接逐出池，重试一次即完成注入（与 worker 实况一致）。
+            try:
+                async with async_session_factory() as session:
+                    await session.execute(sa_text2("select 1"))
+            except RuntimeError:
+                async with async_session_factory() as session:
+                    await session.execute(sa_text2("select 1"))
+
+        try:
+            asyncio.run(_setup())
+            asyncio.run(_poison())
+            assert asyncio.run(finalize_task_usage("bid_wizard_qa", qa_id)) is True
+            asyncio.run(_poison())
+            assert asyncio.run(finalize_task_usage("bid_wizard_qa", qa_id)) is True
+        finally:
+            async def _cleanup() -> None:
+                async with usage_session_factory() as session:
+                    await session.execute(
+                        sa_text2("DELETE FROM bid_wizard_qa_tasks WHERE id = :tid"),
+                        {"tid": qa_id},
+                    )
+                    await session.commit()
+
+            asyncio.run(_cleanup())
+            asyncio.run(engine.dispose())
