@@ -90,6 +90,10 @@ VSTO_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "check_margins": {"type": "boolean"},
             "check_white_background": {"type": "boolean"},
             "margin_cm": {"type": "number", "minimum": 0.1, "maximum": 20},
+            "margin_top_cm": {"type": "number", "minimum": 0.1, "maximum": 20},
+            "margin_bottom_cm": {"type": "number", "minimum": 0.1, "maximum": 20},
+            "margin_left_cm": {"type": "number", "minimum": 0.1, "maximum": 20},
+            "margin_right_cm": {"type": "number", "minimum": 0.1, "maximum": 20},
             "tolerance_pt": {"type": "number", "minimum": 0.01, "maximum": 10},
         },
         "additionalProperties": False,
@@ -134,6 +138,8 @@ VSTO_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "type": "object",
         "properties": {
             "snapshot_id": {"type": ["string", "null"]},
+            "check_line_spacing": {"type": "boolean"},
+            "check_space": {"type": "boolean"},
             "line_spacing_rule": {"type": "string", "enum": ["exactly", "single", "multiple", "minimum", "any"]},
             "line_spacing_pt": {"type": "number", "minimum": 0, "maximum": 500},
             "space_before_pt": {"type": "number", "minimum": 0, "maximum": 500},
@@ -145,6 +151,11 @@ VSTO_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "type": "object",
         "properties": {
             "snapshot_id": {"type": ["string", "null"]},
+            "heading_policy": {
+                "type": "string",
+                "enum": ["require_heading_styles", "body_text_outline", "none"],
+            },
+            "check_number_format": {"type": "boolean"},
             "max_level": {"type": "integer", "minimum": 1, "maximum": 9},
             "formats": {
                 "type": "array",
@@ -319,7 +330,14 @@ def _validate_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
         for key in ("check_a4", "check_margins", "check_white_background"):
             if key in arguments and not isinstance(arguments[key], bool):
                 raise ValueError(f"{key} must be a boolean")
-        for key in ("margin_cm", "tolerance_pt"):
+        for key in (
+            "margin_cm",
+            "margin_top_cm",
+            "margin_bottom_cm",
+            "margin_left_cm",
+            "margin_right_cm",
+            "tolerance_pt",
+        ):
             if key in arguments and isinstance(arguments[key], bool):
                 raise ValueError(f"{key} must be a number")
     if tool_name == "word_check_headers_footers":
@@ -346,6 +364,9 @@ def _validate_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
         if max_characters is not None and (isinstance(max_characters, bool) or not isinstance(max_characters, int) or not 1000 <= max_characters <= 1_000_000):
             raise ValueError("max_characters must be between 1000 and 1000000")
     if tool_name == "word_check_paragraph_format":
+        for key in ("check_line_spacing", "check_space"):
+            if key in arguments and not isinstance(arguments[key], bool):
+                raise ValueError(f"{key} must be a boolean")
         for key in ("line_spacing_pt", "space_before_pt", "space_after_pt"):
             if key in arguments and isinstance(arguments[key], bool):
                 raise ValueError(f"{key} must be a number")
@@ -353,6 +374,14 @@ def _validate_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
         if rule is not None and rule not in {"exactly", "single", "multiple", "minimum", "any"}:
             raise ValueError("unsupported line_spacing_rule")
     if tool_name == "word_check_heading_numbering":
+        if "heading_policy" in arguments and arguments["heading_policy"] not in {
+            "require_heading_styles",
+            "body_text_outline",
+            "none",
+        }:
+            raise ValueError("unsupported heading_policy")
+        if "check_number_format" in arguments and not isinstance(arguments["check_number_format"], bool):
+            raise ValueError("check_number_format must be a boolean")
         max_level = arguments.get("max_level")
         if max_level is not None and (isinstance(max_level, bool) or not isinstance(max_level, int) or not 1 <= max_level <= 9):
             raise ValueError("max_level must be an integer between 1 and 9")

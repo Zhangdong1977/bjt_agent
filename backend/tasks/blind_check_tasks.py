@@ -168,6 +168,22 @@ async def _cancel_watcher(task_id: str, event: asyncio.Event) -> None:
 
 def _finding_kwargs(task_id: str, value: dict[str, Any]) -> dict[str, Any]:
     """Clamp agent output before writing it to the database."""
+    evidences = value.get("evidences") if isinstance(value.get("evidences"), list) else None
+    if evidences:
+        evidences = [
+            {
+                "text": str(item.get("text") or "")[:2_000],
+                "page_number": item.get("page_number"),
+                "paragraph_index": item.get("paragraph_index"),
+                "story": item.get("story"),
+                "locateable": bool(item.get("locateable")),
+            }
+            for item in evidences[:50]
+            if isinstance(item, dict)
+        ]
+    rule_references = value.get("rule_references") if isinstance(value.get("rule_references"), list) else None
+    if rule_references:
+        rule_references = [str(ref)[:120] for ref in rule_references[:20]]
     return {
         "task_id": task_id,
         "category": str(value.get("category") or "other")[:40],
@@ -180,6 +196,8 @@ def _finding_kwargs(task_id: str, value: dict[str, Any]) -> dict[str, Any]:
         "paragraph_index": value.get("paragraph_index"),
         "location": value.get("location") if isinstance(value.get("location"), dict) else {},
         "rule_reference": str(value.get("rule_reference") or "")[:5_000] or None,
+        "evidences": evidences,
+        "rule_references": rule_references,
         "confidence": value.get("confidence"),
     }
 

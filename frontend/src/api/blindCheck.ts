@@ -33,6 +33,14 @@ export interface BlindCheckTask {
   created_at: string;
 }
 
+export interface BlindCheckEvidence {
+  text: string;
+  page_number: number | null;
+  paragraph_index: number | null;
+  story: string | null;
+  locateable: boolean;
+}
+
 export interface BlindCheckFinding {
   id: string;
   task_id: string;
@@ -46,6 +54,8 @@ export interface BlindCheckFinding {
   paragraph_index: number | null;
   location: Record<string, unknown> | null;
   rule_reference: string | null;
+  evidences: BlindCheckEvidence[] | null;
+  rule_references: string[] | null;
   confidence: number | null;
 }
 

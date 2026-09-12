@@ -9,14 +9,19 @@ import pytest
 
 from backend.agent.blind_check_agent import (
     BlindCheckAgent,
+    _apply_echo_verification,
     _build_coverage_report,
+    _build_deterministic_arguments,
     _coverage_unknown_findings,
-    _deterministic_findings,
+    _legacy_story_note,
+    _normalize_evidences,
     _normalize_findings,
     _parse_agent_json,
     _parse_last_json_object,
     _select_deterministic_tools,
     _summarize,
+    _uncovered_dimension_findings,
+    _uncovered_tool_dimensions,
 )
 from backend.agent.tools.vsto_remote import VstoRemoteTool
 from backend.api.vsto_tools import _session, submit_tool_result
@@ -225,29 +230,106 @@ def test_incomplete_deterministic_coverage_forces_unknown():
 
 
 @pytest.mark.unit
-def test_deterministic_violation_is_materialized_even_without_model_finding():
-    findings = _deterministic_findings(
+def test_uncovered_tool_dimensions_degrade_to_one_unknown_per_tool():
+    """ADR-0002：raw 违规不再物化；未覆盖维度每工具一条待确认降级卡。"""
+    observations = [
+        {
+            "tool": "word_check_paragraph_format",
+            "data": {
+                "coverage": "complete",
+                "violations": [
+                    {
+                        "rule_id": "paragraph.line_spacing_rule",
+                        "severity": "major",
+                        "title": "行距规则不是固定值",
+                        "description": "期望 exactly，实际 rule=0",
+                        "evidence_text": "施",
+                        "page_number": 1,
+                        "paragraph_index": 1,
+                    },
+                    {
+                        "rule_id": "paragraph.line_spacing",
+                        "severity": "major",
+                        "title": "行距不是要求值",
+                        "description": "期望 25 磅，实际 12 磅",
+                        "evidence_text": "工",
+                        "page_number": 1,
+                        "paragraph_index": 2,
+                    },
+                ],
+            },
+        }
+    ]
+    # 模型完全没覆盖该维度 → 守门员判定未覆盖
+    assert _uncovered_tool_dimensions([], observations)
+    findings = _uncovered_dimension_findings([], observations)
+    assert len(findings) == 1
+    assert findings[0]["verdict"] == "unknown"
+    assert "段落格式" in findings[0]["title"]
+    assert "2 处" in findings[0]["description"]
+
+    # 模型已声明覆盖（rule_references）→ 不再降级
+    covered = [
+        {
+            "verdict": "violation",
+            "title": "行距不符合固定值 25 磅",
+            "rule_references": ["paragraph.line_spacing_rule", "paragraph.line_spacing"],
+        }
+    ]
+    assert _uncovered_tool_dimensions(covered, observations) == []
+    assert _uncovered_dimension_findings(covered, observations) == []
+
+    # 只覆盖部分规则 → 仅剩未覆盖规则参与降级
+    partial = [{"verdict": "violation", "title": "x", "rule_references": ["paragraph.line_spacing"]}]
+    rest = _uncovered_tool_dimensions(partial, observations)
+    assert len(rest) == 1
+    assert all(
+        item["rule_id"] == "paragraph.line_spacing_rule" for item in rest[0]["violations"]
+    )
+
+
+@pytest.mark.unit
+def test_normalize_evidences_gates_locateable_on_story_and_text():
+    evidences = _normalize_evidences(
         [
-            {
-                "tool": "word_check_page_setup",
-                "data": {
-                    "coverage": "complete",
-                    "violations": [
-                        {
-                            "rule_id": "page.a4",
-                            "severity": "major",
-                            "title": "页面不是 A4 尺寸",
-                            "description": "第 2 节不是 A4",
-                            "evidence_text": "section 2",
-                            "page_number": 3,
-                        }
-                    ],
-                },
-            }
+            # 正文原文 + 工具标记可定位 → 保留 locateable
+            {"text": "主要施工方案与技术措施", "page_number": 2, "paragraph_index": 7, "story": "main", "locateable": True},
+            # 页眉页脚故事：即使模型标了 true 也强制不可定位
+            {"text": "1", "story": "footer", "locateable": True},
+            # 空文本不可定位
+            {"text": "   ", "story": "main", "locateable": True},
+            # 无 story（旧插件/模型省略）且有正文文本 → 允许定位（与旧行为一致）
+            {"text": "施", "page_number": 1, "paragraph_index": 1, "locateable": True},
+            # 未标记 locateable → false
+            {"text": "作者：张三", "story": None},
         ]
     )
-    assert findings[0]["verdict"] == "violation"
-    assert findings[0]["confidence"] == 1.0
+    assert [item["locateable"] for item in evidences] == [True, False, False, True, False]
+    # 派生旧字段：normalize 后首条可定位证据填 location.query
+    finding = _normalize_findings(
+        [{"verdict": "violation", "evidences": evidences}]
+    )[0]
+    assert finding["location"] == {"query": "主要施工方案与技术措施"}
+    assert finding["evidence_text"] == "主要施工方案与技术措施"
+
+
+@pytest.mark.unit
+def test_legacy_story_note_only_for_untagged_format_tools():
+    untagged = [
+        {
+            "tool": "word_check_text_style",
+            "data": {"violations": [{"rule_id": "text.font", "evidence_text": ""}]},
+        }
+    ]
+    assert _legacy_story_note(untagged) is not None
+    tagged = [
+        {
+            "tool": "word_check_text_style",
+            "data": {"violations": [{"rule_id": "text.font", "story": "main"}]},
+        }
+    ]
+    assert _legacy_story_note(tagged) is None
+    assert _legacy_story_note([]) is None
 
 
 @pytest.mark.unit
@@ -259,6 +341,200 @@ def test_requirement_selects_relevant_deterministic_tools():
     assert "word_check_headers_footers" in selected
     assert "word_check_objects" in selected
     assert "word_check_signatures" in selected
+
+
+# 2026-09-12 生产事故回归样本：用户粘贴的行距/页边距/编号口径与样例要求不同时，
+# 确定性工具曾按硬编码默认值（28 磅、统一 2.5 厘米、“（一）”格式）判定，产生大量假阳性。
+_PROD_REQUIREMENT = (
+    "技术标正文应采用“白底A4 纸张，纵向排版”，“宋体”四号字(黑色)；图表中字体和字号自拟；"
+    "不得设置页码、页眉、页脚；对齐方式：左对齐；大纲级别：正文文本；行距为固定值25 磅；"
+    "段前：0 行/0 磅，段后：0 行/0 磅；左侧缩进：0 字符/0 厘米，右侧缩进：0字符/0 厘米；"
+    "页边距（上3 厘米，下3 厘米，左2 厘米，右2 厘米）。"
+)
+
+_SAMPLE_REQUIREMENT = (
+    "（2）排版要求：全文采用A4大小，不允许插入空白页，页边距均为2.5厘米，不得出现页眉、页脚、页码，"
+    "全文均为白底黑字，字体为宋体四号字，行间距采用固定值28磅，段前段后间距为0。"
+    "（3）标题编号要求：标题序号最多设置7级，一级为“一、”，二级为“（一）”，三级为“1.”，"
+    "四级为“（1）”，五级为“1）”，六级为“a.”，七级为“a）”。"
+)
+
+
+@pytest.mark.unit
+def test_requirement_parsing_uses_pasted_values_not_defaults():
+    arguments, notes = _build_deterministic_arguments(_PROD_REQUIREMENT)
+    assert notes == []
+    assert arguments["word_check_paragraph_format"]["line_spacing_pt"] == 25.0
+    assert arguments["word_check_paragraph_format"]["check_space"] is True
+    assert arguments["word_check_page_setup"] == {
+        "margin_top_cm": 3.0,
+        "margin_bottom_cm": 3.0,
+        "margin_left_cm": 2.0,
+        "margin_right_cm": 2.0,
+    }
+    # “大纲级别：正文文本”必须映射为 body_text_outline 口径，而不是默认的标题样式要求。
+    assert arguments["word_check_heading_numbering"]["heading_policy"] == "body_text_outline"
+    assert arguments["word_check_heading_numbering"]["check_number_format"] is False
+    assert "formats" not in arguments["word_check_heading_numbering"]
+    assert arguments["word_check_text_style"]["expected_size_pt"] == 14.0
+    assert arguments["word_check_text_style"]["expected_font"] == "宋体"
+
+
+@pytest.mark.unit
+def test_requirement_parsing_handles_sample_requirement_and_max_level():
+    arguments, notes = _build_deterministic_arguments(_SAMPLE_REQUIREMENT)
+    assert notes == []
+    assert arguments["word_check_paragraph_format"]["line_spacing_pt"] == 28.0
+    assert arguments["word_check_paragraph_format"]["line_spacing_rule"] == "exactly"
+    assert arguments["word_check_page_setup"] == {"margin_cm": 2.5}
+    heading = arguments["word_check_heading_numbering"]
+    assert heading["heading_policy"] == "require_heading_styles"
+    assert heading["max_level"] == 7
+    formats = heading["formats"]
+    assert formats[0] == "^[一二三四五六七八九十百千万零〇]+、"
+    assert formats[1] == "^（[一二三四五六七八九十百千万零〇]+）"
+    assert formats[2] == "^\\d+\\."
+
+
+@pytest.mark.unit
+def test_requirement_parsing_reports_unresolvable_dimensions():
+    arguments, notes = _build_deterministic_arguments("行距要符合要求，页边距按招标文件，字体另行规定")
+    assert arguments["word_check_paragraph_format"] == {
+        "check_line_spacing": True,
+        "check_space": False,
+    }
+    assert arguments["word_check_page_setup"] == {"check_margins": False}
+    assert any("行距" in note for note in notes)
+    assert any("页边距" in note for note in notes)
+    assert any("字体" in note for note in notes)
+
+
+def _observation(expected: dict, violations: list[dict]) -> dict:
+    return {
+        "tool": "tool",
+        "success": True,
+        "error": None,
+        "content": "",
+        "data": {
+            "coverage": "complete",
+            "checked_count": len(violations),
+            "violation_count": len(violations),
+            "violations": violations,
+            "unknown_reasons": [],
+            "expected": expected,
+        },
+    }
+
+
+@pytest.mark.unit
+def test_echo_verification_drops_old_plugin_default_value_violations():
+    arguments, _ = _build_deterministic_arguments(_PROD_REQUIREMENT)
+    paragraph = _observation(
+        # 旧插件忽略 line_spacing_pt=25，按内置默认 28 磅比较。
+        expected={
+            "line_spacing_rule": "exactly",
+            "line_spacing_pt": 28,
+            "space_before_pt": 0,
+            "space_after_pt": 0,
+        },
+        violations=[
+            {"rule_id": "paragraph.line_spacing", "title": "行距不是要求值", "severity": "major"},
+            {"rule_id": "paragraph.line_spacing_rule", "title": "行距规则不是固定值", "severity": "major"},
+        ],
+    )
+    _apply_echo_verification(paragraph, "word_check_paragraph_format", arguments["word_check_paragraph_format"])
+    kept = [item["rule_id"] for item in paragraph["data"]["violations"]]
+    # 行距数值按错误参数计算被丢弃；行距规则参数一致，违规保留。
+    assert kept == ["paragraph.line_spacing_rule"]
+    assert paragraph["data"]["violation_count"] == 1
+    assert any("行距数值" in reason for reason in paragraph["data"]["unknown_reasons"])
+
+    page = _observation(
+        # 旧插件不认识四边页边距参数，按统一 2.5 厘米比较。
+        expected={"page_size": "A4", "margin_cm": 2.5},
+        violations=[{"rule_id": "page.margins", "title": "页边距不是统一的 2.5 厘米", "severity": "major"}],
+    )
+    _apply_echo_verification(page, "word_check_page_setup", arguments["word_check_page_setup"])
+    assert page["data"]["violations"] == []
+    assert any("页边距" in reason for reason in page["data"]["unknown_reasons"])
+
+    heading = _observation(
+        # 旧插件没有 heading_policy 概念，按“必须用标题样式+（一）格式”判定。
+        expected={"max_level": 7, "formats": ["^[一", "^（一", "^1"]},
+        violations=[
+            {"rule_id": "heading.number_format", "title": "标题编号格式不符合要求", "severity": "major"},
+            {"rule_id": "heading.max_level", "title": "标题级别超过限制", "severity": "major"},
+        ],
+    )
+    _apply_echo_verification(heading, "word_check_heading_numbering", arguments["word_check_heading_numbering"])
+    assert heading["data"]["violations"] == []
+
+
+@pytest.mark.unit
+def test_echo_verification_keeps_violations_when_plugin_echoes_intent():
+    arguments, _ = _build_deterministic_arguments(_PROD_REQUIREMENT)
+    paragraph = _observation(
+        expected={
+            "check_line_spacing": True,
+            "line_spacing_rule": "exactly",
+            "line_spacing_pt": 25.0,
+            "check_space": True,
+            "space_before_pt": 0.0,
+            "space_after_pt": 0.0,
+        },
+        violations=[
+            {"rule_id": "paragraph.line_spacing", "title": "行距不是要求值", "severity": "major"},
+        ],
+    )
+    _apply_echo_verification(paragraph, "word_check_paragraph_format", arguments["word_check_paragraph_format"])
+    assert [item["rule_id"] for item in paragraph["data"]["violations"]] == ["paragraph.line_spacing"]
+    assert paragraph["data"]["unknown_reasons"] == []
+
+    heading = _observation(
+        expected={
+            "heading_policy": "body_text_outline",
+            "check_number_format": False,
+            "max_level": None,
+            "formats": None,
+        },
+        violations=[
+            {"rule_id": "heading.outline_level", "title": "大纲级别不是正文文本", "severity": "major"},
+        ],
+    )
+    _apply_echo_verification(heading, "word_check_heading_numbering", arguments["word_check_heading_numbering"])
+    assert [item["rule_id"] for item in heading["data"]["violations"]] == ["heading.outline_level"]
+
+
+@pytest.mark.unit
+def test_broker_schema_accepts_new_per_side_and_policy_arguments():
+    _validate_tool_arguments(
+        "word_check_page_setup",
+        {
+            "snapshot_id": "snapshot-1",
+            "margin_top_cm": 3,
+            "margin_bottom_cm": 3,
+            "margin_left_cm": 2,
+            "margin_right_cm": 2,
+        },
+    )
+    _validate_tool_arguments(
+        "word_check_paragraph_format",
+        {"snapshot_id": "snapshot-1", "check_line_spacing": True, "check_space": False},
+    )
+    _validate_tool_arguments(
+        "word_check_heading_numbering",
+        {
+            "snapshot_id": "snapshot-1",
+            "heading_policy": "body_text_outline",
+            "check_number_format": False,
+            "formats": ["^[一]+、", "", ""],
+        },
+    )
+    with pytest.raises(ValueError, match="heading_policy"):
+        _validate_tool_arguments(
+            "word_check_heading_numbering",
+            {"snapshot_id": "snapshot-1", "heading_policy": "bogus"},
+        )
 
 
 @pytest.mark.asyncio
