@@ -96,9 +96,29 @@ BLIND_CHECK_SYSTEM_PROMPT = """
 每个确定性工具的结果都包含 coverage、checked_count、violation_count 和 unknown_reasons。
 coverage 不是 complete 时，对应规则必须输出 unknown；不能把“未扫描到”写成 compliant。
 
-最终 findings 的 title/description/evidence_text 面向最终用户（标书编制人员）：用平实中文表述，
+最终 findings 的 title/description 面向最终用户（标书编制人员）：用平实中文表述，
 不要出现英文工具名（word_*）、coverage/checked_count/rule=0 等内部字段；引用工具结论时用中文
 转述（如“行距规则不是固定值”“字号 56 磅”），页码与段落位置照常保留。
+
+findings 按暗标要求维度组织——每个维度一张卡：
+- 同一维度的所有问题合并为一张 finding。例如 8 个标题的大纲级别问题 = 1 张卡、evidences 列 8 条证据；
+  封面的字号/对齐/行距若属同一口径问题，合并为一张封面格式卡。
+- 禁止为同一维度输出多张卡，禁止把工具返回的逐段/逐字违规直接罗列成多条 finding。
+- description 中的数量必须与 evidences 数量一致；不要引用工具的 violation_count/checked_count。
+- 对确认符合的维度输出一张 verdict=compliant 的卡；对覆盖不足或无法判定的维度输出一张 verdict=unknown 的卡。
+- 每张 finding 的 rule_references 列出它吸收了哪些工具规则（rule_id，如 "paragraph.line_spacing"、
+  "heading.outline_level"、"text.size"）；没有工具证据的发现留空数组。你判断某维度不构成违规
+  （如事实来自页眉页脚而非正文、封面口径豁免）时，也输出说明性 finding 并在 rule_references 带上对应规则。
+- 若工具事实缺少 story/locateable 字段（旧版插件）：“西文等线”“9 磅”“1.5 倍行距”“空证据”类事实
+  大概率来自页眉页脚/页码域而非正文，应并入页眉页脚与页码维度综合研判或判待确认，
+  不要按正文格式违规逐条上报。
+
+evidences 是支撑结论的定位锚点列表：
+- text 必须原样搬运工具回传的文档原文短摘录（evidence_text），不得自行拼接合成说明串；
+  page_number/paragraph_index/story/locateable 一并照抄工具回传。
+- 工具标记 locateable=false、或证据没有正文原文锚点（文件属性、页眉页脚、合成说明串）时一律
+  locateable=false，text 可用简短事实描述代替（如“作者：张三”）。
+- 每张卡 evidences 最多 20 条，超出时合并同类并在 description 说明总数。
 
 最终回答必须只包含 JSON（不要 Markdown 代码围栏），格式如下：
 {
@@ -110,11 +130,10 @@ coverage 不是 complete 时，对应规则必须输出 unknown；不能把“�
       "verdict": "violation|compliant|unknown",
       "title": "简短标题",
       "description": "判断和原因",
-      "evidence_text": "原文短摘录或工具证据",
-      "page_number": 1,
-      "paragraph_index": 1,
-      "location": {"query": "用于定位的短文本"},
-      "rule_reference": "对应暗标要求",
+      "rule_references": ["paragraph.line_spacing"],
+      "evidences": [
+        {"text": "文档原文短摘录", "page_number": 1, "paragraph_index": 7, "story": "main", "locateable": true}
+      ],
       "confidence": 0.0
     }
   ]
@@ -225,6 +244,50 @@ class BlindCheckAgent(BaseAgent):
         self._tool_observations.append(observation)
         return observation
 
+    async def _guardrail_reask(
+        self, findings: list[dict[str, Any]], observations: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """带着未覆盖的工具事实重问模型一次；失败/无未覆盖时返回空列表。
+
+        守门员不越权下结论：它只负责把“模型漏掉的维度 + 对应事实”送回
+        模型补判（ADR-0002）。重问结果与原 findings 合并，仍漏的维度由
+        `_uncovered_dimension_findings` 降级为待确认。
+        """
+        uncovered = _uncovered_tool_dimensions(findings, observations)
+        if not uncovered:
+            return []
+        lines = [
+            "检查发现以下工具异常维度没有出现在你的 findings 中。请逐维度研判",
+            "（违规/待确认/合规均可），只输出补充的 findings JSON（结构与之前相同，",
+            "含 rule_references/evidences）。若你判断某维度不构成违规（如事实来自页眉",
+            "页脚而非正文、封面口径豁免），也输出一张说明性 finding 并在 rule_references",
+            "中带上对应规则。未覆盖维度如下：",
+        ]
+        for entry in uncovered:
+            label = _BLIND_TOOL_LABELS.get(entry["tool"], entry["tool"])
+            rule_counts: dict[str, int] = {}
+            for item in entry["violations"]:
+                rule_id = str(item.get("rule_id") or "unknown")
+                rule_counts[rule_id] = rule_counts.get(rule_id, 0) + 1
+            summary_text = "、".join(f"{rule}×{count}" for rule, count in rule_counts.items())
+            examples = _violation_example_texts(entry["violations"], limit=3)
+            lines.append(f"- {label}（{summary_text}）示例：{'；'.join(examples)}")
+        self.add_user_message("\n".join(lines))
+        try:
+            response = await self.llm.generate(messages=self.messages, tools=[])
+        except Exception:
+            logger.exception(
+                "guardrail re-ask failed for task %s; uncovered dimensions degrade to unknown",
+                self.task_id,
+            )
+            return []
+        if getattr(self, "cancel_event", None) and self.cancel_event.is_set():
+            return []
+        parsed = _parse_agent_json(response.content or "")
+        if parsed is None:
+            return []
+        return _normalize_findings(parsed.get("findings"))
+
     async def run_blind_check(self) -> dict[str, Any]:
         overview = await self.collect_overview()
         if not overview["success"]:
@@ -308,6 +371,11 @@ class BlindCheckAgent(BaseAgent):
             "coverage_contract": coverage,
             "instructions": "现在继续调查必要证据，并最终严格输出 JSON。",
         }
+        legacy_story_note = _legacy_story_note(deterministic_observations)
+        if legacy_story_note:
+            # 旧版插件的格式事实不带 story 标记：页眉页脚事实会混进格式维度，
+            # 给模型研判规则而非代码启发式硬判（ADR-0002 过渡兼容）。
+            context["legacy_story_note"] = legacy_story_note
         self.add_user_message(json.dumps(context, ensure_ascii=False))
         try:
             raw = await super().run(cancel_event=self.cancel_event)
@@ -325,10 +393,13 @@ class BlindCheckAgent(BaseAgent):
                 "findings": [_unknown_finding("智能体未返回可解析的结构化结果", raw[:1_000])],
             }
         findings = _normalize_findings(parsed.get("findings"))
-        # Deterministic VSTO violations are authoritative evidence.  Materialize
-        # them even if the model forgets to mention one or returns an optimistic
-        # summary after seeing a long result payload.
-        findings = _merge_findings(findings, _deterministic_findings(deterministic_observations))
+        # AI 是用户可见发现的唯一作者（ADR-0002）：工具违规只作为事实。发现
+        # 模型未覆盖的违规维度时先带着事实重问一次；重问后仍未覆盖的维度
+        # 才降级为待确认，绝不把 raw 违规直接物化成用户可见 finding。
+        supplement = await self._guardrail_reask(findings, deterministic_observations)
+        if supplement:
+            findings = _merge_findings(findings, supplement)
+        findings.extend(_uncovered_dimension_findings(findings, deterministic_observations))
         if not findings:
             findings = [_unknown_finding("当前检查没有获得可判定的证据")]
         if mandatory_failures:
@@ -904,39 +975,113 @@ def _coverage_unknown_findings(coverage: dict[str, Any]) -> list[dict[str, Any]]
     return findings
 
 
-def _deterministic_findings(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    findings: list[dict[str, Any]] = []
+def _referenced_rule_ids(findings: list[dict[str, Any]], known_rule_ids: set[str]) -> set[str]:
+    """模型在 findings 里声明覆盖的工具规则集合（含 rule_reference 文本子串命中）。"""
+    references: set[str] = set()
+    for finding in findings:
+        for ref in finding.get("rule_references") or []:
+            ref_text = str(ref).strip()
+            if ref_text:
+                references.add(ref_text)
+        rule_reference = str(finding.get("rule_reference") or "")
+        if rule_reference:
+            references.update(
+                rule_id for rule_id in known_rule_ids if rule_id and rule_id in rule_reference
+            )
+    return references
+
+
+def _uncovered_tool_dimensions(
+    findings: list[dict[str, Any]], observations: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """找出“工具有违规、但没有任何模型 finding 声明覆盖”的维度（按工具×规则聚合）。"""
+    violations_by_tool: dict[str, list[dict[str, Any]]] = {}
     for observation in observations:
         data = observation.get("data") if isinstance(observation.get("data"), dict) else {}
         violations = data.get("violations") if isinstance(data.get("violations"), list) else []
-        for item in violations[:200]:
-            if not isinstance(item, dict):
-                continue
-            rule_id = str(item.get("rule_id") or "")
-            category = "format"
-            if rule_id.startswith("signature") or rule_id.startswith("object"):
-                category = "other"
-            severity = str(item.get("severity") or "major")
-            if severity not in {"critical", "major", "minor", "info"}:
-                severity = "major"
-            evidence = str(item.get("evidence_text") or "")[:5_000] or None
-            location = item.get("location") if isinstance(item.get("location"), dict) else {}
-            findings.append(
-                {
-                    "category": category,
-                    "severity": severity,
-                    "verdict": "violation",
-                    "title": str(item.get("title") or "发现确定性违规")[:255],
-                    "description": str(item.get("description") or "VSTO 确定性检查发现违规")[:10_000],
-                    "evidence_text": evidence,
-                    "page_number": _positive_int(item.get("page_number")),
-                    "paragraph_index": _positive_int(item.get("paragraph_index")),
-                    "location": location,
-                    "rule_reference": rule_id or observation.get("tool"),
-                    "confidence": 1.0,
-                }
+        valid = [item for item in violations if isinstance(item, dict)]
+        if valid:
+            violations_by_tool[str(observation.get("tool") or "unknown")] = valid
+    if not violations_by_tool:
+        return []
+    known_rule_ids = {
+        str(item.get("rule_id") or "") for items in violations_by_tool.values() for item in items
+    }
+    referenced = _referenced_rule_ids(findings, known_rule_ids)
+    uncovered: list[dict[str, Any]] = []
+    for tool, items in violations_by_tool.items():
+        rest = [item for item in items if str(item.get("rule_id") or "") not in referenced]
+        if rest:
+            uncovered.append({"tool": tool, "violations": rest})
+    return uncovered
+
+
+def _violation_example_texts(violations: list[dict[str, Any]], limit: int = 3) -> list[str]:
+    examples: list[str] = []
+    for item in violations[:limit]:
+        text = str(item.get("evidence_text") or "").strip()
+        position = ""
+        if _positive_int(item.get("page_number")):
+            position = f"第{item.get('page_number')}页"
+            if _positive_int(item.get("paragraph_index")):
+                position += f"第{item.get('paragraph_index')}段"
+        example = f"「{text[:40]}」（{position}）" if text else (f"（{position}）" if position else "（无证据文本）")
+        rule_id = str(item.get("rule_id") or "").strip()
+        if rule_id:
+            example = f"{rule_id} {example}" if not example.startswith(rule_id) else example
+        examples.append(example)
+    return examples
+
+
+def _uncovered_dimension_findings(
+    findings: list[dict[str, Any]], observations: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """重问后仍未覆盖的违规维度：每工具一条待确认降级卡（不逐条物化 raw 违规）。"""
+    results: list[dict[str, Any]] = []
+    for entry in _uncovered_tool_dimensions(findings, observations):
+        tool = entry["tool"]
+        violations = entry["violations"]
+        label = _BLIND_TOOL_LABELS.get(tool, tool)
+        rule_counts: dict[str, int] = {}
+        for item in violations:
+            rule_id = str(item.get("rule_id") or "unknown")
+            rule_counts[rule_id] = rule_counts.get(rule_id, 0) + 1
+        counts_text = "、".join(f"{rule}×{count}" for rule, count in rule_counts.items())
+        examples = "；".join(_violation_example_texts(violations, limit=3))
+        finding = _unknown_finding(
+            f"「{label}」检查发现 {len(violations)} 处异常（{counts_text}），"
+            "但智能体汇总未能完成对该维度的研判。示例："
+            f"{examples}。建议重新执行检查，或按暗标要求人工复核该维度。"
+        )
+        finding.update(
+            {
+                "category": "format",
+                "title": f"「{label}」异常未能完成智能研判，需人工确认",
+                "rule_reference": counts_text,
+            }
+        )
+        results.append(finding)
+    return results
+
+
+def _legacy_story_note(observations: list[dict[str, Any]]) -> str | None:
+    """旧版插件的格式事实不带 story 标记时的研判提示（过渡兼容，随插件发版消失）。"""
+    for observation in observations:
+        tool = str(observation.get("tool") or "")
+        if tool not in {"word_check_text_style", "word_check_paragraph_format"}:
+            continue
+        data = observation.get("data") if isinstance(observation.get("data"), dict) else {}
+        violations = data.get("violations") if isinstance(data.get("violations"), list) else []
+        if violations and all(
+            not isinstance(item, dict) or item.get("story") is None for item in violations
+        ):
+            return (
+                "当前插件版本未标注格式事实的故事来源（story）。页眉/页脚（含页码域）中的"
+                "空段落与域字符会产生“9 磅”“西文等线”“1.5 倍行距”“空证据”类事实，它们"
+                "不是正文格式问题：请并入页眉页脚与页码维度综合研判或判为待确认，不要按"
+                "正文格式违规逐条上报。"
             )
-    return findings
+    return None
 
 
 def _merge_findings(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1019,8 +1164,40 @@ def _unknown_finding(description: str, evidence: str | None = None) -> dict[str,
         "paragraph_index": None,
         "location": {},
         "rule_reference": None,
+        "rule_references": [],
+        "evidences": [],
         "confidence": 0.0,
     }
+
+
+# 证据只能锚定在正文故事：页眉/页脚/脚注等非正文故事的事实不提供点击定位。
+_NON_MAIN_STORIES = {"header", "footer", "footnote", "endnote", "comment", "textbox"}
+
+
+def _normalize_evidences(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in raw[:50]:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        story = str(item.get("story") or "").strip() or None
+        locateable = (
+            bool(item.get("locateable"))
+            and bool(text)
+            and story not in _NON_MAIN_STORIES
+        )
+        normalized.append(
+            {
+                "text": text[:2_000],
+                "page_number": _positive_int(item.get("page_number")),
+                "paragraph_index": _positive_int(item.get("paragraph_index")),
+                "story": story,
+                "locateable": locateable,
+            }
+        )
+    return normalized
 
 
 def _normalize_findings(raw: Any) -> list[dict[str, Any]]:
@@ -1036,6 +1213,16 @@ def _normalize_findings(raw: Any) -> list[dict[str, Any]]:
         category = str(item.get("category") or "other")
         severity = str(item.get("severity") or "info")
         verdict = str(item.get("verdict") or "unknown")
+        evidences = _normalize_evidences(item.get("evidences"))
+        primary = next((entry for entry in evidences if entry["locateable"]), evidences[0] if evidences else {})
+        rule_references = [
+            str(ref).strip()[:120]
+            for ref in (item.get("rule_references") or [])
+            if str(ref).strip()
+        ][:20]
+        location = _normalize_location(item.get("location"))
+        if not location and primary.get("locateable"):
+            location = {"query": primary["text"]}
         normalized.append(
             {
                 "category": category if category in allowed_categories else "other",
@@ -1043,11 +1230,13 @@ def _normalize_findings(raw: Any) -> list[dict[str, Any]]:
                 "verdict": verdict if verdict in allowed_verdict else "unknown",
                 "title": str(item.get("title") or "未命名检查项")[:255],
                 "description": str(item.get("description") or "未提供判断说明")[:10_000],
-                "evidence_text": str(item.get("evidence_text") or "")[:5_000] or None,
-                "page_number": _positive_int(item.get("page_number")),
-                "paragraph_index": _positive_int(item.get("paragraph_index")),
-                "location": _normalize_location(item.get("location")),
+                "evidence_text": primary.get("text") or (str(item.get("evidence_text") or "")[:5_000] or None),
+                "page_number": primary.get("page_number") or _positive_int(item.get("page_number")),
+                "paragraph_index": primary.get("paragraph_index") or _positive_int(item.get("paragraph_index")),
+                "location": location,
                 "rule_reference": str(item.get("rule_reference") or "")[:5_000] or None,
+                "rule_references": rule_references,
+                "evidences": evidences,
                 "confidence": _confidence(item.get("confidence")),
             }
         )

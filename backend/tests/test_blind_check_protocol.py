@@ -13,12 +13,15 @@ from backend.agent.blind_check_agent import (
     _build_coverage_report,
     _build_deterministic_arguments,
     _coverage_unknown_findings,
-    _deterministic_findings,
+    _legacy_story_note,
+    _normalize_evidences,
     _normalize_findings,
     _parse_agent_json,
     _parse_last_json_object,
     _select_deterministic_tools,
     _summarize,
+    _uncovered_dimension_findings,
+    _uncovered_tool_dimensions,
 )
 from backend.agent.tools.vsto_remote import VstoRemoteTool
 from backend.api.vsto_tools import _session, submit_tool_result
@@ -227,29 +230,106 @@ def test_incomplete_deterministic_coverage_forces_unknown():
 
 
 @pytest.mark.unit
-def test_deterministic_violation_is_materialized_even_without_model_finding():
-    findings = _deterministic_findings(
+def test_uncovered_tool_dimensions_degrade_to_one_unknown_per_tool():
+    """ADR-0002：raw 违规不再物化；未覆盖维度每工具一条待确认降级卡。"""
+    observations = [
+        {
+            "tool": "word_check_paragraph_format",
+            "data": {
+                "coverage": "complete",
+                "violations": [
+                    {
+                        "rule_id": "paragraph.line_spacing_rule",
+                        "severity": "major",
+                        "title": "行距规则不是固定值",
+                        "description": "期望 exactly，实际 rule=0",
+                        "evidence_text": "施",
+                        "page_number": 1,
+                        "paragraph_index": 1,
+                    },
+                    {
+                        "rule_id": "paragraph.line_spacing",
+                        "severity": "major",
+                        "title": "行距不是要求值",
+                        "description": "期望 25 磅，实际 12 磅",
+                        "evidence_text": "工",
+                        "page_number": 1,
+                        "paragraph_index": 2,
+                    },
+                ],
+            },
+        }
+    ]
+    # 模型完全没覆盖该维度 → 守门员判定未覆盖
+    assert _uncovered_tool_dimensions([], observations)
+    findings = _uncovered_dimension_findings([], observations)
+    assert len(findings) == 1
+    assert findings[0]["verdict"] == "unknown"
+    assert "段落格式" in findings[0]["title"]
+    assert "2 处" in findings[0]["description"]
+
+    # 模型已声明覆盖（rule_references）→ 不再降级
+    covered = [
+        {
+            "verdict": "violation",
+            "title": "行距不符合固定值 25 磅",
+            "rule_references": ["paragraph.line_spacing_rule", "paragraph.line_spacing"],
+        }
+    ]
+    assert _uncovered_tool_dimensions(covered, observations) == []
+    assert _uncovered_dimension_findings(covered, observations) == []
+
+    # 只覆盖部分规则 → 仅剩未覆盖规则参与降级
+    partial = [{"verdict": "violation", "title": "x", "rule_references": ["paragraph.line_spacing"]}]
+    rest = _uncovered_tool_dimensions(partial, observations)
+    assert len(rest) == 1
+    assert all(
+        item["rule_id"] == "paragraph.line_spacing_rule" for item in rest[0]["violations"]
+    )
+
+
+@pytest.mark.unit
+def test_normalize_evidences_gates_locateable_on_story_and_text():
+    evidences = _normalize_evidences(
         [
-            {
-                "tool": "word_check_page_setup",
-                "data": {
-                    "coverage": "complete",
-                    "violations": [
-                        {
-                            "rule_id": "page.a4",
-                            "severity": "major",
-                            "title": "页面不是 A4 尺寸",
-                            "description": "第 2 节不是 A4",
-                            "evidence_text": "section 2",
-                            "page_number": 3,
-                        }
-                    ],
-                },
-            }
+            # 正文原文 + 工具标记可定位 → 保留 locateable
+            {"text": "主要施工方案与技术措施", "page_number": 2, "paragraph_index": 7, "story": "main", "locateable": True},
+            # 页眉页脚故事：即使模型标了 true 也强制不可定位
+            {"text": "1", "story": "footer", "locateable": True},
+            # 空文本不可定位
+            {"text": "   ", "story": "main", "locateable": True},
+            # 无 story（旧插件/模型省略）且有正文文本 → 允许定位（与旧行为一致）
+            {"text": "施", "page_number": 1, "paragraph_index": 1, "locateable": True},
+            # 未标记 locateable → false
+            {"text": "作者：张三", "story": None},
         ]
     )
-    assert findings[0]["verdict"] == "violation"
-    assert findings[0]["confidence"] == 1.0
+    assert [item["locateable"] for item in evidences] == [True, False, False, True, False]
+    # 派生旧字段：normalize 后首条可定位证据填 location.query
+    finding = _normalize_findings(
+        [{"verdict": "violation", "evidences": evidences}]
+    )[0]
+    assert finding["location"] == {"query": "主要施工方案与技术措施"}
+    assert finding["evidence_text"] == "主要施工方案与技术措施"
+
+
+@pytest.mark.unit
+def test_legacy_story_note_only_for_untagged_format_tools():
+    untagged = [
+        {
+            "tool": "word_check_text_style",
+            "data": {"violations": [{"rule_id": "text.font", "evidence_text": ""}]},
+        }
+    ]
+    assert _legacy_story_note(untagged) is not None
+    tagged = [
+        {
+            "tool": "word_check_text_style",
+            "data": {"violations": [{"rule_id": "text.font", "story": "main"}]},
+        }
+    ]
+    assert _legacy_story_note(tagged) is None
+    assert _legacy_story_note([]) is None
 
 
 @pytest.mark.unit

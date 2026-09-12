@@ -77,6 +77,8 @@ class BlindCheckFindingResponse(BaseModel):
     paragraph_index: int | None
     location: dict[str, Any] | None
     rule_reference: str | None
+    evidences: list[dict[str, Any]] | None = None
+    rule_references: list[str] | None = None
     confidence: float | None
 
     model_config = ConfigDict(from_attributes=True)
