@@ -409,20 +409,52 @@ async function reconnectDocument() {
   if (!refreshed) errorMessage.value = errorMessage.value || "连接 Word 文档失败，请确认插件面板仍处于打开状态后重试";
 }
 
-function canLocate(item: BlindCheckFinding) {
-  // 与 locateFinding 的发送条件保持一致：既无定位查询串也无证据文本的发现
-  // （如工具级「覆盖度不足」待确认项）没有可定位的文档位置，不渲染定位入口。
-  return Boolean((item.location && typeof item.location.query === "string" && item.location.query) || item.evidence_text);
+// ADR-0002：发现的定位入口只在证据级出现，且只认工具证实可定位（locateable）
+// 的正文锚点；文件属性/页眉页脚/合成说明串没有“点击定位”。
+function findingEvidences(item: BlindCheckFinding) {
+  if (Array.isArray(item.evidences) && item.evidences.length) {
+    return item.evidences;
+  }
+  // 旧任务数据没有 evidences 数组：退回旧的单证据行为（文本搜索定位）。
+  const legacyQuery = item.location && typeof item.location.query === "string" ? item.location.query : item.evidence_text;
+  if (legacyQuery) {
+    return [{
+      text: legacyQuery,
+      page_number: item.page_number,
+      paragraph_index: item.paragraph_index,
+      story: null,
+      locateable: true,
+    }];
+  }
+  return [];
 }
-function locateFinding(item: BlindCheckFinding) {
-  const locationQuery = item.location && typeof item.location.query === "string" ? item.location.query : item.evidence_text;
-  if (locationQuery) postBridge({ type: "bjt.vsto.locate", tool_session_id: toolSessionId.value, snapshot_id: snapshotId.value, query: locationQuery.slice(0, 500), page_number: item.page_number, paragraph_index: item.paragraph_index });
+function hasLocateableEvidence(item: BlindCheckFinding) {
+  return findingEvidences(item).some((evidence) => evidence.locateable);
 }
+function locateEvidence(evidence: { text: string; page_number: number | null; paragraph_index: number | null; story: string | null; locateable: boolean }) {
+  if (!evidence.locateable || !evidence.text) return;
+  postBridge({
+    type: "bjt.vsto.locate",
+    tool_session_id: toolSessionId.value,
+    snapshot_id: snapshotId.value,
+    query: evidence.text.slice(0, 500),
+    page_number: evidence.page_number || null,
+    paragraph_index: evidence.paragraph_index || null,
+    story: evidence.story || null,
+  });
+}
+function evidenceLocationText(evidence: { page_number: number | null; paragraph_index: number | null }) {
+  return evidence.page_number
+    ? `第 ${evidence.page_number} 页${evidence.paragraph_index ? ` · 第 ${evidence.paragraph_index} 段` : ""}（点击定位）`
+    : "点击定位";
+}
+const violationFindings = computed(() => findings.value.filter((item) => item.verdict === "violation"));
+const unknownFindings = computed(() => findings.value.filter((item) => item.verdict === "unknown"));
+const compliantFindings = computed(() => findings.value.filter((item) => item.verdict === "compliant"));
 
 function categoryText(value: string) { return ({ format: "格式", company_identity: "公司身份", person_identity: "人员身份", metadata: "文件属性", other: "其他" } as Record<string, string>)[value] || value || "其他"; }
 function severityText(value: string) { return ({ critical: "严重", major: "主要", minor: "一般", info: "提示" } as Record<string, string>)[value] || value || "提示"; }
 function verdictText(value: string) { return ({ violation: "疑似违规", compliant: "已符合", unknown: "待确认" } as Record<string, string>)[value] || "待确认"; }
-function locationText(item: BlindCheckFinding) { return item.page_number ? `第 ${item.page_number} 页${item.paragraph_index ? ` · 第 ${item.paragraph_index} 段` : ""}（点击定位）` : "点击定位到证据"; }
 function errorText(error: unknown, fallback: string) {
   if (error && typeof error === "object" && "response" in error) {
     const response = (error as { response?: { data?: { detail?: string; message?: string } } }).response;
@@ -556,12 +588,30 @@ onUnmounted(() => {
       <div v-if="errorMessage" class="error">{{ errorMessage }}</div>
       <div class="findings-scroll">
         <div v-if="!findings.length && finished" class="empty">未返回结构化发现，请重新检查。</div>
-        <article v-for="item in findings" :key="item.id" class="finding" :class="{ 'no-locate': !canLocate(item) }" @click="locateFinding(item)">
+        <article v-for="item in violationFindings" :key="item.id" class="finding" :class="{ 'no-locate': !hasLocateableEvidence(item) }">
           <div class="finding-meta"><b :class="`severity-${item.severity}`">{{ severityText(item.severity) }}</b><span>{{ categoryText(item.category) }}</span><span>{{ verdictText(item.verdict) }}</span></div>
           <h3>{{ item.title }}</h3><p>{{ item.description }}</p>
-          <blockquote v-if="item.evidence_text">证据：{{ item.evidence_text }}</blockquote>
-          <small v-if="canLocate(item)">{{ locationText(item) }}</small>
+          <ul v-if="findingEvidences(item).length" class="evidence-list">
+            <li v-for="(evidence, index) in findingEvidences(item)" :key="index" :class="{ locateable: evidence.locateable }" @click="locateEvidence(evidence)">
+              <span class="evidence-text">{{ evidence.text }}</span>
+              <small v-if="evidence.locateable">{{ evidenceLocationText(evidence) }}</small>
+            </li>
+          </ul>
         </article>
+        <details v-if="unknownFindings.length" class="fold-section">
+          <summary>待确认与检查覆盖说明（{{ unknownFindings.length }} 条，点击展开）</summary>
+          <article v-for="item in unknownFindings" :key="item.id" class="finding muted no-locate">
+            <div class="finding-meta"><b class="severity-info">待确认</b><span>{{ categoryText(item.category) }}</span></div>
+            <h3>{{ item.title }}</h3><p>{{ item.description }}</p>
+          </article>
+        </details>
+        <details v-if="compliantFindings.length" class="fold-section">
+          <summary>符合项一览（{{ compliantFindings.length }} 项，点击展开）</summary>
+          <article v-for="item in compliantFindings" :key="item.id" class="finding compliant no-locate">
+            <div class="finding-meta"><b class="severity-info">已符合</b><span>{{ categoryText(item.category) }}</span></div>
+            <h3>{{ item.title }}</h3><p>{{ item.description }}</p>
+          </article>
+        </details>
       </div>
     </section>
   </main>
@@ -572,4 +622,16 @@ onUnmounted(() => {
 @media (max-width:560px){.blind-check-view{padding:0 8px 28px}.brand-line{margin:0 -8px}.panel-header{min-height:56px}.panel-logo{width:96px}.metric-pill{height:27px;min-width:80px;padding-left:30px;font-size:10px}.blind-card{padding:14px 12px;margin-bottom:9px;border-radius:9px}.hero-card h1{font-size:19px}.document-state{align-items:flex-start;flex-wrap:wrap}.document-name{flex-basis:100%;margin-left:14px}.scope-title-row{align-items:flex-start}.actions{flex-direction:column}.actions button{width:100%}.result-head{flex-direction:column}.counts{justify-content:flex-start}.finding{padding:10px}}
 @media (max-width:390px){.panel-header{align-items:flex-start;flex-direction:column;padding:10px 3px}.account-strip{width:100%}.metric-pill{flex:1}.scope-icon{display:none}.result-head strong{padding-left:0}.timeline-content{padding:7px 8px}}
 .findings-scroll{max-height:60vh;overflow-y:auto}
+.evidence-list{margin:8px 0 0;padding:0;list-style:none}
+.evidence-list li{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-top:5px;padding:6px 8px;border-left:2px solid #ddd;background:#fafafa}
+.evidence-list li.locateable{cursor:pointer;transition:background .15s}
+.evidence-list li.locateable:hover{background:#fff3f3;border-left-color:var(--brand)}
+.evidence-list li:not(.locateable){cursor:default}
+.evidence-text{min-width:0;color:#777;font-size:10px;line-height:1.5;overflow-wrap:anywhere}
+.evidence-list small{flex:0 0 auto;color:var(--brand);font-size:9px;white-space:nowrap}
+.fold-section{margin-top:12px}
+.fold-section summary{padding:8px 10px;border:1px dashed #dcdcdc;border-radius:7px;background:#fafafa;color:#888;font-size:10px;cursor:pointer;user-select:none}
+.fold-section summary:hover{color:var(--brand);border-color:#f1c9cd}
+.finding.muted{border-left-color:#d9d9d9}
+.finding.compliant{border-left-color:#95de64}
 </style>
