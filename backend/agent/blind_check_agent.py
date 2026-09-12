@@ -96,6 +96,10 @@ BLIND_CHECK_SYSTEM_PROMPT = """
 每个确定性工具的结果都包含 coverage、checked_count、violation_count 和 unknown_reasons。
 coverage 不是 complete 时，对应规则必须输出 unknown；不能把“未扫描到”写成 compliant。
 
+最终 findings 的 title/description/evidence_text 面向最终用户（标书编制人员）：用平实中文表述，
+不要出现英文工具名（word_*）、coverage/checked_count/rule=0 等内部字段；引用工具结论时用中文
+转述（如“行距规则不是固定值”“字号 56 磅”），页码与段落位置照常保留。
+
 最终回答必须只包含 JSON（不要 Markdown 代码围栏），格式如下：
 {
   "summary": {"overall": "pass|fail|unknown", "critical": 0, "major": 0, "minor": 0, "unknown": 0},
@@ -248,46 +252,21 @@ class BlindCheckAgent(BaseAgent):
             snapshot_id=self.snapshot_id,
         )
         deterministic_observations: list[dict[str, Any]] = []
+        parsed_arguments, requirement_notes = _build_deterministic_arguments(self.requirement_text)
         for tool_name in _select_deterministic_tools(self.requirement_text):
             arguments: dict[str, Any] = {"snapshot_id": self.snapshot_id}
             if tool_name == "word_check_page_setup":
+                arguments.update(parsed_arguments.get("word_check_page_setup", {}))
                 arguments["check_white_background"] = "白底" in self.requirement_text or "背景" in self.requirement_text
             if tool_name == "word_check_text_style":
-                arguments.update(
-                    {
-                        "expected_font": "宋体",
-                        "expected_font_far_east": "宋体",
-                        "expected_size_pt": 14,
-                        "expected_color_rgb": [0, 0, 0],
-                        "require_no_italic": True,
-                        "require_no_underline": True,
-                        "check_white_background": "白底" in self.requirement_text or "背景" in self.requirement_text,
-                    }
-                )
+                arguments.update(parsed_arguments.get("word_check_text_style", {}))
+                arguments["require_no_italic"] = True
+                arguments["require_no_underline"] = True
+                arguments["check_white_background"] = "白底" in self.requirement_text or "背景" in self.requirement_text
             elif tool_name == "word_check_paragraph_format":
-                arguments.update(
-                    {
-                        "line_spacing_rule": "exactly",
-                        "line_spacing_pt": 28,
-                        "space_before_pt": 0,
-                        "space_after_pt": 0,
-                    }
-                )
+                arguments.update(parsed_arguments.get("word_check_paragraph_format", {}))
             elif tool_name == "word_check_heading_numbering":
-                arguments.update(
-                    {
-                        "max_level": 7,
-                        "formats": [
-                            r"^[一二三四五六七八九十百千万零〇]+、",
-                            r"^（[一二三四五六七八九十百千万零〇]+）",
-                            r"^\d+\.",
-                            r"^（\d+）",
-                            r"^\d+）",
-                            r"^[a-zA-Z]\.",
-                            r"^[a-zA-Z]）",
-                        ],
-                    }
-                )
+                arguments.update(parsed_arguments.get("word_check_heading_numbering", {}))
             elif tool_name == "word_check_objects":
                 # The pasted requirement may explicitly allow tender-required
                 # images.  Do not turn every image into a hard violation in
@@ -297,9 +276,9 @@ class BlindCheckAgent(BaseAgent):
                     "不得插入图片" in self.requirement_text
                     and "除外" not in self.requirement_text
                 )
-            deterministic_observations.append(
-                await self._collect_tool(tool_name, **arguments)
-            )
+            observation = await self._collect_tool(tool_name, **arguments)
+            _apply_echo_verification(observation, tool_name, arguments)
+            deterministic_observations.append(observation)
         mandatory_evidence = [
             _compact_observation_for_agent(identity_observation),
             *[_compact_observation_for_agent(item) for item in deterministic_observations],
@@ -322,6 +301,8 @@ class BlindCheckAgent(BaseAgent):
             }
         context = {
             "requirement_text": self.requirement_text,
+            # 解析器无法结构化的要求维度：模型不得据工具默认参数把它们判成违规或合规。
+            "requirement_parse_notes": requirement_notes,
             "mandatory_overview": overview,
             "mandatory_evidence": mandatory_evidence,
             "coverage_contract": coverage,
@@ -356,6 +337,16 @@ class BlindCheckAgent(BaseAgent):
                 _unknown_finding(f"必要的文档检查工具未成功完成：{failed_tools}")
             )
         findings.extend(_coverage_unknown_findings(coverage))
+        for note in requirement_notes:
+            unresolved = _unknown_finding(note)
+            unresolved.update(
+                {
+                    "category": "format",
+                    "title": "暗标要求项未能自动检查，需人工确认",
+                    "rule_reference": "粘贴的暗标要求",
+                }
+            )
+            findings.append(unresolved)
         identity_data = identity_observation.get("data") or {}
         visual_unknown_count = _positive_int(identity_data.get("visual_objects_without_text"))
         if visual_unknown_count:
@@ -416,6 +407,366 @@ def _select_deterministic_tools(requirement_text: str) -> list[str]:
     if not selected:
         selected = list(_DETERMINISTIC_RULE_KEYWORDS)
     return selected
+
+
+# ---------------------------------------------------------------------------
+# 粘贴要求的结构化解析。
+#
+# 历史缺陷（2026-09-12 生产实测）：确定性工具参数（28 磅行距、统一 2.5 厘米页边距、
+# “（一）”编号格式）曾是硬编码的样例值，与用户实际粘贴的要求（如“固定值25磅、
+# 上3下3左2右2、大纲级别正文文本”）错配，产生数十条假阳性违规。解析原则：
+# 能解析出数值/名称的维度才传参；解析不出的维度显式跳过并生成待确认说明，
+# 绝不回落到内置默认值。
+# ---------------------------------------------------------------------------
+
+_FONT_SIZE_NAMES = {
+    "初号": 42.0, "小初": 36.0, "一号": 26.0, "小一": 24.0, "二号": 22.0, "小二": 18.0,
+    "三号": 16.0, "小三": 15.0, "四号": 14.0, "小四": 12.0, "五号": 10.5, "小五": 9.0,
+    "六号": 7.5, "小六": 6.5, "七号": 5.5, "八号": 5.0,
+}
+# 顺序即优先级：长名优先，避免“仿宋_GB2312”被“仿宋”抢先命中。
+_KNOWN_FONTS = (
+    "仿宋_GB2312", "楷体_GB2312", "Times New Roman", "等线 Light",
+    "宋体", "仿宋", "黑体", "楷体", "微软雅黑", "等线", "Arial",
+)
+_CN_NUMERAL_CHARS = "一二三四五六七八九十百千万零〇"
+_CN_NUMERAL_CLASS = "[" + _CN_NUMERAL_CHARS + "]+"
+_LEVEL_NAMES = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_MARGIN_SIDE_PATTERNS = {
+    "margin_top_cm": r"上\s*(\d+(?:\.\d+)?)\s*(?:厘米|㎝|cm|CM)",
+    "margin_bottom_cm": r"下\s*(\d+(?:\.\d+)?)\s*(?:厘米|㎝|cm|CM)",
+    "margin_left_cm": r"左\s*(\d+(?:\.\d+)?)\s*(?:厘米|㎝|cm|CM)",
+    "margin_right_cm": r"右\s*(\d+(?:\.\d+)?)\s*(?:厘米|㎝|cm|CM)",
+}
+
+
+def _parse_font_name(text: str) -> str | None:
+    for name in _KNOWN_FONTS:
+        if name in text:
+            return name
+    return None
+
+
+def _parse_size_pt(text: str) -> float | None:
+    for name in sorted(_FONT_SIZE_NAMES, key=len, reverse=True):
+        if name in text:
+            return _FONT_SIZE_NAMES[name]
+    match = re.search(r"字号[^\d]{0,8}(\d+(?:\.\d+)?)\s*(?:磅|pt)", text, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def _parse_color_rgb(text: str) -> list[int] | None:
+    match = re.search(
+        r"RGB\s*[(（]\s*(\d+)\s*[,，]\s*(\d+)\s*[,，]\s*(\d+)\s*[)）]", text, re.IGNORECASE
+    )
+    if match:
+        return [int(match.group(index)) for index in (1, 2, 3)]
+    if "黑字" in text or "黑色" in text:
+        return [0, 0, 0]
+    return None
+
+
+def _parse_line_spacing(text: str) -> dict[str, Any]:
+    mentioned = any(keyword in text for keyword in ("行距", "行间距"))
+    if not mentioned:
+        return {"mentioned": False}
+    match = re.search(r"固定值\s*(\d+(?:\.\d+)?)\s*(?:磅|pt)", text, re.IGNORECASE)
+    if match:
+        return {"mentioned": True, "rule": "exactly", "pt": float(match.group(1))}
+    match = re.search(
+        r"(?:行距|行间距)[^\d\n]{0,12}(\d+(?:\.\d+)?)\s*(?:磅|pt)", text, re.IGNORECASE
+    )
+    if match:
+        rule = "exactly" if "固定值" in text else "any"
+        return {"mentioned": True, "rule": rule, "pt": float(match.group(1))}
+    if "单倍" in text:
+        return {"mentioned": True, "rule": "single", "pt": None}
+    return {"mentioned": True, "rule": None, "pt": None}
+
+
+def _parse_margins(text: str) -> dict[str, Any]:
+    if "边距" not in text:
+        return {"mode": "unmentioned"}
+    sides: dict[str, float] = {}
+    for key, pattern in _MARGIN_SIDE_PATTERNS.items():
+        match = re.search(pattern, text)
+        if match and 0.5 <= float(match.group(1)) <= 10:
+            sides[key] = float(match.group(1))
+    if len(sides) == 4:
+        return {"mode": "per_side", **sides}
+    uniform = re.search(r"(?:均|统一)[^\d]{0,6}(\d+(?:\.\d+)?)\s*(?:厘米|㎝|cm|CM)", text)
+    if not uniform:
+        uniform = re.search(r"(\d+(?:\.\d+)?)\s*(?:厘米|㎝|cm|CM)[^\n。；]{0,8}边距", text)
+    if uniform and 0.5 <= float(uniform.group(1)) <= 10:
+        return {"mode": "uniform", "cm": float(uniform.group(1))}
+    return {"mode": "unparsed"}
+
+
+def _parse_max_heading_level(text: str) -> int | None:
+    match = re.search(r"最多[^\d\n]{0,8}(\d+)\s*级", text)
+    return int(match.group(1)) if match else None
+
+
+def _heading_pattern_from_example(example: str) -> str | None:
+    """把编号样例（“一、”“（一）”“1.”）翻译成锚定正则；没有字面标点可锚定时放弃。"""
+    tokens: list[str] = []
+    for ch in example.strip():
+        if ch in _CN_NUMERAL_CHARS:
+            token = _CN_NUMERAL_CLASS
+        elif ch.isdigit():
+            token = r"\d+"
+        elif ch.isascii() and ch.isalpha():
+            token = "[a-zA-Z]+"
+        else:
+            token = re.escape(ch)
+        if tokens and tokens[-1] == token and token != re.escape(ch):
+            continue
+        tokens.append(token)
+    variable = (_CN_NUMERAL_CLASS, r"\d+", "[a-zA-Z]+")
+    if not tokens or all(token in variable for token in tokens):
+        return None
+    return "^" + "".join(tokens)
+
+
+def _parse_heading_formats(text: str) -> list[str] | None:
+    formats: dict[int, str] = {}
+    pattern = re.compile(
+        r"([一二三四五六七八九])级(?:标题|序号)?(?:编号)?(?:格式)?(?:为|是|：|:)"
+        r"\s*[\"“']?([^\"”'，,；;\n]{1,12})"
+    )
+    for match in pattern.finditer(text):
+        level = _LEVEL_NAMES.get(match.group(1))
+        regex = _heading_pattern_from_example(match.group(2))
+        if level and regex:
+            formats.setdefault(level, regex)
+    if not formats:
+        return None
+    # 未提及的层级用空串占位：插件侧空串表示“该层不做格式比较”。
+    return [formats.get(level, "") for level in range(1, 8)]
+
+
+def _parse_heading_policy(text: str) -> tuple[str, bool]:
+    """返回 (heading_policy, 要求是否包含编号格式条款)。"""
+    if "大纲级别" in text and "正文文本" in text:
+        return "body_text_outline", False
+    has_format_clause = bool(
+        re.search(r"[一二三四五六七八九]级[^\n。；]{0,16}(?:为|：|:)", text) or "编号格式" in text
+    )
+    if has_format_clause or "标题样式" in text or "重新开始编号" in text or "重新编号" in text:
+        return "require_heading_styles", has_format_clause
+    return "none", has_format_clause
+
+
+def _build_deterministic_arguments(requirement_text: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """把粘贴的要求解析成确定性工具参数；解析不出的维度跳过并返回待确认说明。"""
+    text = requirement_text or ""
+    arguments: dict[str, dict[str, Any]] = {}
+    notes: list[str] = []
+
+    style_args: dict[str, Any] = {}
+    font = _parse_font_name(text)
+    if font:
+        style_args["expected_font"] = font
+        style_args["expected_font_far_east"] = font
+    elif "字体" in text:
+        notes.append("要求提到字体但未能解析出具体字体名，字体一致性需人工确认")
+    size = _parse_size_pt(text)
+    if size is not None:
+        style_args["expected_size_pt"] = size
+    elif "字号" in text or any(name in text for name in _FONT_SIZE_NAMES):
+        notes.append("要求提到字号但未能解析出具体字号，字号一致性需人工确认")
+    color = _parse_color_rgb(text)
+    if color:
+        style_args["expected_color_rgb"] = color
+    elif "颜色" in text:
+        notes.append("要求提到颜色但未能解析出具体 RGB，颜色一致性需人工确认")
+    arguments["word_check_text_style"] = style_args
+
+    para_args: dict[str, Any] = {}
+    line = _parse_line_spacing(text)
+    if line.get("mentioned"):
+        para_args["check_line_spacing"] = True
+        if line.get("pt") is not None:
+            para_args["line_spacing_pt"] = line["pt"]
+            para_args["line_spacing_rule"] = line.get("rule") or "any"
+        elif line.get("rule"):
+            para_args["line_spacing_rule"] = line["rule"]
+        else:
+            notes.append("要求提到行距但未能解析出具体磅值或规则，行距需人工确认")
+    else:
+        para_args["check_line_spacing"] = False
+    before = re.search(r"段前[^\d]{0,8}(\d+(?:\.\d+)?)", text)
+    after = re.search(r"段后[^\d]{0,8}(\d+(?:\.\d+)?)", text)
+    if before or after or "段前" in text or "段后" in text:
+        para_args["check_space"] = True
+        if before:
+            para_args["space_before_pt"] = float(before.group(1))
+        if after:
+            para_args["space_after_pt"] = float(after.group(1))
+        if ("段前" in text and not before) or ("段后" in text and not after):
+            notes.append("要求提到段前/段后间距但数值未能完全解析，相应间距需人工确认")
+    else:
+        para_args["check_space"] = False
+    arguments["word_check_paragraph_format"] = para_args
+
+    page_args: dict[str, Any] = {}
+    margins = _parse_margins(text)
+    if margins["mode"] == "per_side":
+        page_args.update(
+            {key: margins[key] for key in _MARGIN_SIDE_PATTERNS}
+        )
+    elif margins["mode"] == "uniform":
+        page_args["margin_cm"] = margins["cm"]
+    else:
+        page_args["check_margins"] = False
+        if margins["mode"] == "unparsed":
+            notes.append("要求提到页边距但数值未能解析，页边距需人工确认")
+    arguments["word_check_page_setup"] = page_args
+
+    policy, has_format_clause = _parse_heading_policy(text)
+    heading_args: dict[str, Any] = {"heading_policy": policy}
+    max_level = _parse_max_heading_level(text)
+    if max_level:
+        heading_args["max_level"] = max_level
+    formats = _parse_heading_formats(text)
+    if policy == "require_heading_styles" and formats:
+        heading_args["formats"] = formats
+    else:
+        heading_args["check_number_format"] = False
+        if policy == "require_heading_styles" and has_format_clause and not formats:
+            notes.append("标题编号格式要求未能结构化，编号格式需人工确认")
+    arguments["word_check_heading_numbering"] = heading_args
+    return arguments, notes
+
+
+def _echo_value_matches(echo: Any, intent: Any) -> bool:
+    if echo is None or intent is None or isinstance(intent, bool):
+        return echo == intent
+    if isinstance(intent, (int, float)):
+        try:
+            return abs(float(echo) - float(intent)) < 1e-6
+        except (TypeError, ValueError):
+            return False
+    if isinstance(intent, list):
+        if not isinstance(echo, list) or len(echo) != len(intent):
+            return False
+
+        def _norm(value: Any) -> Any:
+            return None if value in (None, "") else value
+
+        return all(
+            _echo_value_matches(_norm(item), _norm(value))
+            for item, value in zip(echo, intent)
+        )
+    return echo == intent
+
+
+def _echo_mismatched_dimensions(
+    tool_name: str, arguments: dict[str, Any], expected: dict[str, Any]
+) -> list[tuple[tuple[str, ...], str]]:
+    """把插件回显的 expected 与传入意图逐维度比对，返回不可信规则的维度列表。
+
+    主动跳过的维度（未传参）也参与校验：插件必须不执行该维度比较
+    （回显 null），否则其内置默认值（统一 2.5 厘米、28 磅等）会产生假阳性。
+    """
+
+    def check(arg_key: str, echo_key: str, rules: tuple[str, ...], label: str) -> None:
+        intent = arguments.get(arg_key)
+        echo = expected.get(echo_key)
+        if intent is None:
+            if echo is not None:
+                mismatches.append((rules, label))
+        elif not _echo_value_matches(echo, intent):
+            mismatches.append((rules, label))
+
+    mismatches: list[tuple[tuple[str, ...], str]] = []
+    if tool_name == "word_check_text_style":
+        check("expected_font", "font", ("text.font",), "字体")
+        check("expected_size_pt", "size_pt", ("text.size",), "字号")
+        check("expected_color_rgb", "color_rgb", ("text.color",), "字体颜色")
+    elif tool_name == "word_check_paragraph_format":
+        check("line_spacing_rule", "line_spacing_rule", ("paragraph.line_spacing_rule",), "行距规则")
+        check("line_spacing_pt", "line_spacing_pt", ("paragraph.line_spacing",), "行距数值")
+        check("space_before_pt", "space_before_pt", ("paragraph.space_before",), "段前间距")
+        check("space_after_pt", "space_after_pt", ("paragraph.space_after",), "段后间距")
+    elif tool_name == "word_check_page_setup":
+        per_side = ("margin_top_cm", "margin_bottom_cm", "margin_left_cm", "margin_right_cm")
+        if any(arguments.get(key) is not None for key in per_side):
+            if expected.get("margin_mode") != "per_side":
+                mismatches.append((("page.margins",), "页边距（四边不同）"))
+            else:
+                for key in per_side:
+                    if arguments.get(key) is not None and not _echo_value_matches(
+                        expected.get(key), arguments[key]
+                    ):
+                        mismatches.append((("page.margins",), "页边距（四边不同）"))
+                        break
+        else:
+            check("margin_cm", "margin_cm", ("page.margins",), "页边距")
+    elif tool_name == "word_check_heading_numbering":
+        policy = arguments.get("heading_policy") or "require_heading_styles"
+        if expected.get("heading_policy") != policy and policy in ("body_text_outline", "none"):
+            mismatches.append(
+                (
+                    (
+                        "heading.style",
+                        "heading.list",
+                        "heading.list_level",
+                        "heading.number_format",
+                        "heading.restart",
+                    ),
+                    "标题样式/编号口径",
+                )
+            )
+        enforce_formats = bool(arguments.get("formats")) and arguments.get("check_number_format") is not False
+        if enforce_formats:
+            if not _echo_value_matches(expected.get("formats"), arguments["formats"]):
+                mismatches.append((("heading.number_format", "heading.restart"), "标题编号格式"))
+        elif expected.get("formats") is not None:
+            mismatches.append((("heading.number_format", "heading.restart"), "标题编号格式"))
+        check("max_level", "max_level", ("heading.max_level",), "标题层级上限")
+    return mismatches
+
+
+def _apply_echo_verification(
+    observation: dict[str, Any], tool_name: str, arguments: dict[str, Any]
+) -> None:
+    """丢弃插件没有按传入参数计算出的确定性违规，并降级为待确认。
+
+    插件旧版本会忽略新增参数（四边页边距、维度开关、heading_policy）并回落到
+    内置默认值；这类违规按维度剔除并写入 unknown 原因，覆盖度报告与 LLM 上下文
+    都基于修正后的数据，避免版本错配假阳性流向最终结论。
+    """
+    if not observation.get("success"):
+        return
+    data = observation.get("data")
+    if not isinstance(data, dict):
+        return
+    violations = data.get("violations")
+    if not isinstance(violations, list) or not violations:
+        return
+    expected = data.get("expected") if isinstance(data.get("expected"), dict) else {}
+    mismatches = _echo_mismatched_dimensions(tool_name, arguments, expected)
+    if not mismatches:
+        return
+    dropped_rules = {rule for rules, _label in mismatches for rule in rules}
+    kept = [
+        item
+        for item in violations
+        if not (isinstance(item, dict) and str(item.get("rule_id") or "") in dropped_rules)
+    ]
+    if len(kept) == len(violations):
+        return
+    labels = "、".join(dict.fromkeys(label for _rules, label in mismatches))
+    data["violations"] = kept
+    data["violation_count"] = len(kept)
+    reasons = list(data.get("unknown_reasons") or [])
+    reasons.append(
+        f"插件未按本次暗标要求参数执行{labels}比较（插件版本过旧或参数被忽略），相关违规已转为待确认"
+    )
+    data["unknown_reasons"] = reasons
 
 
 def _compact_observation_for_agent(observation: dict[str, Any]) -> dict[str, Any]:
@@ -495,21 +846,58 @@ def _safe_nonnegative_int(*values: Any) -> int:
     return 0
 
 
+_BLIND_TOOL_LABELS = {
+    "word_check_page_setup": "页面设置",
+    "word_check_headers_footers": "页眉页脚与页码",
+    "word_check_blank_pages": "空白页",
+    "word_check_text_style": "字体与字号",
+    "word_check_paragraph_format": "段落格式（行距/间距）",
+    "word_check_heading_numbering": "标题样式与编号",
+    "word_check_objects": "图片与图形对象",
+    "word_check_signatures": "签名与批注",
+    "word_scan_identity_clues": "身份线索扫描",
+    "word_check_format": "整体格式抽查",
+}
+
+# 用户可读的原因转述；值为 None 表示保留原文（如含具体数字的上限提示本身已可读）。
+_COVERAGE_REASON_HINTS = (
+    ("部分文字的字体属性混合", "少量文字（多为页码等特殊字符）无法自动读取字体属性"),
+    ("未能读取签名行", "Word 未能读取签名行信息"),
+    ("无法读取 OOXML 签名包", "无法读取文档内嵌的签名信息"),
+    ("重新开始编号", "无法确定编号是否按要求在每部分重新开始"),
+    ("旧版格式工具", "整体格式检查只覆盖部分段落"),
+)
+
+
+def _friendly_coverage_reason(reason: Any) -> str:
+    text = str(reason).strip()
+    for keyword, friendly in _COVERAGE_REASON_HINTS:
+        if keyword in text:
+            return friendly or text
+    return text
+
+
 def _coverage_unknown_findings(coverage: dict[str, Any]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     for tool, item in coverage.items():
         if not isinstance(item, dict) or item.get("coverage") == "complete":
             continue
+        label = _BLIND_TOOL_LABELS.get(tool, tool)
         reasons = item.get("unknown_reasons") if isinstance(item.get("unknown_reasons"), list) else []
-        reason_text = "；".join(str(reason)[:300] for reason in reasons[:3]) or "工具没有提供完整覆盖证明"
+        reason_text = (
+            "；".join(_friendly_coverage_reason(reason)[:160] for reason in reasons[:3])
+            or "工具未说明具体原因"
+        )
+        # 面向最终用户（标书编制人员）的表述：不出现英文工具名/coverage 等内部口径。
         finding = _unknown_finding(
-            f"{tool} 的检查覆盖度为 {item.get('coverage') or 'none'}，不能据此确认对应规则全文合规。{reason_text}"
+            f"「{label}」的自动检查未能覆盖全部内容（{reason_text}），"
+            "已检查部分未发现问题不代表全文合规，建议按暗标要求人工复核。"
         )
         finding.update(
             {
-                "category": "format" if "check_" in tool else "other",
-                "title": f"{tool} 覆盖度不足，需人工确认",
-                "rule_reference": "确定性检查必须完整覆盖后才能判定合规",
+                "category": "format" if "check" in tool or "scan" in tool else "other",
+                "title": f"「{label}」检查未能覆盖全部内容，需人工确认",
+                "rule_reference": "自动检查覆盖度不足，相关要求需人工复核",
             }
         )
         findings.append(finding)
