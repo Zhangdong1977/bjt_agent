@@ -94,7 +94,8 @@ BLIND_CHECK_SYSTEM_PROMPT = """
 旧版 word_check_format 只提供采样，不能用采样结果证明全文合规。工具是只读的，不要请求修改文档。
 
 每个确定性工具的结果都包含 coverage、checked_count、violation_count 和 unknown_reasons。
-coverage 不是 complete 时，对应规则必须输出 unknown；不能把“未扫描到”写成 compliant。
+coverage 不是 complete 时，对应维度不能写成 compliant：有违规证据就判 violation，否则该维度卡输出 unknown。
+覆盖度本身由系统在结果页顶部统一提示，不要单独为“某项检查覆盖不完整”输出卡片。
 
 最终 findings 的 title/description 面向最终用户（标书编制人员）：用平实中文表述，
 不要出现英文工具名（word_*）、coverage/checked_count/rule=0 等内部字段；引用工具结论时用中文
@@ -105,7 +106,19 @@ findings 按暗标要求维度组织——每个维度一张卡：
   封面的字号/对齐/行距若属同一口径问题，合并为一张封面格式卡。
 - 禁止为同一维度输出多张卡，禁止把工具返回的逐段/逐字违规直接罗列成多条 finding。
 - description 中的数量必须与 evidences 数量一致；不要引用工具的 violation_count/checked_count。
-- 对确认符合的维度输出一张 verdict=compliant 的卡；对覆盖不足或无法判定的维度输出一张 verdict=unknown 的卡。
+- 对确认符合的维度输出一张 verdict=compliant 的卡；对要求明确存在但无法判定的维度输出一张 verdict=unknown 的卡。
+
+待确认（verdict=unknown）卡的准入——必须同时满足才输出：
+1. 该维度在用户粘贴的暗标要求中明确存在；
+2. 现有证据确实无法判定合规与否。
+要求未提及的维度（例如要求没写页边距、标题样式、编号规则），即使工具返回了相关事实，也不要单独输出待确认卡；
+这类事实若构成“异常排版/特殊做法”风险，并入身份或特殊标记维度综合研判即可。
+同一事实只输出一张卡：例如“若干图形对象没有文字、无法识别其中是否含 Logo/印章”这一事实，
+只在视觉身份线索维度输出一张待确认卡，不要在身份线索、图片对象、签章等多个维度反复提及。
+“与招标文件一致”“统一封面/目录”这类需要参照招标文件才能比对的要求，合并为一张“需人工对照招标文件”的
+待确认卡，不逐维度展开。requirement_parse_notes 列出的每个维度各输出一张待确认卡（说明无法自动核对的原因）。
+
+severity 口径：violation 卡一律填 critical（用户界面只区分“严重”与“待确认”两类）；compliant/unknown 卡填 info。
 - 每张 finding 的 rule_references 列出它吸收了哪些工具规则（rule_id，如 "paragraph.line_spacing"、
   "heading.outline_level"、"text.size"）；没有工具证据的发现留空数组。你判断某维度不构成违规
   （如事实来自页眉页脚而非正文、封面口径豁免）时，也输出说明性 finding 并在 rule_references 带上对应规则。
@@ -329,7 +342,12 @@ class BlindCheckAgent(BaseAgent):
             elif tool_name == "word_check_paragraph_format":
                 arguments.update(parsed_arguments.get("word_check_paragraph_format", {}))
             elif tool_name == "word_check_heading_numbering":
-                arguments.update(parsed_arguments.get("word_check_heading_numbering", {}))
+                heading_args = parsed_arguments.get("word_check_heading_numbering", {})
+                if not _heading_check_has_dimension(heading_args):
+                    # 要求没有任何可检的标题维度（口径 none、无层级上限、无编号格式）时，
+                    # 工具只会盘点标题清单——这些盘点事实曾被误写成“未用标题样式”待确认卡。
+                    continue
+                arguments.update(heading_args)
             elif tool_name == "word_check_objects":
                 # The pasted requirement may explicitly allow tender-required
                 # images.  Do not turn every image into a hard violation in
@@ -407,33 +425,14 @@ class BlindCheckAgent(BaseAgent):
             findings.append(
                 _unknown_finding(f"必要的文档检查工具未成功完成：{failed_tools}")
             )
-        findings.extend(_coverage_unknown_findings(coverage))
-        for note in requirement_notes:
-            unresolved = _unknown_finding(note)
-            unresolved.update(
-                {
-                    "category": "format",
-                    "title": "暗标要求项未能自动检查，需人工确认",
-                    "rule_reference": "粘贴的暗标要求",
-                }
-            )
-            findings.append(unresolved)
+        # 覆盖度不再逐工具物化成待确认卡（同一根因曾在 4 张卡里重复出现），只经
+        # summary.coverage_incomplete_details 在结果页顶部统一提示。
+        # 解析不出的要求维度已随 requirement_parse_notes 交给模型主笔，代码只在模型
+        # 完全没提到该维度时兜底一张，避免“模型卡 + 代码卡”双报。
+        findings.extend(_unresolved_requirement_findings(requirement_notes, findings))
         identity_data = identity_observation.get("data") or {}
-        visual_unknown_count = _positive_int(identity_data.get("visual_objects_without_text"))
-        if visual_unknown_count:
-            visual_finding = _unknown_finding(
-                f"文档包含 {visual_unknown_count} 个无法通过文字或替代文字识别的图片/图形对象，"
-                "当前只读工具无法确认其中是否包含 Logo 或其他身份标识。",
-                identity_data.get("visual_scan_note"),
-            )
-            visual_finding.update(
-                {
-                    "category": "company_identity",
-                    "title": "图片或图形中的身份线索需人工确认",
-                    "rule_reference": "暗标不得包含投标人 Logo、品牌或其他可识别身份的视觉标识",
-                }
-            )
-            findings.append(visual_finding)
+        # 无文字图形对象的视觉线索事实已在 identity 观察里交给模型（prompt 要求只出一张
+        # 视觉维度待确认卡），代码不再另出一张，否则与模型卡、覆盖卡三重重复。
         if identity_data.get("truncated") is True:
             truncated_finding = _unknown_finding(
                 "文档可扫描文字超过首阶段工具上限，未覆盖的尾部内容仍可能包含身份线索。"
@@ -512,8 +511,11 @@ _MARGIN_SIDE_PATTERNS = {
 
 
 def _parse_font_name(text: str) -> str | None:
+    # 招标文件常把 Word 字体名“仿宋_GB2312”写成“仿宋-GB2312”；归一后再匹配，
+    # 返回值始终是 Word 的真实字体名（下划线形式），避免前缀“仿宋”抢先命中。
+    normalized = text.replace("-", "_").replace("－", "_")
     for name in _KNOWN_FONTS:
-        if name in text:
+        if name in text or name in normalized:
             return name
     return None
 
@@ -539,6 +541,9 @@ def _parse_color_rgb(text: str) -> list[int] | None:
     return None
 
 
+_LINE_SPACING_MULTIPLE_WORDS = {"单倍": 1.0, "双倍": 2.0, "两倍": 2.0, "二倍": 2.0, "三倍": 3.0}
+
+
 def _parse_line_spacing(text: str) -> dict[str, Any]:
     mentioned = any(keyword in text for keyword in ("行距", "行间距"))
     if not mentioned:
@@ -552,8 +557,20 @@ def _parse_line_spacing(text: str) -> dict[str, Any]:
     if match:
         rule = "exactly" if "固定值" in text else "any"
         return {"mentioned": True, "rule": rule, "pt": float(match.group(1))}
-    if "单倍" in text:
-        return {"mentioned": True, "rule": "single", "pt": None}
+    # “1.5 倍行距”“行距为 1.5 倍”“单倍/双倍行距”：Word 的倍数行距（wdLineSpace1pt5/
+    # Double/Multiple）由插件按倍数比较，这里只解析出倍数值；倍数必须紧邻“行距”词，
+    # 避免误吞要求中其他语境的“N 倍”。
+    match = re.search(
+        r"(?:行距|行间距)[^\d\n。；;]{0,10}(\d+(?:\.\d+)?)\s*倍|(\d+(?:\.\d+)?)\s*倍\s*(?:行距|行间距)",
+        text,
+    )
+    if match:
+        multiple = float(match.group(1) or match.group(2))
+        if 0.5 <= multiple <= 10:
+            return {"mentioned": True, "rule": "multiple", "pt": None, "multiple": multiple}
+    for word, multiple in _LINE_SPACING_MULTIPLE_WORDS.items():
+        if word in text:
+            return {"mentioned": True, "rule": "multiple", "pt": None, "multiple": multiple}
     return {"mentioned": True, "rule": None, "pt": None}
 
 
@@ -662,6 +679,9 @@ def _build_deterministic_arguments(requirement_text: str) -> tuple[dict[str, dic
         if line.get("pt") is not None:
             para_args["line_spacing_pt"] = line["pt"]
             para_args["line_spacing_rule"] = line.get("rule") or "any"
+        elif line.get("rule") == "multiple" and line.get("multiple"):
+            para_args["line_spacing_rule"] = "multiple"
+            para_args["line_spacing_multiple"] = line["multiple"]
         elif line.get("rule"):
             para_args["line_spacing_rule"] = line["rule"]
         else:
@@ -712,6 +732,13 @@ def _build_deterministic_arguments(requirement_text: str) -> tuple[dict[str, dic
     return arguments, notes
 
 
+def _heading_check_has_dimension(heading_args: dict[str, Any]) -> bool:
+    """标题工具是否有任何可检维度；没有时调用只会产出盘点噪音。"""
+    if heading_args.get("heading_policy") in ("require_heading_styles", "body_text_outline"):
+        return True
+    return heading_args.get("max_level") is not None or bool(heading_args.get("formats"))
+
+
 def _echo_value_matches(echo: Any, intent: Any) -> bool:
     if echo is None or intent is None or isinstance(intent, bool):
         return echo == intent
@@ -760,6 +787,14 @@ def _echo_mismatched_dimensions(
     elif tool_name == "word_check_paragraph_format":
         check("line_spacing_rule", "line_spacing_rule", ("paragraph.line_spacing_rule",), "行距规则")
         check("line_spacing_pt", "line_spacing_pt", ("paragraph.line_spacing",), "行距数值")
+        # 旧插件不认识倍数参数：它会把 multiple 当 wdLineSpaceMultiple 硬比，1.5 倍（rule=1）
+        # 段落全部误报规则不符，所以倍数错配时规则与数值两条规则一起剔除。
+        check(
+            "line_spacing_multiple",
+            "line_spacing_multiple",
+            ("paragraph.line_spacing", "paragraph.line_spacing_rule"),
+            "行距倍数",
+        )
         check("space_before_pt", "space_before_pt", ("paragraph.space_before",), "段前间距")
         check("space_after_pt", "space_after_pt", ("paragraph.space_after",), "段后间距")
     elif tool_name == "word_check_page_setup":
@@ -933,6 +968,9 @@ _BLIND_TOOL_LABELS = {
 # 用户可读的原因转述；值为 None 表示保留原文（如含具体数字的上限提示本身已可读）。
 _COVERAGE_REASON_HINTS = (
     ("部分文字的字体属性混合", "少量文字（多为页码等特殊字符）无法自动读取字体属性"),
+    ("部分段落的行距或段前后属性混合", "少量段落的行距/间距属性无法自动读取"),
+    ("视觉对象", "存在无文字的图片/图形对象，暂不支持图像识别"),
+    ("未能读取数字签名集合", "Word 未能读取数字签名信息"),
     ("未能读取签名行", "Word 未能读取签名行信息"),
     ("无法读取 OOXML 签名包", "无法读取文档内嵌的签名信息"),
     ("重新开始编号", "无法确定编号是否按要求在每部分重新开始"),
@@ -948,31 +986,51 @@ def _friendly_coverage_reason(reason: Any) -> str:
     return text
 
 
-def _coverage_unknown_findings(coverage: dict[str, Any]) -> list[dict[str, Any]]:
-    findings: list[dict[str, Any]] = []
+def _coverage_incomplete_details(coverage: dict[str, Any]) -> list[dict[str, Any]]:
+    """覆盖不完整工具的用户可读明细，供结果页顶部提示条渲染（不再物化成待确认卡）。"""
+    details: list[dict[str, Any]] = []
     for tool, item in coverage.items():
         if not isinstance(item, dict) or item.get("coverage") == "complete":
             continue
-        label = _BLIND_TOOL_LABELS.get(tool, tool)
         reasons = item.get("unknown_reasons") if isinstance(item.get("unknown_reasons"), list) else []
-        reason_text = (
-            "；".join(_friendly_coverage_reason(reason)[:160] for reason in reasons[:3])
-            or "工具未说明具体原因"
-        )
-        # 面向最终用户（标书编制人员）的表述：不出现英文工具名/coverage 等内部口径。
-        finding = _unknown_finding(
-            f"「{label}」的自动检查未能覆盖全部内容（{reason_text}），"
-            "已检查部分未发现问题不代表全文合规，建议按暗标要求人工复核。"
-        )
-        finding.update(
+        details.append(
             {
-                "category": "format" if "check" in tool or "scan" in tool else "other",
-                "title": f"「{label}」检查未能覆盖全部内容，需人工确认",
-                "rule_reference": "自动检查覆盖度不足，相关要求需人工复核",
+                "tool": tool,
+                "label": _BLIND_TOOL_LABELS.get(tool, tool),
+                "reason": "；".join(_friendly_coverage_reason(reason)[:160] for reason in reasons[:2]),
             }
         )
-        findings.append(finding)
-    return findings
+    return details
+
+
+# 要求解析说明里出现的维度词；模型 finding 文本命中任一即视为该维度已由模型主笔。
+_REQUIREMENT_NOTE_TOPICS = ("字体", "字号", "颜色", "行距", "段前", "段后", "边距", "编号")
+
+
+def _unresolved_requirement_findings(
+    notes: list[str], findings: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """解析不出的要求维度只在模型完全没提到时兜底一张待确认卡。"""
+    if not notes:
+        return []
+    corpus = "\n".join(
+        f"{finding.get('title') or ''}\n{finding.get('description') or ''}" for finding in findings
+    )
+    results: list[dict[str, Any]] = []
+    for note in notes:
+        topics = [topic for topic in _REQUIREMENT_NOTE_TOPICS if topic in note]
+        if topics and any(topic in corpus for topic in topics):
+            continue
+        unresolved = _unknown_finding(note)
+        unresolved.update(
+            {
+                "category": "format",
+                "title": "暗标要求项未能自动检查，需人工确认",
+                "rule_reference": "粘贴的暗标要求",
+            }
+        )
+        results.append(unresolved)
+    return results
 
 
 def _referenced_rule_ids(findings: list[dict[str, Any]], known_rule_ids: set[str]) -> set[str]:
@@ -1213,6 +1271,14 @@ def _normalize_findings(raw: Any) -> list[dict[str, Any]]:
         category = str(item.get("category") or "other")
         severity = str(item.get("severity") or "info")
         verdict = str(item.get("verdict") or "unknown")
+        if verdict not in allowed_verdict:
+            verdict = "unknown"
+        if severity not in allowed_severity:
+            severity = "info"
+        # 用户界面只有“严重/待确认”两类：severity 只对 violation 有意义，待确认与
+        # 符合项一律 info，防止模型给待确认卡标 major/minor 后被误计入违规统计。
+        if verdict != "violation":
+            severity = "info"
         evidences = _normalize_evidences(item.get("evidences"))
         primary = next((entry for entry in evidences if entry["locateable"]), evidences[0] if evidences else {})
         rule_references = [
@@ -1226,8 +1292,8 @@ def _normalize_findings(raw: Any) -> list[dict[str, Any]]:
         normalized.append(
             {
                 "category": category if category in allowed_categories else "other",
-                "severity": severity if severity in allowed_severity else "info",
-                "verdict": verdict if verdict in allowed_verdict else "unknown",
+                "severity": severity,
+                "verdict": verdict,
                 "title": str(item.get("title") or "未命名检查项")[:255],
                 "description": str(item.get("description") or "未提供判断说明")[:10_000],
                 "evidence_text": primary.get("text") or (str(item.get("evidence_text") or "")[:5_000] or None),
@@ -1303,6 +1369,9 @@ def _summarize(
         ]
         result["coverage_complete"] = not incomplete
         result["coverage_incomplete_tools"] = incomplete
+        # 覆盖不完整的用户可读明细（中文标签 + 原因），结果页顶部提示条用它替代
+        # 原先逐工具物化的待确认卡。
+        result["coverage_incomplete_details"] = _coverage_incomplete_details(coverage)
         # A deterministic violation still makes the document fail.  If there
         # is no violation, incomplete evidence must prevent a green pass.
         if not violations and incomplete:

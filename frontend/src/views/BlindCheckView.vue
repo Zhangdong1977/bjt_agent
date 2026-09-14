@@ -13,7 +13,6 @@ import {
   type BlindCheckFinding,
 } from "@/api/blindCheck";
 import { useBillingStore } from "@/stores/billing";
-import { showCheckDurationNotice } from "@/utils/checkDurationNotice";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 import iconWallet from "@/assets/images/ui/common-icon-wallet.png";
 import iconPoints from "@/assets/images/ui/common-icon-points.png";
@@ -75,9 +74,24 @@ const coverageIncompleteTools = computed(() => {
   const value = summary.value.coverage_incomplete_tools;
   return Array.isArray(value) ? value.map((item) => String(item)) : [];
 });
-const coverageText = computed(() => coverageIncompleteTools.value.length
-  ? `以下检查尚未完成全文覆盖：${coverageIncompleteTools.value.join("、")}`
+// 覆盖不完整的中文明细（后端 coverage_incomplete_details）；旧结果没有该字段时回退到工具名。
+const coverageIncompleteLabels = computed(() => {
+  const details = summary.value.coverage_incomplete_details;
+  if (Array.isArray(details) && details.length) {
+    return details.map((item) => {
+      const entry = (item || {}) as { label?: unknown; reason?: unknown };
+      const label = String(entry.label || "");
+      const reason = String(entry.reason || "");
+      return reason ? `${label}（${reason}）` : label;
+    }).filter(Boolean);
+  }
+  return coverageIncompleteTools.value;
+});
+const coverageText = computed(() => coverageIncompleteLabels.value.length
+  ? `以下检查尚未完成全文覆盖：${coverageIncompleteLabels.value.join("、")}`
   : (summary.value.coverage_complete === true ? "确定性检查已完成声明范围覆盖" : "检查覆盖度信息待确认"));
+// 用户界面只区分「严重」与「待确认」两类：所有疑似违规（历史数据含 major/minor）合并计为严重。
+const severeCount = computed(() => ["critical", "major", "minor"].reduce((total, key) => total + Number(summary.value[key] || 0), 0));
 
 function timelineState(index: number): "done" | "active" | "waiting" {
   const step = index + 1;
@@ -273,8 +287,6 @@ async function startCheck() {
     progressStep.value = 1;
     progressMessage.value = "已提交，等待智能体读取文档…";
     void listenTask(task.id);
-    // 提示预计耗时与稍后查看结果的入口（暗标检查在当前页展示进度，提示不阻断监听）
-    void showCheckDurationNotice();
   } catch (error) {
     errorMessage.value = errorText(error, "提交暗标检查失败");
   } finally {
@@ -453,7 +465,6 @@ const unknownFindings = computed(() => findings.value.filter((item) => item.verd
 const compliantFindings = computed(() => findings.value.filter((item) => item.verdict === "compliant"));
 
 function categoryText(value: string) { return ({ format: "格式", company_identity: "公司身份", person_identity: "人员身份", metadata: "文件属性", other: "其他" } as Record<string, string>)[value] || value || "其他"; }
-function severityText(value: string) { return ({ critical: "严重", major: "主要", minor: "一般", info: "提示" } as Record<string, string>)[value] || value || "提示"; }
 function verdictText(value: string) { return ({ violation: "疑似违规", compliant: "已符合", unknown: "待确认" } as Record<string, string>)[value] || "待确认"; }
 function errorText(error: unknown, fallback: string) {
   if (error && typeof error === "object" && "response" in error) {
@@ -582,14 +593,14 @@ onUnmounted(() => {
     <section v-if="taskId && (findings.length || finished)" class="blind-card results-card">
       <div class="result-head">
         <div><span class="heading-index">03</span><h2>检查结果</h2><strong :class="`verdict-${String(summary.overall)}`">{{ overallText }}</strong></div>
-        <div class="counts"><span>严重 {{ summary.critical || 0 }}</span><span>主要 {{ summary.major || 0 }}</span><span>一般 {{ summary.minor || 0 }}</span><span>待确认 {{ summary.unknown || 0 }}</span></div>
+        <div class="counts"><span>严重 {{ severeCount }}</span><span>待确认 {{ summary.unknown || 0 }}</span></div>
       </div>
       <div v-if="summary.coverage_complete !== true" class="coverage-warning">{{ coverageText }}。覆盖不完整时，“未发现违规”不等于全文合规。</div>
       <div v-if="errorMessage" class="error">{{ errorMessage }}</div>
       <div class="findings-scroll">
         <div v-if="!findings.length && finished" class="empty">未返回结构化发现，请重新检查。</div>
         <article v-for="item in violationFindings" :key="item.id" class="finding" :class="{ 'no-locate': !hasLocateableEvidence(item) }">
-          <div class="finding-meta"><b :class="`severity-${item.severity}`">{{ severityText(item.severity) }}</b><span>{{ categoryText(item.category) }}</span><span>{{ verdictText(item.verdict) }}</span></div>
+          <div class="finding-meta"><b class="severity-critical">严重</b><span>{{ categoryText(item.category) }}</span><span>{{ verdictText(item.verdict) }}</span></div>
           <h3>{{ item.title }}</h3><p>{{ item.description }}</p>
           <ul v-if="findingEvidences(item).length" class="evidence-list">
             <li v-for="(evidence, index) in findingEvidences(item)" :key="index" :class="{ locateable: evidence.locateable }" @click="locateEvidence(evidence)">

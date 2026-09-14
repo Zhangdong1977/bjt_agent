@@ -142,6 +142,7 @@ VSTO_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "check_space": {"type": "boolean"},
             "line_spacing_rule": {"type": "string", "enum": ["exactly", "single", "multiple", "minimum", "any"]},
             "line_spacing_pt": {"type": "number", "minimum": 0, "maximum": 500},
+            "line_spacing_multiple": {"type": "number", "minimum": 0, "maximum": 10},
             "space_before_pt": {"type": "number", "minimum": 0, "maximum": 500},
             "space_after_pt": {"type": "number", "minimum": 0, "maximum": 500},
         },
@@ -367,7 +368,7 @@ def _validate_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
         for key in ("check_line_spacing", "check_space"):
             if key in arguments and not isinstance(arguments[key], bool):
                 raise ValueError(f"{key} must be a boolean")
-        for key in ("line_spacing_pt", "space_before_pt", "space_after_pt"):
+        for key in ("line_spacing_pt", "line_spacing_multiple", "space_before_pt", "space_after_pt"):
             if key in arguments and isinstance(arguments[key], bool):
                 raise ValueError(f"{key} must be a number")
         rule = arguments.get("line_spacing_rule")
