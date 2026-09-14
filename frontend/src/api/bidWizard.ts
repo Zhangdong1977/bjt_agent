@@ -36,6 +36,30 @@ export interface WizardQuestion {
   round?: number | null; // ≥2 为追问轮（首轮无此字段视为 1）
 }
 
+export type GenerationPart = "business" | "technical";
+
+/** 生成要求（决策 38-41）：编写需求里固定的三项硬约束子结构；word_count 为空=草稿，进大纲时必填。 */
+export interface GenerationOptions {
+  parts: GenerationPart[];
+  word_count: number | null;
+  charts: boolean;
+}
+
+export const GENERATION_WORD_COUNT_MIN = 1_000;
+export const GENERATION_WORD_COUNT_MAX = 1_000_000;
+/** 字数快捷档（决策 40）：5万/10万/20万/30万/50万/80万/100万 */
+export const GENERATION_WORD_COUNT_PRESETS = [
+  50_000, 100_000, 200_000, 300_000, 500_000, 800_000, 1_000_000,
+];
+
+/** 「额外的需求」问答历史条目（决策 43）。 */
+export interface WizardQaHistoryItem {
+  question: string;
+  answer: string;
+  created_at?: string | null;
+  adopted?: boolean;
+}
+
 export interface Wizard {
   id: string;
   project_id: string;
@@ -46,13 +70,17 @@ export interface Wizard {
     questions?: WizardQuestion[];
     followup?: { auto_rounds?: number; status?: "active" | "done" } | null;
   } | null;
-  requirements?: { questions?: WizardQuestion[] } | null;
+  requirements?: {
+    questions?: WizardQuestion[];
+    generation_options?: GenerationOptions | null;
+  } | null;
   spec?: WizardSpecNode[] | null;
   spec_previous?: WizardSpecNode[] | null;
   spec_confirmed_at?: string | null;
   requirements_stale: boolean;
   spec_stale: boolean;
   error_message?: string | null;
+  qa_history?: WizardQaHistoryItem[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -342,11 +370,15 @@ export async function generateQuestionnaireRound(
 export async function saveRequirements(
   wizardId: string,
   answers: { question_id: string; action: "answered" | "adopted" | "skipped" | "supplemented"; answer?: string | null }[],
+  generationOptions?: GenerationOptions | null,
 ) {
+  // 不带 generation_options 时后端沿用已保存值；带则整体覆盖（决策 38）
+  const body: Record<string, unknown> = { answers };
+  if (generationOptions) body.generation_options = generationOptions;
   return request<Wizard>(
     "put",
     `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/requirements`,
-    { answers },
+    body,
   );
 }
 

@@ -559,7 +559,7 @@ class TestProjectManagementApi:
         assert self.cleanup_calls and self.cleanup_calls[0][0] == wizard_id
 
     async def test_tender_upload_renames_default_project_name_only(self, client, auth_headers):
-        default = await self._create_wizard(client, auth_headers)  # 默认名 AI编标 日期
+        default = await self._create_wizard(client, auth_headers)  # 默认名 标书生成 日期
         custom = await self._create_wizard(client, auth_headers, name="我起的名字")
 
         for wizard, expect in ((default, "智慧园区招标文件"), (custom, "我起的名字")):
@@ -1342,3 +1342,372 @@ class TestUsageLedgerFixes:
 
             asyncio.run(_cleanup())
             asyncio.run(engine.dispose())
+
+
+# ------------------------------------------------------------------ 生成要求 / 问答历史（2026-09-14 第三轮 grilling 决策 37-44）
+
+
+def test_normalize_generation_options_bounds_and_defaults():
+    from backend.agent.bid_wizard_agent import normalize_generation_options
+
+    assert normalize_generation_options(None) is None
+    assert normalize_generation_options("x") is None
+    options = normalize_generation_options(
+        {"parts": ["technical", "technical", "bogus", "business"], "word_count": "50000", "charts": False}
+    )
+    assert options == {"parts": ["technical", "business"], "word_count": 50000, "charts": False}
+    # 空 parts → 默认仅技术；字数越界 → None（草稿态）；charts 缺省 True
+    assert normalize_generation_options({"parts": [], "word_count": 500}) == {
+        "parts": ["technical"],
+        "word_count": None,
+        "charts": True,
+    }
+    assert normalize_generation_options({"word_count": 2_000_000})["word_count"] is None
+    assert normalize_generation_options({"word_count": True})["word_count"] is None
+
+
+def test_build_generation_constraints_text_variants():
+    from backend.agent.bid_wizard_agent import build_generation_constraints_text
+
+    assert "无" in build_generation_constraints_text(None)
+    technical = build_generation_constraints_text(
+        {"parts": ["technical"], "word_count": 50_000, "charts": False}
+    )
+    assert "仅技术部分" in technical and "不得出现商务部分" in technical
+    assert "40,000–60,000" in technical  # ±20% 软约束区间
+    assert "charts 必须为空数组" in technical
+    both = build_generation_constraints_text(
+        {"parts": ["business", "technical"], "word_count": None, "charts": True}
+    )
+    assert "商务部分+技术部分" in both and "目标总字数" not in both and "需要配图" in both
+
+
+def test_apply_generation_options_clears_charts_only_when_disabled():
+    from backend.agent.bid_wizard_agent import apply_generation_options_to_spec
+
+    spec = [{"node_id": "1", "title": "a", "charts": [{"type": "table", "title": "t", "points": None}]}]
+    assert apply_generation_options_to_spec(spec, None) is spec
+    assert apply_generation_options_to_spec(spec, {"charts": True})[0]["charts"]
+    cleared = apply_generation_options_to_spec(spec, {"charts": False})
+    assert cleared[0]["charts"] is None and spec[0]["charts"]  # 不改原对象
+
+
+def test_build_requirements_text_leads_with_generation_options():
+    text = build_requirements_text(
+        {
+            "generation_options": {"parts": ["technical"], "word_count": 80_000, "charts": False},
+            "questions": [
+                {"question": "q", "effective_answer": "a", "topic": "技术", "action": "answered"}
+            ],
+        }
+    )
+    lines = text.splitlines()
+    assert lines[0] == "- [生成要求] 生成内容：技术部分；目标总字数：80,000 字；配图：否"
+    assert lines[1].startswith("- [技术] q")
+    # 未设置生成要求的存量需求文本不变
+    assert "[生成要求]" not in build_requirements_text({"questions": []})
+
+
+def test_section_prompts_switch_to_no_chart_mode():
+    from backend.agent.bid_wizard_agent import WIZARD_SECTION_SYSTEM_PROMPT, section_system_prompt
+
+    node = {"charts": [{"type": "mermaid", "title": "流程图", "points": "步骤"}]}
+    assert "mermaid 图" in build_chart_plan_text(node)
+    assert "不配图" in build_chart_plan_text(node, charts_enabled=False)
+    assert section_system_prompt(charts_enabled=True) == WIZARD_SECTION_SYSTEM_PROMPT
+    no_chart = section_system_prompt(charts_enabled=False)
+    assert "不得输出任何 Markdown 表格" in no_chart and "优先用 Markdown 表格" not in no_chart
+
+
+class TestGenerationOptionsApi:
+    """生成要求（决策 38-42）与问答历史（决策 43）的 API 回归。"""
+
+    @pytest.fixture(autouse=True)
+    def _stub_env(self, monkeypatch):
+        from backend.config import get_settings
+        from backend.tasks.document_parser import parse_document
+
+        monkeypatch.setattr(parse_document, "delay", lambda *args, **kwargs: None)
+        monkeypatch.setattr(get_settings(), "bid_wizard_access_mode", "enabled")
+
+        import backend.services.sales as sales_service
+        import backend.services.task_lifecycle as lifecycle
+
+        async def _fake_async(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(lifecycle, "authorize_billable_task_start", _fake_async)
+        monkeypatch.setattr(lifecycle, "finalize_task_usage", _fake_async)
+        monkeypatch.setattr(
+            sales_service, "multiplier_for_task", lambda config, task_kind: Decimal("1")
+        )
+
+    async def _prepare_wizard(self, client, auth_headers) -> dict:
+        """向导（需求确认阶段）+ 已解析招标文件 + 一道题的问卷（未保存需求）。"""
+        created = (
+            await client.post("/api/bid-wizard/wizards", json={}, headers=auth_headers)
+        ).json()
+        await client.post(
+            f"/api/bid-wizard/wizards/{created['id']}/tender",
+            files={"file": ("tender.pdf", b"%PDF-1.4\n regression tender\n", "application/pdf")},
+            headers=auth_headers,
+        )
+        from backend.models import BidWizard, Document, async_session_factory, engine
+
+        async with async_session_factory() as session:
+            wizard = (
+                await session.execute(select(BidWizard).where(BidWizard.id == created["id"]))
+            ).scalar_one()
+            wizard.analysis = {"project_name": "回归测试"}
+            wizard.questionnaire = normalize_questionnaire(
+                {"questions": [{"question": "交付周期？", "suggested_answer": "45 天", "topic": "交付"}]}
+            )
+            wizard.stage = "requirement"
+            documents = (
+                await session.execute(
+                    select(Document).where(
+                        Document.project_id == wizard.project_id, Document.doc_type == "tender"
+                    )
+                )
+            ).scalars().all()
+            for document in documents:
+                document.status = "parsed"
+            await session.commit()
+        await engine.dispose()
+        return created
+
+    @staticmethod
+    def _answers() -> list[dict]:
+        return [{"question_id": "q1", "action": "adopted", "answer": None}]
+
+    async def test_save_requirements_stores_and_preserves_generation_options(self, client, auth_headers):
+        wizard = await self._prepare_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+        saved = await client.put(
+            f"{base}/requirements",
+            json={
+                "answers": self._answers(),
+                "generation_options": {
+                    "parts": ["technical", "technical"],
+                    "word_count": 50000,
+                    "charts": False,
+                },
+            },
+            headers=auth_headers,
+        )
+        assert saved.status_code == 200
+        assert saved.json()["requirements"]["generation_options"] == {
+            "parts": ["technical"],
+            "word_count": 50000,
+            "charts": False,
+        }
+        # 不带 generation_options 再保存（老客户端 / 只改作答）→ 沿用已保存值
+        again = await client.put(
+            f"{base}/requirements", json={"answers": self._answers()}, headers=auth_headers
+        )
+        assert again.status_code == 200
+        assert again.json()["requirements"]["generation_options"]["word_count"] == 50000
+
+    async def test_save_requirements_rejects_out_of_range(self, client, auth_headers):
+        wizard = await self._prepare_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+        for options in (
+            {"parts": [], "word_count": 50000},
+            {"parts": ["technical"], "word_count": 999},
+            {"parts": ["technical"], "word_count": 1_000_001},
+            {"parts": ["marketing"], "word_count": 50000},
+        ):
+            response = await client.put(
+                f"{base}/requirements",
+                json={"answers": self._answers(), "generation_options": options},
+                headers=auth_headers,
+            )
+            assert response.status_code == 422, options
+
+    async def test_enter_outline_requires_word_count_forward_only(self, client, auth_headers):
+        wizard = await self._prepare_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+        # 草稿：字数为空可保存（决策 40：保存不拦）
+        draft = await client.put(
+            f"{base}/requirements",
+            json={
+                "answers": self._answers(),
+                "generation_options": {"parts": ["technical"], "charts": True},
+            },
+            headers=auth_headers,
+        )
+        assert draft.status_code == 200
+        assert draft.json()["requirements"]["generation_options"]["word_count"] is None
+        blocked = await client.post(f"{base}/stage", json={"stage": "outline"}, headers=auth_headers)
+        assert blocked.status_code == 400
+        assert "字数要求" in blocked.json()["detail"]
+
+        filled = await client.put(
+            f"{base}/requirements",
+            json={
+                "answers": self._answers(),
+                "generation_options": {"parts": ["technical"], "word_count": 20000},
+            },
+            headers=auth_headers,
+        )
+        assert filled.status_code == 200
+        entered = await client.post(f"{base}/stage", json={"stage": "outline"}, headers=auth_headers)
+        assert entered.status_code == 200 and entered.json()["stage"] == "outline"
+
+    async def test_backward_to_outline_not_gated(self, client, auth_headers):
+        """存量向导（无生成要求）从撰写阶段回退到大纲不受字数门禁影响（决策 42）。"""
+        wizard = await self._prepare_wizard(client, auth_headers)
+        from backend.models import BidWizard, async_session_factory, engine
+
+        async with async_session_factory() as session:
+            row = (
+                await session.execute(select(BidWizard).where(BidWizard.id == wizard["id"]))
+            ).scalar_one()
+            row.stage = "writing"
+            row.requirements = {"questions": []}
+            await session.commit()
+        await engine.dispose()
+        response = await client.post(
+            f"/api/bid-wizard/wizards/{wizard['id']}/stage",
+            json={"stage": "outline"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200 and response.json()["stage"] == "outline"
+
+    async def test_save_spec_clears_charts_when_disabled(self, client, auth_headers):
+        wizard = await self._prepare_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+        spec_payload = {
+            "spec": [
+                {
+                    "title": "技术方案",
+                    "level": 1,
+                    "summary": "总体",
+                    "article_count": 2,
+                    "text_count": 400,
+                    "charts": [{"type": "table", "title": "参数表", "points": "对比"}],
+                }
+            ]
+        }
+        for charts, expect_kept in ((False, False), (True, True)):
+            await client.put(
+                f"{base}/requirements",
+                json={
+                    "answers": self._answers(),
+                    "generation_options": {"parts": ["technical"], "word_count": 20000, "charts": charts},
+                },
+                headers=auth_headers,
+            )
+            saved = await client.put(f"{base}/spec", json=spec_payload, headers=auth_headers)
+            assert saved.status_code == 200
+            node_charts = saved.json()["spec"][0]["charts"]
+            if expect_kept:
+                assert node_charts[0]["title"] == "参数表"
+            else:
+                assert node_charts is None  # 配图=否：手工带图表保存也被清空
+
+    async def test_spec_generation_passes_constraints_and_clears_charts(
+        self, client, auth_headers, monkeypatch
+    ):
+        from backend.agent import bid_wizard_agent
+
+        seen: dict[str, str] = {}
+
+        class FakeLLM:
+            def __init__(self, timeout=None):
+                pass
+
+            async def generate_json(self, system_prompt, user_prompt):
+                seen["prompt"] = user_prompt
+                return [
+                    {
+                        "title": "技术方案",
+                        "level": 1,
+                        "summary": "总体",
+                        "article_count": 2,
+                        "text_count": 400,
+                        "charts": [{"type": "mermaid", "title": "架构图", "points": "分层"}],
+                    }
+                ]
+
+        monkeypatch.setattr(bid_wizard_agent, "WizardLLM", FakeLLM)
+        wizard = await self._prepare_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+        await client.put(
+            f"{base}/requirements",
+            json={
+                "answers": self._answers(),
+                "generation_options": {"parts": ["technical"], "word_count": 50000, "charts": False},
+            },
+            headers=auth_headers,
+        )
+        generated = await client.post(f"{base}/spec", headers=auth_headers)
+        assert generated.status_code == 200
+        assert "仅技术部分" in seen["prompt"] and "40,000–60,000" in seen["prompt"]
+        assert generated.json()["spec"][0]["charts"] is None  # AI 违约输出的图表被强制清空
+
+        revised = await client.post(
+            f"{base}/spec/revise", json={"instruction": "再细一点"}, headers=auth_headers
+        )
+        assert revised.status_code == 200
+        assert "修订后的大纲仍须满足" in seen["prompt"] and "不配图" in seen["prompt"]
+        assert revised.json()["spec"][0]["charts"] is None
+
+    async def test_qa_history_persists_adopts_and_caps(self, client, auth_headers, monkeypatch):
+        from backend.agent import bid_wizard_agent
+
+        async def _fake_answer(llm, **kwargs):
+            return f"回答：{kwargs['question']}"
+
+        class FakeLLM:
+            def __init__(self, timeout=None):
+                pass
+
+        monkeypatch.setattr(bid_wizard_agent, "WizardLLM", FakeLLM)
+        monkeypatch.setattr(bid_wizard_agent, "answer_sidebar_question", _fake_answer)
+        wizard = await self._prepare_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+        await client.put(f"{base}/requirements", json={"answers": self._answers()}, headers=auth_headers)
+
+        first = await client.post(f"{base}/qa/ask", json={"question": "质保几年？"}, headers=auth_headers)
+        assert first.status_code == 200 and first.json()["answer"] == "回答：质保几年？"
+        second = await client.post(f"{base}/qa/ask", json={"question": "有没有等保？"}, headers=auth_headers)
+        assert second.status_code == 200
+
+        detail = (await client.get(base, headers=auth_headers)).json()
+        history = detail["qa_history"]
+        assert [item["question"] for item in history] == ["质保几年？", "有没有等保？"]  # 时序正序
+        assert all(item["adopted"] is False and item["created_at"] for item in history)
+
+        adopted = await client.post(
+            f"{base}/qa/adopt",
+            json={"question": "质保几年？", "answer": "回答：质保几年？"},
+            headers=auth_headers,
+        )
+        assert adopted.status_code == 200
+        body = adopted.json()
+        assert [item["adopted"] for item in body["qa_history"]] == [True, False]
+        assert body["requirements"]["supplementals"][0]["question"] == "质保几年？"
+
+        # 上限 50：预置 50 条后再提问 → 仍 50 条且最旧被丢
+        from backend.models import BidWizard, async_session_factory, engine
+
+        async with async_session_factory() as session:
+            row = (
+                await session.execute(select(BidWizard).where(BidWizard.id == wizard["id"]))
+            ).scalar_one()
+            row.qa_history = [
+                {
+                    "question": f"旧问题 {index}",
+                    "answer": "旧答案",
+                    "created_at": "2026-09-14T00:00:00",
+                    "adopted": False,
+                }
+                for index in range(50)
+            ]
+            await session.commit()
+        await engine.dispose()
+        await client.post(f"{base}/qa/ask", json={"question": "第 51 问"}, headers=auth_headers)
+        capped = (await client.get(base, headers=auth_headers)).json()["qa_history"]
+        assert len(capped) == 50
+        assert capped[0]["question"] == "旧问题 1" and capped[-1]["question"] == "第 51 问"

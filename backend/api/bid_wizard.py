@@ -73,6 +73,8 @@ _QA_TIMEOUT_SECONDS = 120  # 轻交互（AI 修订 / 追问 / 反问）
 # 重交互（解读 / 问卷 / Spec 生成）：2026-09-09 联调实测，9 份素材索引 + 11k 解读
 # 的问卷生成在 TokenHub 上 >120s，被一刀切超时打成「AI 处理超时」——按动作分级放宽。
 _QA_HEAVY_TIMEOUT_SECONDS = 300
+# 「额外的需求」问答历史上限（决策 43）：超出丢最旧，防向导行 JSON 无界膨胀
+_QA_HISTORY_MAX = 50
 # 默认项目名「标书生成 YYYY-MM-DD」（决策 26：仍是默认名时，传招标文件后自动改用文件名）。
 # 兼容匹配 2026-09-14 改名前建的「AI编标 YYYY-MM-DD」，否则存量默认名项目传招标文件后不会自动改名。
 _DEFAULT_PROJECT_NAME_RE = re.compile(r"^(?:标书生成|AI编标) \d{4}-\d{2}-\d{2}$")
@@ -561,6 +563,14 @@ async def update_wizard_stage(
                 wizard.spec_stale = True
     if target == "writing" and not wizard.spec_confirmed_at:
         raise HTTPException(status_code=400, detail="请先在「编写大纲」阶段确认大纲后再进入撰写")
+    if target == "outline" and _STAGE_ORDER[target] > _STAGE_ORDER[wizard.stage]:
+        # 决策 40/42：字数要求必填，拦截点在「进入编写大纲」（前进方向）；已在下游阶段的存量向导
+        # 回退到大纲不受影响，只有回到需求确认再前进时才需要补填。
+        from backend.agent.bid_wizard_agent import generation_options_of
+
+        options = generation_options_of(wizard.requirements)
+        if not options or not options.get("word_count"):
+            raise HTTPException(status_code=400, detail="请先在「生成要求」中填写字数要求")
     wizard.stage = target
     await db.commit()
     await db.refresh(wizard)
@@ -1243,7 +1253,10 @@ async def save_requirements(
     if not isinstance(wizard.questionnaire, dict) or not wizard.questionnaire.get("questions"):
         raise HTTPException(status_code=400, detail="请先生成问卷")
     await _guard_writing_idle(db, wizard)
-    from backend.agent.bid_wizard_agent import merge_questionnaire_answers
+    from backend.agent.bid_wizard_agent import (
+        merge_questionnaire_answers,
+        normalize_generation_options,
+    )
 
     merged = merge_questionnaire_answers(
         wizard.questionnaire, [answer.model_dump() for answer in body.answers]
@@ -1253,6 +1266,13 @@ async def save_requirements(
     for key in ("supplementals",):
         if isinstance(previous.get(key), list):
             merged[key] = previous[key]
+    # 生成要求（决策 38）：载荷带则整体覆盖，不带则沿用已保存值（老客户端 / 只改作答不丢）
+    if body.generation_options is not None:
+        merged["generation_options"] = normalize_generation_options(
+            body.generation_options.model_dump()
+        )
+    elif isinstance(previous.get("generation_options"), dict):
+        merged["generation_options"] = previous["generation_options"]
     wizard.requirements = merged
     wizard.requirements_stale = False
     # 答案变了 → 基于旧答案的 Spec 过期（决策 19）
@@ -1298,7 +1318,36 @@ async def ask_sidebar_question(
         )
 
     answer = await _run_qa_task(db, wizard, current_user, action="qa_ask", runner=runner)
+    # 问答历史落库（决策 43）：时序正序追加、上限丢最旧；整列重新赋值以触发 JSON 变更检测
+    history = [item for item in (wizard.qa_history or []) if isinstance(item, dict)]
+    history.append(
+        {
+            "question": question[:2_000],
+            "answer": str(answer)[:4_000],
+            "created_at": utc_now().isoformat(),
+            "adopted": False,
+        }
+    )
+    wizard.qa_history = history[-_QA_HISTORY_MAX:]
+    await db.commit()
     return WizardQaAskResponse(answer=str(answer))
+
+
+def _mark_qa_history_adopted(
+    history: Any, question: str, answer: str
+) -> list[dict[str, Any]] | None:
+    """把问答历史里与采纳对匹配的条目置 adopted（决策 43）；无匹配返回 None 表示不用写回。"""
+    items = [dict(item) for item in (history or []) if isinstance(item, dict)]
+    changed = False
+    for item in items:
+        if (
+            not item.get("adopted")
+            and str(item.get("question") or "") == question
+            and str(item.get("answer") or "") == answer
+        ):
+            item["adopted"] = True
+            changed = True
+    return items if changed else None
 
 
 @router.post("/wizards/{wizard_id}/qa/adopt", response_model=WizardResponse)
@@ -1327,7 +1376,11 @@ async def adopt_sidebar_answer(
         wizard.requirements = requirements
         if wizard.spec:
             wizard.spec_stale = True
-        await db.commit()
+    # 问答历史同步置 adopted（决策 43）：刷新/重进后仍显示「已并入」
+    marked = _mark_qa_history_adopted(wizard.qa_history, question, answer)
+    if marked is not None:
+        wizard.qa_history = marked
+    await db.commit()
     await db.refresh(wizard)
     return wizard
 
@@ -1350,6 +1403,7 @@ async def generate_spec(wizard_id: str, db: DBSession, current_user: CurrentUser
             build_material_index_text,
             build_requirements_text,
             generate_spec as gen_spec,
+            generation_options_of,
         )
 
         llm = WizardLLM(timeout=_QA_HEAVY_TIMEOUT_SECONDS)
@@ -1359,6 +1413,7 @@ async def generate_spec(wizard_id: str, db: DBSession, current_user: CurrentUser
             analysis=wizard_ref.analysis if isinstance(wizard_ref.analysis, dict) else {},
             requirements_text=build_requirements_text(wizard_ref.requirements),
             material_index_text=build_material_index_text(material_entries),
+            generation_options=generation_options_of(wizard_ref.requirements),
         )
 
     spec = await _run_qa_task(
@@ -1382,12 +1437,19 @@ async def generate_spec(wizard_id: str, db: DBSession, current_user: CurrentUser
 async def save_spec(
     wizard_id: str, body: SpecUpdate, db: DBSession, current_user: CurrentUser
 ) -> BidWizard:
-    """手工编辑保存：规范化编号/钳制参数；确认状态重置。"""
+    """手工编辑保存：规范化编号/钳制参数；确认状态重置；配图=否时强制清空 charts（决策 41）。"""
     wizard = await _owned_wizard(wizard_id, current_user, db)
     await _guard_writing_idle(db, wizard)
-    from backend.agent.bid_wizard_agent import normalize_spec
+    from backend.agent.bid_wizard_agent import (
+        apply_generation_options_to_spec,
+        generation_options_of,
+        normalize_spec,
+    )
 
-    spec = normalize_spec([node.model_dump() for node in body.spec])
+    spec = apply_generation_options_to_spec(
+        normalize_spec([node.model_dump() for node in body.spec]),
+        generation_options_of(wizard.requirements),
+    )
     if not spec:
         raise HTTPException(status_code=422, detail="编写大纲不能为空")
     wizard.spec = spec
@@ -1411,12 +1473,22 @@ async def revise_spec(
 
     current_spec = wizard.spec
     instruction = body.instruction
+    wizard_ref = wizard
 
     async def runner() -> list[dict[str, Any]]:
-        from backend.agent.bid_wizard_agent import WizardLLM, revise_spec as rev_spec
+        from backend.agent.bid_wizard_agent import (
+            WizardLLM,
+            generation_options_of,
+            revise_spec as rev_spec,
+        )
 
         llm = WizardLLM(timeout=_QA_TIMEOUT_SECONDS)
-        return await rev_spec(llm, current_spec=current_spec, instruction=instruction)
+        return await rev_spec(
+            llm,
+            current_spec=current_spec,
+            instruction=instruction,
+            generation_options=generation_options_of(wizard_ref.requirements),
+        )
 
     spec = await _run_qa_task(db, wizard, current_user, action="spec_revise", runner=runner)
     wizard.spec_previous = wizard.spec

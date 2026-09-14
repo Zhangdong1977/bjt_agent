@@ -56,6 +56,19 @@ MATERIAL_CONTEXT_MAX_CHARS = 12_000
 # 实际计费按 ai_usage_records 真实用量结算。
 ESTIMATE_TOKENS_PER_CHAR = 0.7
 
+# ---- 生成要求（决策 38-41，2026-09-14）：编写需求里固定的三项硬约束子结构 ----
+GENERATION_PARTS: tuple[str, ...] = ("business", "technical")
+GENERATION_PART_LABELS = {"business": "商务部分", "technical": "技术部分"}
+# 只勾一个部分时，告诉 Spec 生成器另一部分的典型章节不得出现
+_GENERATION_PART_EXCLUSIONS = {
+    "technical": "商务部分的章节（如资质证明、业绩证明、报价、商务条款响应/偏离表）",
+    "business": "技术部分的章节（如技术方案、实施方案、质量保障、售后服务）",
+}
+GENERATION_WORD_COUNT_MIN = 1_000
+GENERATION_WORD_COUNT_MAX = 1_000_000
+# Spec 生成按目标总字数 ±20% 软约束规划章数与每章字数（决策 40）
+GENERATION_WORD_COUNT_TOLERANCE = 0.2
+
 # ------------------------------------------------------------------ prompts
 
 INDEX_META_SYSTEM_PROMPT = (
@@ -113,6 +126,9 @@ __ANALYSIS_JSON__
 ## 编写需求（用户问卷确认）
 __REQUIREMENTS_TEXT__
 
+## 生成要求（用户设定的硬约束，优先级高于下方通用规则）
+__GENERATION_CONSTRAINTS__
+
 ## 公司素材索引（每行一段：编号｜标题｜摘要｜关键词）
 __MATERIAL_INDEX__
 
@@ -124,10 +140,11 @@ __MATERIAL_INDEX__
  "charts": [{"type": "table|mermaid", "title": "图表标题", "points": "图表要呈现的要点"}]}
 
 规则：
-1. 大纲完整覆盖招标需求与评分标准对应的响应内容，与评分办法呼应；
+1. 大纲完整覆盖招标需求与评分标准对应的响应内容，与评分办法呼应；只覆盖「生成要求」指定的生成内容范围；
 2. summary 写清楚本章要回应什么、用什么素材支撑；
-3. charts 按内容需要规划（每章 0-3 项）：对比/参数/人员/进度用 table，组织架构/流程/横道图/占比用 mermaid；
-4. 素材里有真实业绩/资质可引用的章节，在 summary 中点明引用方向；严禁虚构。"""
+3. charts 按「生成要求」执行：需要配图时按内容需要规划（每章 0-3 项）——对比/参数/人员/进度用 table，组织架构/流程/横道图/占比用 mermaid；不配图时每章 charts 一律为 []；
+4. 素材里有真实业绩/资质可引用的章节，在 summary 中点明引用方向；严禁虚构；
+5. 「生成要求」给了目标总字数时，所有章节 article_count×text_count 之和必须落在允许区间，据此决定章节数量与每章篇幅。"""
 
 REVISE_SYSTEM_PROMPT = (
     "你是资深投标文件编写专家。按用户的修改指令调整编写大纲（Spec），保持未涉及的部分不变。"
@@ -137,6 +154,9 @@ REVISE_SYSTEM_PROMPT = (
 REVISE_USER_TEMPLATE = """当前 Spec：
 
 __CURRENT_SPEC__
+
+生成要求（用户设定，修订后的大纲仍须满足）：
+__GENERATION_CONSTRAINTS__
 
 用户修改指令：
 __INSTRUCTION__
@@ -168,13 +188,15 @@ __NODE_LIST__
 
 {"mapping": {"<node_id>": ["<文档ID>#<编号>"]}}"""
 
-WIZARD_SECTION_SYSTEM_PROMPT = (
+_WIZARD_SECTION_SYSTEM_PROMPT_BASE = (
     "你是资深投标文件编写专家。撰写指定章节的正文，严格遵循本章摘要与图表计划，"
     "内容专业、具体、结构清晰、可直接用于投标文件。"
     "只输出 Markdown 正文：不要输出本节标题（系统会自动添加），不要输出解释或前言，"
     "不要把整节内容包进代码块围栏（mermaid 图表除外）。"
     "公司资质、业绩、项目、人员与数据必须来自「素材摘录」，不得虚构；"
     "素材与需求都未覆盖的事实性内容用“（请补充）”占位，由投标人自行补齐。"
+)
+_WIZARD_SECTION_CHART_RULES = (
     "图表要求："
     "①结构化内容（对比、参数、人员配置、职责分工、进度安排）优先用 Markdown 表格；"
     "②「本章图表计划」指定了 mermaid 图的，按计划的类型与标题输出 ```mermaid 代码块，"
@@ -182,6 +204,17 @@ WIZARD_SECTION_SYSTEM_PROMPT = (
     "③图表涉及的名称、日期、数值必须与正文和素材一致，严禁虚构；"
     "④纯论述性内容保持文本段落，不要为凑图表而强行图示化。"
 )
+# 生成要求「不配图」（决策 41）：章节正文不得出现任何表格/图示，结构化内容改文字或列表
+_WIZARD_SECTION_NO_CHART_RULES = (
+    "图表要求：用户在生成要求中选择了不配图——本章不得输出任何 Markdown 表格、mermaid 代码块"
+    "或其他图示；对比、参数、人员配置、职责分工、进度安排等结构化内容一律用文字段落或有序/无序列表表达。"
+)
+WIZARD_SECTION_SYSTEM_PROMPT = _WIZARD_SECTION_SYSTEM_PROMPT_BASE + _WIZARD_SECTION_CHART_RULES
+
+
+def section_system_prompt(*, charts_enabled: bool = True) -> str:
+    rules = _WIZARD_SECTION_CHART_RULES if charts_enabled else _WIZARD_SECTION_NO_CHART_RULES
+    return _WIZARD_SECTION_SYSTEM_PROMPT_BASE + rules
 
 WIZARD_SECTION_USER_TEMPLATE = """## 项目招标要素（摘要）
 __ANALYSIS_JSON__
@@ -420,6 +453,16 @@ def merge_questionnaire_answers(
 def build_requirements_text(requirements: dict[str, Any] | None) -> str:
     """Render 编写需求 as readable text for spec/section prompts."""
     lines: list[str] = []
+    # 生成要求（决策 38）置顶：下游 prompt（问卷追问轮/追问侧栏/章节撰写）都要知道范围与篇幅
+    options = generation_options_of(requirements)
+    if options:
+        word_count = options.get("word_count")
+        lines.append(
+            "- [生成要求] 生成内容："
+            f"{generation_parts_label(options.get('parts') or [])}；"
+            f"目标总字数：{f'{word_count:,} 字' if word_count else '未设置'}；"
+            f"配图：{'是' if options.get('charts', True) else '否'}"
+        )
     for question in (requirements or {}).get("questions") or []:
         if not isinstance(question, dict):
             continue
@@ -445,6 +488,91 @@ def build_requirements_text(requirements: dict[str, Any] | None) -> str:
     if not lines:
         return "无"
     return "\n".join(lines)[:SPEC_CONTEXT_MAX_CHARS]
+
+
+# ------------------------------------------------------------------ 生成要求（决策 38-41）
+
+
+def normalize_generation_options(raw: Any) -> dict[str, Any] | None:
+    """生成要求规范化：parts 去重保序且非空（空→仅技术）、word_count 越界回 None、charts 布尔。
+
+    返回 None 表示"未设置"（存量向导 / 老客户端载荷），下游一律按无约束处理（决策 42）。
+    word_count=None 是允许的草稿态——必填校验在进入编写大纲时做（决策 40）。
+    """
+    if not isinstance(raw, dict):
+        return None
+    parts: list[str] = []
+    for item in raw.get("parts") or []:
+        key = str(item or "").strip().lower()
+        if key in GENERATION_PARTS and key not in parts:
+            parts.append(key)
+    if not parts:
+        parts = ["technical"]
+    word_count: int | None = None
+    raw_count = raw.get("word_count")
+    if raw_count is not None and not isinstance(raw_count, bool):
+        try:
+            word_count = int(raw_count)
+        except (TypeError, ValueError):
+            word_count = None
+    if word_count is not None and not (
+        GENERATION_WORD_COUNT_MIN <= word_count <= GENERATION_WORD_COUNT_MAX
+    ):
+        word_count = None
+    charts = raw.get("charts")
+    return {
+        "parts": parts,
+        "word_count": word_count,
+        "charts": True if charts is None else bool(charts),
+    }
+
+
+def generation_options_of(requirements: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(requirements, dict):
+        return None
+    return normalize_generation_options(requirements.get("generation_options"))
+
+
+def generation_parts_label(parts: list[str]) -> str:
+    labels = [GENERATION_PART_LABELS.get(str(part), str(part)) for part in parts or []]
+    return "+".join(labels) if labels else GENERATION_PART_LABELS["technical"]
+
+
+def build_generation_constraints_text(options: dict[str, Any] | None) -> str:
+    """Spec 生成/AI 修订 prompt 的「生成要求」块；未设置时明示无约束。"""
+    if not options:
+        return "无（按招标要素与编写需求自行规划）"
+    lines: list[str] = []
+    parts = [str(part) for part in options.get("parts") or ["technical"]]
+    scope = generation_parts_label(parts)
+    if len(parts) == 1 and parts[0] in _GENERATION_PART_EXCLUSIONS:
+        lines.append(
+            f"- 生成内容：仅{scope}——大纲只包含{scope}的章节，不得出现{_GENERATION_PART_EXCLUSIONS[parts[0]]}"
+        )
+    else:
+        lines.append(f"- 生成内容：{scope}——大纲需分别覆盖商务与技术两部分的章节")
+    word_count = options.get("word_count")
+    if word_count:
+        low = int(word_count * (1 - GENERATION_WORD_COUNT_TOLERANCE))
+        high = int(word_count * (1 + GENERATION_WORD_COUNT_TOLERANCE))
+        lines.append(
+            f"- 目标总字数：约 {word_count:,} 字（允许 ±20%，即 {low:,}–{high:,} 字）——"
+            "所有章节 article_count×text_count 之和必须落在该区间，据此规划章节数量与每章 article_count/text_count"
+        )
+    if options.get("charts", True):
+        lines.append("- 图表：需要配图——charts 按内容需要规划（每章 0-3 项）")
+    else:
+        lines.append("- 图表：不配图——每个章节的 charts 必须为空数组 []，不要规划任何表格或 mermaid 图")
+    return "\n".join(lines)
+
+
+def apply_generation_options_to_spec(
+    spec: list[dict[str, Any]], options: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """配图=否时强制清空 charts（决策 41）：AI 输出与手工保存都经此处，UI 隐藏入口不是唯一防线。"""
+    if not options or options.get("charts", True):
+        return spec
+    return [{**node, "charts": None} for node in spec]
 
 
 def _bound_charts(raw: Any) -> list[dict[str, Any]] | None:
@@ -529,7 +657,9 @@ def normalize_spec(nodes: list[Any]) -> list[dict[str, Any]]:
     return spec
 
 
-def build_chart_plan_text(node: dict[str, Any]) -> str:
+def build_chart_plan_text(node: dict[str, Any], *, charts_enabled: bool = True) -> str:
+    if not charts_enabled:
+        return "- 不配图（用户生成要求）：本章不要输出任何表格或 mermaid 图，全部用文字段落或列表表达"
     charts = node.get("charts") or []
     if not charts:
         return "- 无（本章按内容需要自行把握，结构化内容优先表格）"
@@ -757,12 +887,14 @@ async def generate_spec(
     analysis: dict[str, Any],
     requirements_text: str,
     material_index_text: str,
+    generation_options: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     user_prompt = (
         SPEC_USER_TEMPLATE.replace(
             "__ANALYSIS_JSON__", json.dumps(analysis, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]
         )
         .replace("__REQUIREMENTS_TEXT__", (requirements_text or "无")[:SPEC_CONTEXT_MAX_CHARS])
+        .replace("__GENERATION_CONSTRAINTS__", build_generation_constraints_text(generation_options))
         .replace("__MATERIAL_INDEX__", material_index_text or "（无素材）")
         .replace("__MAX_NODES__", str(OUTLINE_MAX_NODES))
     )
@@ -771,21 +903,29 @@ async def generate_spec(
     spec = normalize_spec(nodes if isinstance(nodes, list) else [])
     if not spec:
         raise RuntimeError("Spec 生成结果为空，请重试")
-    return spec
+    return apply_generation_options_to_spec(spec, generation_options)
 
 
 async def revise_spec(
-    llm: WizardLLM, *, current_spec: list[dict[str, Any]], instruction: str
+    llm: WizardLLM,
+    *,
+    current_spec: list[dict[str, Any]],
+    instruction: str,
+    generation_options: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    user_prompt = REVISE_USER_TEMPLATE.replace(
-        "__CURRENT_SPEC__", json.dumps(current_spec, ensure_ascii=False)[:SPEC_CONTEXT_MAX_CHARS]
-    ).replace("__INSTRUCTION__", (instruction or "").strip()[:2_000])
+    user_prompt = (
+        REVISE_USER_TEMPLATE.replace(
+            "__CURRENT_SPEC__", json.dumps(current_spec, ensure_ascii=False)[:SPEC_CONTEXT_MAX_CHARS]
+        )
+        .replace("__GENERATION_CONSTRAINTS__", build_generation_constraints_text(generation_options))
+        .replace("__INSTRUCTION__", (instruction or "").strip()[:2_000])
+    )
     payload = await llm.generate_json(REVISE_SYSTEM_PROMPT, user_prompt)
     nodes = payload if isinstance(payload, list) else payload.get("outline") if isinstance(payload, dict) else None
     spec = normalize_spec(nodes if isinstance(nodes, list) else [])
     if not spec:
         raise RuntimeError("Spec 修订结果为空，请重试")
-    return spec
+    return apply_generation_options_to_spec(spec, generation_options)
 
 
 async def answer_sidebar_question(
@@ -1052,6 +1192,7 @@ class BidWizardWriteAgent:
         spec: list[dict[str, Any]],
         material_refs: list[str],
         prev_sections: list[tuple[str, str, Optional[str]]],
+        charts_enabled: bool = True,
     ) -> dict[str, Any]:
         self._publish("section_started", {"node_id": node["node_id"], "title": node["title"]})
         await self._set_section_status(node["node_id"], status="generating")
@@ -1077,13 +1218,15 @@ class BidWizardWriteAgent:
             .replace("__OUTLINE_TEXT__", _outline_text(spec))
             .replace("__TITLE__", node["title"])
             .replace("__SUMMARY__", str(node.get("summary") or "（无摘要，按标题与大纲撰写）"))
-            .replace("__CHART_PLAN_TEXT__", build_chart_plan_text(node))
+            .replace("__CHART_PLAN_TEXT__", build_chart_plan_text(node, charts_enabled=charts_enabled))
             .replace("__MATERIAL_CHUNKS__", material_chunks)
             .replace("__PREV_SECTIONS__", prev_text)
             .replace("__ARTICLE_COUNT__", str(node.get("article_count") or 2))
             .replace("__TEXT_COUNT__", str(node.get("text_count") or 400))
         )
-        body = strip_code_fence(await self.llm.generate(WIZARD_SECTION_SYSTEM_PROMPT, user_prompt))
+        body = strip_code_fence(
+            await self.llm.generate(section_system_prompt(charts_enabled=charts_enabled), user_prompt)
+        )
         if not body:
             raise RuntimeError(f"章节「{node['title']}」生成结果为空")
         body = clamp_mermaid_blocks(close_unterminated_mermaid_fence(body))
@@ -1132,6 +1275,9 @@ class BidWizardWriteAgent:
             self.llm, material_entries=material_entries, spec_scope=spec_scope
         )
         requirements_text = build_requirements_text(context["requirements"])
+        # 生成要求「不配图」（决策 41）贯穿到章节正文：system prompt 与图表计划文本都切无图版
+        generation_options = generation_options_of(context["requirements"])
+        charts_enabled = bool(generation_options.get("charts", True)) if generation_options else True
         prev_sections = await self._load_prev_sections(wizard.id, spec)
 
         done: list[dict[str, Any]] = []
@@ -1146,6 +1292,7 @@ class BidWizardWriteAgent:
                     spec=spec,
                     material_refs=ref_mapping.get(node["node_id"], []),
                     prev_sections=prev_sections,
+                    charts_enabled=charts_enabled,
                 )
                 done.append(result)
                 prev_sections.append((node["node_id"], node["title"], node.get("summary")))

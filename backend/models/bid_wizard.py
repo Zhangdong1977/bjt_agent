@@ -50,6 +50,9 @@ class BidWizard(Base):
         Boolean, default=False, server_default="false", nullable=False
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 「额外的需求」问答历史（决策 43，迁移 045）：list[{question, answer, created_at, adopted}]，
+    # 时序正序、上限 50 条丢最旧；采纳并入 supplementals 时同步置 adopted
+    qa_history: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
 
     user: Mapped["User"] = relationship("User")
     project: Mapped["Project"] = relationship("Project")
