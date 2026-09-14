@@ -73,8 +73,9 @@ _QA_TIMEOUT_SECONDS = 120  # 轻交互（AI 修订 / 追问 / 反问）
 # 重交互（解读 / 问卷 / Spec 生成）：2026-09-09 联调实测，9 份素材索引 + 11k 解读
 # 的问卷生成在 TokenHub 上 >120s，被一刀切超时打成「AI 处理超时」——按动作分级放宽。
 _QA_HEAVY_TIMEOUT_SECONDS = 300
-# 默认项目名「AI编标 YYYY-MM-DD」（决策 26：仍是默认名时，传招标文件后自动改用文件名）
-_DEFAULT_PROJECT_NAME_RE = re.compile(r"^AI编标 \d{4}-\d{2}-\d{2}$")
+# 默认项目名「标书生成 YYYY-MM-DD」（决策 26：仍是默认名时，传招标文件后自动改用文件名）。
+# 兼容匹配 2026-09-14 改名前建的「AI编标 YYYY-MM-DD」，否则存量默认名项目传招标文件后不会自动改名。
+_DEFAULT_PROJECT_NAME_RE = re.compile(r"^(?:标书生成|AI编标) \d{4}-\d{2}-\d{2}$")
 
 
 # ------------------------------------------------------------------ helpers
@@ -107,7 +108,7 @@ async def _require_access(db: DBSession, current_user) -> None:
         ).scalar_one_or_none()
         if row is not None:
             return
-    raise HTTPException(status_code=403, detail="AI编标功能尚未开放，敬请期待")
+    raise HTTPException(status_code=403, detail="标书生成功能尚未开放，敬请期待")
 
 
 async def _owned_wizard(wizard_id: str, current_user, db: DBSession) -> BidWizard:
@@ -276,7 +277,7 @@ async def _run_qa_task(
     )
 
     sales_config = await authorize_billable_task_start(
-        db, user_id=current_user.id, operation_name="AI编标问答"
+        db, user_id=current_user.id, operation_name="标书生成问答"
     )
     # 任务行去重（§5.4 失败重试幂等）：同向导同类 QA 任务进行中时拒绝重复发起，
     # 防双击/网络重试造成并行双计费。
@@ -420,11 +421,11 @@ async def create_wizard(
         if project is None or project.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="项目不存在或无权访问")
         if project.project_type != "bid_wizard":
-            raise HTTPException(status_code=400, detail="请选择 AI编标 项目，或留空由系统新建")
+            raise HTTPException(status_code=400, detail="请选择标书生成项目，或留空由系统新建")
     else:
         project = Project(
             user_id=current_user.id,
-            name=(body.project_name or f"AI编标 {datetime.now().strftime('%Y-%m-%d')}").strip()[:200],
+            name=(body.project_name or f"标书生成 {datetime.now().strftime('%Y-%m-%d')}").strip()[:200],
             project_type="bid_wizard",
             duplicate_mode="pair",
         )
@@ -469,7 +470,7 @@ async def get_active_wizard(db: DBSession, current_user: CurrentUser) -> BidWiza
         )
     ).scalar_one_or_none()
     if wizard is None:
-        raise HTTPException(status_code=404, detail="当前没有进行中的 AI编标 向导")
+        raise HTTPException(status_code=404, detail="当前没有进行中的标书生成向导")
     return wizard
 
 
@@ -663,7 +664,7 @@ async def upload_tender(
     await _require_access(db, current_user)
     wizard.analysis = None
     document = await _store_wizard_document(db, wizard, current_user, file, doc_type="tender")
-    # 决策 26：项目名仍是默认名（AI编标 YYYY-MM-DD）时，自动改用招标文件名（去扩展名）
+    # 决策 26：项目名仍是默认名（标书生成 YYYY-MM-DD，含改名前的 AI编标 前缀）时，自动改用招标文件名（去扩展名）
     project = (
         await db.execute(select(Project).where(Project.id == wizard.project_id))
     ).scalar_one_or_none()
@@ -802,7 +803,7 @@ async def upload_material(
     sales_config = await authorize_billable_task_start(
         db,
         user_id=current_user.id,
-        operation_name="AI编标素材索引",
+        operation_name="标书生成素材索引",
         max_active_tasks=get_settings().bid_wizard_index_max_active_tasks,
     )
     document = await _store_wizard_document(db, wizard, current_user, file, doc_type="material")
@@ -979,7 +980,7 @@ async def reindex_material(
     sales_config = await authorize_billable_task_start(
         db,
         user_id=current_user.id,
-        operation_name="AI编标素材索引",
+        operation_name="标书生成素材索引",
         max_active_tasks=get_settings().bid_wizard_index_max_active_tasks,
     )
     material.index_status = "pending"

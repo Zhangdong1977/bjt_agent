@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { cancelPolishTask, createPolishTask, getPolishTask, type PolishMode } from "@/api/polish";
 import { useVstoBridge } from "@/composables/useVstoBridge";
 import { useBillingStore } from "@/stores/billing";
@@ -241,6 +241,10 @@ async function copyResult() {
     errorMessage.value = "复制失败，请手动选择结果文本复制";
   }
 }
+
+onMounted(() => {
+  void billingStore.fetchWallet().catch(() => undefined);
+});
 
 onUnmounted(stopPolling);
 </script>
