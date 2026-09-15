@@ -26,7 +26,7 @@ const router = createRouter({
       path: "/vsto/bid-wizard",
       name: "vsto-bid-wizard-sso",
       component: () => import("@/views/VstoSsoView.vue"),
-      meta: { title: "AI编标" },
+      meta: { title: "标书生成" },
     },
     {
       path: "/vsto/polish",

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -55,6 +56,25 @@ MATERIAL_CONTEXT_MAX_CHARS = 12_000
 # 粗估：中文约 0.7 token/字（deepseek 系 tokenizer 量级），仅作上传前提示，
 # 实际计费按 ai_usage_records 真实用量结算。
 ESTIMATE_TOKENS_PER_CHAR = 0.7
+
+# ---- 生成要求（决策 38-41，2026-09-14）：编写需求里固定的三项硬约束子结构 ----
+GENERATION_PARTS: tuple[str, ...] = ("business", "technical")
+GENERATION_PART_LABELS = {"business": "商务部分", "technical": "技术部分"}
+# 只勾一个部分时，告诉 Spec 生成器另一部分的典型章节不得出现
+_GENERATION_PART_EXCLUSIONS = {
+    "technical": "商务部分的章节（如资质证明、业绩证明、报价、商务条款响应/偏离表）",
+    "business": "技术部分的章节（如技术方案、实施方案、质量保障、售后服务）",
+}
+GENERATION_WORD_COUNT_MIN = 1_000
+GENERATION_WORD_COUNT_MAX = 1_000_000
+# Spec 生成按目标总字数 ±20% 软约束规划章数与每章字数（决策 40）
+GENERATION_WORD_COUNT_TOLERANCE = 0.2
+# 平级劣化判据（2026-09-15 预发布实证：字数约束下模型把 56 章全标 level=1）：
+# 全部节点 level=1 且数量超过此值即视为结构劣化，带纠正指令重试一次；少量一级章节的小纲要属正常
+SPEC_FLAT_DEGRADATION_MIN_NODES = 12
+# 重试只在时间预算允许时进行：首轮耗时 × 该系数 < 总预算（重试耗时按与首轮同量级估），
+# 否则宁可返回平级结果，也不能让整个同步微任务超时把首轮结果一起丢掉
+_SPEC_RETRY_BUDGET_FACTOR = 2.2
 
 # ------------------------------------------------------------------ prompts
 
@@ -103,7 +123,7 @@ __MATERIAL_INDEX__
 4. 严禁在答案里虚构公司资质、业绩、人员与数据。"""
 
 SPEC_SYSTEM_PROMPT = (
-    "你是资深投标文件编写专家。根据编写需求、招标要素与素材索引，设计投标文件编写大纲（Spec）。"
+    "你是资深投标文件编写专家。根据编写需求、招标要素与素材索引，设计多级目录结构的投标文件编写大纲（Spec）。"
     "只输出一个合法 JSON 数组，不要输出任何其他文字或代码块标记。"
 )
 
@@ -113,21 +133,38 @@ __ANALYSIS_JSON__
 ## 编写需求（用户问卷确认）
 __REQUIREMENTS_TEXT__
 
+## 生成要求（用户设定的硬约束，优先级高于下方通用规则）
+__GENERATION_CONSTRAINTS__
+
 ## 公司素材索引（每行一段：编号｜标题｜摘要｜关键词）
 __MATERIAL_INDEX__
 
-请输出 Spec JSON 数组（不超过 __MAX_NODES__ 个章节，层级 1-4 级），每项格式：
+请输出 Spec JSON 数组（不超过 __MAX_NODES__ 个节点；按目录顺序平铺，用 level 标注层级，1-4 级），每项格式：
 
 {"title": "章节标题", "level": 1,
  "summary": "本章内容要点摘要（1-3 句，写作时的执行纲领）",
  "article_count": 2, "text_count": 400,
  "charts": [{"type": "table|mermaid", "title": "图表标题", "points": "图表要呈现的要点"}]}
 
+层级示例（小节紧跟其所属大章之后；示例省略了其他字段）：
+[{"title": "技术方案", "level": 1}, {"title": "总体架构设计", "level": 2}, {"title": "网络架构", "level": 3},
+ {"title": "数据架构", "level": 3}, {"title": "关键技术选型", "level": 2}, {"title": "实施方案", "level": 1}]
+
 规则：
-1. 大纲完整覆盖招标需求与评分标准对应的响应内容，与评分办法呼应；
-2. summary 写清楚本章要回应什么、用什么素材支撑；
-3. charts 按内容需要规划（每章 0-3 项）：对比/参数/人员/进度用 table，组织架构/流程/横道图/占比用 mermaid；
-4. 素材里有真实业绩/资质可引用的章节，在 summary 中点明引用方向；严禁虚构。"""
+1. 大纲完整覆盖招标需求与评分标准对应的响应内容，与评分办法呼应；只覆盖「生成要求」指定的生成内容范围；
+2. 必须是多级目录：一级大章（level=1）一般 6-12 个，每个大章下按内容拆分二级小节（level=2），内容复杂的小节再拆三级（level=3）；level 必须如实标注所属层级，严禁把全部章节都标成 level=1 平铺——只有目标总字数不足 5,000 字时才允许仅有一级章节；
+3. summary 写清楚本章要回应什么、用什么素材支撑；
+4. charts 按「生成要求」执行：需要配图时按内容需要规划（每章 0-3 项）——对比/参数/人员/进度用 table，组织架构/流程/横道图/占比用 mermaid；不配图时每章 charts 一律为 []；
+5. 素材里有真实业绩/资质可引用的章节，在 summary 中点明引用方向；严禁虚构；
+6. 「生成要求」给了目标总字数时，所有章节 article_count×text_count 之和必须落在允许区间——通过调整每章篇幅（article_count/text_count）与小节数量来满足，不得为凑字数把大纲压成只有一级章节的平级结构。"""
+
+# 兜底重试时追加在 SPEC_USER_TEMPLATE 之后：把首轮不合格的事实喂回去，要求按规则 2 重排层级
+SPEC_FLAT_RETRY_ADDENDUM = """
+
+## 上一次输出不合格，必须修正后重新输出
+上一次生成的大纲把全部 __FLAT_COUNT__ 个章节都标成了 level=1，没有任何二级/三级小节，违反规则 2。
+请重新规划：归并为 6-12 个一级大章（level=1），其余章节作为所属大章下的二级小节（level=2，复杂处可设 level=3），
+数组顺序保持「大章 → 其下小节」的目录顺序；总字数区间与其他规则不变。"""
 
 REVISE_SYSTEM_PROMPT = (
     "你是资深投标文件编写专家。按用户的修改指令调整编写大纲（Spec），保持未涉及的部分不变。"
@@ -138,10 +175,13 @@ REVISE_USER_TEMPLATE = """当前 Spec：
 
 __CURRENT_SPEC__
 
+生成要求（用户设定，修订后的大纲仍须满足）：
+__GENERATION_CONSTRAINTS__
+
 用户修改指令：
 __INSTRUCTION__
 
-请输出调整后的完整 Spec JSON 数组，字段格式与输入一致（title/level/summary/article_count/text_count/charts）。"""
+请输出调整后的完整 Spec JSON 数组，字段格式与输入一致（title/level/summary/article_count/text_count/charts）；保持多级目录结构（大章 level=1、小节 level=2/3，level 如实标注所属层级），除非用户指令明确要求改变层级。"""
 
 SELECT_SYSTEM_PROMPT = (
     "你是素材检索员。根据任务描述，从素材索引中挑选需要引用原文的分段。"
@@ -168,13 +208,15 @@ __NODE_LIST__
 
 {"mapping": {"<node_id>": ["<文档ID>#<编号>"]}}"""
 
-WIZARD_SECTION_SYSTEM_PROMPT = (
+_WIZARD_SECTION_SYSTEM_PROMPT_BASE = (
     "你是资深投标文件编写专家。撰写指定章节的正文，严格遵循本章摘要与图表计划，"
     "内容专业、具体、结构清晰、可直接用于投标文件。"
     "只输出 Markdown 正文：不要输出本节标题（系统会自动添加），不要输出解释或前言，"
     "不要把整节内容包进代码块围栏（mermaid 图表除外）。"
     "公司资质、业绩、项目、人员与数据必须来自「素材摘录」，不得虚构；"
     "素材与需求都未覆盖的事实性内容用“（请补充）”占位，由投标人自行补齐。"
+)
+_WIZARD_SECTION_CHART_RULES = (
     "图表要求："
     "①结构化内容（对比、参数、人员配置、职责分工、进度安排）优先用 Markdown 表格；"
     "②「本章图表计划」指定了 mermaid 图的，按计划的类型与标题输出 ```mermaid 代码块，"
@@ -182,6 +224,17 @@ WIZARD_SECTION_SYSTEM_PROMPT = (
     "③图表涉及的名称、日期、数值必须与正文和素材一致，严禁虚构；"
     "④纯论述性内容保持文本段落，不要为凑图表而强行图示化。"
 )
+# 生成要求「不配图」（决策 41）：章节正文不得出现任何表格/图示，结构化内容改文字或列表
+_WIZARD_SECTION_NO_CHART_RULES = (
+    "图表要求：用户在生成要求中选择了不配图——本章不得输出任何 Markdown 表格、mermaid 代码块"
+    "或其他图示；对比、参数、人员配置、职责分工、进度安排等结构化内容一律用文字段落或有序/无序列表表达。"
+)
+WIZARD_SECTION_SYSTEM_PROMPT = _WIZARD_SECTION_SYSTEM_PROMPT_BASE + _WIZARD_SECTION_CHART_RULES
+
+
+def section_system_prompt(*, charts_enabled: bool = True) -> str:
+    rules = _WIZARD_SECTION_CHART_RULES if charts_enabled else _WIZARD_SECTION_NO_CHART_RULES
+    return _WIZARD_SECTION_SYSTEM_PROMPT_BASE + rules
 
 WIZARD_SECTION_USER_TEMPLATE = """## 项目招标要素（摘要）
 __ANALYSIS_JSON__
@@ -420,6 +473,16 @@ def merge_questionnaire_answers(
 def build_requirements_text(requirements: dict[str, Any] | None) -> str:
     """Render 编写需求 as readable text for spec/section prompts."""
     lines: list[str] = []
+    # 生成要求（决策 38）置顶：下游 prompt（问卷追问轮/追问侧栏/章节撰写）都要知道范围与篇幅
+    options = generation_options_of(requirements)
+    if options:
+        word_count = options.get("word_count")
+        lines.append(
+            "- [生成要求] 生成内容："
+            f"{generation_parts_label(options.get('parts') or [])}；"
+            f"目标总字数：{f'{word_count:,} 字' if word_count else '未设置'}；"
+            f"配图：{'是' if options.get('charts', True) else '否'}"
+        )
     for question in (requirements or {}).get("questions") or []:
         if not isinstance(question, dict):
             continue
@@ -445,6 +508,92 @@ def build_requirements_text(requirements: dict[str, Any] | None) -> str:
     if not lines:
         return "无"
     return "\n".join(lines)[:SPEC_CONTEXT_MAX_CHARS]
+
+
+# ------------------------------------------------------------------ 生成要求（决策 38-41）
+
+
+def normalize_generation_options(raw: Any) -> dict[str, Any] | None:
+    """生成要求规范化：parts 去重保序且非空（空→仅技术）、word_count 越界回 None、charts 布尔。
+
+    返回 None 表示"未设置"（存量向导 / 老客户端载荷），下游一律按无约束处理（决策 42）。
+    word_count=None 是允许的草稿态——必填校验在进入编写大纲时做（决策 40）。
+    """
+    if not isinstance(raw, dict):
+        return None
+    parts: list[str] = []
+    for item in raw.get("parts") or []:
+        key = str(item or "").strip().lower()
+        if key in GENERATION_PARTS and key not in parts:
+            parts.append(key)
+    if not parts:
+        parts = ["technical"]
+    word_count: int | None = None
+    raw_count = raw.get("word_count")
+    if raw_count is not None and not isinstance(raw_count, bool):
+        try:
+            word_count = int(raw_count)
+        except (TypeError, ValueError):
+            word_count = None
+    if word_count is not None and not (
+        GENERATION_WORD_COUNT_MIN <= word_count <= GENERATION_WORD_COUNT_MAX
+    ):
+        word_count = None
+    charts = raw.get("charts")
+    return {
+        "parts": parts,
+        "word_count": word_count,
+        "charts": True if charts is None else bool(charts),
+    }
+
+
+def generation_options_of(requirements: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(requirements, dict):
+        return None
+    return normalize_generation_options(requirements.get("generation_options"))
+
+
+def generation_parts_label(parts: list[str]) -> str:
+    labels = [GENERATION_PART_LABELS.get(str(part), str(part)) for part in parts or []]
+    return "+".join(labels) if labels else GENERATION_PART_LABELS["technical"]
+
+
+def build_generation_constraints_text(options: dict[str, Any] | None) -> str:
+    """Spec 生成/AI 修订 prompt 的「生成要求」块；未设置时明示无约束。"""
+    if not options:
+        return "无（按招标要素与编写需求自行规划）"
+    lines: list[str] = []
+    parts = [str(part) for part in options.get("parts") or ["technical"]]
+    scope = generation_parts_label(parts)
+    if len(parts) == 1 and parts[0] in _GENERATION_PART_EXCLUSIONS:
+        lines.append(
+            f"- 生成内容：仅{scope}——大纲只包含{scope}的章节，不得出现{_GENERATION_PART_EXCLUSIONS[parts[0]]}"
+        )
+    else:
+        lines.append(f"- 生成内容：{scope}——大纲需分别覆盖商务与技术两部分的章节")
+    word_count = options.get("word_count")
+    if word_count:
+        low = int(word_count * (1 - GENERATION_WORD_COUNT_TOLERANCE))
+        high = int(word_count * (1 + GENERATION_WORD_COUNT_TOLERANCE))
+        lines.append(
+            f"- 目标总字数：约 {word_count:,} 字（允许 ±20%，即 {low:,}–{high:,} 字）——"
+            "所有章节 article_count×text_count 之和必须落在该区间，据此规划小节数量与每章 article_count/text_count；"
+            "字数约束不改变多级目录要求，不得为凑字数把大纲压成只有一级章节"
+        )
+    if options.get("charts", True):
+        lines.append("- 图表：需要配图——charts 按内容需要规划（每章 0-3 项）")
+    else:
+        lines.append("- 图表：不配图——每个章节的 charts 必须为空数组 []，不要规划任何表格或 mermaid 图")
+    return "\n".join(lines)
+
+
+def apply_generation_options_to_spec(
+    spec: list[dict[str, Any]], options: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """配图=否时强制清空 charts（决策 41）：AI 输出与手工保存都经此处，UI 隐藏入口不是唯一防线。"""
+    if not options or options.get("charts", True):
+        return spec
+    return [{**node, "charts": None} for node in spec]
 
 
 def _bound_charts(raw: Any) -> list[dict[str, Any]] | None:
@@ -529,7 +678,16 @@ def normalize_spec(nodes: list[Any]) -> list[dict[str, Any]]:
     return spec
 
 
-def build_chart_plan_text(node: dict[str, Any]) -> str:
+def is_flat_degraded_spec(spec: list[dict[str, Any]]) -> bool:
+    """全部节点 level=1 且数量超过阈值 → 平级劣化；节点少的小纲要只有一级章节属正常。"""
+    if len(spec) <= SPEC_FLAT_DEGRADATION_MIN_NODES:
+        return False
+    return all(int(node.get("level") or 1) == 1 for node in spec)
+
+
+def build_chart_plan_text(node: dict[str, Any], *, charts_enabled: bool = True) -> str:
+    if not charts_enabled:
+        return "- 不配图（用户生成要求）：本章不要输出任何表格或 mermaid 图，全部用文字段落或列表表达"
     charts = node.get("charts") or []
     if not charts:
         return "- 无（本章按内容需要自行把握，结构化内容优先表格）"
@@ -615,27 +773,203 @@ def _bound_suggested_materials(raw: Any) -> list[dict[str, str]]:
     return items
 
 
+# ---- JSON 交互容错（2026-09-15 首轮问卷「模型输出不是合法 JSON」事故） ----
+
+# 与 Spec 平级重试同口径：首次耗时 × 系数 ≥ 超时预算即跳过重试，防同步微任务超时把首轮一起丢掉
+JSON_RETRY_TIME_FACTOR = 2.2
+JSON_RETRY_ADDENDUM = (
+    "\n\n【重要】你上一次的输出不是合法 JSON，已被丢弃。请严格只输出一个合法 JSON："
+    "不要任何前后说明文字、不要代码块标记；字符串内的英文双引号必须写成 \\\"；"
+    "不要尾逗号；确保所有括号闭合；控制总长度，宁可少几项也不要输出到一半被截断。"
+)
+_UNPARSEABLE_LOG_SNIPPET = 400
+
+
+def _json_start_candidates(value: str) -> list[int]:
+    """首个 '{' 与首个 '[' 的位置（存在者）。两种起点都要试：模型在 JSON 前写了带方括号的
+    说明（"参考[1]…"）时先出现的是垃圾 '['，Spec 顶层是数组时先出现的 '{' 只是首个元素。"""
+    return [index for index in (value.find("{"), value.find("[")) if index >= 0]
+
+
+def parse_json_payload_tolerant(text: str) -> Any | None:
+    """V1 parse_json_payload 之上再补一层 raw_decode：忽略首个完整 JSON 值之后的尾随文字。
+
+    V1 的括号切片取全文最后一个 '}'，模型在 JSON 后追加说明（含花括号/方括号）时会切进垃圾；
+    raw_decode 只取从起点开始的第一个完整值。两种起点都试、取覆盖最长者（见 _json_start_candidates）。
+    V1 文件保持零改动，这里包一层。
+    """
+    parsed = parse_json_payload(text)
+    if parsed is not None:
+        return parsed
+    value = strip_code_fence((text or "").strip())
+    decoder = json.JSONDecoder()
+    best: tuple[int, Any] | None = None
+    for start in _json_start_candidates(value):
+        try:
+            candidate, end = decoder.raw_decode(value, start)
+        except ValueError:
+            continue
+        if isinstance(candidate, (dict, list)) and (best is None or end - start > best[0]):
+            best = (end - start, candidate)
+    return best[1] if best else None
+
+
+def _salvage_from(value: str) -> str | None:
+    """从 value[0]（须为 '{' 或 '['）起扫描，返回可被 json.loads 的最长完整前缀文本。"""
+    pairs = {"{": "}", "[": "]"}
+    stack: list[str] = []
+    cut_points: list[tuple[int, list[str]]] = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(value):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in pairs:
+            stack.append(char)
+        elif char in ("}", "]"):
+            if not stack or pairs[stack[-1]] != char:
+                break  # 结构已乱，后面不可信；仍可用此前记下的切点
+            stack.pop()
+            # 只在「根闭合」或「元素直接在数组里闭合」处记切点（数组栈深 ≤2：顶层数组 /
+            # 顶层对象内的数组）；节点内部子容器（如 charts 数组）闭合不算，免得救出残缺节点
+            if not stack or (len(stack) <= 2 and stack[-1] == "["):
+                cut_points.append((index + 1, list(stack)))
+    for end, snapshot in reversed(cut_points):
+        candidate = value[:end].rstrip()
+        if candidate.endswith(","):
+            candidate = candidate[:-1]
+        candidate += "".join(pairs[opener] for opener in reversed(snapshot))
+        try:
+            json.loads(candidate)
+        except ValueError:
+            continue
+        return candidate
+    return None
+
+
+def salvage_truncated_json(text: str) -> Any | None:
+    """救援被截断的 JSON：保留已完整闭合的元素、补齐未闭合括号。
+
+    面向本模块的顶层形态——`{"questions": [ {…}, {…}, {"topic": "…`、`[ {…}, {…}, {"title": "…`
+    与 `{"basic": {…}, "scoring": [ {…}, {…`（招标要素）。按字符扫描跟踪字符串/转义与括号栈，
+    元素在栈深 ≤2 处闭合即记可切点；从最后一个可切点往前试：切掉未完成尾巴、去尾逗号、
+    按栈补闭合。两种起点都试、取救出文本最长者；首个元素都没完整时返回 None。有损但优于整轮报错。
+    """
+    value = strip_code_fence((text or "").strip())
+    best: str | None = None
+    for start in _json_start_candidates(value):
+        candidate = _salvage_from(value[start:])
+        if candidate is not None and (best is None or len(candidate) > len(best)):
+            best = candidate
+    if best is None:
+        return None
+    parsed = json.loads(best)
+    return parsed if isinstance(parsed, (dict, list)) else None
+
+
+def _log_unparseable_llm_output(label: str, text: str, response: Any, elapsed: float) -> None:
+    usage = getattr(response, "usage", None)
+    completion_tokens = getattr(usage, "completion_tokens", None) if usage is not None else None
+    thinking = getattr(response, "thinking", None)
+    stripped = strip_code_fence((text or "").strip())
+    try:
+        json.loads(stripped)
+        decode_hint = "loads ok?!"
+    except json.JSONDecodeError as exc:
+        lo, hi = max(0, exc.pos - 120), min(len(stripped), exc.pos + 60)
+        decode_hint = f"{exc.msg} at {exc.pos}/{len(stripped)} …{stripped[lo:hi]!r}…"
+    except ValueError as exc:
+        decode_hint = str(exc)
+    logger.warning(
+        "bid_wizard llm output not JSON (%s): %.1fs len=%d completion_tokens=%s thinking_len=%s "
+        "fence=%s decode=%s HEAD=%r TAIL=%r",
+        label,
+        elapsed,
+        len(text),
+        completion_tokens,
+        len(thinking) if isinstance(thinking, str) else None,
+        text.lstrip().startswith("```"),
+        decode_hint,
+        text[:_UNPARSEABLE_LOG_SNIPPET],
+        text[-_UNPARSEABLE_LOG_SNIPPET:],
+    )
+
+
 class WizardLLM:
     """Thin instrumented client wrapper shared by sync and celery flows."""
 
     def __init__(self, *, timeout: float = 180.0) -> None:
+        self.timeout = timeout
         self.client = instrument_llm_client(create_llm_client(timeout=timeout))
 
-    async def generate(self, system_prompt: str, user_prompt: str) -> str:
+    async def _generate_response(self, system_prompt: str, user_prompt: str) -> Any:
         from mini_agent.schema import Message
 
         messages = [
             Message(role="system", content=system_prompt),
             Message(role="user", content=user_prompt),
         ]
-        response = await self.client.generate(messages=messages)
+        return await self.client.generate(messages=messages)
+
+    async def generate(self, system_prompt: str, user_prompt: str) -> str:
+        response = await self._generate_response(system_prompt, user_prompt)
         return str(getattr(response, "content", "") or "").strip()
 
     async def generate_json(self, system_prompt: str, user_prompt: str) -> Any:
-        parsed = parse_json_payload(await self.generate(system_prompt, user_prompt))
-        if parsed is None:
-            raise RuntimeError("模型输出不是合法 JSON，请重试")
-        return parsed
+        """JSON 交互：解析失败先重试一次，再救援截断片段，最后才向用户报错。
+
+        模型输出偶发不可解析（同一输入复跑通常正常，2026-09-15 首轮问卷实证），
+        以前这里直接 RuntimeError 且原文不留痕，用户只能手动重试。现在：
+        ① 首次不可解析 → WARNING 记录长度/首尾/usage（下次事故可定因）；
+        ② 时间预算允许（首次耗时 × JSON_RETRY_TIME_FACTOR < timeout）→ 带纠正语重试一次；
+        ③ 仍不可解析 → salvage_truncated_json 救援截断输出（保留已完整的元素）；
+        ④ 都不行才抛「模型输出不是合法 JSON，请重试」。
+        """
+        started = time.monotonic()
+        first = await self._generate_response(system_prompt, user_prompt)
+        first_text = str(getattr(first, "content", "") or "").strip()
+        parsed = parse_json_payload_tolerant(first_text)
+        if parsed is not None:
+            return parsed
+        elapsed = time.monotonic() - started
+        _log_unparseable_llm_output("first", first_text, first, elapsed)
+
+        retry_text = ""
+        if elapsed * JSON_RETRY_TIME_FACTOR < self.timeout:
+            retry_started = time.monotonic()
+            retry = await self._generate_response(system_prompt, user_prompt + JSON_RETRY_ADDENDUM)
+            retry_text = str(getattr(retry, "content", "") or "").strip()
+            parsed = parse_json_payload_tolerant(retry_text)
+            if parsed is not None:
+                logger.info(
+                    "bid_wizard llm json retry succeeded: retry=%.1fs first_len=%d retry_len=%d",
+                    time.monotonic() - retry_started, len(first_text), len(retry_text),
+                )
+                return parsed
+            _log_unparseable_llm_output("retry", retry_text, retry, time.monotonic() - retry_started)
+        else:
+            logger.warning(
+                "bid_wizard llm json retry skipped: first call %.1fs × %.1f ≥ timeout %.0fs",
+                elapsed, JSON_RETRY_TIME_FACTOR, self.timeout,
+            )
+
+        for label, text in (("retry", retry_text), ("first", first_text)):
+            salvaged = salvage_truncated_json(text)
+            if salvaged is not None:
+                logger.warning(
+                    "bid_wizard llm json salvaged from %s output (len=%d): kept a complete prefix",
+                    label, len(text),
+                )
+                return salvaged
+        raise RuntimeError("模型输出不是合法 JSON，请重试")
 
 
 async def analyze_tender(llm: WizardLLM, tender_markdown: str) -> dict[str, Any]:
@@ -751,41 +1085,81 @@ async def generate_questionnaire_round(
     return normalize_questionnaire(payload)
 
 
+async def _generate_spec_once(llm: WizardLLM, user_prompt: str) -> list[dict[str, Any]]:
+    payload = await llm.generate_json(SPEC_SYSTEM_PROMPT, user_prompt)
+    nodes = payload if isinstance(payload, list) else payload.get("outline") if isinstance(payload, dict) else None
+    return normalize_spec(nodes if isinstance(nodes, list) else [])
+
+
 async def generate_spec(
     llm: WizardLLM,
     *,
     analysis: dict[str, Any],
     requirements_text: str,
     material_index_text: str,
+    generation_options: dict[str, Any] | None = None,
+    time_budget_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
+    """Spec 生成；首轮平级劣化（见 is_flat_degraded_spec）且时间预算够时带纠正指令重试一次。
+
+    重试结果只有真正多级时才替换首轮；重试仍平级或抛错都保留首轮可用结果（用户可手工/AI 修订）。
+    """
     user_prompt = (
         SPEC_USER_TEMPLATE.replace(
             "__ANALYSIS_JSON__", json.dumps(analysis, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]
         )
         .replace("__REQUIREMENTS_TEXT__", (requirements_text or "无")[:SPEC_CONTEXT_MAX_CHARS])
+        .replace("__GENERATION_CONSTRAINTS__", build_generation_constraints_text(generation_options))
         .replace("__MATERIAL_INDEX__", material_index_text or "（无素材）")
         .replace("__MAX_NODES__", str(OUTLINE_MAX_NODES))
     )
-    payload = await llm.generate_json(SPEC_SYSTEM_PROMPT, user_prompt)
-    nodes = payload if isinstance(payload, list) else payload.get("outline") if isinstance(payload, dict) else None
-    spec = normalize_spec(nodes if isinstance(nodes, list) else [])
+    started = time.monotonic()
+    spec = await _generate_spec_once(llm, user_prompt)
     if not spec:
         raise RuntimeError("Spec 生成结果为空，请重试")
-    return spec
+    if is_flat_degraded_spec(spec):
+        elapsed = time.monotonic() - started
+        if time_budget_seconds is not None and elapsed * _SPEC_RETRY_BUDGET_FACTOR >= time_budget_seconds:
+            logger.warning(
+                "bid-wizard spec is flat (%d nodes, all level=1) but first pass used %.0fs of %.0fs budget; skip retry",
+                len(spec), elapsed, time_budget_seconds,
+            )
+        else:
+            logger.warning("bid-wizard spec is flat (%d nodes, all level=1); retrying once with correction", len(spec))
+            try:
+                retried = await _generate_spec_once(
+                    llm, user_prompt + SPEC_FLAT_RETRY_ADDENDUM.replace("__FLAT_COUNT__", str(len(spec)))
+                )
+            except Exception as exc:  # 重试失败不能丢掉首轮可用结果
+                logger.warning("bid-wizard spec flat-retry failed, keeping first pass: %s", exc)
+                retried = []
+            if retried and not is_flat_degraded_spec(retried):
+                spec = retried
+            elif retried:
+                logger.warning("bid-wizard spec flat-retry still flat (%d nodes); keeping first pass", len(retried))
+    return apply_generation_options_to_spec(spec, generation_options)
 
 
 async def revise_spec(
-    llm: WizardLLM, *, current_spec: list[dict[str, Any]], instruction: str
+    llm: WizardLLM,
+    *,
+    current_spec: list[dict[str, Any]],
+    instruction: str,
+    generation_options: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    user_prompt = REVISE_USER_TEMPLATE.replace(
-        "__CURRENT_SPEC__", json.dumps(current_spec, ensure_ascii=False)[:SPEC_CONTEXT_MAX_CHARS]
-    ).replace("__INSTRUCTION__", (instruction or "").strip()[:2_000])
+    user_prompt = (
+        REVISE_USER_TEMPLATE.replace(
+            "__CURRENT_SPEC__", json.dumps(current_spec, ensure_ascii=False)[:SPEC_CONTEXT_MAX_CHARS]
+        )
+        .replace("__GENERATION_CONSTRAINTS__", build_generation_constraints_text(generation_options))
+        .replace("__INSTRUCTION__", (instruction or "").strip()[:2_000])
+    )
     payload = await llm.generate_json(REVISE_SYSTEM_PROMPT, user_prompt)
     nodes = payload if isinstance(payload, list) else payload.get("outline") if isinstance(payload, dict) else None
     spec = normalize_spec(nodes if isinstance(nodes, list) else [])
     if not spec:
         raise RuntimeError("Spec 修订结果为空，请重试")
-    return spec
+    return apply_generation_options_to_spec(spec, generation_options)
 
 
 async def answer_sidebar_question(
@@ -1052,6 +1426,7 @@ class BidWizardWriteAgent:
         spec: list[dict[str, Any]],
         material_refs: list[str],
         prev_sections: list[tuple[str, str, Optional[str]]],
+        charts_enabled: bool = True,
     ) -> dict[str, Any]:
         self._publish("section_started", {"node_id": node["node_id"], "title": node["title"]})
         await self._set_section_status(node["node_id"], status="generating")
@@ -1077,13 +1452,15 @@ class BidWizardWriteAgent:
             .replace("__OUTLINE_TEXT__", _outline_text(spec))
             .replace("__TITLE__", node["title"])
             .replace("__SUMMARY__", str(node.get("summary") or "（无摘要，按标题与大纲撰写）"))
-            .replace("__CHART_PLAN_TEXT__", build_chart_plan_text(node))
+            .replace("__CHART_PLAN_TEXT__", build_chart_plan_text(node, charts_enabled=charts_enabled))
             .replace("__MATERIAL_CHUNKS__", material_chunks)
             .replace("__PREV_SECTIONS__", prev_text)
             .replace("__ARTICLE_COUNT__", str(node.get("article_count") or 2))
             .replace("__TEXT_COUNT__", str(node.get("text_count") or 400))
         )
-        body = strip_code_fence(await self.llm.generate(WIZARD_SECTION_SYSTEM_PROMPT, user_prompt))
+        body = strip_code_fence(
+            await self.llm.generate(section_system_prompt(charts_enabled=charts_enabled), user_prompt)
+        )
         if not body:
             raise RuntimeError(f"章节「{node['title']}」生成结果为空")
         body = clamp_mermaid_blocks(close_unterminated_mermaid_fence(body))
@@ -1132,6 +1509,9 @@ class BidWizardWriteAgent:
             self.llm, material_entries=material_entries, spec_scope=spec_scope
         )
         requirements_text = build_requirements_text(context["requirements"])
+        # 生成要求「不配图」（决策 41）贯穿到章节正文：system prompt 与图表计划文本都切无图版
+        generation_options = generation_options_of(context["requirements"])
+        charts_enabled = bool(generation_options.get("charts", True)) if generation_options else True
         prev_sections = await self._load_prev_sections(wizard.id, spec)
 
         done: list[dict[str, Any]] = []
@@ -1146,6 +1526,7 @@ class BidWizardWriteAgent:
                     spec=spec,
                     material_refs=ref_mapping.get(node["node_id"], []),
                     prev_sections=prev_sections,
+                    charts_enabled=charts_enabled,
                 )
                 done.append(result)
                 prev_sections.append((node["node_id"], node["title"], node.get("summary")))

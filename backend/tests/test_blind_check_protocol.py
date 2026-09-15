@@ -12,7 +12,8 @@ from backend.agent.blind_check_agent import (
     _apply_echo_verification,
     _build_coverage_report,
     _build_deterministic_arguments,
-    _coverage_unknown_findings,
+    _coverage_incomplete_details,
+    _heading_check_has_dimension,
     _legacy_story_note,
     _normalize_evidences,
     _normalize_findings,
@@ -22,6 +23,7 @@ from backend.agent.blind_check_agent import (
     _summarize,
     _uncovered_dimension_findings,
     _uncovered_tool_dimensions,
+    _unresolved_requirement_findings,
 )
 from backend.agent.tools.vsto_remote import VstoRemoteTool
 from backend.api.vsto_tools import _session, submit_tool_result
@@ -207,7 +209,24 @@ def test_agent_json_is_normalized_and_unknown_is_not_pass(monkeypatch):
 
 
 @pytest.mark.unit
+def test_non_violation_findings_are_forced_to_info_severity():
+    """两类口径：待确认/符合项的 severity 一律 info，模型误标 major 不得进违规统计。"""
+    findings = _normalize_findings(
+        [
+            {"verdict": "unknown", "severity": "major", "title": "待确认"},
+            {"verdict": "compliant", "severity": "minor", "title": "符合"},
+            {"verdict": "violation", "severity": "critical", "title": "违规"},
+        ]
+    )
+    assert [item["severity"] for item in findings] == ["info", "info", "critical"]
+    summary = _summarize(findings)
+    assert summary["major"] == 0 and summary["minor"] == 0
+    assert summary["critical"] == 1 and summary["unknown"] == 1
+
+
+@pytest.mark.unit
 def test_incomplete_deterministic_coverage_forces_unknown():
+    """覆盖不完整不再物化待确认卡，只进 summary 明细并压住 pass。"""
     coverage = _build_coverage_report(
         [
             {
@@ -217,16 +236,36 @@ def test_incomplete_deterministic_coverage_forces_unknown():
                     "coverage": "partial",
                     "checked_count": 10,
                     "violation_count": 0,
-                    "unknown_reasons": ["只扫描了部分字符"],
+                    "unknown_reasons": ["部分文字的字体属性混合、未定义或无法读取"],
                 },
             }
         ]
     )
-    findings = _coverage_unknown_findings(coverage)
-    assert findings and findings[0]["verdict"] == "unknown"
-    summary = _summarize(findings, coverage=coverage)
+    details = _coverage_incomplete_details(coverage)
+    assert details == [
+        {
+            "tool": "word_check_text_style",
+            "label": "字体与字号",
+            "reason": "少量文字（多为页码等特殊字符）无法自动读取字体属性",
+        }
+    ]
+    summary = _summarize([], coverage=coverage)
     assert summary["overall"] == "unknown"
     assert summary["coverage_complete"] is False
+    assert summary["coverage_incomplete_details"] == details
+
+
+@pytest.mark.unit
+def test_unresolved_requirement_note_is_only_a_fallback():
+    """要求解析卡：模型已提到该维度就不再另出一张，模型完全没提才兜底。"""
+    notes = ["要求提到行距但未能解析出具体磅值或规则，行距需人工确认"]
+    covered = [{"verdict": "unknown", "title": "1.5 倍行距无法自动核对", "description": "…"}]
+    assert _unresolved_requirement_findings(notes, covered) == []
+    fallback = _unresolved_requirement_findings(notes, [{"verdict": "violation", "title": "文件属性", "description": "作者"}])
+    assert len(fallback) == 1
+    assert fallback[0]["verdict"] == "unknown"
+    assert fallback[0]["title"] == "暗标要求项未能自动检查，需人工确认"
+    assert _unresolved_requirement_findings([], []) == []
 
 
 @pytest.mark.unit
@@ -409,6 +448,62 @@ def test_requirement_parsing_reports_unresolvable_dimensions():
     assert any("字体" in note for note in notes)
 
 
+# 2026-09-14 生产实测要求：倍数行距 + 连字符写法的字体名，此前均解析失败并落成待确认。
+_MULTIPLE_REQUIREMENT = (
+    "技术标书统一为竖版 A4 规格白色纸张(有要求的除外), 除封面、目录以外所有文字均为四号仿宋-GB2312,"
+    "行距为 1.5 倍行距，黑色字体，页码一律不得设置。"
+)
+
+
+@pytest.mark.unit
+def test_requirement_parsing_supports_multiple_line_spacing_and_hyphen_font():
+    arguments, notes = _build_deterministic_arguments(_MULTIPLE_REQUIREMENT)
+    assert notes == []
+    paragraph = arguments["word_check_paragraph_format"]
+    assert paragraph["check_line_spacing"] is True
+    assert paragraph["line_spacing_rule"] == "multiple"
+    assert paragraph["line_spacing_multiple"] == 1.5
+    assert "line_spacing_pt" not in paragraph
+    style = arguments["word_check_text_style"]
+    # 连字符写法归一到 Word 真实字体名，不再被前缀“仿宋”抢先命中。
+    assert style["expected_font"] == "仿宋_GB2312"
+    assert style["expected_font_far_east"] == "仿宋_GB2312"
+    assert style["expected_size_pt"] == 14.0
+    assert style["expected_color_rgb"] == [0, 0, 0]
+    # 其他写法
+    assert _build_deterministic_arguments("正文行距 1.5 倍")[0]["word_check_paragraph_format"]["line_spacing_multiple"] == 1.5
+    assert _build_deterministic_arguments("单倍行距")[0]["word_check_paragraph_format"]["line_spacing_multiple"] == 1.0
+    assert _build_deterministic_arguments("双倍行距")[0]["word_check_paragraph_format"]["line_spacing_multiple"] == 2.0
+    # 要求没提标题维度：标题工具没有可检维度，应跳过而不是盘点刷屏。
+    assert _heading_check_has_dimension(arguments["word_check_heading_numbering"]) is False
+    assert _heading_check_has_dimension({"heading_policy": "body_text_outline"}) is True
+    assert _heading_check_has_dimension({"heading_policy": "none", "max_level": 7}) is True
+
+
+@pytest.mark.unit
+def test_echo_verification_drops_multiple_line_spacing_on_old_plugin():
+    arguments, _ = _build_deterministic_arguments(_MULTIPLE_REQUIREMENT)
+    paragraph = _observation(
+        # 旧插件不认识 line_spacing_multiple：把 multiple 当 wdLineSpaceMultiple 硬比，
+        # 1.5 倍（rule=1）段落全部误报规则不符。
+        expected={"line_spacing_rule": "multiple", "line_spacing_pt": None},
+        violations=[
+            {"rule_id": "paragraph.line_spacing_rule", "title": "行距规则不是固定值", "severity": "major"},
+            {"rule_id": "paragraph.line_spacing", "title": "行距不是要求值", "severity": "major"},
+        ],
+    )
+    _apply_echo_verification(paragraph, "word_check_paragraph_format", arguments["word_check_paragraph_format"])
+    assert paragraph["data"]["violations"] == []
+    assert any("行距倍数" in reason for reason in paragraph["data"]["unknown_reasons"])
+
+    echoed = _observation(
+        expected={"line_spacing_rule": "multiple", "line_spacing_multiple": 1.5, "line_spacing_pt": None},
+        violations=[{"rule_id": "paragraph.line_spacing", "title": "行距不是要求的 1.5 倍", "severity": "major"}],
+    )
+    _apply_echo_verification(echoed, "word_check_paragraph_format", arguments["word_check_paragraph_format"])
+    assert [item["rule_id"] for item in echoed["data"]["violations"]] == ["paragraph.line_spacing"]
+
+
 def _observation(expected: dict, violations: list[dict]) -> dict:
     return {
         "tool": "tool",
@@ -521,6 +616,15 @@ def test_broker_schema_accepts_new_per_side_and_policy_arguments():
         "word_check_paragraph_format",
         {"snapshot_id": "snapshot-1", "check_line_spacing": True, "check_space": False},
     )
+    _validate_tool_arguments(
+        "word_check_paragraph_format",
+        {"snapshot_id": "snapshot-1", "line_spacing_rule": "multiple", "line_spacing_multiple": 1.5},
+    )
+    with pytest.raises(ValueError):
+        _validate_tool_arguments(
+            "word_check_paragraph_format",
+            {"snapshot_id": "snapshot-1", "line_spacing_multiple": True},
+        )
     _validate_tool_arguments(
         "word_check_heading_numbering",
         {

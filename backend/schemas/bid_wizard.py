@@ -3,11 +3,13 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.agent.bid_draft_agent import OUTLINE_MAX_NODES
+from backend.agent.bid_wizard_agent import GENERATION_WORD_COUNT_MAX, GENERATION_WORD_COUNT_MIN
 
 WizardStage = Literal["material", "requirement", "outline", "writing"]
+GenerationPart = Literal["business", "technical"]
 
 # 待答问题上限：round 闸门按"未作答/待确认(supplemented)"计数——已答/已采纳/已跳过
 # 的问题不算待办、不阻断再次检查（2026-09-11 反馈⑯：20 题全已采纳仍被总数顶死）。
@@ -48,6 +50,8 @@ class WizardResponse(BaseModel):
     requirements_stale: bool
     spec_stale: bool
     error_message: str | None
+    # 「额外的需求」问答历史（决策 43）：时序正序，条目 {question, answer, created_at, adopted}
+    qa_history: list[Any] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -134,8 +138,32 @@ class QuestionnaireAnswer(BaseModel):
     answer: str | None = Field(default=None, max_length=4_000)
 
 
+class GenerationOptions(BaseModel):
+    """生成要求（决策 38-41）：编写需求里固定的三项硬约束子结构。
+
+    word_count 允许为空以保存草稿；必填校验在进入「编写大纲」时由 stage 端点做（决策 40/42）。
+    """
+
+    parts: list[GenerationPart] = Field(default_factory=lambda: ["technical"], min_length=1)
+    word_count: int | None = Field(
+        default=None, ge=GENERATION_WORD_COUNT_MIN, le=GENERATION_WORD_COUNT_MAX
+    )
+    charts: bool = True
+
+    @field_validator("parts")
+    @classmethod
+    def _dedupe_parts(cls, value: list[str]) -> list[str]:
+        deduped: list[str] = []
+        for item in value:
+            if item not in deduped:
+                deduped.append(item)
+        return deduped
+
+
 class RequirementsUpdate(BaseModel):
     answers: list[QuestionnaireAnswer] = Field(min_length=0, max_length=QUESTIONNAIRE_TOTAL_MAX_QUESTIONS)
+    # 不带该字段=沿用已保存的生成要求（老客户端 / 只改作答）；带则整体覆盖
+    generation_options: GenerationOptions | None = None
 
 
 class WizardQaAsk(BaseModel):

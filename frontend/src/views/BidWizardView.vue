@@ -41,9 +41,15 @@ import {
   uploadTender as apiUploadTender,
   wizardStreamUrl,
   wizardToken,
+  GENERATION_WORD_COUNT_MAX,
+  GENERATION_WORD_COUNT_MIN,
+  GENERATION_WORD_COUNT_PRESETS,
+  type GenerationOptions,
+  type GenerationPart,
   type Wizard,
   type WizardListItem,
   type WizardMaterial,
+  type WizardQaHistoryItem,
   type WizardQuestion,
   type WizardSection,
   type WizardSpecNode,
@@ -53,12 +59,72 @@ import {
 import { documentsApi, projectsApi } from "@/api/client";
 import type { Document } from "@/types";
 import { useVstoBridge } from "@/composables/useVstoBridge";
+import { useBillingStore } from "@/stores/billing";
 import { prepareChartAssets, splitMermaidFences } from "@/utils/chartAssets";
 import { renderMarkdown } from "@/utils/markdown";
 import StatusDot from "@/components/StatusDot.vue";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
+import iconWallet from "@/assets/images/ui/common-icon-wallet.png";
+import iconPoints from "@/assets/images/ui/common-icon-points.png";
 
 const bridge = useVstoBridge();
+const billingStore = useBillingStore();
+
+function formatMetric(value: number) {
+  return new Intl.NumberFormat("zh-CN").format(Math.round(value || 0));
+}
+
+/** 余额条只读展示：静默刷新，失败不打断向导（与暗标检查页同口径）。 */
+function refreshWallet() {
+  void billingStore.fetchWallet().catch(() => undefined);
+}
+
+// ---- 文档连接三态（与暗标检查页 hero 卡同语义）：ready / busy（连接中）/ disconnected ----
+// useVstoBridge 只在收到 bjt.vsto.context 时置 contextReady，没有"连接中"与"超时"概念；
+// 这里补一个连接窗口：ready 消息发出后 20s 内算连接中，超时转为已断开并露出「重新连接文档」。
+const BRIDGE_CONNECT_TIMEOUT_MS = 20_000;
+const bridgeConnecting = ref(false);
+let bridgeConnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearBridgeConnectTimer() {
+  if (bridgeConnectTimer) {
+    clearTimeout(bridgeConnectTimer);
+    bridgeConnectTimer = null;
+  }
+}
+
+function beginBridgeConnect() {
+  if (!bridge.available.value || bridge.contextReady.value) return;
+  bridgeConnecting.value = true;
+  clearBridgeConnectTimer();
+  bridgeConnectTimer = setTimeout(() => {
+    bridgeConnectTimer = null;
+    bridgeConnecting.value = false;
+  }, BRIDGE_CONNECT_TIMEOUT_MS);
+}
+
+/** 重发 bjt.vsto.ready：插件侧只是重新推送一次文档上下文（QueueBlindDocumentContext），无副作用。 */
+function reconnectDocument() {
+  if (bridgeState.value !== "disconnected") return;
+  beginBridgeConnect();
+  bridge.postBridge({ type: "bjt.vsto.ready" });
+}
+
+watch(
+  () => bridge.contextReady.value,
+  (ready) => {
+    if (!ready) return;
+    bridgeConnecting.value = false;
+    clearBridgeConnectTimer();
+  },
+);
+
+const bridgeState = computed<"ready" | "busy" | "disconnected">(() => {
+  if (bridge.contextReady.value) return "ready";
+  if (bridge.available.value && bridgeConnecting.value) return "busy";
+  return "disconnected";
+});
+const documentName = computed(() => bridge.documentContext.value?.document_name || "");
 
 /** 向导锚点书签（常量，与单章书签名一起由页面生成、插件只接收）。 */
 const ANCHOR_BOOKMARK = "AI_WIZARD_ANCHOR";
@@ -120,10 +186,13 @@ async function enterWizard(wizardId: string) {
   view.value = "wizard";
   questionnaire.value = wizard.value.questionnaire?.questions || [];
   for (const question of questionnaire.value) ensureAnswerDraft(question);
+  loadGenerationOptionsFromWizard();
+  loadQaHistoryFromWizard();
   loadSpecFromWizard();
   await Promise.all([loadTenderDoc(), loadMaterials()]);
   startMaterialPoll();
   if (wizard.value.stage === "writing") await resumeWriting();
+  void scrollQaThreadToBottom();
 }
 
 function onCreateProject() {
@@ -217,7 +286,7 @@ function friendlyError(error: unknown, fallback: string): string {
   if (status === 402) {
     return (detail && typeof detail === "object" && "message" in detail)
       ? String((detail as { message?: string }).message)
-      : "余额不足，请先充值后再使用 AI编标";
+      : "余额不足，请先充值后再使用标书生成";
   }
   if (status === 409 && detail && typeof detail === "object" && "code" in detail
     && (detail as { code?: string }).code === "ACTIVE_BILLING_TASK_EXISTS") {
@@ -243,6 +312,7 @@ async function withBusy(name: string, action: () => Promise<void>): Promise<bool
     return false;
   } finally {
     busy.value = "";
+    refreshWallet();
   }
 }
 
@@ -252,13 +322,11 @@ async function refreshWizard() {
 }
 
 const stageIndex = computed(() => stageIndexOf[wizard.value?.stage || "material"] ?? 0);
-const bridgeStateText = computed(() =>
-  bridge.contextReady.value
-    ? "已连接文档"
-    : bridge.available.value
-      ? "正在连接 Word 文档"
-      : "未检测到 Word 插件桥（仍可完成前三阶段）",
-);
+const bridgeStateText = computed(() => {
+  if (bridgeState.value === "ready") return "已连接文档";
+  if (!bridge.available.value) return "未检测到 Word 插件桥（仍可完成前三阶段）";
+  return bridgeState.value === "busy" ? "正在连接 Word 文档" : "文档连接已断开（写入阶段需重新连接）";
+});
 
 async function gotoStage(index: number) {
   if (!wizard.value || busy.value) return;
@@ -333,7 +401,10 @@ function startMaterialPoll() {
       const parsing = materials.value.some(
         (item) => item.doc_status === "pending" || item.doc_status === "parsing",
       );
-      if (!active && !parsing) stopMaterialPoll();
+      if (!active && !parsing) {
+        stopMaterialPoll();
+        refreshWallet(); // 素材索引是计费微任务，索引收口后余额条才有变化
+      }
     } catch {
       /* keep polling */
     }
@@ -690,6 +761,106 @@ const questionnaire = ref<WizardQuestion[]>([]);
 type AnswerState = { action: "answered" | "adopted" | "skipped" | "supplemented"; answer: string };
 const answerDrafts = reactive<Record<string, AnswerState>>({});
 const savedAtText = ref(""); // 本会话最近一次保存作答的时刻（HH:MM，反馈⑰：保存按钮挪进问卷卡片后就近提示）
+// 反馈㉔：保存后 AI 评估被跳过的原因就近明示（作答无变化/待答已满/达轮数上限），作答再有改动即清空
+const followupSkipNotice = ref("");
+
+// ---- 生成要求（决策 38-42）：编写需求里固定的三项硬约束，随「保存作答」一并保存；字数在进入编写大纲时必填 ----
+const GEN_PART_ORDER: GenerationPart[] = ["business", "technical"];
+const GEN_PART_LABELS: Record<GenerationPart, string> = { business: "商务部分", technical: "技术部分" };
+const genOptions = reactive<{ parts: GenerationPart[]; word_count: number | null; charts: boolean }>({
+  parts: ["technical"],
+  word_count: null,
+  charts: true,
+});
+const genWordInput = ref<number | "">(""); // type=number 输入框原值（"" = 未填）
+const genWordInputEl = ref<HTMLInputElement | null>(null);
+const genOptionsError = ref(""); // 就近展示的必填/越界提示（页顶 pageError 易滚出视野）
+
+function formatWordCount(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  if (value >= 10_000) {
+    const wan = value / 10_000;
+    return `${Number.isInteger(wan) ? wan : wan.toFixed(1)} 万字`;
+  }
+  return `${value.toLocaleString()} 字`;
+}
+
+/** 已保存的生成要求（wizard.requirements.generation_options）；存量向导可能没有。 */
+function savedGenerationOptions(): GenerationOptions | null {
+  const saved = wizard.value?.requirements?.generation_options;
+  return saved && typeof saved === "object" ? saved : null;
+}
+
+/** 从向导恢复生成要求草稿（进入向导 / 保存后与后端规范化结果对齐）；无已存值回默认：仅技术、未填字数、配图。 */
+function loadGenerationOptionsFromWizard() {
+  const saved = savedGenerationOptions();
+  genOptions.parts = saved?.parts?.length ? sortParts(saved.parts) : ["technical"];
+  genOptions.word_count = typeof saved?.word_count === "number" ? saved.word_count : null;
+  genOptions.charts = saved ? saved.charts !== false : true;
+  genWordInput.value = genOptions.word_count ?? "";
+  genOptionsError.value = "";
+}
+
+/** parts 固定顺序（商务、技术），与后端去重保序的结果可逐项比对，避免假"未保存"。 */
+function sortParts(parts: GenerationPart[]): GenerationPart[] {
+  return GEN_PART_ORDER.filter((part) => parts.includes(part));
+}
+
+function togglePart(part: GenerationPart) {
+  if (genOptions.parts.includes(part)) {
+    if (genOptions.parts.length === 1) return; // 至少勾一（决策 39）：最后一项不可取消
+    genOptions.parts = genOptions.parts.filter((item) => item !== part);
+  } else {
+    genOptions.parts = sortParts([...genOptions.parts, part]);
+  }
+}
+
+function onGenWordInput() {
+  const raw = genWordInput.value;
+  genOptions.word_count = typeof raw === "number" && Number.isFinite(raw) ? Math.round(raw) : null;
+  genOptionsError.value = "";
+}
+
+function pickWordPreset(value: number) {
+  genWordInput.value = value;
+  genOptions.word_count = value;
+  genOptionsError.value = "";
+}
+
+const genWordCountError = computed(() => {
+  const value = genOptions.word_count;
+  if (value == null) return "";
+  if (value < GENERATION_WORD_COUNT_MIN || value > GENERATION_WORD_COUNT_MAX) {
+    return `字数须在 ${formatWordCount(GENERATION_WORD_COUNT_MIN)}～${formatWordCount(GENERATION_WORD_COUNT_MAX)} 之间`;
+  }
+  return "";
+});
+
+const genOptionsPayload = computed<GenerationOptions>(() => ({
+  parts: [...genOptions.parts],
+  word_count: genOptions.word_count,
+  charts: genOptions.charts,
+}));
+
+const hasUnsavedGenOptions = computed(() => {
+  const saved = savedGenerationOptions();
+  const draft = genOptionsPayload.value;
+  if (!saved) {
+    return draft.parts.join() !== "technical" || draft.word_count != null || draft.charts !== true;
+  }
+  return (
+    sortParts(saved.parts || []).join() !== draft.parts.join() ||
+    (saved.word_count ?? null) !== draft.word_count ||
+    (saved.charts !== false) !== draft.charts
+  );
+});
+
+function focusGenWordInput() {
+  void nextTick(() => {
+    genWordInputEl.value?.scrollIntoView({ block: "center", behavior: "smooth" });
+    genWordInputEl.value?.focus();
+  });
+}
 
 /** 有无未保存作答：与 requirements 已存状态逐题比对（未渲染过草稿的题视为未动过）。 */
 const hasUnsavedAnswers = computed(() =>
@@ -708,9 +879,22 @@ const hasUnsavedAnswers = computed(() =>
     return savedAnswer !== answer;
   }),
 );
+// 作答一有改动，"未触发 AI 评估"的说明就过时了（下次保存会真正评估），立即撤掉
+watch(hasUnsavedAnswers, (dirty) => {
+  if (dirty) followupSkipNotice.value = "";
+});
+
+/** 有无从未落库的作答（反馈㉖）：首批问题 / 新追加轮的题在首次保存前，哪怕一题没动、全用默认值
+ *  （采纳建议/跳过），这次保存也会把它们首次写进 requirements——对 AI 而言就是"作答有变化"，
+ *  必须触发评估；hasUnsavedAnswers 按反馈⑰口径把"未动过默认值"视为不脏，只管"有未保存修改"提示。 */
+const hasUnpersistedAnswers = computed(() =>
+  questionnaire.value.some((question) => !savedAnswerFor(question.id)?.action),
+);
+/** 这次保存是否会改变已落库的作答（评估触发与"无变化"提示共用此口径）。 */
+const saveWillChangeAnswers = computed(() => hasUnsavedAnswers.value || hasUnpersistedAnswers.value);
 
 const saveHintText = computed(() => {
-  if (hasUnsavedAnswers.value) {
+  if (hasUnsavedAnswers.value || hasUnsavedGenOptions.value) {
     return savedAtText.value ? `已保存 ${savedAtText.value}，有未保存的修改` : "有未保存的修改";
   }
   return savedAtText.value ? `已保存 ${savedAtText.value}` : "";
@@ -775,6 +959,11 @@ function onGenerateQuestionnaire() {
 }
 
 async function saveRequirementsInternal() {
+  if (genWordCountError.value) {
+    genOptionsError.value = genWordCountError.value;
+    focusGenWordInput();
+    throw new Error(genWordCountError.value);
+  }
   const answers = questionnaire.value.map((question) => {
     const draft = ensureAnswerDraft(question);
     return {
@@ -783,7 +972,9 @@ async function saveRequirementsInternal() {
       answer: draft.action === "answered" ? draft.answer : null,
     };
   });
-  wizard.value = await apiSaveRequirements(wizard.value!.id, answers);
+  // 生成要求随作答一并提交（决策 38）；字数可为空（草稿），必填在进入编写大纲时拦
+  wizard.value = await apiSaveRequirements(wizard.value!.id, answers, genOptionsPayload.value);
+  loadGenerationOptionsFromWizard();
   const now = new Date();
   savedAtText.value = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 }
@@ -810,21 +1001,41 @@ function onSubmitRequirements() {
     });
     return;
   }
-  const wasDirty = hasUnsavedAnswers.value;
+  // 反馈㉖：首批/新一轮的题即使全用默认值，首次保存也算"有变化"（否则首批直接保存会被当成无变化、
+  // 跳过最该做的首次评估，还配上不成立的"与上次保存一致"）
+  const wasDirty = saveWillChangeAnswers.value;
   // 必须等保存的 withBusy 结束（busy 清零）后再触发追问轮：autoFollowupRound 内部
   // 也走 withBusy，busy 未清时会被守卫静默跳过（反馈⑱链路一度因此从未生效）
   void withBusy("requirements", saveRequirementsInternal).then((ok) => {
-    if (wasDirty && ok) autoFollowupRound();
+    if (!ok) return;
+    followupSkipNotice.value = "";
+    if (wasDirty) {
+      autoFollowupRound();
+      return;
+    }
+    // 反馈㉔：作答无变化时按设计不烧一次评估计费，但必须告诉用户"没评估"以及手动出口
+    // （走到这里=每题都已落库且与本次一致，"与上次保存一致"才成立）
+    if (!followupDone.value) {
+      followupSkipNotice.value =
+        `已保存 ${savedAtText.value}，作答与上次保存一致，本次未触发 AI 评估；需要 AI 复查请点上方「再次检查」。`;
+    }
   });
 }
 
 /** 进入编写大纲前先把未保存草稿落库（反馈⑰：此前直接跳转会静默丢弃改动）。 */
 function onEnterOutline() {
   if (!wizard.value) return;
+  // 决策 40/42：字数要求必填，拦截点就在这里（保存作答不拦草稿）；就近提示 + 聚焦输入框
+  if (genOptions.word_count == null || genWordCountError.value) {
+    genOptionsError.value = genWordCountError.value || "请先填写字数要求";
+    focusGenWordInput();
+    return;
+  }
   // gotoStage 开头有 busy 守卫：必须在保存的 withBusy 结束后再调，
   // 在其回调内直调会被静默跳过（"点击无反应"事故根因）
   void withBusy("requirements", async () => {
-    if (hasUnsavedAnswers.value) await saveRequirementsInternal();
+    // 反馈㉖：首批全默认值、从未保存过也要落库，否则 Spec 生成看不到任何已确认作答
+    if (saveWillChangeAnswers.value || hasUnsavedGenOptions.value) await saveRequirementsInternal();
   }).then((ok) => {
     if (ok) void gotoStage(2);
   });
@@ -1002,6 +1213,7 @@ function onRecheck() {
   }
   void withBusy("recheck", async () => {
     reqActionError.value = "";
+    followupSkipNotice.value = "";
     try {
       await saveRequirementsInternal(); // 先保存现有需求（含"已补充素材"状态）
       wizard.value = await generateQuestionnaireRound(wizard.value!.id);
@@ -1021,13 +1233,35 @@ const supplementalCount = computed(() => {
   return Array.isArray(requirements?.supplementals) ? requirements!.supplementals!.length : 0;
 });
 const qaQuestion = ref("");
-const qaHistory = ref<{ question: string; answer: string; adopted: boolean }[]>([]);
+// 问答历史（决策 43）：服务端 wizard.qa_history 持久化，时序正序（最旧在上、最新在下），聊天式布局
+const qaHistory = ref<WizardQaHistoryItem[]>([]);
+const qaThreadEl = ref<HTMLElement | null>(null);
+
+function loadQaHistoryFromWizard() {
+  const saved = wizard.value?.qa_history;
+  if (!Array.isArray(saved)) return; // 老后端无该字段时保留本地列表
+  qaHistory.value = saved.map((item) => ({ ...item, adopted: Boolean(item.adopted) }));
+}
+
+async function scrollQaThreadToBottom() {
+  await nextTick();
+  const el = qaThreadEl.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+function formatQaTime(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
 /** 追问状态（questionnaire.followup）：AI 是否确认需求充分、已用自动轮数。 */
 const followupState = computed(() => wizard.value?.questionnaire?.followup || null);
 const followupDone = computed(() => followupState.value?.status === "done");
 
-/** 保存作答后自动追问（反馈⑮⑱）：AI 判断是否需要新一轮；done/达上限/满待答时不触发。 */
+/** 保存作答后自动追问（反馈⑮⑱）：AI 判断是否需要新一轮；done/达上限/满待答时不触发（跳过原因就近明示，反馈㉔）。 */
 function autoFollowupRound() {
   const current = wizard.value;
   if (!current || followupDone.value) return;
@@ -1036,7 +1270,11 @@ function autoFollowupRound() {
     const saved = savedAnswerFor(question.id);
     return !(saved?.action && closed.has(saved.action));
   }).length;
-  if (openCount >= 20) return; // 待答已满，后端也会拒，不白跑一次计费评估
+  if (openCount >= 20) {
+    // 待答已满，后端也会拒，不白跑一次计费评估
+    followupSkipNotice.value = "已保存。待答问题已满 20 题，本次未触发 AI 评估；请先作答、采纳或跳过部分问题。";
+    return;
+  }
   const indexing = materials.value.some(
     (item) => item.index_status === "pending" || item.index_status === "indexing",
   );
@@ -1047,9 +1285,11 @@ function autoFollowupRound() {
       questionnaire.value = wizard.value.questionnaire?.questions || [];
       for (const question of questionnaire.value) ensureAnswerDraft(question);
     } catch (error) {
-      // 400=AI 已确认充分/达最大自动轮数、409=素材还在索引：静默；其余给就近提示
+      // 400=AI 已确认充分/达最大自动轮数/待答已满：不是故障，就近说明为何没评估；409=素材还在索引：静默
       const status = (error as { status?: number }).status;
-      if (status !== 400 && status !== 409) {
+      if (status === 400) {
+        followupSkipNotice.value = `已保存。${friendlyError(error, "本次未触发 AI 评估")}`;
+      } else if (status !== 409) {
         reqActionError.value = friendlyError(error, "自动追问未完成，可点「再次检查」手动触发");
       }
     }
@@ -1060,17 +1300,25 @@ function onAskQuestion() {
   if (!wizard.value || !qaQuestion.value.trim()) return;
   void withBusy("qaAsk", async () => {
     const question = qaQuestion.value.trim();
+    void scrollQaThreadToBottom(); // 「正在作答」占位出现在线程底部，先滚过去
     const result = await apiAskQuestion(wizard.value!.id, question);
-    qaHistory.value.unshift({ question, answer: result.answer, adopted: false });
+    qaHistory.value.push({
+      question,
+      answer: result.answer,
+      created_at: new Date().toISOString(),
+      adopted: false,
+    });
     qaQuestion.value = "";
+    void scrollQaThreadToBottom();
   });
 }
 
-function onAdoptQaAnswer(item: { question: string; answer: string; adopted: boolean }) {
+function onAdoptQaAnswer(item: WizardQaHistoryItem) {
   if (!wizard.value || item.adopted) return;
   void withBusy("qaAdopt", async () => {
     wizard.value = await apiAdoptAnswer(wizard.value!.id, item.question, item.answer);
     item.adopted = true;
+    loadQaHistoryFromWizard(); // 服务端已同步置 adopted，以其为准（刷新后一致）
   });
 }
 
@@ -1091,9 +1339,22 @@ const canConfirmSpec = computed(() =>
   Boolean(specNodes.value.length && !wizard.value?.spec_stale),
 );
 
+/** 单章规划字数 = 段落数 × 每段字数（与 Spec/章节 prompt 的篇幅口径一致）。 */
+function plannedWords(node: WizardSpecNode): number {
+  return Math.max(1, node.article_count || 1) * (node.text_count || 0);
+}
+
 const specTotalWords = computed(() =>
-  specNodes.value.reduce((sum, node) => sum + (node.text_count || 0), 0),
+  specNodes.value.reduce((sum, node) => sum + plannedWords(node), 0),
 );
+
+// 生成要求在大纲阶段的读法（决策 40/41）：字数目标只做对齐提示不硬拦；不配图时隐藏图表编辑入口
+const specWordTarget = computed(() => savedGenerationOptions()?.word_count ?? null);
+const specScopeLabel = computed(() => {
+  const parts = savedGenerationOptions()?.parts;
+  return parts?.length ? sortParts(parts).map((part) => GEN_PART_LABELS[part]).join("+") : "";
+});
+const specChartsEnabled = computed(() => savedGenerationOptions()?.charts !== false);
 
 interface SpecTreeItem {
   uid: number;
@@ -1472,20 +1733,146 @@ function upsertSection(meta: Partial<WizardSection> & { node_id: string }) {
   }
 }
 
-/** 撰写页章节勾选：空集合=默认全选（§4.2），物化后才允许提交（onStartWriting 消费）。 */
 function specNodeIds(): string[] {
   return (wizard.value?.spec || []).map((node) => node.node_id);
 }
 
-function toggleNode(nodeId: string) {
-  // 空集合时视觉上是全选：首次点击视为取消勾选该章，先物化全部再删
-  if (!selectedNodes.value.size) selectedNodes.value = new Set(specNodeIds());
-  if (!selectedNodes.value.delete(nodeId)) selectedNodes.value.add(nodeId);
+// ---- 撰写页章节选择（决策 44）：真树 + 三态级联；「默认全选」显式物化全部 id（消灭"空集合=全选"隐式语义，09-09 缺陷 7 前科） ----
+
+interface PickTreeItem {
+  id: string;
+  title: string;
+  children: PickTreeItem[];
 }
+
+interface PickRow {
+  id: string;
+  title: string;
+  hasChildren: boolean;
+  guides: SpecRow["guides"];
+}
+
+const pickCollapsed = ref<Set<string>>(new Set());
+const pickInitializedFor = ref(""); // 已按哪个 spec 快照物化过默认全选（spec 变了重新全选）
+
+/** 确认后的 spec（wizard.spec）→ 树；层级跳变按父级+1 平滑，与阶段 3 specTree 同口径。 */
+const pickTree = computed<PickTreeItem[]>(() => {
+  const items: PickTreeItem[] = [];
+  const stack: PickTreeItem[] = [];
+  let prevLevel = 0;
+  for (const node of wizard.value?.spec || []) {
+    const raw = Math.max(1, Math.floor(node.level || 1));
+    const level = raw > prevLevel + 1 ? prevLevel + 1 : raw;
+    prevLevel = level;
+    while (stack.length >= level) stack.pop();
+    const item: PickTreeItem = { id: node.node_id, title: node.title, children: [] };
+    if (stack.length) stack[stack.length - 1].children.push(item);
+    else items.push(item);
+    stack.push(item);
+  }
+  return items;
+});
+
+/** id → 父 id / 全部子孙 id（级联与三态计算用）。 */
+const pickRelations = computed(() => {
+  const parent = new Map<string, string | null>();
+  const descendants = new Map<string, string[]>();
+  const walk = (item: PickTreeItem, parentId: string | null): string[] => {
+    parent.set(item.id, parentId);
+    const all: string[] = [];
+    for (const child of item.children) all.push(child.id, ...walk(child, item.id));
+    descendants.set(item.id, all);
+    return all;
+  };
+  for (const item of pickTree.value) walk(item, null);
+  return { parent, descendants };
+});
+
+const pickRows = computed<PickRow[]>(() => {
+  const out: PickRow[] = [];
+  const walk = (list: PickTreeItem[], prefix: PickRow["guides"]) => {
+    list.forEach((item, i) => {
+      const isLast = i === list.length - 1;
+      out.push({
+        id: item.id,
+        title: item.title,
+        hasChildren: item.children.length > 0,
+        guides: prefix.length ? [...prefix, isLast ? "elbow-last" : "elbow-mid"] : [],
+      });
+      if (item.children.length && !pickCollapsed.value.has(item.id)) {
+        walk(item.children, [...prefix, isLast ? "blank" : "line"]);
+      }
+    });
+  };
+  walk(pickTree.value, []);
+  return out;
+});
+
+function togglePickCollapse(id: string) {
+  const next = new Set(pickCollapsed.value);
+  if (!next.delete(id)) next.add(id);
+  pickCollapsed.value = next;
+}
+
+/** 三态：叶子看自身；父节点看自身+全部子孙——全勾=checked、全不勾=unchecked、其余=半选（不进提交清单）。 */
+function pickState(id: string): "checked" | "unchecked" | "indeterminate" {
+  const selected = selectedNodes.value;
+  const desc = pickRelations.value.descendants.get(id) || [];
+  if (!desc.length) return selected.has(id) ? "checked" : "unchecked";
+  const checked = desc.filter((item) => selected.has(item)).length + (selected.has(id) ? 1 : 0);
+  if (checked === 0) return "unchecked";
+  if (checked === desc.length + 1) return "checked";
+  return "indeterminate";
+}
+
+/** 勾父→子孙全勾；取消父→子孙全取消；再沿祖先链同步：子孙全勾才勾父，否则父退出清单（呈半选/未选）。 */
+function togglePick(id: string) {
+  const next = new Set(selectedNodes.value);
+  const { parent, descendants } = pickRelations.value;
+  const targetChecked = pickState(id) !== "checked";
+  for (const item of [id, ...(descendants.get(id) || [])]) {
+    if (targetChecked) next.add(item);
+    else next.delete(item);
+  }
+  let ancestor = parent.get(id) || null;
+  while (ancestor) {
+    const desc = descendants.get(ancestor) || [];
+    if (desc.every((item) => next.has(item))) next.add(ancestor);
+    else next.delete(ancestor);
+    ancestor = parent.get(ancestor) || null;
+  }
+  selectedNodes.value = next;
+}
+
+function selectAllPicks() {
+  selectedNodes.value = new Set(specNodeIds());
+}
+
+function clearPicks() {
+  selectedNodes.value = new Set();
+}
+
+/** 进入撰写页（且尚无任务）时按当前 spec 物化默认全选；同一 spec 只物化一次，用户清空后不回填。 */
+function ensurePickInitialized() {
+  const signature = specNodeIds().join("|");
+  if (!signature || pickInitializedFor.value === signature) return;
+  pickInitializedFor.value = signature;
+  selectedNodes.value = new Set(specNodeIds());
+  pickCollapsed.value = new Set();
+}
+
+watch(
+  [stageIndex, () => wizard.value?.spec, () => task.value],
+  () => {
+    if (stageIndex.value === 3 && !task.value) ensurePickInitialized();
+  },
+  { immediate: true },
+);
 
 function onStartWriting() {
   if (!wizard.value) return;
-  const nodeIds = selectedNodes.value.size ? Array.from(selectedNodes.value) : specNodeIds();
+  // 提交清单按 spec 顺序（Set 的插入顺序受级联操作影响，不可直接用）
+  const nodeIds = specNodeIds().filter((id) => selectedNodes.value.has(id));
   if (!nodeIds.length) {
     pageError.value = "请至少勾选一个要撰写的章节";
     return;
@@ -1680,6 +2067,7 @@ async function refreshTask(quiet = false) {
     if (!taskRunning.value) {
       stopTaskPoll();
       stopTaskStream();
+      refreshWallet();
       if (current.status === "completed") pushLog("ok", "撰写任务完成");
       if (current.status === "failed") pushLog("error", current.error_message || "任务失败");
       if (current.status === "cancelled") pushLog("info", "任务已取消");
@@ -1940,6 +2328,8 @@ function onRewriteAllSections() {
 
 async function bootstrap() {
   loading.value = true;
+  refreshWallet();
+  beginBridgeConnect();
   try {
     access.value = await getWizardAccess();
     if (!access.value.enabled) return;
@@ -1978,11 +2368,21 @@ function resetLocalState() {
   supplementMaterialIds.value = [];
   supplementBindings.value = {};
   savedAtText.value = "";
+  followupSkipNotice.value = "";
   reqActionError.value = "";
+  genOptions.parts = ["technical"];
+  genOptions.word_count = null;
+  genOptions.charts = true;
+  genWordInput.value = "";
+  genOptionsError.value = "";
+  qaQuestion.value = "";
+  qaHistory.value = [];
   specNodes.value = [];
   specDirty.value = false;
   reviseInstruction.value = "";
   selectedNodes.value = new Set();
+  pickCollapsed.value = new Set();
+  pickInitializedFor.value = "";
   taskId.value = "";
   task.value = null;
   sections.value = [];
@@ -1996,6 +2396,7 @@ function resetLocalState() {
 
 onMounted(bootstrap);
 onUnmounted(() => {
+  clearBridgeConnectTimer();
   stopTenderPoll();
   stopMaterialPoll();
   stopTaskStream();
@@ -2005,51 +2406,67 @@ onUnmounted(() => {
 
 <template>
   <div class="wizard-page">
-    <header class="wiz-header">
-      <img :src="logoUrl" alt="标书审查智能体" class="wiz-logo">
-      <div class="wiz-title">
-        <h1>AI编标</h1>
-        <span class="bridge-state" :class="{ ok: bridge.contextReady.value }">
-          <span class="bridge-dot" />
-          <span>{{ bridgeStateText }}</span>
-          <span
-            v-if="bridge.documentContext.value?.document_name"
-            class="bridge-doc-name"
-            :title="bridge.documentContext.value.document_name"
-          >{{ bridge.documentContext.value.document_name }}</span>
+    <div class="brand-line" />
+    <header class="panel-header">
+      <img :src="logoUrl" alt="标书审查智能体" class="panel-logo">
+      <div class="account-strip" aria-label="账户余额">
+        <span class="metric-pill" :style="{ backgroundImage: `url(${iconWallet})` }">
+          <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.balanceWen) }}点</span>
+        </span>
+        <span class="metric-pill" :style="{ backgroundImage: `url(${iconPoints})` }">
+          <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.points) }}积分</span>
         </span>
       </div>
-      <button
-        v-if="view === 'wizard' && wizard"
-        type="button"
-        class="ghost new-project-btn"
-        :disabled="Boolean(busy)"
-        title="返回项目列表（进行中的撰写任务继续在云端执行，重进自动恢复）"
-        @click="onBackToList"
-      >项目列表</button>
     </header>
 
-    <div v-if="loading" class="wiz-loading">正在进入 AI编标…</div>
+    <section class="blind-card hero-card">
+      <div class="hero-head">
+        <div class="section-kicker">WORD · 四阶段智能撰写</div>
+        <button
+          v-if="view === 'wizard' && wizard"
+          type="button"
+          class="hero-action"
+          :disabled="Boolean(busy)"
+          title="返回项目列表（进行中的撰写任务继续在云端执行，重进自动恢复）"
+          @click="onBackToList"
+        >项目列表</button>
+      </div>
+      <h1>标书生成</h1>
+      <p>基于招标文件与企业素材，AI 依次完成需求确认、大纲编写与逐章撰写，并按章写入当前 Word 文档；每章可单独重写或整体移除。</p>
+      <div class="document-state" :class="`state-${bridgeState}`">
+        <span class="dot" />
+        <span>{{ bridgeStateText }}</span>
+        <span v-if="documentName" class="document-name" :title="documentName">{{ documentName }}</span>
+        <button
+          v-if="bridgeState === 'disconnected' && bridge.available.value"
+          type="button"
+          class="reconnect-btn"
+          @click="reconnectDocument"
+        >重新连接文档</button>
+      </div>
+      <div v-if="pageError" class="hero-error" role="alert">{{ pageError }}</div>
+    </section>
+
+    <div v-if="loading" class="wiz-loading">正在进入标书生成…</div>
 
     <template v-else-if="access && !access.enabled">
       <section class="guide-card">
-        <h2>AI编标 功能即将开放</h2>
+        <h2>标书生成功能即将开放</h2>
         <p>四阶段智能编写向导（素材准备 → 需求确认 → 编写大纲 → 逐章撰写）正在内测中，敬请期待。</p>
       </section>
     </template>
 
     <!-- ==================================================== 项目列表（§4.0 入口） -->
     <template v-else-if="view === 'list'">
-      <div v-if="pageError" class="wiz-error" role="alert">{{ pageError }}</div>
       <section class="stage-panel">
         <div class="card">
-          <h3>新建编标项目</h3>
+          <h3>新建标书生成项目</h3>
           <div class="new-project-row">
             <input
               v-model="newListName"
               type="text"
               maxlength="200"
-              placeholder="项目名称（可选，默认「AI编标 + 日期」，上传招标文件后自动改用文件名）"
+              placeholder="项目名称（可选，默认「标书生成 + 日期」，上传招标文件后自动改用文件名）"
               :disabled="Boolean(busy)"
               @keydown.enter="onCreateProject"
             >
@@ -2062,7 +2479,7 @@ onUnmounted(() => {
 
         <div class="card">
           <h3>进行中{{ projectList ? `（${projectList.active.length}）` : "" }}</h3>
-          <p v-if="projectList && !projectList.active.length" class="hint">还没有进行中的编标项目，先新建一个吧。</p>
+          <p v-if="projectList && !projectList.active.length" class="hint">还没有进行中的标书生成项目，先新建一个吧。</p>
           <ul v-else class="project-list">
             <li v-for="item in projectList?.active || []" :key="item.wizard_id" class="project-row">
               <template v-if="renaming && renaming.wizardId === item.wizard_id">
@@ -2116,14 +2533,12 @@ onUnmounted(() => {
               </span>
             </li>
           </ul>
-          <p class="hint">恢复＝回到归档前进度继续编标；删除＝素材与生成产物永久清除、不可恢复（已消耗点数不退）。</p>
+          <p class="hint">恢复＝回到归档前进度继续生成；删除＝素材与生成产物永久清除、不可恢复（已消耗点数不退）。</p>
         </div>
       </section>
     </template>
 
     <template v-else-if="wizard">
-      <div v-if="pageError" class="wiz-error" role="alert">{{ pageError }}</div>
-
       <nav class="stage-bar">
         <button
           v-for="(stage, index) in STAGES"
@@ -2346,6 +2761,76 @@ onUnmounted(() => {
           </template>
         </div>
 
+        <!-- 生成要求（决策 38-42）：编写需求里固定的三项硬约束，随「保存作答」一并保存；字数在进入编写大纲时必填 -->
+        <div class="card gen-card">
+          <h3>生成要求</h3>
+          <p class="hint" style="margin:0 0 10px">决定大纲的内容范围、总篇幅与是否配图。随「保存作答」一并保存；修改后已生成的大纲会标记为基于旧需求，需重新生成。</p>
+          <div class="gen-row">
+            <span class="gen-label">生成内容</span>
+            <div class="gen-field gen-inline">
+              <label
+                v-for="part in GEN_PART_ORDER"
+                :key="part"
+                class="radio"
+                :title="genOptions.parts.length === 1 && genOptions.parts.includes(part) ? '至少保留一项' : ''"
+              >
+                <input
+                  type="checkbox"
+                  :checked="genOptions.parts.includes(part)"
+                  :disabled="Boolean(busy) || (genOptions.parts.length === 1 && genOptions.parts.includes(part))"
+                  @change="togglePart(part)"
+                >{{ GEN_PART_LABELS[part] }}
+              </label>
+            </div>
+          </div>
+          <div class="gen-row">
+            <span class="gen-label">字数要求 <em class="req-mark" title="进入编写大纲前必填">*</em></span>
+            <div class="gen-field">
+              <div class="gen-presets">
+                <button
+                  v-for="preset in GENERATION_WORD_COUNT_PRESETS"
+                  :key="preset"
+                  type="button"
+                  class="chip"
+                  :class="{ active: genOptions.word_count === preset }"
+                  :disabled="Boolean(busy)"
+                  @click="pickWordPreset(preset)"
+                >{{ formatWordCount(preset) }}</button>
+              </div>
+              <div class="gen-word-input">
+                <input
+                  ref="genWordInputEl"
+                  v-model.number="genWordInput"
+                  type="number"
+                  :min="GENERATION_WORD_COUNT_MIN"
+                  :max="GENERATION_WORD_COUNT_MAX"
+                  step="1000"
+                  placeholder="或手填字数，如 45000"
+                  :disabled="Boolean(busy)"
+                  :class="{ invalid: Boolean(genOptionsError || genWordCountError) }"
+                  @input="onGenWordInput"
+                >
+                <span class="hint" style="margin:0">
+                  <template v-if="genOptions.word_count != null && !genWordCountError">≈ {{ formatWordCount(genOptions.word_count) }}（所选内容合计）</template>
+                  <template v-else>{{ formatWordCount(GENERATION_WORD_COUNT_MIN) }}～{{ formatWordCount(GENERATION_WORD_COUNT_MAX) }}</template>
+                </span>
+              </div>
+              <p v-if="genOptionsError || genWordCountError" class="wiz-error" style="margin:4px 0 0">{{ genOptionsError || genWordCountError }}</p>
+            </div>
+          </div>
+          <div class="gen-row">
+            <span class="gen-label">是否配图</span>
+            <div class="gen-field gen-inline">
+              <label class="radio"><input v-model="genOptions.charts" type="radio" name="gen-charts" :value="true" :disabled="Boolean(busy)">是（AI 按需规划表格/图示）</label>
+              <label class="radio"><input v-model="genOptions.charts" type="radio" name="gen-charts" :value="false" :disabled="Boolean(busy)">否（全部文字表达）</label>
+            </div>
+          </div>
+          <p v-if="hasUnsavedGenOptions" class="hint" style="margin:6px 0 0;color:#d46b08">
+            <template v-if="questionnaire.length">生成要求有未保存的修改，点「保存作答」或「进入编写大纲」时一并保存。</template>
+            <template v-else>生成要求将在「开始检查」后随「保存作答」一并保存。</template>
+          </p>
+        </div>
+
         <div class="card">
           <h3>素材检查和需求确认</h3>
           <template v-if="!questionnaire.length">
@@ -2367,7 +2852,7 @@ onUnmounted(() => {
             <div class="req-toolbar">
               <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="pickSupplementMaterials(null)">补充素材</button>
               <button type="button" class="ghost" :disabled="Boolean(busy) || !tenderReady" @click="onRecheck">再次检查</button>
-              <span class="hint" style="margin:0">补充新素材后点「再次检查」，AI 基于新素材发起下一轮提问（现有问答保留）。</span>
+              <span class="hint" style="margin:0">补充新素材后、或想让 AI 复查当前作答时点「再次检查」，AI 基于最新作答与素材判断是否继续提问（现有问答保留）。</span>
             </div>
             <div v-if="busy === 'recheck'" class="status-row">
               <StatusDot tone="running">正在结合新补充的素材重新检查…</StatusDot>
@@ -2471,19 +2956,36 @@ onUnmounted(() => {
             </template>
             <div class="req-save-bar">
               <button type="button" class="ghost" :disabled="Boolean(busy)" @click="onSubmitRequirements">
-                {{ busy === "requirements" ? "保存中…" : "保存作答" }}
+                {{ busy === "requirements" ? "保存中…" : busy === "followupRound" ? "AI 评估中…" : "保存作答" }}
               </button>
               <!-- 追问反馈就近显示（反馈㉑）：卡片顶部的横幅在长问卷下离保存按钮太远，用户看不见 -->
               <StatusDot v-if="busy === 'followupRound'" tone="running">正在评估你的作答，需要追问的问题会追加在上方…</StatusDot>
               <span v-else-if="followupDone" class="hint" style="margin:0;color:#389e0d">AI 已确认需求充分，可进入编写大纲；补充新素材后仍可点「再次检查」。</span>
+              <!-- 反馈㉔：评估被跳过时明示原因与手动出口，别让用户对着"已保存"猜 AI 有没有动 -->
+              <span v-else-if="followupSkipNotice" class="hint" style="margin:0;color:#ad6800">{{ followupSkipNotice }}</span>
               <span v-else-if="saveHintText" class="hint" style="margin:0">{{ saveHintText }}</span>
             </div>
           </template>
         </div>
-        <!-- 追问侧栏（决策 32a）：自由提问，采纳并入编写需求 -->
-        <div class="card">
+        <!-- 追问侧栏（决策 32a / 43）：聊天式——历史按时间正序从上往下，输入框固定在卡片底部 -->
+        <div class="card qa-card">
           <h3>额外的需求</h3>
           <p class="hint" style="margin:0 0 8px">每条问答点「采纳并入需求」即时生效，无需统一保存。如果您有额外的需求，请告诉 AI；AI 将基于招标要素与已索引素材回答，采纳的问答会并入编写需求（{{ supplementalCount }} 条补充说明），供大纲与撰写参考。每次提问按问答微任务计费。</p>
+          <div ref="qaThreadEl" class="qa-thread">
+            <p v-if="!qaHistory.length && busy !== 'qaAsk'" class="hint qa-empty">还没有提问。在下方输入框告诉 AI 您的额外需求，问答会按时间顺序显示在这里。</p>
+            <div v-for="(item, index) in qaHistory" :key="`${index}-${item.created_at || ''}`" class="qa-item">
+              <p class="qa-q">问：{{ item.question }}</p>
+              <div class="qa-a md-render" v-html="renderMarkdown(item.answer)"></div>
+              <div class="qa-item-foot">
+                <span v-if="item.created_at" class="qa-time">{{ formatQaTime(item.created_at) }}</span>
+                <button v-if="!item.adopted" type="button" class="link-btn" :disabled="Boolean(busy)" @click="onAdoptQaAnswer(item)">采纳并入需求</button>
+                <Tag v-else color="green">已并入</Tag>
+              </div>
+            </div>
+            <div v-if="busy === 'qaAsk'" class="status-row qa-pending">
+              <StatusDot tone="running">正在结合素材作答…</StatusDot>
+            </div>
+          </div>
           <div class="qa-input-row">
             <input
               v-model="qaQuestion"
@@ -2493,16 +2995,7 @@ onUnmounted(() => {
               :disabled="Boolean(busy) || !tenderReady"
               @keydown.enter="onAskQuestion"
             >
-            <button type="button" class="primary" :disabled="Boolean(busy) || !tenderReady || !qaQuestion.trim()" @click="onAskQuestion">提问</button>
-          </div>
-          <div v-if="busy === 'qaAsk'" class="status-row" style="margin-top:8px">
-            <StatusDot tone="running">正在结合素材作答…</StatusDot>
-          </div>
-          <div v-for="(item, index) in qaHistory" :key="index" class="qa-item">
-            <p class="qa-q">问：{{ item.question }}</p>
-            <div class="qa-a md-render" v-html="renderMarkdown(item.answer)"></div>
-            <button v-if="!item.adopted" type="button" class="link-btn" :disabled="Boolean(busy)" @click="onAdoptQaAnswer(item)">采纳并入需求</button>
-            <Tag v-else color="green">已并入</Tag>
+            <button type="button" class="primary" :disabled="Boolean(busy) || !tenderReady || !qaQuestion.trim()" @click="onAskQuestion">提交</button>
           </div>
         </div>
 
@@ -2514,7 +3007,7 @@ onUnmounted(() => {
               class="primary"
               :disabled="Boolean(busy)"
               @click="onEnterOutline"
-            >{{ busy === "requirements" && hasUnsavedAnswers ? "保存并进入…" : "进入编写大纲" }}</button>
+            >{{ busy === "requirements" && saveWillChangeAnswers ? "保存并进入…" : "进入编写大纲" }}</button>
           </div>
         </div>
         <div v-else class="stage-actions">
@@ -2545,12 +3038,16 @@ onUnmounted(() => {
           </template>
           <template v-else>
             <div class="spec-toolbar">
-              <button type="button" class="ghost" :disabled="Boolean(busy) || !specDirty" @click="onSaveSpec">保存修改</button>
-              <button type="button" class="ghost" :disabled="Boolean(busy) || !wizard.spec_previous" @click="onRollbackSpec">回退 AI 修订</button>
-              <button type="button" class="ghost" @click="setAllCollapsed(false)">全部展开</button>
-              <button type="button" class="ghost" @click="setAllCollapsed(true)">全部收起</button>
-              <span v-if="specDirty" class="dirty-tip">有未保存的修改</span>
-              <span class="spec-stat">{{ specNodes.length }} 章 · 约 {{ specTotalWords.toLocaleString() }} 字</span>
+              <div class="spec-actions">
+                <button type="button" class="ghost" :disabled="Boolean(busy) || !specDirty" @click="onSaveSpec">保存修改</button>
+                <button type="button" class="ghost" :disabled="Boolean(busy) || !wizard.spec_previous" @click="onRollbackSpec">回退 AI 修订</button>
+                <button type="button" class="ghost" @click="setAllCollapsed(false)">全部展开</button>
+                <button type="button" class="ghost" @click="setAllCollapsed(true)">全部收起</button>
+                <span v-if="specDirty" class="dirty-tip">有未保存的修改</span>
+              </div>
+              <span class="spec-stat" :title="specWordTarget ? '字数目标来自需求确认阶段的生成要求；仅作对照，不强制' : ''">
+                <template v-if="specWordTarget">目标 {{ formatWordCount(specWordTarget) }}<template v-if="specScopeLabel">（{{ specScopeLabel }}）</template> · </template>{{ specNodes.length }} 章 · 当前约 {{ formatWordCount(specTotalWords) }}
+              </span>
             </div>
             <div class="spec-revise">
               <input
@@ -2603,7 +3100,7 @@ onUnmounted(() => {
                     @focus="openDetailUid = row.uid"
                   >
                   <span class="spec-row-meta">
-                    {{ row.node.text_count || 0 }}字<template v-if="row.node.charts && row.node.charts.length"> · 图{{ row.node.charts.length }}</template>
+                    约{{ plannedWords(row.node) }}字<template v-if="specChartsEnabled && row.node.charts && row.node.charts.length"> · 图{{ row.node.charts.length }}</template>
                   </span>
                   <span class="row-actions">
                     <button type="button" class="link-btn" title="上移（含子树）" @click="moveNode(row.index, -1)">↑</button>
@@ -2626,18 +3123,22 @@ onUnmounted(() => {
                     <label>段落数 <input v-model.number="row.node.article_count" type="number" min="1" max="8" @input="markSpecDirty"></label>
                     <label>每段字数 <input v-model.number="row.node.text_count" type="number" min="100" max="3000" step="50" @input="markSpecDirty"></label>
                   </div>
-                  <div v-if="row.node.charts && row.node.charts.length" class="spec-charts">
-                    <div v-for="(chart, chartIndex) in row.node.charts" :key="chartIndex" class="chart-row">
-                      <select v-model="chart.type" @change="markSpecDirty">
-                        <option value="table">表格</option>
-                        <option value="mermaid">图示</option>
-                      </select>
-                      <input v-model="chart.title" placeholder="图表标题" @input="markSpecDirty">
-                      <input v-model="chart.points" placeholder="要点" @input="markSpecDirty">
-                      <button type="button" class="link-btn danger" @click="row.node.charts?.splice(chartIndex, 1); markSpecDirty()">删</button>
+                  <!-- 配图=否（决策 41）：隐藏图表编辑入口；后端保存时同样强制清空 -->
+                  <template v-if="specChartsEnabled">
+                    <div v-if="row.node.charts && row.node.charts.length" class="spec-charts">
+                      <div v-for="(chart, chartIndex) in row.node.charts" :key="chartIndex" class="chart-row">
+                        <select v-model="chart.type" @change="markSpecDirty">
+                          <option value="table">表格</option>
+                          <option value="mermaid">图示</option>
+                        </select>
+                        <input v-model="chart.title" placeholder="图表标题" @input="markSpecDirty">
+                        <input v-model="chart.points" placeholder="要点" @input="markSpecDirty">
+                        <button type="button" class="link-btn danger" @click="row.node.charts?.splice(chartIndex, 1); markSpecDirty()">删</button>
+                      </div>
                     </div>
-                  </div>
-                  <button type="button" class="link-btn" @click="addChart(row.node)">＋图表计划</button>
+                    <button type="button" class="link-btn" @click="addChart(row.node)">＋图表计划</button>
+                  </template>
+                  <p v-else class="hint" style="margin:4px 0 0">生成要求已选择「不配图」：本章不规划图表，正文全部以文字表达。</p>
                 </div>
               </div>
             </div>
@@ -2658,19 +3159,37 @@ onUnmounted(() => {
       <section v-else class="stage-panel">
         <div class="card">
           <template v-if="!task">
-            <h3>选择要撰写的章节（默认全选）</h3>
-            <ul class="pick-list">
-              <li v-for="node in wizard.spec || []" :key="node.node_id">
-                <label class="radio">
+            <h3>选择要撰写的章节</h3>
+            <!-- 决策 44：真树 + 三态级联勾选；默认全选已显式物化，「清空」后不回填 -->
+            <div class="pick-toolbar">
+              <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="selectAllPicks">全选</button>
+              <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="clearPicks">清空</button>
+              <span class="hint" style="margin:0">已选 {{ selectedNodes.size }} / {{ (wizard.spec || []).length }} 章；勾选父章节会连带其全部子章节，半选表示只选了部分子章节。</span>
+            </div>
+            <div class="pick-tree" role="tree">
+              <div v-for="row in pickRows" :key="row.id" class="pick-row" role="treeitem">
+                <span v-for="(guide, gi) in row.guides" :key="gi" class="guide" :class="guide"></span>
+                <button
+                  type="button"
+                  class="twist"
+                  :class="{ leaf: !row.hasChildren }"
+                  :disabled="!row.hasChildren"
+                  :title="row.hasChildren ? (pickCollapsed.has(row.id) ? '展开子树' : '折叠子树') : ''"
+                  @click="togglePickCollapse(row.id)"
+                >{{ pickCollapsed.has(row.id) ? "▸" : "▾" }}</button>
+                <label class="radio pick-label">
                   <input
                     type="checkbox"
-                    :checked="selectedNodes.has(node.node_id) || !selectedNodes.size"
-                    @change="toggleNode(node.node_id)"
+                    :checked="pickState(row.id) === 'checked'"
+                    :indeterminate="pickState(row.id) === 'indeterminate'"
+                    :disabled="Boolean(busy)"
+                    @change="togglePick(row.id)"
                   >
-                  <span :style="{ paddingLeft: `${(node.level - 1) * 12}px` }">{{ node.node_id }} {{ node.title }}</span>
+                  <span class="spec-num">{{ row.id }}</span>
+                  <span class="pick-title" :title="row.title">{{ displayTitle(row.id, row.title) }}</span>
                 </label>
-              </li>
-            </ul>
+              </div>
+            </div>
             <div class="mode-row">
               <label class="radio"><input v-model="writeMode" type="radio" value="auto">自动连写（每章生成完自动写入 Word）</label>
               <label class="radio"><input v-model="writeMode" type="radio" value="confirm">逐章确认（每章预览后手动写入）</label>
@@ -2770,17 +3289,30 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.wizard-page{display:flex;flex-direction:column;min-height:100vh;background:#f5f5f5;font-family:"Microsoft YaHei",sans-serif;font-size:13px;color:#222}
-.wiz-header{display:flex;align-items:center;gap:14px;padding:12px 16px;background:#fff;border-bottom:1px solid #ebebeb}
-.new-project-btn{margin-left:auto;padding:6px 14px;border:1px solid #d9d9d9;border-radius:7px;background:#fff;color:#555;cursor:pointer;font-size:12px}
-.new-project-btn:hover:not(:disabled){border-color:#d7041a;color:#d7041a}
-.new-project-btn:disabled{opacity:.5;cursor:not-allowed}
-.wiz-logo{width:96px;object-fit:contain}
-.wiz-title h1{margin:0;font-size:18px}
-.bridge-state{display:inline-flex;min-width:0;align-items:center;gap:7px;margin-top:4px;padding:5px 10px;border-radius:999px;background:#fafafa;color:#999;font-size:11px}
-.bridge-state.ok{background:#f6ffed;color:#3d9b18}
-.bridge-dot{width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:currentColor}
-.bridge-doc-name{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#555}
+.wizard-page{--brand:#d7041a;--brand-deep:#b80015;box-sizing:border-box;display:flex;flex-direction:column;width:100%;max-width:760px;min-height:100vh;margin:0 auto;padding:0 12px 36px;background:#f5f5f5;color:#222;overflow-x:hidden;font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif;font-size:13px}
+/* 顶部区域与暗标检查页（BlindCheckView）同款：品牌线 + panel-header（logo/余额）+ hero 卡（标题/说明/文档状态） */
+.brand-line{height:3px;margin:0 -12px;background:linear-gradient(90deg,var(--brand),var(--brand-deep))}
+.panel-header{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:60px;padding:10px 4px}
+.panel-logo{width:108px;height:auto;object-fit:contain}
+.account-strip{display:flex;align-items:center;gap:7px;min-width:0}
+.metric-pill{display:inline-flex;align-items:center;justify-content:flex-end;box-sizing:border-box;height:29px;min-width:88px;padding:0 9px 0 34px;background-position:center;background-repeat:no-repeat;background-size:100% 100%;white-space:nowrap;color:#333;font-size:11px;font-weight:600}
+.blind-card{box-sizing:border-box;width:100%;margin-bottom:12px;padding:17px;background:#fff;border:1px solid #e8e8e8;border-radius:12px;box-shadow:0 3px 14px rgba(40,28,30,.045)}
+.hero-card{position:relative;overflow:hidden;border-top:3px solid var(--brand)}
+.hero-card::after{content:"";position:absolute;right:-34px;top:-52px;width:116px;height:116px;border-radius:50%;background:linear-gradient(135deg,rgba(215,4,26,.12),rgba(215,4,26,0));pointer-events:none}
+.hero-head{position:relative;z-index:1;display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.section-kicker{margin-bottom:5px;color:var(--brand);font-size:10px;font-weight:700;letter-spacing:.12em}
+.hero-card h1{position:relative;margin:0;color:#171717;font-size:22px;line-height:1.35}
+.hero-card>p{position:relative;margin:8px 0 13px;color:#777;font-size:12px;line-height:1.65}
+.document-state{display:flex;min-width:0;align-items:center;gap:7px;padding:8px 10px;border-radius:7px;background:#fafafa;color:#999;font-size:11px}
+.state-ready{background:#f6ffed;color:#3d9b18}
+.state-busy{background:#fffbe6;color:#c58608}
+.dot{width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:currentColor}
+.document-name{min-width:0;margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#555}
+.reconnect-btn,.hero-action{flex:0 0 auto;padding:3px 9px;border:1px solid #ddd;border-radius:5px;background:#fff;color:#666;font:inherit;font-size:10px;line-height:1.4;cursor:pointer;transition:border-color .2s,color .2s}
+.reconnect-btn:hover,.hero-action:hover:not(:disabled){border-color:var(--brand);color:var(--brand)}
+.hero-action{padding:4px 11px;font-size:11px}
+.hero-action:disabled{opacity:.5;cursor:not-allowed}
+.hero-error{position:relative;margin-top:11px;padding:9px 10px;border:1px solid #ffccc7;border-radius:7px;background:#fff1f0;color:#c53030;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
 .wiz-loading{padding:60px 16px;text-align:center;color:#888}
 .wiz-error{margin:8px 16px;padding:9px 12px;border:1px solid #ffccc7;border-radius:7px;background:#fff1f0;color:#c23b3b;font-size:12px;line-height:1.6}
 .guide-card{margin:40px auto;padding:28px;width:min(460px,calc(100vw - 28px));background:#fff;border:1px solid #e8e8e8;border-top:3px solid #d7041a;border-radius:12px;text-align:center}
@@ -2800,13 +3332,13 @@ onUnmounted(() => {
 .rename-input{flex:1;border:1px solid #e5e5e5;border-radius:6px;padding:5px 8px;font-size:13px}
 .rename-input:focus{outline:none;border-color:#d7041a}
 .archived-toggle{font-size:13px;margin:2px 0 8px}
-.stage-bar{display:flex;gap:6px;padding:10px 16px 0;background:#fff;border-bottom:1px solid #ebebeb;overflow-x:auto}
+.stage-bar{display:flex;gap:6px;margin-bottom:12px;padding:6px 8px;background:#fff;border:1px solid #e8e8e8;border-radius:12px;box-shadow:0 3px 14px rgba(40,28,30,.045);overflow-x:auto}
 .stage-item{display:flex;align-items:center;gap:7px;padding:9px 13px;border:0;border-bottom:2px solid transparent;background:transparent;color:#888;cursor:pointer;font-size:13px;white-space:nowrap}
 .stage-item.active{color:#d7041a;border-bottom-color:#d7041a;font-weight:600}
 .stage-item.done{color:#52c41a}
 .stage-item:disabled{opacity:.45;cursor:not-allowed}
 .stage-no{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid currentColor;border-radius:50%;font-size:11px}
-.stage-panel{padding:12px 16px 24px;display:flex;flex-direction:column;gap:12px}
+.stage-panel{padding:0 0 24px;display:flex;flex-direction:column;gap:12px}
 .card{background:#fff;border:1px solid #ebebeb;border-radius:10px;padding:14px}
 .card h3{margin:0 0 10px;font-size:14px}
 .card h4{margin:14px 0 8px;font-size:13px;color:#555}
@@ -2860,11 +3392,33 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .q-supplement .sp-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 0}
 .q-supplement .sp-name{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .round-head{margin:14px 0 6px;padding:4px 10px;background:#f0f7ff;border-left:3px solid #2f6fdd;font-size:13px}
+/* 生成要求卡（决策 38-42） */
+.gen-row{display:flex;align-items:flex-start;gap:10px;padding:6px 0;border-top:1px dashed #f0f0f0}
+.gen-row:first-of-type{border-top:0}
+.gen-label{flex:none;width:64px;padding-top:3px;font-size:12.5px;font-weight:600;color:#444}
+.gen-field{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+.gen-inline{flex-direction:row;flex-wrap:wrap;gap:14px;padding-top:3px}
+.req-mark{color:#d7041a;font-style:normal;margin-left:2px}
+.gen-presets{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid #d9d9d9;background:#fff;border-radius:999px;padding:2px 10px;font-size:12px;color:#555;cursor:pointer;line-height:1.6}
+.chip:hover:not(:disabled){border-color:#d7041a;color:#d7041a}
+.chip.active{border-color:#d7041a;background:#fff1f0;color:#d7041a;font-weight:600}
+.chip:disabled{cursor:not-allowed;opacity:.6}
+.gen-word-input{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.gen-word-input input{width:150px;border:1px solid #e5e5e5;border-radius:6px;padding:6px 10px;font-size:13px}
+.gen-word-input input.invalid{border-color:#ff7875;background:#fff1f0}
+/* 额外的需求：聊天式线程（决策 43）——历史正序、限高滚动，输入框固定在卡底 */
+.qa-thread{max-height:360px;overflow:auto;margin:0 0 10px;padding:2px 8px;border:1px solid #f0f0f0;border-radius:8px;background:#fafafa}
+.qa-empty{margin:10px 0;text-align:center}
 .qa-input-row{display:flex;gap:8px}
 .qa-input-row input{flex:1;border:1px solid #e5e5e5;border-radius:6px;padding:7px 10px;font-size:13px}
-.qa-item{border-top:1px dashed #f0f0f0;margin-top:10px;padding-top:10px}
+.qa-item{border-top:1px dashed #e8e8e8;padding:10px 0}
+.qa-item:first-child{border-top:0}
 .qa-q{margin:0 0 4px;font-weight:600;font-size:12.5px}
 .qa-a{margin:0 0 6px;color:#555;font-size:12.5px}
+.qa-item-foot{display:flex;align-items:center;gap:10px}
+.qa-time{color:#aaa;font-size:11px;font-variant-numeric:tabular-nums}
+.qa-pending{margin:8px 0}
 .action-group{display:flex;gap:10px}
 .q-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .q-why{color:#999;margin:5px 0 0;font-size:12px}
@@ -2874,7 +3428,9 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .radio{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
 .q-actions textarea,.spec-summary,.spec-revise input{width:100%;border:1px solid #e5e5e5;border-radius:6px;padding:6px 8px;font-size:12px;font-family:inherit}
 .q-actions textarea{flex:1 1 100%}
-.spec-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.spec-toolbar{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin-bottom:8px}
+.spec-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.spec-actions .ghost{padding:5px 12px;font-size:12px;border-radius:6px}
 .dirty-tip{color:#d46b08;font-size:12px}
 .spec-revise{display:flex;gap:8px;margin-bottom:12px}
 .spec-revise input{flex:1}
@@ -2903,7 +3459,7 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .row-actions{display:none;gap:2px;flex:none;align-items:center}
 .spec-row:hover .row-actions,.spec-node.open .row-actions{display:flex}
 .spec-detail{margin:0 8px 8px 46px;border-top:1px dashed #e8e8e8;padding:8px 2px 0}
-.spec-stat{color:#999;font-size:12px;margin-left:auto;white-space:nowrap}
+.spec-stat{color:#999;font-size:12px;line-height:1.5}
 .spec-summary{margin:7px 0 5px;resize:vertical}
 .spec-meta{display:flex;gap:16px;color:#777;font-size:12px;align-items:center}
 .spec-meta input{width:70px;border:1px solid #e5e5e5;border-radius:5px;padding:3px 5px;margin-left:4px}
@@ -2911,7 +3467,14 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .chart-row{display:flex;gap:6px;align-items:center}
 .chart-row select,.chart-row input{border:1px solid #e5e5e5;border-radius:5px;padding:4px 6px;font-size:12px}
 .chart-row input{flex:1}
-.pick-list{list-style:none;margin:0 0 10px;padding:0;max-height:300px;overflow:auto;display:flex;flex-direction:column;gap:4px}
+/* 撰写页章节选择树（决策 44）：复用 .guide/.twist/.spec-num 导线与折叠钮样式 */
+.pick-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 6px}
+.pick-tree{margin:0 0 10px;max-height:300px;overflow:auto;display:flex;flex-direction:column}
+.pick-row{display:flex;align-items:center;gap:4px;min-height:30px;padding:2px 8px 2px 2px;border-radius:7px}
+.pick-row:hover{background:#f7f9fb}
+.pick-label{flex:1;min-width:0;gap:6px}
+.pick-label input[type=checkbox]{flex:none}
+.pick-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mode-row{display:flex;gap:18px;margin:10px 0 14px}
 .writing-head{display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap}
 .event-log{max-height:180px;overflow:auto;border:1px solid #f0f0f0;border-radius:8px;padding:8px 10px;margin-bottom:10px;background:#fafafa}
@@ -2950,4 +3513,7 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .preview-body{max-height:60vh;overflow:auto}
 .preview-text{white-space:pre-wrap;font-family:inherit;font-size:12.5px;line-height:1.8;margin:0}
 .preview-mermaid{border-left:3px solid #d9d9d9;margin:6px 0;padding:4px 10px;color:#777}
+/* 顶部区域响应式断点与暗标检查页一致（Word 任务面板默认 500px 宽，命中 560 档） */
+@media (max-width:560px){.wizard-page{padding:0 8px 28px}.brand-line{margin:0 -8px}.panel-header{min-height:56px}.panel-logo{width:96px}.metric-pill{height:27px;min-width:80px;padding-left:30px;font-size:10px}.blind-card{padding:14px 12px;margin-bottom:9px;border-radius:9px}.hero-card h1{font-size:19px}.document-state{align-items:flex-start;flex-wrap:wrap}.document-name{flex-basis:100%;margin-left:14px}.stage-bar{margin-bottom:9px;border-radius:9px}}
+@media (max-width:390px){.panel-header{align-items:flex-start;flex-direction:column;padding:10px 3px}.account-strip{width:100%}.metric-pill{flex:1}}
 </style>
