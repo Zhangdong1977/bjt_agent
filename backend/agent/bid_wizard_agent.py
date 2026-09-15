@@ -773,27 +773,203 @@ def _bound_suggested_materials(raw: Any) -> list[dict[str, str]]:
     return items
 
 
+# ---- JSON 交互容错（2026-09-15 首轮问卷「模型输出不是合法 JSON」事故） ----
+
+# 与 Spec 平级重试同口径：首次耗时 × 系数 ≥ 超时预算即跳过重试，防同步微任务超时把首轮一起丢掉
+JSON_RETRY_TIME_FACTOR = 2.2
+JSON_RETRY_ADDENDUM = (
+    "\n\n【重要】你上一次的输出不是合法 JSON，已被丢弃。请严格只输出一个合法 JSON："
+    "不要任何前后说明文字、不要代码块标记；字符串内的英文双引号必须写成 \\\"；"
+    "不要尾逗号；确保所有括号闭合；控制总长度，宁可少几项也不要输出到一半被截断。"
+)
+_UNPARSEABLE_LOG_SNIPPET = 400
+
+
+def _json_start_candidates(value: str) -> list[int]:
+    """首个 '{' 与首个 '[' 的位置（存在者）。两种起点都要试：模型在 JSON 前写了带方括号的
+    说明（"参考[1]…"）时先出现的是垃圾 '['，Spec 顶层是数组时先出现的 '{' 只是首个元素。"""
+    return [index for index in (value.find("{"), value.find("[")) if index >= 0]
+
+
+def parse_json_payload_tolerant(text: str) -> Any | None:
+    """V1 parse_json_payload 之上再补一层 raw_decode：忽略首个完整 JSON 值之后的尾随文字。
+
+    V1 的括号切片取全文最后一个 '}'，模型在 JSON 后追加说明（含花括号/方括号）时会切进垃圾；
+    raw_decode 只取从起点开始的第一个完整值。两种起点都试、取覆盖最长者（见 _json_start_candidates）。
+    V1 文件保持零改动，这里包一层。
+    """
+    parsed = parse_json_payload(text)
+    if parsed is not None:
+        return parsed
+    value = strip_code_fence((text or "").strip())
+    decoder = json.JSONDecoder()
+    best: tuple[int, Any] | None = None
+    for start in _json_start_candidates(value):
+        try:
+            candidate, end = decoder.raw_decode(value, start)
+        except ValueError:
+            continue
+        if isinstance(candidate, (dict, list)) and (best is None or end - start > best[0]):
+            best = (end - start, candidate)
+    return best[1] if best else None
+
+
+def _salvage_from(value: str) -> str | None:
+    """从 value[0]（须为 '{' 或 '['）起扫描，返回可被 json.loads 的最长完整前缀文本。"""
+    pairs = {"{": "}", "[": "]"}
+    stack: list[str] = []
+    cut_points: list[tuple[int, list[str]]] = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(value):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in pairs:
+            stack.append(char)
+        elif char in ("}", "]"):
+            if not stack or pairs[stack[-1]] != char:
+                break  # 结构已乱，后面不可信；仍可用此前记下的切点
+            stack.pop()
+            # 只在「根闭合」或「元素直接在数组里闭合」处记切点（数组栈深 ≤2：顶层数组 /
+            # 顶层对象内的数组）；节点内部子容器（如 charts 数组）闭合不算，免得救出残缺节点
+            if not stack or (len(stack) <= 2 and stack[-1] == "["):
+                cut_points.append((index + 1, list(stack)))
+    for end, snapshot in reversed(cut_points):
+        candidate = value[:end].rstrip()
+        if candidate.endswith(","):
+            candidate = candidate[:-1]
+        candidate += "".join(pairs[opener] for opener in reversed(snapshot))
+        try:
+            json.loads(candidate)
+        except ValueError:
+            continue
+        return candidate
+    return None
+
+
+def salvage_truncated_json(text: str) -> Any | None:
+    """救援被截断的 JSON：保留已完整闭合的元素、补齐未闭合括号。
+
+    面向本模块的顶层形态——`{"questions": [ {…}, {…}, {"topic": "…`、`[ {…}, {…}, {"title": "…`
+    与 `{"basic": {…}, "scoring": [ {…}, {…`（招标要素）。按字符扫描跟踪字符串/转义与括号栈，
+    元素在栈深 ≤2 处闭合即记可切点；从最后一个可切点往前试：切掉未完成尾巴、去尾逗号、
+    按栈补闭合。两种起点都试、取救出文本最长者；首个元素都没完整时返回 None。有损但优于整轮报错。
+    """
+    value = strip_code_fence((text or "").strip())
+    best: str | None = None
+    for start in _json_start_candidates(value):
+        candidate = _salvage_from(value[start:])
+        if candidate is not None and (best is None or len(candidate) > len(best)):
+            best = candidate
+    if best is None:
+        return None
+    parsed = json.loads(best)
+    return parsed if isinstance(parsed, (dict, list)) else None
+
+
+def _log_unparseable_llm_output(label: str, text: str, response: Any, elapsed: float) -> None:
+    usage = getattr(response, "usage", None)
+    completion_tokens = getattr(usage, "completion_tokens", None) if usage is not None else None
+    thinking = getattr(response, "thinking", None)
+    stripped = strip_code_fence((text or "").strip())
+    try:
+        json.loads(stripped)
+        decode_hint = "loads ok?!"
+    except json.JSONDecodeError as exc:
+        lo, hi = max(0, exc.pos - 120), min(len(stripped), exc.pos + 60)
+        decode_hint = f"{exc.msg} at {exc.pos}/{len(stripped)} …{stripped[lo:hi]!r}…"
+    except ValueError as exc:
+        decode_hint = str(exc)
+    logger.warning(
+        "bid_wizard llm output not JSON (%s): %.1fs len=%d completion_tokens=%s thinking_len=%s "
+        "fence=%s decode=%s HEAD=%r TAIL=%r",
+        label,
+        elapsed,
+        len(text),
+        completion_tokens,
+        len(thinking) if isinstance(thinking, str) else None,
+        text.lstrip().startswith("```"),
+        decode_hint,
+        text[:_UNPARSEABLE_LOG_SNIPPET],
+        text[-_UNPARSEABLE_LOG_SNIPPET:],
+    )
+
+
 class WizardLLM:
     """Thin instrumented client wrapper shared by sync and celery flows."""
 
     def __init__(self, *, timeout: float = 180.0) -> None:
+        self.timeout = timeout
         self.client = instrument_llm_client(create_llm_client(timeout=timeout))
 
-    async def generate(self, system_prompt: str, user_prompt: str) -> str:
+    async def _generate_response(self, system_prompt: str, user_prompt: str) -> Any:
         from mini_agent.schema import Message
 
         messages = [
             Message(role="system", content=system_prompt),
             Message(role="user", content=user_prompt),
         ]
-        response = await self.client.generate(messages=messages)
+        return await self.client.generate(messages=messages)
+
+    async def generate(self, system_prompt: str, user_prompt: str) -> str:
+        response = await self._generate_response(system_prompt, user_prompt)
         return str(getattr(response, "content", "") or "").strip()
 
     async def generate_json(self, system_prompt: str, user_prompt: str) -> Any:
-        parsed = parse_json_payload(await self.generate(system_prompt, user_prompt))
-        if parsed is None:
-            raise RuntimeError("模型输出不是合法 JSON，请重试")
-        return parsed
+        """JSON 交互：解析失败先重试一次，再救援截断片段，最后才向用户报错。
+
+        模型输出偶发不可解析（同一输入复跑通常正常，2026-09-15 首轮问卷实证），
+        以前这里直接 RuntimeError 且原文不留痕，用户只能手动重试。现在：
+        ① 首次不可解析 → WARNING 记录长度/首尾/usage（下次事故可定因）；
+        ② 时间预算允许（首次耗时 × JSON_RETRY_TIME_FACTOR < timeout）→ 带纠正语重试一次；
+        ③ 仍不可解析 → salvage_truncated_json 救援截断输出（保留已完整的元素）；
+        ④ 都不行才抛「模型输出不是合法 JSON，请重试」。
+        """
+        started = time.monotonic()
+        first = await self._generate_response(system_prompt, user_prompt)
+        first_text = str(getattr(first, "content", "") or "").strip()
+        parsed = parse_json_payload_tolerant(first_text)
+        if parsed is not None:
+            return parsed
+        elapsed = time.monotonic() - started
+        _log_unparseable_llm_output("first", first_text, first, elapsed)
+
+        retry_text = ""
+        if elapsed * JSON_RETRY_TIME_FACTOR < self.timeout:
+            retry_started = time.monotonic()
+            retry = await self._generate_response(system_prompt, user_prompt + JSON_RETRY_ADDENDUM)
+            retry_text = str(getattr(retry, "content", "") or "").strip()
+            parsed = parse_json_payload_tolerant(retry_text)
+            if parsed is not None:
+                logger.info(
+                    "bid_wizard llm json retry succeeded: retry=%.1fs first_len=%d retry_len=%d",
+                    time.monotonic() - retry_started, len(first_text), len(retry_text),
+                )
+                return parsed
+            _log_unparseable_llm_output("retry", retry_text, retry, time.monotonic() - retry_started)
+        else:
+            logger.warning(
+                "bid_wizard llm json retry skipped: first call %.1fs × %.1f ≥ timeout %.0fs",
+                elapsed, JSON_RETRY_TIME_FACTOR, self.timeout,
+            )
+
+        for label, text in (("retry", retry_text), ("first", first_text)):
+            salvaged = salvage_truncated_json(text)
+            if salvaged is not None:
+                logger.warning(
+                    "bid_wizard llm json salvaged from %s output (len=%d): kept a complete prefix",
+                    label, len(text),
+                )
+                return salvaged
+        raise RuntimeError("模型输出不是合法 JSON，请重试")
 
 
 async def analyze_tender(llm: WizardLLM, tender_markdown: str) -> dict[str, Any]:

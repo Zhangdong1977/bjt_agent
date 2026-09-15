@@ -1533,6 +1533,138 @@ def test_generate_spec_skips_retry_when_time_budget_exhausted(monkeypatch):
     assert len(llm.prompts) == 2 and len(spec) == 3
 
 
+# ------------------------------------------------------------------ JSON 交互容错（2026-09-15 首轮问卷不是合法 JSON）
+
+_Q_ITEM = '{"topic": "商务", "question": "报价策略？", "why": "价格 30 分", "suggested_answer": "见\\"素材#1\\" [1]", "source": "推断", "inferred": true}'
+_SPEC_NODE = '{"title": "技术方案", "level": 1, "article_count": 2, "text_count": 400, "charts": [{"type": "table", "title": "对比表"}]}'
+
+
+def test_parse_json_payload_tolerant_trailing_and_leading_noise():
+    from backend.agent.bid_wizard_agent import parse_json_payload_tolerant
+
+    body = '{"questions": [' + _Q_ITEM + "]}"
+    # V1 能解的原样通过
+    assert parse_json_payload_tolerant(body)["questions"][0]["topic"] == "商务"
+    assert parse_json_payload_tolerant("```json\n" + body + "\n```")["questions"][0]["topic"] == "商务"
+    # JSON 后追加带括号的说明：V1 括号切片会切进垃圾，raw_decode 只取首个完整值
+    assert parse_json_payload_tolerant(body + "\n\n以上共 1 题（见附录[2]，{说明}）。")["questions"][0]["why"] == "价格 30 分"
+    # JSON 前有带方括号的说明：先出现的 '[' 是垃圾，取覆盖最长的候选
+    assert parse_json_payload_tolerant("参考要素[1]后给出问卷：" + body)["questions"][0]["topic"] == "商务"
+    # Spec 顶层数组：先出现的 '{' 只是首个元素，仍应取整个数组
+    parsed = parse_json_payload_tolerant("大纲如下：[" + _SPEC_NODE + "," + _SPEC_NODE + "] 完")
+    assert isinstance(parsed, list) and len(parsed) == 2
+    assert parse_json_payload_tolerant("完全不是 JSON 的一段话") is None
+    assert parse_json_payload_tolerant("") is None
+
+
+def test_salvage_truncated_json_keeps_complete_elements_only():
+    from backend.agent.bid_wizard_agent import salvage_truncated_json
+
+    # 顶层对象内数组：第 3 题输出到一半被截断 → 保留前 2 题
+    truncated = '{"questions": [' + _Q_ITEM + ", " + _Q_ITEM + ', {"topic": "技术", "question": "等保三级'
+    salvaged = salvage_truncated_json(truncated)
+    assert isinstance(salvaged, dict) and len(salvaged["questions"]) == 2
+    assert salvaged["questions"][1]["suggested_answer"] == '见"素材#1" [1]'  # 字符串内引号/方括号不干扰扫描
+    # 尾逗号形态（截断恰好落在逗号后）
+    assert len(salvage_truncated_json('{"questions": [' + _Q_ITEM + ",")["questions"]) == 1
+    # 顶层数组（Spec）：第 3 节截断在 charts 数组之后——残缺节点不能被救出，只保留 2 个完整节点
+    spec_truncated = "[" + _SPEC_NODE + ", " + _SPEC_NODE + ', {"charts": [{"type": "mermaid"}], "title": "实施方'
+    salvaged = salvage_truncated_json(spec_truncated)
+    assert isinstance(salvaged, list) and len(salvaged) == 2 and salvaged[1]["charts"][0]["type"] == "table"
+    # 招标要素：scoring 数组截断 → basic 完整保留 + 已完整的 scoring 项
+    analysis = '{"basic": {"project_name": "智慧园区", "budget": "1200 万"}, "scoring_criteria": [{"item": "价格", "score": 30}, {"item": "技术", "sc'
+    salvaged = salvage_truncated_json(analysis)
+    assert salvaged["basic"]["budget"] == "1200 万" and salvaged["scoring_criteria"] == [{"item": "价格", "score": 30}]
+    # 首个元素都没完整 → 无可救援
+    assert salvage_truncated_json('{"questions": [{"topic": "商务", "question": "报') is None
+    assert salvage_truncated_json("没有 JSON") is None
+    # 前导带方括号说明 + 截断对象：取救出文本最长者（对象），不被垃圾 [1] 抢走
+    salvaged = salvage_truncated_json("参考[1]：" + truncated)
+    assert isinstance(salvaged, dict) and len(salvaged["questions"]) == 2
+    # 完整 JSON 原样救出（含代码块围栏）
+    assert len(salvage_truncated_json("```json\n[" + _SPEC_NODE + "]\n```")) == 1
+
+
+class _ScriptedResponses:
+    """按顺序回放 LLMResponse 形态（content/usage/thinking），记录每次 user_prompt。"""
+
+    def __init__(self, contents):
+        self.contents = list(contents)
+        self.prompts: list[str] = []
+
+    async def __call__(self, system_prompt, user_prompt):
+        self.prompts.append(user_prompt)
+        return SimpleNamespace(content=self.contents.pop(0), usage=SimpleNamespace(completion_tokens=123), thinking="x" * 10)
+
+
+def _wizard_llm_with(contents, timeout=300.0):
+    from backend.agent.bid_wizard_agent import WizardLLM
+
+    llm = WizardLLM.__new__(WizardLLM)  # 绕过 __init__，不创建真实 LLM client
+    llm.timeout = timeout
+    llm.client = None
+    scripted = _ScriptedResponses(contents)
+    llm._generate_response = scripted
+    return llm, scripted
+
+
+def test_wizard_llm_generate_json_retries_once_then_salvages():
+    import asyncio
+
+    from backend.agent.bid_wizard_agent import JSON_RETRY_ADDENDUM
+
+    body = '{"questions": [' + _Q_ITEM + "]}"
+    truncated = '{"questions": [' + _Q_ITEM + ", " + _Q_ITEM + ', {"topic": "技'
+
+    llm, scripted = _wizard_llm_with([body])  # 首次即合法：一次调用、不带纠正语
+    assert asyncio.run(llm.generate_json("sys", "user"))["questions"][0]["topic"] == "商务"
+    assert scripted.prompts == ["user"]
+
+    llm, scripted = _wizard_llm_with(["模型走神写了一段散文", body])  # 首次不可解析 → 带纠正语重试成功
+    assert len(asyncio.run(llm.generate_json("sys", "user"))["questions"]) == 1
+    assert scripted.prompts[0] == "user" and scripted.prompts[1] == "user" + JSON_RETRY_ADDENDUM
+    assert "不是合法 JSON" in JSON_RETRY_ADDENDUM
+
+    llm, scripted = _wizard_llm_with(["散文", truncated])  # 重试仍不可解析但可救援 → 保留完整的 2 题
+    assert len(asyncio.run(llm.generate_json("sys", "user"))["questions"]) == 2
+    assert len(scripted.prompts) == 2
+
+    llm, scripted = _wizard_llm_with([truncated, "散文"])  # 重试比首轮更差 → 退回救援首轮
+    assert len(asyncio.run(llm.generate_json("sys", "user"))["questions"]) == 2
+
+    llm, scripted = _wizard_llm_with(["散文", "还是散文"])  # 两次都不可解析且无可救援 → 原文案报错
+    with pytest.raises(RuntimeError, match="模型输出不是合法 JSON"):
+        asyncio.run(llm.generate_json("sys", "user"))
+    assert len(scripted.prompts) == 2
+
+
+def test_wizard_llm_generate_json_skips_retry_when_budget_exhausted(monkeypatch):
+    """首轮已用 150s（×2.2 ≥ 300s 超时）→ 不重试，直接救援首轮；救不出则报错，只调用一次。"""
+    import asyncio
+
+    from backend.agent import bid_wizard_agent
+
+    truncated = '{"questions": [' + _Q_ITEM + ', {"topic": "技'
+
+    ticks = iter([0.0, 150.0])
+    monkeypatch.setattr(bid_wizard_agent, "time", SimpleNamespace(monotonic=lambda: next(ticks, 150.0)))
+    llm, scripted = _wizard_llm_with([truncated, "不该被调用"])
+    assert len(asyncio.run(llm.generate_json("sys", "user"))["questions"]) == 1
+    assert scripted.prompts == ["user"]
+
+    ticks = iter([0.0, 150.0])
+    llm, scripted = _wizard_llm_with(["散文", "不该被调用"])
+    with pytest.raises(RuntimeError, match="模型输出不是合法 JSON"):
+        asyncio.run(llm.generate_json("sys", "user"))
+    assert scripted.prompts == ["user"]
+
+    # 首轮很快（30s×2.2 < 300s）→ 照常重试
+    ticks = iter([0.0, 30.0])
+    llm, scripted = _wizard_llm_with(["散文", '{"questions": [' + _Q_ITEM + "]}"])
+    assert len(asyncio.run(llm.generate_json("sys", "user"))["questions"]) == 1
+    assert len(scripted.prompts) == 2
+
+
 class TestGenerationOptionsApi:
     """生成要求（决策 38-42）与问答历史（决策 43）的 API 回归。"""
 
