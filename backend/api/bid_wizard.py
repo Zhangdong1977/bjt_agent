@@ -1414,6 +1414,7 @@ async def generate_spec(wizard_id: str, db: DBSession, current_user: CurrentUser
             requirements_text=build_requirements_text(wizard_ref.requirements),
             material_index_text=build_material_index_text(material_entries),
             generation_options=generation_options_of(wizard_ref.requirements),
+            time_budget_seconds=_QA_HEAVY_TIMEOUT_SECONDS,
         )
 
     spec = await _run_qa_task(

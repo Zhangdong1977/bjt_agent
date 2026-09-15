@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -68,6 +69,12 @@ GENERATION_WORD_COUNT_MIN = 1_000
 GENERATION_WORD_COUNT_MAX = 1_000_000
 # Spec 生成按目标总字数 ±20% 软约束规划章数与每章字数（决策 40）
 GENERATION_WORD_COUNT_TOLERANCE = 0.2
+# 平级劣化判据（2026-09-15 预发布实证：字数约束下模型把 56 章全标 level=1）：
+# 全部节点 level=1 且数量超过此值即视为结构劣化，带纠正指令重试一次；少量一级章节的小纲要属正常
+SPEC_FLAT_DEGRADATION_MIN_NODES = 12
+# 重试只在时间预算允许时进行：首轮耗时 × 该系数 < 总预算（重试耗时按与首轮同量级估），
+# 否则宁可返回平级结果，也不能让整个同步微任务超时把首轮结果一起丢掉
+_SPEC_RETRY_BUDGET_FACTOR = 2.2
 
 # ------------------------------------------------------------------ prompts
 
@@ -116,7 +123,7 @@ __MATERIAL_INDEX__
 4. 严禁在答案里虚构公司资质、业绩、人员与数据。"""
 
 SPEC_SYSTEM_PROMPT = (
-    "你是资深投标文件编写专家。根据编写需求、招标要素与素材索引，设计投标文件编写大纲（Spec）。"
+    "你是资深投标文件编写专家。根据编写需求、招标要素与素材索引，设计多级目录结构的投标文件编写大纲（Spec）。"
     "只输出一个合法 JSON 数组，不要输出任何其他文字或代码块标记。"
 )
 
@@ -132,19 +139,32 @@ __GENERATION_CONSTRAINTS__
 ## 公司素材索引（每行一段：编号｜标题｜摘要｜关键词）
 __MATERIAL_INDEX__
 
-请输出 Spec JSON 数组（不超过 __MAX_NODES__ 个章节，层级 1-4 级），每项格式：
+请输出 Spec JSON 数组（不超过 __MAX_NODES__ 个节点；按目录顺序平铺，用 level 标注层级，1-4 级），每项格式：
 
 {"title": "章节标题", "level": 1,
  "summary": "本章内容要点摘要（1-3 句，写作时的执行纲领）",
  "article_count": 2, "text_count": 400,
  "charts": [{"type": "table|mermaid", "title": "图表标题", "points": "图表要呈现的要点"}]}
 
+层级示例（小节紧跟其所属大章之后；示例省略了其他字段）：
+[{"title": "技术方案", "level": 1}, {"title": "总体架构设计", "level": 2}, {"title": "网络架构", "level": 3},
+ {"title": "数据架构", "level": 3}, {"title": "关键技术选型", "level": 2}, {"title": "实施方案", "level": 1}]
+
 规则：
 1. 大纲完整覆盖招标需求与评分标准对应的响应内容，与评分办法呼应；只覆盖「生成要求」指定的生成内容范围；
-2. summary 写清楚本章要回应什么、用什么素材支撑；
-3. charts 按「生成要求」执行：需要配图时按内容需要规划（每章 0-3 项）——对比/参数/人员/进度用 table，组织架构/流程/横道图/占比用 mermaid；不配图时每章 charts 一律为 []；
-4. 素材里有真实业绩/资质可引用的章节，在 summary 中点明引用方向；严禁虚构；
-5. 「生成要求」给了目标总字数时，所有章节 article_count×text_count 之和必须落在允许区间，据此决定章节数量与每章篇幅。"""
+2. 必须是多级目录：一级大章（level=1）一般 6-12 个，每个大章下按内容拆分二级小节（level=2），内容复杂的小节再拆三级（level=3）；level 必须如实标注所属层级，严禁把全部章节都标成 level=1 平铺——只有目标总字数不足 5,000 字时才允许仅有一级章节；
+3. summary 写清楚本章要回应什么、用什么素材支撑；
+4. charts 按「生成要求」执行：需要配图时按内容需要规划（每章 0-3 项）——对比/参数/人员/进度用 table，组织架构/流程/横道图/占比用 mermaid；不配图时每章 charts 一律为 []；
+5. 素材里有真实业绩/资质可引用的章节，在 summary 中点明引用方向；严禁虚构；
+6. 「生成要求」给了目标总字数时，所有章节 article_count×text_count 之和必须落在允许区间——通过调整每章篇幅（article_count/text_count）与小节数量来满足，不得为凑字数把大纲压成只有一级章节的平级结构。"""
+
+# 兜底重试时追加在 SPEC_USER_TEMPLATE 之后：把首轮不合格的事实喂回去，要求按规则 2 重排层级
+SPEC_FLAT_RETRY_ADDENDUM = """
+
+## 上一次输出不合格，必须修正后重新输出
+上一次生成的大纲把全部 __FLAT_COUNT__ 个章节都标成了 level=1，没有任何二级/三级小节，违反规则 2。
+请重新规划：归并为 6-12 个一级大章（level=1），其余章节作为所属大章下的二级小节（level=2，复杂处可设 level=3），
+数组顺序保持「大章 → 其下小节」的目录顺序；总字数区间与其他规则不变。"""
 
 REVISE_SYSTEM_PROMPT = (
     "你是资深投标文件编写专家。按用户的修改指令调整编写大纲（Spec），保持未涉及的部分不变。"
@@ -161,7 +181,7 @@ __GENERATION_CONSTRAINTS__
 用户修改指令：
 __INSTRUCTION__
 
-请输出调整后的完整 Spec JSON 数组，字段格式与输入一致（title/level/summary/article_count/text_count/charts）。"""
+请输出调整后的完整 Spec JSON 数组，字段格式与输入一致（title/level/summary/article_count/text_count/charts）；保持多级目录结构（大章 level=1、小节 level=2/3，level 如实标注所属层级），除非用户指令明确要求改变层级。"""
 
 SELECT_SYSTEM_PROMPT = (
     "你是素材检索员。根据任务描述，从素材索引中挑选需要引用原文的分段。"
@@ -557,7 +577,8 @@ def build_generation_constraints_text(options: dict[str, Any] | None) -> str:
         high = int(word_count * (1 + GENERATION_WORD_COUNT_TOLERANCE))
         lines.append(
             f"- 目标总字数：约 {word_count:,} 字（允许 ±20%，即 {low:,}–{high:,} 字）——"
-            "所有章节 article_count×text_count 之和必须落在该区间，据此规划章节数量与每章 article_count/text_count"
+            "所有章节 article_count×text_count 之和必须落在该区间，据此规划小节数量与每章 article_count/text_count；"
+            "字数约束不改变多级目录要求，不得为凑字数把大纲压成只有一级章节"
         )
     if options.get("charts", True):
         lines.append("- 图表：需要配图——charts 按内容需要规划（每章 0-3 项）")
@@ -655,6 +676,13 @@ def normalize_spec(nodes: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return spec
+
+
+def is_flat_degraded_spec(spec: list[dict[str, Any]]) -> bool:
+    """全部节点 level=1 且数量超过阈值 → 平级劣化；节点少的小纲要只有一级章节属正常。"""
+    if len(spec) <= SPEC_FLAT_DEGRADATION_MIN_NODES:
+        return False
+    return all(int(node.get("level") or 1) == 1 for node in spec)
 
 
 def build_chart_plan_text(node: dict[str, Any], *, charts_enabled: bool = True) -> str:
@@ -881,6 +909,12 @@ async def generate_questionnaire_round(
     return normalize_questionnaire(payload)
 
 
+async def _generate_spec_once(llm: WizardLLM, user_prompt: str) -> list[dict[str, Any]]:
+    payload = await llm.generate_json(SPEC_SYSTEM_PROMPT, user_prompt)
+    nodes = payload if isinstance(payload, list) else payload.get("outline") if isinstance(payload, dict) else None
+    return normalize_spec(nodes if isinstance(nodes, list) else [])
+
+
 async def generate_spec(
     llm: WizardLLM,
     *,
@@ -888,7 +922,12 @@ async def generate_spec(
     requirements_text: str,
     material_index_text: str,
     generation_options: dict[str, Any] | None = None,
+    time_budget_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
+    """Spec 生成；首轮平级劣化（见 is_flat_degraded_spec）且时间预算够时带纠正指令重试一次。
+
+    重试结果只有真正多级时才替换首轮；重试仍平级或抛错都保留首轮可用结果（用户可手工/AI 修订）。
+    """
     user_prompt = (
         SPEC_USER_TEMPLATE.replace(
             "__ANALYSIS_JSON__", json.dumps(analysis, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]
@@ -898,11 +937,30 @@ async def generate_spec(
         .replace("__MATERIAL_INDEX__", material_index_text or "（无素材）")
         .replace("__MAX_NODES__", str(OUTLINE_MAX_NODES))
     )
-    payload = await llm.generate_json(SPEC_SYSTEM_PROMPT, user_prompt)
-    nodes = payload if isinstance(payload, list) else payload.get("outline") if isinstance(payload, dict) else None
-    spec = normalize_spec(nodes if isinstance(nodes, list) else [])
+    started = time.monotonic()
+    spec = await _generate_spec_once(llm, user_prompt)
     if not spec:
         raise RuntimeError("Spec 生成结果为空，请重试")
+    if is_flat_degraded_spec(spec):
+        elapsed = time.monotonic() - started
+        if time_budget_seconds is not None and elapsed * _SPEC_RETRY_BUDGET_FACTOR >= time_budget_seconds:
+            logger.warning(
+                "bid-wizard spec is flat (%d nodes, all level=1) but first pass used %.0fs of %.0fs budget; skip retry",
+                len(spec), elapsed, time_budget_seconds,
+            )
+        else:
+            logger.warning("bid-wizard spec is flat (%d nodes, all level=1); retrying once with correction", len(spec))
+            try:
+                retried = await _generate_spec_once(
+                    llm, user_prompt + SPEC_FLAT_RETRY_ADDENDUM.replace("__FLAT_COUNT__", str(len(spec)))
+                )
+            except Exception as exc:  # 重试失败不能丢掉首轮可用结果
+                logger.warning("bid-wizard spec flat-retry failed, keeping first pass: %s", exc)
+                retried = []
+            if retried and not is_flat_degraded_spec(retried):
+                spec = retried
+            elif retried:
+                logger.warning("bid-wizard spec flat-retry still flat (%d nodes); keeping first pass", len(retried))
     return apply_generation_options_to_spec(spec, generation_options)
 
 

@@ -1419,6 +1419,120 @@ def test_section_prompts_switch_to_no_chart_mode():
     assert "不得输出任何 Markdown 表格" in no_chart and "优先用 Markdown 表格" not in no_chart
 
 
+def test_spec_prompts_demand_multilevel_outline():
+    """2026-09-15 回归：字数约束下模型把 56 章全标 level=1——层级要求必须是显式规则而非括号说明。"""
+    from backend.agent.bid_wizard_agent import (
+        REVISE_USER_TEMPLATE,
+        SPEC_SYSTEM_PROMPT,
+        SPEC_USER_TEMPLATE,
+        build_generation_constraints_text,
+    )
+
+    assert "多级目录" in SPEC_SYSTEM_PROMPT
+    assert "必须是多级目录" in SPEC_USER_TEMPLATE and "严禁把全部章节都标成 level=1" in SPEC_USER_TEMPLATE
+    assert '"level": 2' in SPEC_USER_TEMPLATE and '"level": 3' in SPEC_USER_TEMPLATE  # 示例给出下级节点
+    assert "不得为凑字数" in SPEC_USER_TEMPLATE  # 字数规则自带层级保底
+    assert "保持多级目录结构" in REVISE_USER_TEMPLATE
+    constraints = build_generation_constraints_text({"parts": ["technical"], "word_count": 20_000, "charts": True})
+    assert "16,000–24,000" in constraints and "不得为凑字数" in constraints
+
+
+def test_is_flat_degraded_spec_threshold():
+    from backend.agent.bid_wizard_agent import SPEC_FLAT_DEGRADATION_MIN_NODES, is_flat_degraded_spec
+
+    flat = [{"level": 1} for _ in range(SPEC_FLAT_DEGRADATION_MIN_NODES + 1)]
+    assert is_flat_degraded_spec(flat)
+    assert not is_flat_degraded_spec(flat[:SPEC_FLAT_DEGRADATION_MIN_NODES])  # 小纲要少量一级章节属正常
+    assert not is_flat_degraded_spec(flat[:-1] + [{"level": 2}])  # 只要有下级节点就不算劣化
+    assert not is_flat_degraded_spec([])
+
+
+def _flat_spec_payload(count: int) -> list[dict]:
+    return [{"title": f"章节{index}", "level": 1, "article_count": 1, "text_count": 400} for index in range(count)]
+
+
+_TREE_SPEC_PAYLOAD = [
+    {"title": "技术方案", "level": 1, "article_count": 1, "text_count": 400},
+    {"title": "总体架构", "level": 2, "article_count": 2, "text_count": 400},
+    {"title": "实施方案", "level": 1, "article_count": 1, "text_count": 400},
+]
+
+
+class _ScriptedLLM:
+    """按顺序回放输出；元素为异常时抛出（模拟重试轮 JSON 解析失败）。"""
+
+    def __init__(self, outputs):
+        self.outputs = list(outputs)
+        self.prompts: list[str] = []
+
+    async def generate_json(self, system_prompt, user_prompt):
+        self.prompts.append(user_prompt)
+        output = self.outputs.pop(0)
+        if isinstance(output, Exception):
+            raise output
+        return output
+
+
+def test_generate_spec_retries_flat_outline_once():
+    """兜底：首轮全 level=1 且超阈值 → 带纠正指令重试一次；重试仍平级或抛错则保留首轮。"""
+    import asyncio
+
+    from backend.agent.bid_wizard_agent import generate_spec
+
+    def run(llm):
+        return asyncio.run(
+            generate_spec(llm, analysis={}, requirements_text="", material_index_text="", time_budget_seconds=300)
+        )
+
+    llm = _ScriptedLLM([_flat_spec_payload(20), _TREE_SPEC_PAYLOAD])
+    spec = run(llm)
+    assert len(llm.prompts) == 2
+    assert "上一次输出不合格" not in llm.prompts[0]
+    assert "上一次输出不合格" in llm.prompts[1] and "全部 20 个章节" in llm.prompts[1]
+    assert llm.prompts[1].startswith(llm.prompts[0])  # 纠正指令是追加，不改原上下文
+    assert [node["level"] for node in spec] == [1, 2, 1]
+    assert [node["node_id"] for node in spec] == ["1", "1.1", "2"]
+
+    llm = _ScriptedLLM([_flat_spec_payload(20), _flat_spec_payload(15)])  # 重试仍平级 → 保留首轮
+    assert len(run(llm)) == 20 and len(llm.prompts) == 2
+
+    llm = _ScriptedLLM([_flat_spec_payload(20), RuntimeError("模型输出不是合法 JSON，请重试")])  # 重试失败不丢首轮
+    assert len(run(llm)) == 20 and len(llm.prompts) == 2
+
+    llm = _ScriptedLLM([_flat_spec_payload(5), _TREE_SPEC_PAYLOAD])  # 未超阈值不重试
+    assert len(run(llm)) == 5 and len(llm.prompts) == 1
+
+    llm = _ScriptedLLM([_TREE_SPEC_PAYLOAD, _flat_spec_payload(20)])  # 首轮已是多级不重试
+    assert len(run(llm)) == 3 and len(llm.prompts) == 1
+
+
+def test_generate_spec_skips_retry_when_time_budget_exhausted(monkeypatch):
+    """首轮已用掉大半预算（150s×2.2 > 300s）时不重试，避免整个同步微任务超时把首轮结果一起丢掉。"""
+    import asyncio
+    from types import SimpleNamespace
+
+    from backend.agent import bid_wizard_agent
+
+    ticks = iter([0.0, 150.0])
+    monkeypatch.setattr(bid_wizard_agent, "time", SimpleNamespace(monotonic=lambda: next(ticks, 150.0)))
+
+    llm = _ScriptedLLM([_flat_spec_payload(20), _TREE_SPEC_PAYLOAD])
+    spec = asyncio.run(
+        bid_wizard_agent.generate_spec(
+            llm, analysis={}, requirements_text="", material_index_text="", time_budget_seconds=300
+        )
+    )
+    assert len(llm.prompts) == 1 and len(spec) == 20
+
+    # 不传预算（离线脚本/测试）→ 不受时间限制，照常重试
+    ticks = iter([0.0, 150.0])
+    llm = _ScriptedLLM([_flat_spec_payload(20), _TREE_SPEC_PAYLOAD])
+    spec = asyncio.run(
+        bid_wizard_agent.generate_spec(llm, analysis={}, requirements_text="", material_index_text="")
+    )
+    assert len(llm.prompts) == 2 and len(spec) == 3
+
+
 class TestGenerationOptionsApi:
     """生成要求（决策 38-42）与问答历史（决策 43）的 API 回归。"""
 
