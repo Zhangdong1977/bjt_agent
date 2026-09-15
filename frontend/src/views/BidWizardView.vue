@@ -761,6 +761,8 @@ const questionnaire = ref<WizardQuestion[]>([]);
 type AnswerState = { action: "answered" | "adopted" | "skipped" | "supplemented"; answer: string };
 const answerDrafts = reactive<Record<string, AnswerState>>({});
 const savedAtText = ref(""); // 本会话最近一次保存作答的时刻（HH:MM，反馈⑰：保存按钮挪进问卷卡片后就近提示）
+// 反馈㉔：保存后 AI 评估被跳过的原因就近明示（作答无变化/待答已满/达轮数上限），作答再有改动即清空
+const followupSkipNotice = ref("");
 
 // ---- 生成要求（决策 38-42）：编写需求里固定的三项硬约束，随「保存作答」一并保存；字数在进入编写大纲时必填 ----
 const GEN_PART_ORDER: GenerationPart[] = ["business", "technical"];
@@ -877,6 +879,10 @@ const hasUnsavedAnswers = computed(() =>
     return savedAnswer !== answer;
   }),
 );
+// 作答一有改动，"未触发 AI 评估"的说明就过时了（下次保存会真正评估），立即撤掉
+watch(hasUnsavedAnswers, (dirty) => {
+  if (dirty) followupSkipNotice.value = "";
+});
 
 const saveHintText = computed(() => {
   if (hasUnsavedAnswers.value || hasUnsavedGenOptions.value) {
@@ -990,7 +996,17 @@ function onSubmitRequirements() {
   // 必须等保存的 withBusy 结束（busy 清零）后再触发追问轮：autoFollowupRound 内部
   // 也走 withBusy，busy 未清时会被守卫静默跳过（反馈⑱链路一度因此从未生效）
   void withBusy("requirements", saveRequirementsInternal).then((ok) => {
-    if (wasDirty && ok) autoFollowupRound();
+    if (!ok) return;
+    followupSkipNotice.value = "";
+    if (wasDirty) {
+      autoFollowupRound();
+      return;
+    }
+    // 反馈㉔：作答无变化时按设计不烧一次评估计费，但必须告诉用户"没评估"以及手动出口
+    if (!followupDone.value) {
+      followupSkipNotice.value =
+        `已保存 ${savedAtText.value}，作答与上次保存一致，本次未触发 AI 评估；需要 AI 复查请点上方「再次检查」。`;
+    }
   });
 }
 
@@ -1184,6 +1200,7 @@ function onRecheck() {
   }
   void withBusy("recheck", async () => {
     reqActionError.value = "";
+    followupSkipNotice.value = "";
     try {
       await saveRequirementsInternal(); // 先保存现有需求（含"已补充素材"状态）
       wizard.value = await generateQuestionnaireRound(wizard.value!.id);
@@ -1231,7 +1248,7 @@ function formatQaTime(iso: string | null | undefined): string {
 const followupState = computed(() => wizard.value?.questionnaire?.followup || null);
 const followupDone = computed(() => followupState.value?.status === "done");
 
-/** 保存作答后自动追问（反馈⑮⑱）：AI 判断是否需要新一轮；done/达上限/满待答时不触发。 */
+/** 保存作答后自动追问（反馈⑮⑱）：AI 判断是否需要新一轮；done/达上限/满待答时不触发（跳过原因就近明示，反馈㉔）。 */
 function autoFollowupRound() {
   const current = wizard.value;
   if (!current || followupDone.value) return;
@@ -1240,7 +1257,11 @@ function autoFollowupRound() {
     const saved = savedAnswerFor(question.id);
     return !(saved?.action && closed.has(saved.action));
   }).length;
-  if (openCount >= 20) return; // 待答已满，后端也会拒，不白跑一次计费评估
+  if (openCount >= 20) {
+    // 待答已满，后端也会拒，不白跑一次计费评估
+    followupSkipNotice.value = "已保存。待答问题已满 20 题，本次未触发 AI 评估；请先作答、采纳或跳过部分问题。";
+    return;
+  }
   const indexing = materials.value.some(
     (item) => item.index_status === "pending" || item.index_status === "indexing",
   );
@@ -1251,9 +1272,11 @@ function autoFollowupRound() {
       questionnaire.value = wizard.value.questionnaire?.questions || [];
       for (const question of questionnaire.value) ensureAnswerDraft(question);
     } catch (error) {
-      // 400=AI 已确认充分/达最大自动轮数、409=素材还在索引：静默；其余给就近提示
+      // 400=AI 已确认充分/达最大自动轮数/待答已满：不是故障，就近说明为何没评估；409=素材还在索引：静默
       const status = (error as { status?: number }).status;
-      if (status !== 400 && status !== 409) {
+      if (status === 400) {
+        followupSkipNotice.value = `已保存。${friendlyError(error, "本次未触发 AI 评估")}`;
+      } else if (status !== 409) {
         reqActionError.value = friendlyError(error, "自动追问未完成，可点「再次检查」手动触发");
       }
     }
@@ -2332,6 +2355,7 @@ function resetLocalState() {
   supplementMaterialIds.value = [];
   supplementBindings.value = {};
   savedAtText.value = "";
+  followupSkipNotice.value = "";
   reqActionError.value = "";
   genOptions.parts = ["technical"];
   genOptions.word_count = null;
@@ -2815,7 +2839,7 @@ onUnmounted(() => {
             <div class="req-toolbar">
               <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="pickSupplementMaterials(null)">补充素材</button>
               <button type="button" class="ghost" :disabled="Boolean(busy) || !tenderReady" @click="onRecheck">再次检查</button>
-              <span class="hint" style="margin:0">补充新素材后点「再次检查」，AI 基于新素材发起下一轮提问（现有问答保留）。</span>
+              <span class="hint" style="margin:0">补充新素材后、或想让 AI 复查当前作答时点「再次检查」，AI 基于最新作答与素材判断是否继续提问（现有问答保留）。</span>
             </div>
             <div v-if="busy === 'recheck'" class="status-row">
               <StatusDot tone="running">正在结合新补充的素材重新检查…</StatusDot>
@@ -2919,11 +2943,13 @@ onUnmounted(() => {
             </template>
             <div class="req-save-bar">
               <button type="button" class="ghost" :disabled="Boolean(busy)" @click="onSubmitRequirements">
-                {{ busy === "requirements" ? "保存中…" : "保存作答" }}
+                {{ busy === "requirements" ? "保存中…" : busy === "followupRound" ? "AI 评估中…" : "保存作答" }}
               </button>
               <!-- 追问反馈就近显示（反馈㉑）：卡片顶部的横幅在长问卷下离保存按钮太远，用户看不见 -->
               <StatusDot v-if="busy === 'followupRound'" tone="running">正在评估你的作答，需要追问的问题会追加在上方…</StatusDot>
               <span v-else-if="followupDone" class="hint" style="margin:0;color:#389e0d">AI 已确认需求充分，可进入编写大纲；补充新素材后仍可点「再次检查」。</span>
+              <!-- 反馈㉔：评估被跳过时明示原因与手动出口，别让用户对着"已保存"猜 AI 有没有动 -->
+              <span v-else-if="followupSkipNotice" class="hint" style="margin:0;color:#ad6800">{{ followupSkipNotice }}</span>
               <span v-else-if="saveHintText" class="hint" style="margin:0">{{ saveHintText }}</span>
             </div>
           </template>
@@ -2956,7 +2982,7 @@ onUnmounted(() => {
               :disabled="Boolean(busy) || !tenderReady"
               @keydown.enter="onAskQuestion"
             >
-            <button type="button" class="primary" :disabled="Boolean(busy) || !tenderReady || !qaQuestion.trim()" @click="onAskQuestion">提问</button>
+            <button type="button" class="primary" :disabled="Boolean(busy) || !tenderReady || !qaQuestion.trim()" @click="onAskQuestion">提交</button>
           </div>
         </div>
 
@@ -2999,11 +3025,13 @@ onUnmounted(() => {
           </template>
           <template v-else>
             <div class="spec-toolbar">
-              <button type="button" class="ghost" :disabled="Boolean(busy) || !specDirty" @click="onSaveSpec">保存修改</button>
-              <button type="button" class="ghost" :disabled="Boolean(busy) || !wizard.spec_previous" @click="onRollbackSpec">回退 AI 修订</button>
-              <button type="button" class="ghost" @click="setAllCollapsed(false)">全部展开</button>
-              <button type="button" class="ghost" @click="setAllCollapsed(true)">全部收起</button>
-              <span v-if="specDirty" class="dirty-tip">有未保存的修改</span>
+              <div class="spec-actions">
+                <button type="button" class="ghost" :disabled="Boolean(busy) || !specDirty" @click="onSaveSpec">保存修改</button>
+                <button type="button" class="ghost" :disabled="Boolean(busy) || !wizard.spec_previous" @click="onRollbackSpec">回退 AI 修订</button>
+                <button type="button" class="ghost" @click="setAllCollapsed(false)">全部展开</button>
+                <button type="button" class="ghost" @click="setAllCollapsed(true)">全部收起</button>
+                <span v-if="specDirty" class="dirty-tip">有未保存的修改</span>
+              </div>
               <span class="spec-stat" :title="specWordTarget ? '字数目标来自需求确认阶段的生成要求；仅作对照，不强制' : ''">
                 <template v-if="specWordTarget">目标 {{ formatWordCount(specWordTarget) }}<template v-if="specScopeLabel">（{{ specScopeLabel }}）</template> · </template>{{ specNodes.length }} 章 · 当前约 {{ formatWordCount(specTotalWords) }}
               </span>
@@ -3387,7 +3415,9 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .radio{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
 .q-actions textarea,.spec-summary,.spec-revise input{width:100%;border:1px solid #e5e5e5;border-radius:6px;padding:6px 8px;font-size:12px;font-family:inherit}
 .q-actions textarea{flex:1 1 100%}
-.spec-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.spec-toolbar{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin-bottom:8px}
+.spec-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.spec-actions .ghost{padding:5px 12px;font-size:12px;border-radius:6px}
 .dirty-tip{color:#d46b08;font-size:12px}
 .spec-revise{display:flex;gap:8px;margin-bottom:12px}
 .spec-revise input{flex:1}
@@ -3416,7 +3446,7 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .row-actions{display:none;gap:2px;flex:none;align-items:center}
 .spec-row:hover .row-actions,.spec-node.open .row-actions{display:flex}
 .spec-detail{margin:0 8px 8px 46px;border-top:1px dashed #e8e8e8;padding:8px 2px 0}
-.spec-stat{color:#999;font-size:12px;margin-left:auto;white-space:nowrap}
+.spec-stat{color:#999;font-size:12px;line-height:1.5}
 .spec-summary{margin:7px 0 5px;resize:vertical}
 .spec-meta{display:flex;gap:16px;color:#777;font-size:12px;align-items:center}
 .spec-meta input{width:70px;border:1px solid #e5e5e5;border-radius:5px;padding:3px 5px;margin-left:4px}
