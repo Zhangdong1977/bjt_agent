@@ -53,6 +53,9 @@ pnpm-debug.log*
 # Environment
 .env.local
 .env.*.local
+# .env 的手工备份（如 backend/.env.bak-pre-vsto）含数据库/LLM 密钥，此前只靠人工排除（2026-09-14）
+.env.bak*
+.env.*.bak*
 .planning
 docs/rules/
 temp/
