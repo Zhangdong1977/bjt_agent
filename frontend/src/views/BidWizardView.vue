@@ -884,6 +884,15 @@ watch(hasUnsavedAnswers, (dirty) => {
   if (dirty) followupSkipNotice.value = "";
 });
 
+/** 有无从未落库的作答（反馈㉖）：首批问题 / 新追加轮的题在首次保存前，哪怕一题没动、全用默认值
+ *  （采纳建议/跳过），这次保存也会把它们首次写进 requirements——对 AI 而言就是"作答有变化"，
+ *  必须触发评估；hasUnsavedAnswers 按反馈⑰口径把"未动过默认值"视为不脏，只管"有未保存修改"提示。 */
+const hasUnpersistedAnswers = computed(() =>
+  questionnaire.value.some((question) => !savedAnswerFor(question.id)?.action),
+);
+/** 这次保存是否会改变已落库的作答（评估触发与"无变化"提示共用此口径）。 */
+const saveWillChangeAnswers = computed(() => hasUnsavedAnswers.value || hasUnpersistedAnswers.value);
+
 const saveHintText = computed(() => {
   if (hasUnsavedAnswers.value || hasUnsavedGenOptions.value) {
     return savedAtText.value ? `已保存 ${savedAtText.value}，有未保存的修改` : "有未保存的修改";
@@ -992,7 +1001,9 @@ function onSubmitRequirements() {
     });
     return;
   }
-  const wasDirty = hasUnsavedAnswers.value;
+  // 反馈㉖：首批/新一轮的题即使全用默认值，首次保存也算"有变化"（否则首批直接保存会被当成无变化、
+  // 跳过最该做的首次评估，还配上不成立的"与上次保存一致"）
+  const wasDirty = saveWillChangeAnswers.value;
   // 必须等保存的 withBusy 结束（busy 清零）后再触发追问轮：autoFollowupRound 内部
   // 也走 withBusy，busy 未清时会被守卫静默跳过（反馈⑱链路一度因此从未生效）
   void withBusy("requirements", saveRequirementsInternal).then((ok) => {
@@ -1003,6 +1014,7 @@ function onSubmitRequirements() {
       return;
     }
     // 反馈㉔：作答无变化时按设计不烧一次评估计费，但必须告诉用户"没评估"以及手动出口
+    // （走到这里=每题都已落库且与本次一致，"与上次保存一致"才成立）
     if (!followupDone.value) {
       followupSkipNotice.value =
         `已保存 ${savedAtText.value}，作答与上次保存一致，本次未触发 AI 评估；需要 AI 复查请点上方「再次检查」。`;
@@ -1022,7 +1034,8 @@ function onEnterOutline() {
   // gotoStage 开头有 busy 守卫：必须在保存的 withBusy 结束后再调，
   // 在其回调内直调会被静默跳过（"点击无反应"事故根因）
   void withBusy("requirements", async () => {
-    if (hasUnsavedAnswers.value || hasUnsavedGenOptions.value) await saveRequirementsInternal();
+    // 反馈㉖：首批全默认值、从未保存过也要落库，否则 Spec 生成看不到任何已确认作答
+    if (saveWillChangeAnswers.value || hasUnsavedGenOptions.value) await saveRequirementsInternal();
   }).then((ok) => {
     if (ok) void gotoStage(2);
   });
@@ -2994,7 +3007,7 @@ onUnmounted(() => {
               class="primary"
               :disabled="Boolean(busy)"
               @click="onEnterOutline"
-            >{{ busy === "requirements" && hasUnsavedAnswers ? "保存并进入…" : "进入编写大纲" }}</button>
+            >{{ busy === "requirements" && saveWillChangeAnswers ? "保存并进入…" : "进入编写大纲" }}</button>
           </div>
         </div>
         <div v-else class="stage-actions">
