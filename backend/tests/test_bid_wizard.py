@@ -1268,6 +1268,67 @@ class TestUsageLedgerFixes:
         finally:
             await engine.dispose()
 
+    async def test_task_summary_keeps_duplicate_task_type(self, client, auth_headers):
+        """2026-09-18 回归：查重任务也住在 review_tasks（task_type='duplicate'），
+        用量汇总合并不得写死 'review'（生产 5/5 查重任务曾被误标成标书检查）。"""
+        import uuid as _uuid
+        from datetime import datetime, timezone
+
+        from sqlalchemy import text as sa_text
+
+        from backend.models import ReviewTask, async_session_factory, engine
+        from backend.models.ai_usage_record import AiUsageRecord
+        from backend.services.usage_summary import refresh_task_summary
+
+        project = (
+            await client.post(
+                "/api/projects",
+                json={"name": "dup-summary-regression"},
+                headers=auth_headers,
+            )
+        ).json()
+        async with async_session_factory() as session:
+            task = ReviewTask(
+                project_id=project["id"],
+                task_type="duplicate",
+                duplicate_mode="pair",
+                status="completed",
+            )
+            session.add(task)
+            await session.flush()
+            session.add(
+                AiUsageRecord(
+                    usage_type="llm",
+                    provider="tencent",
+                    model="test-model",
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                    latency_ms=1,
+                    status="success",
+                    cost_cny=Decimal("0.001"),
+                    user_name="regression",
+                    project_id=project["id"],
+                    task_id=task.id,
+                    usage_date=datetime.now(timezone.utc).date(),
+                )
+            )
+            await session.commit()
+            task_id = task.id
+        try:
+            await refresh_task_summary(task_id, strict=True)
+            async with async_session_factory() as session:
+                row = (
+                    await session.execute(
+                        sa_text("SELECT task_type FROM ai_usage_task_summary WHERE id = :tid"),
+                        {"tid": task_id},
+                    )
+                ).fetchone()
+            assert row is not None
+            assert row.task_type == "duplicate"
+        finally:
+            await engine.dispose()
+
     def test_index_meta_short_circuit(self):
         from backend.tasks.bid_wizard_tasks import index_meta_llm_needed
 

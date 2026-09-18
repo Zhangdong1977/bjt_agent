@@ -51,6 +51,35 @@ const batchDocuments = computed(() =>
     .sort((a, b) => (a.duplicate_ordinal ?? 999) - (b.duplicate_ordinal ?? 999)),
 )
 
+// —— 双口径相似度：文字重复 vs 结构相似 ——
+// structural 通道的分数来自两段文本「数字集合 / 表格骨架」的重合度（算法上限 0.85），
+// 左右文字可以完全不同；与 exact/near_exact/semantic 的文字层面相似分开呈现，
+// 避免用户把「结构相似 85%」读成「85% 内容是重复的」。
+const TEXTUAL_MATCH_TYPES = new Set(['exact', 'near_exact', 'semantic'])
+
+const textDuplication = computed(() => {
+  const rows = sortedFindings.value.filter((finding) => TEXTUAL_MATCH_TYPES.has(finding.match_type))
+  return {
+    count: rows.length,
+    maxScore: rows.reduce((max, finding) => Math.max(max, finding.similarity_score), 0),
+  }
+})
+
+const structureSimilarity = computed(() => {
+  const rows = sortedFindings.value.filter((finding) => finding.match_type === 'structural')
+  return {
+    count: rows.length,
+    maxScore: rows.reduce((max, finding) => Math.max(max, finding.similarity_score), 0),
+  }
+})
+
+// 单条/单组分数的口径名：与分数一起展示，标明这个百分比衡量的是什么。
+function scoreCaliberOf(matchType: string): string {
+  if (matchType === 'structural') return '结构相似'
+  if (matchType === 'semantic') return '语义相似'
+  return '文字重复'
+}
+
 // 重复点按「A 文档位置顺序」排列：先按 A 文档文件名（batch 多文档分桶），
 // 再按 section 文本（中文本地化排序），最后按 start_line / end_line。
 // 位置字段可能缺失，start_line 用 Infinity 兜底（与后端 grouper 同思路）。
@@ -395,6 +424,7 @@ interface EvidenceGroup {
   members: DuplicateResult[]
   ruleNames: string[]
   maxScore: number
+  maxScoreType: string
   verdict: DuplicateVerdict
 }
 
@@ -446,9 +476,13 @@ const groupedFindings = computed<EvidenceGroup[]>(() => {
     )[0]
     const ruleNames: string[] = []
     let maxScore = 0
+    let maxScoreType = ''
     for (const m of members) {
       if (!ruleNames.includes(m.check_item_name)) ruleNames.push(m.check_item_name)
-      maxScore = Math.max(maxScore, m.similarity_score)
+      if (m.similarity_score > maxScore) {
+        maxScore = m.similarity_score
+        maxScoreType = m.match_type
+      }
     }
     return {
       key: `g${idx}-${cluster.leftNorm.slice(0, 16)}`,
@@ -456,6 +490,7 @@ const groupedFindings = computed<EvidenceGroup[]>(() => {
       members,
       ruleNames,
       maxScore,
+      maxScoreType,
       verdict: representative.verdict,
     }
   })
@@ -712,6 +747,32 @@ function recheck() {
           :message="`文档解析覆盖度为${data.summary.coverage_status === 'insufficient' ? '不足' : '部分'}，未发现重复不能视为绝对结论。`"
           :description="(data.summary.coverage_warnings || []).join('；') || '请打开解析诊断查看未覆盖对象。'"
         />
+        <!-- 双口径相似度：文字重复（判断内容重复的直接依据）与结构相似（数字/表格骨架趋同，
+             文字可完全不同、同一工程背景天然出现）分开呈现，避免单一「相似度」引发误读 -->
+        <section class="caliber-grid">
+          <div class="caliber caliber-text">
+            <div class="caliber-head">
+              <span class="caliber-name">文字重复率</span>
+              <span class="caliber-sub">{{ textDuplication.count }} 处词句/语义命中</span>
+            </div>
+            <strong>{{ textDuplication.count ? Math.round(textDuplication.maxScore * 100) + '%' : '未发现' }}</strong>
+            <span class="caliber-note">词句相同/近似或语义相近的重复点，是判断内容重复的直接依据</span>
+          </div>
+          <div class="caliber caliber-struct">
+            <div class="caliber-head">
+              <span class="caliber-name">结构相似度</span>
+              <span class="caliber-sub">{{ structureSimilarity.count }} 处数字/表格骨架趋同</span>
+            </div>
+            <strong>{{ structureSimilarity.count ? Math.round(structureSimilarity.maxScore * 100) + '%' : '无' }}</strong>
+            <span class="caliber-note">结构特征趋同、文字可完全不同；同一工程的标书天然出现，不代表内容重复</span>
+          </div>
+        </section>
+        <a-alert
+          v-if="structureSimilarity.count && !textDuplication.count"
+          type="info"
+          show-icon
+          message="本次未发现文字层面的重复，高分项均为结构趋同提示（数字/表格骨架一致），不代表内容重复。"
+        />
         <section class="summary-grid">
           <div><strong>{{ data.summary.rule_count }}</strong><span>规则子代理</span></div>
           <div><strong>{{ data.summary.completed_rule_count }}</strong><span>已完成</span></div>
@@ -861,7 +922,7 @@ function recheck() {
                   <strong :title="group.representative.check_item_name">{{ groupTitle(group) }}</strong>
                   <span v-if="group.ruleNames.length > 1" class="grp-rules">命中 {{ group.ruleNames.length }} 条规则</span>
                 </div>
-                <span class="score">相似度 {{ Math.round(group.maxScore * 100) }}%</span>
+                <span class="score">{{ scoreCaliberOf(group.maxScoreType) }} {{ Math.round(group.maxScore * 100) }}%</span>
               </li>
             </ul>
 
@@ -871,7 +932,7 @@ function recheck() {
                   <span :class="['verdict', selectedFinding.verdict]">{{ verdictLabel(selectedFinding.verdict) }}</span>
                   <strong>{{ selectedGroup ? groupTitle(selectedGroup) : selectedFinding.check_item_name }}</strong>
                   <span class="match-type">{{ matchTypeLabel(selectedFinding.match_type) }}</span>
-                  <span class="score">相似度 {{ Math.round(selectedFinding.similarity_score * 100) }}%</span>
+                  <span class="score">{{ scoreCaliberOf(selectedFinding.match_type) }} {{ Math.round(selectedFinding.similarity_score * 100) }}%</span>
                   <span class="source-basis">{{ sourceBasisLabel(selectedFinding.source_basis) }}</span>
                   <span class="evidence-strength">证据强度 {{ evidenceStrength(selectedFinding.evidence?.evidence_strength) }}</span>
                   <span v-if="Number(selectedFinding.evidence?.collapsed_count) > 1" class="aggregate-count">
@@ -1001,6 +1062,15 @@ button.primary { border-color: #d7041a; background: #d7041a; color: #fff; }
 .summary-grid .reasonable strong { color: #18864b; }
 .summary-grid .suspicious strong { color: #d7041a; }
 .summary-grid .unknown strong { color: #b77900; }
+.caliber-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.caliber { background: #fff; border: 1px solid #e6e8ee; border-radius: 9px; padding: 16px 18px; display: flex; flex-direction: column; gap: 4px; }
+.caliber-head { display: flex; align-items: baseline; gap: 10px; }
+.caliber-name { font-size: 14px; font-weight: 600; color: #333; }
+.caliber-sub { color: #888; font-size: 12px; }
+.caliber strong { font-size: 30px; line-height: 1.2; }
+.caliber-text strong { color: #d7041a; }
+.caliber-struct strong { color: #1d5fd6; }
+.caliber-note { color: #777; font-size: 12px; }
 .matrix-table-wrap { overflow-x: auto; }
 .matrix-table { width: 100%; border-collapse: collapse; min-width: 720px; }
 .matrix-table th, .matrix-table td { border: 1px solid #e1e4eb; padding: 8px; text-align: center; }
@@ -1111,6 +1181,7 @@ blockquote { margin: 10px 0 0; padding-left: 12px; border-left: 2px solid #ccd1d
   .task-control { width: 100%; }
   .task-control select { min-width: 0; flex: 1; }
   .summary-grid { grid-template-columns: 1fr 1fr; }
+  .caliber-grid { grid-template-columns: 1fr; }
   .duplicate-list-layout { grid-template-columns: 1fr; }
   .finding-list { position: static; max-height: none; }
   .evidence-grid { grid-template-columns: 1fr; }
