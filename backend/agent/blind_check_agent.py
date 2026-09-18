@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import logging
 import re
-from typing import Any, Optional
+import time
+from typing import Any, Callable, Optional
 
+from backend.agent.tools.vsto_chunked import ChunkedVstoTool
 from backend.agent.tools.vsto_remote import VstoRemoteTool
 from backend.config import get_settings
 from backend.services.llm_factory import create_llm_client
@@ -20,6 +23,73 @@ from mini_agent.agent import Agent as BaseAgent  # noqa: E402
 from mini_agent.logger import AgentLogger  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+# ---- 时间预算与超时口径（ADR-0003）-------------------------------------------
+# 任务总预算由 Celery 侧传入（生产 25 min）。证据采集最多占 60%，之后无论采到多少
+# 都进入研判；研判阶段预留 LLM_RESERVE_SECONDS 给收尾，ReAct 超时后改为一次“不再
+# 调工具”的最终汇总调用——任务以 completed（覆盖 partial）收尾，而不是 failed。
+DEFAULT_TOTAL_BUDGET_SECONDS = 25 * 60
+EVIDENCE_BUDGET_RATIO = 0.6
+LLM_RESERVE_SECONDS = 150
+MIN_REACT_SECONDS = 45
+FINAL_SUMMARY_TIMEOUT_SECONDS = 90
+GUARDRAIL_MIN_REMAINING_SECONDS = 60
+# 单次工具超时按文档规模估算：生产观测 text_style ≈ 2,600 字符/秒（8.6 万字符 33 s），
+# 466 页/35.9 万字符文档 ≈ 140 s+，固定 90 s 必然超时。
+SCAN_TIMEOUT_BASE_SECONDS = 30
+SCAN_TIMEOUT_MIN_SECONDS = 90
+SCAN_TIMEOUT_MAX_SECONDS = 480
+CHARACTERS_PER_SECOND = 1500
+SECONDS_PER_PARAGRAPH = 0.01
+# 秒级完成、与文档规模无关（或近似无关）的工具：不受证据阶段预算跳过影响。
+LIGHT_TOOLS = frozenset(
+    {
+        "word_get_overview",
+        "word_check_page_setup",
+        "word_check_headers_footers",
+        "word_check_signatures",
+        "word_check_blank_pages",
+    }
+)
+# 全文扫描类：耗时随文档线性增长，按规模放宽超时；前两者另按段落范围分块。
+SCAN_TOOLS = frozenset(
+    {
+        "word_check_text_style",
+        "word_check_paragraph_format",
+        "word_check_heading_numbering",
+        "word_scan_identity_clues",
+        "word_check_objects",
+        "word_search",
+        "word_check_format",
+    }
+)
+CHUNKED_TOOLS = ("word_check_text_style", "word_check_paragraph_format")
+
+
+def estimate_scan_timeout(paragraph_count: int | None, characters: int | None) -> int:
+    """Per-call timeout for a whole-document scan on a document of this size."""
+    paragraphs = max(0, int(paragraph_count or 0))
+    chars = max(0, int(characters or 0))
+    seconds = SCAN_TIMEOUT_BASE_SECONDS + chars / CHARACTERS_PER_SECOND + paragraphs * SECONDS_PER_PARAGRAPH
+    return int(max(SCAN_TIMEOUT_MIN_SECONDS, min(SCAN_TIMEOUT_MAX_SECONDS, seconds)))
+
+
+def document_characters(overview: dict[str, Any]) -> int | None:
+    """Character count from the overview (``document_revision`` carries ``doc.Content.End``)."""
+    revision = overview.get("document_revision")
+    if isinstance(revision, str):
+        parts = revision.split("|")
+        if len(parts) >= 4:
+            try:
+                value = int(parts[2])
+                if value > 0:
+                    return value
+            except ValueError:
+                pass
+    paragraphs = overview.get("paragraph_count")
+    if isinstance(paragraphs, int) and paragraphs > 0:
+        return paragraphs * 40
+    return None
 
 
 class _BlindCheckLogger(AgentLogger):
@@ -173,6 +243,8 @@ class BlindCheckAgent(BaseAgent):
         snapshot_id: str | None = None,
         scope: dict[str, Any] | None = None,
         max_steps: int = 24,
+        total_budget_seconds: int = DEFAULT_TOTAL_BUDGET_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.task_id = task_id
         self.tool_session_id = tool_session_id
@@ -180,29 +252,46 @@ class BlindCheckAgent(BaseAgent):
         self.snapshot_id = snapshot_id
         self.scope = scope if isinstance(scope, dict) else None
         self._tool_observations: list[dict[str, Any]] = []
+        self._clock = clock
+        self._started_at = clock()
+        self.total_budget_seconds = max(120, int(total_budget_seconds or DEFAULT_TOTAL_BUDGET_SECONDS))
+        self.document_profile: dict[str, Any] = {}
+        self.budget_notes: list[str] = []
 
         broker = VstoToolBroker(
             session_factory=session_factory,
             task_id=task_id,
             tool_session_id=tool_session_id,
             event_callback=event_callback,
-            timeout_seconds=90,
+            timeout_seconds=SCAN_TIMEOUT_MIN_SECONDS,
             cancel_event=cancel_event,
         )
-        tools = [
-            VstoRemoteTool(tool_name="word_get_overview", broker=broker),
-            VstoRemoteTool(tool_name="word_search", broker=broker),
-            VstoRemoteTool(tool_name="word_check_format", broker=broker),
-            VstoRemoteTool(tool_name="word_scan_identity_clues", broker=broker),
-            VstoRemoteTool(tool_name="word_check_page_setup", broker=broker),
-            VstoRemoteTool(tool_name="word_check_headers_footers", broker=broker),
-            VstoRemoteTool(tool_name="word_check_blank_pages", broker=broker),
-            VstoRemoteTool(tool_name="word_check_text_style", broker=broker),
-            VstoRemoteTool(tool_name="word_check_paragraph_format", broker=broker),
-            VstoRemoteTool(tool_name="word_check_heading_numbering", broker=broker),
-            VstoRemoteTool(tool_name="word_check_objects", broker=broker),
-            VstoRemoteTool(tool_name="word_check_signatures", broker=broker),
-        ]
+        self.broker = broker
+        self._remote_tools: dict[str, VstoRemoteTool] = {}
+        self._chunked_tools: dict[str, ChunkedVstoTool] = {}
+        tools = []
+        for tool_name in (
+            "word_get_overview",
+            "word_search",
+            "word_check_format",
+            "word_scan_identity_clues",
+            "word_check_page_setup",
+            "word_check_headers_footers",
+            "word_check_blank_pages",
+            "word_check_text_style",
+            "word_check_paragraph_format",
+            "word_check_heading_numbering",
+            "word_check_objects",
+            "word_check_signatures",
+        ):
+            remote = VstoRemoteTool(tool_name=tool_name, broker=broker)
+            self._remote_tools[tool_name] = remote
+            if tool_name in CHUNKED_TOOLS:
+                chunked = ChunkedVstoTool(inner=remote, event_callback=event_callback, clock=clock)
+                self._chunked_tools[tool_name] = chunked
+                tools.append(chunked)
+            else:
+                tools.append(remote)
         from backend.services.usage_recorder import instrument_llm_client
 
         super().__init__(
@@ -217,6 +306,34 @@ class BlindCheckAgent(BaseAgent):
         self.logger = _BlindCheckLogger()
         self.cancel_event = cancel_event
 
+    # ---- 时间预算 ----------------------------------------------------------
+    def elapsed_seconds(self) -> float:
+        return max(0.0, self._clock() - self._started_at)
+
+    def remaining_seconds(self) -> float:
+        return self.total_budget_seconds - self.elapsed_seconds()
+
+    def evidence_budget_exhausted(self) -> bool:
+        return self.elapsed_seconds() >= self.total_budget_seconds * EVIDENCE_BUDGET_RATIO
+
+    def configure_for_document(self, overview: dict[str, Any]) -> dict[str, Any]:
+        """Size timeouts and chunking from the document overview (paragraphs / characters)."""
+        paragraph_count = overview.get("paragraph_count") if isinstance(overview.get("paragraph_count"), int) else None
+        characters = document_characters(overview)
+        timeout = estimate_scan_timeout(paragraph_count, characters)
+        for tool_name in SCAN_TOOLS:
+            remote = self._remote_tools.get(tool_name)
+            if remote is not None:
+                remote.default_timeout_seconds = timeout
+        for chunked in self._chunked_tools.values():
+            chunked.configure(total_paragraphs=paragraph_count)
+        self.document_profile = {
+            "paragraph_count": paragraph_count,
+            "characters": characters,
+            "scan_timeout_seconds": timeout,
+        }
+        return self.document_profile
+
     async def collect_overview(self) -> dict[str, Any]:
         """Mandatory fixed orchestration step before LLM reasoning."""
         observation = await self._collect_tool(
@@ -229,6 +346,7 @@ class BlindCheckAgent(BaseAgent):
             }
         parsed = observation.get("data") or {}
         self.snapshot_id = parsed.get("snapshot_id") or self.snapshot_id
+        self.configure_for_document(parsed)
         return {
             "success": True,
             "content": observation["content"],
@@ -238,6 +356,14 @@ class BlindCheckAgent(BaseAgent):
     async def _collect_tool(self, tool_name: str, **arguments: Any) -> dict[str, Any]:
         """Run and record one deterministic VSTO evidence collection step."""
         tool = self.tools[tool_name]
+        if tool_name not in LIGHT_TOOLS and self.evidence_budget_exhausted():
+            # 证据阶段预算用尽：重型扫描不再发起，剩余维度交给研判阶段按待确认处理，
+            # 保证任务总能在预算内收尾而不是被总时限打断。
+            error = "证据采集时间预算已用尽，跳过该项检查"
+            self.budget_notes.append(f"{tool_name}: {error}")
+            observation = {"tool": tool_name, "success": False, "content": "", "error": error, "data": {}}
+            self._tool_observations.append(observation)
+            return observation
         result = await tool.execute(**arguments)
         raw_content = result.content or ""
         observation = {
@@ -395,8 +521,20 @@ class BlindCheckAgent(BaseAgent):
             # 给模型研判规则而非代码启发式硬判（ADR-0002 过渡兼容）。
             context["legacy_story_note"] = legacy_story_note
         self.add_user_message(json.dumps(context, ensure_ascii=False))
+        degraded_reason: str | None = None
+        react_budget = self.remaining_seconds() - LLM_RESERVE_SECONDS
         try:
-            raw = await super().run(cancel_event=self.cancel_event)
+            if react_budget < MIN_REACT_SECONDS:
+                degraded_reason = "证据采集耗时较长，剩余时间预算不足以继续调查"
+                raw = await self._final_summary_without_tools(degraded_reason)
+            else:
+                try:
+                    raw = await asyncio.wait_for(
+                        super().run(cancel_event=self.cancel_event), timeout=react_budget
+                    )
+                except asyncio.TimeoutError:
+                    degraded_reason = "智能研判超过时间预算"
+                    raw = await self._final_summary_without_tools(degraded_reason)
         except Exception as exc:
             logger.exception("BlindCheckAgent failed for task %s", self.task_id)
             return {
@@ -414,7 +552,9 @@ class BlindCheckAgent(BaseAgent):
         # AI 是用户可见发现的唯一作者（ADR-0002）：工具违规只作为事实。发现
         # 模型未覆盖的违规维度时先带着事实重问一次；重问后仍未覆盖的维度
         # 才降级为待确认，绝不把 raw 违规直接物化成用户可见 finding。
-        supplement = await self._guardrail_reask(findings, deterministic_observations)
+        supplement: list[dict[str, Any]] = []
+        if degraded_reason is None and self.remaining_seconds() > GUARDRAIL_MIN_REMAINING_SECONDS:
+            supplement = await self._guardrail_reask(findings, deterministic_observations)
         if supplement:
             findings = _merge_findings(findings, supplement)
         findings.extend(_uncovered_dimension_findings(findings, deterministic_observations))
@@ -445,8 +585,52 @@ class BlindCheckAgent(BaseAgent):
                 }
             )
             findings.append(truncated_finding)
+        if degraded_reason is not None:
+            budget_finding = _unknown_finding(
+                f"{degraded_reason}：以上结论基于已采集证据的一次性汇总，未能完成调查的维度已按待确认处理。"
+            )
+            budget_finding.update({"title": "检查在时间预算内未完全完成", "category": "other"})
+            findings.append(budget_finding)
         summary = _summarize(findings, parsed.get("summary"), coverage=coverage)
+        summary["time_budget"] = {
+            "total_seconds": self.total_budget_seconds,
+            "elapsed_seconds": int(self.elapsed_seconds()),
+            "degraded": degraded_reason is not None,
+            "skipped_tools": list(self.budget_notes),
+        }
+        if self.document_profile:
+            summary["document_profile"] = self.document_profile
+        chunk_runs = {name: tool.last_run for name, tool in self._chunked_tools.items() if tool.last_run}
+        if chunk_runs:
+            summary["scan_chunks"] = chunk_runs
         return {"summary": summary, "findings": findings}
+
+    async def _final_summary_without_tools(self, reason: str) -> str:
+        """One tool-free summarization call when the ReAct budget is gone.
+
+        The model stays the sole author of findings (ADR-0002); it just no
+        longer gets to investigate further.  Anything it cannot settle from the
+        evidence already in context is expected to come back as ``unknown``.
+        """
+        cleanup = getattr(self, "_cleanup_incomplete_messages", None)
+        if callable(cleanup):
+            try:
+                cleanup()
+            except Exception:
+                logger.exception("message cleanup before final summary failed for task %s", self.task_id)
+        self.add_user_message(
+            f"{reason}。请不要再调用任何工具，立即基于 mandatory_evidence 与对话中已获得的工具结果，"
+            "按系统提示要求的 JSON 格式输出最终结果；证据不足以判定的维度一律输出 verdict=unknown。"
+        )
+        try:
+            response = await asyncio.wait_for(
+                self.llm.generate(messages=self.messages, tools=[]),
+                timeout=FINAL_SUMMARY_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            logger.exception("final summary without tools failed for task %s", self.task_id)
+            return ""
+        return str(getattr(response, "content", "") or "")
 
 
 _DETERMINISTIC_RULE_KEYWORDS: dict[str, tuple[str, ...]] = {

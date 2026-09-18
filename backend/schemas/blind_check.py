@@ -103,3 +103,13 @@ class VstoToolResultRequest(BaseModel):
     content: str | None = Field(default=None, max_length=256_000)
     error: str | None = Field(default=None, max_length=2_000)
     snapshot_id: str | None = Field(default=None, max_length=36)
+
+
+class VstoToolProgressRequest(BaseModel):
+    """Heartbeat relayed by the page while VSTO is still scanning (ADR-0003)."""
+
+    tool_session_id: str = Field(min_length=1, max_length=36)
+    call_id: str = Field(min_length=1, max_length=36)
+    checked_count: int | None = Field(default=None, ge=0, le=100_000_000)
+    cursor: int | None = Field(default=None, ge=0, le=100_000_000)
+    total: int | None = Field(default=None, ge=0, le=100_000_000)

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -31,6 +31,9 @@ class VstoToolCall(Base):
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # VSTO 扫描进度心跳（迁移 046）：最近一次进展时间与段落游标，供活性判定与排障。
+    last_progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    progress_cursor: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     def __repr__(self) -> str:
         return f"<VstoToolCall(call_id={self.call_id}, tool={self.tool_name}, status={self.status})>"

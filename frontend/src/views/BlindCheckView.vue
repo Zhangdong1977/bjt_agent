@@ -9,6 +9,7 @@ import {
   createVstoToolSession,
   getBlindCheckResults,
   heartbeatVstoToolSession,
+  submitVstoToolProgress,
   submitVstoToolResult,
   type BlindCheckFinding,
 } from "@/api/blindCheck";
@@ -19,9 +20,26 @@ import iconPoints from "@/assets/images/ui/common-icon-points.png";
 
 const BRIDGE_REQUEST = "bjt.vsto.tool.request";
 const BRIDGE_RESULT = "bjt.vsto.tool.result";
+// ADR-0003：插件扫描进度（页面转发给后端作活性心跳）与取消（后端/用户 → 插件中止扫描）
+const BRIDGE_PROGRESS = "bjt.vsto.tool.progress";
+const BRIDGE_CANCEL = "bjt.vsto.tool.cancel";
 const BRIDGE_CONTEXT = "bjt.vsto.context";
 const BRIDGE_BIND_RESULT = "bjt.vsto.session.bind.result";
 const BRIDGE_LOCATE_RESULT = "bjt.vsto.locate.result";
+const TOOL_LABELS: Record<string, string> = {
+  word_get_overview: "文档概览",
+  word_search: "关键词检索",
+  word_check_format: "格式采样",
+  word_scan_identity_clues: "身份线索扫描",
+  word_check_page_setup: "页面设置",
+  word_check_headers_footers: "页眉页脚",
+  word_check_blank_pages: "空白页",
+  word_check_text_style: "字体与字号",
+  word_check_paragraph_format: "段落格式",
+  word_check_heading_numbering: "标题编号",
+  word_check_objects: "图片与图形对象",
+  word_check_signatures: "签名与批注",
+};
 const billingStore = useBillingStore();
 const timelineSteps = [
   { title: "建立全文快照", detail: "锁定当前 Word 文档版本" },
@@ -46,6 +64,7 @@ const errorMessage = ref("");
 const documentNotice = ref("");
 const progressMessage = ref("等待提交检查…");
 const progressStep = ref(0);
+const lastToolName = ref("");
 const findings = ref<BlindCheckFinding[]>([]);
 const summary = ref<Record<string, unknown>>({ overall: "unknown", critical: 0, major: 0, minor: 0, unknown: 0 });
 let streamController: AbortController | null = null;
@@ -203,6 +222,8 @@ function handleBridgeMessage(event: MessageEvent) {
   } else if (payload.type === BRIDGE_RESULT) {
     bridgeState.value = "ready";
     void forwardToolResult(payload);
+  } else if (payload.type === BRIDGE_PROGRESS) {
+    void forwardToolProgress(payload);
   } else if (payload.type === BRIDGE_LOCATE_RESULT) {
     if (payload.success === true) {
       progressMessage.value = "已在 Word 中定位到证据";
@@ -342,10 +363,39 @@ function handleTaskEvent(event: Record<string, unknown>) {
     }
     if (forwardedToolCalls.has(callId)) return;
     forwardedToolCalls.add(callId);
+    lastToolName.value = String(event.tool || "");
     progressStep.value = Math.max(progressStep.value, 2);
-    progressMessage.value = `正在调用 Word 工具：${String(event.tool || "")}`;
+    progressMessage.value = `正在调用 Word 工具：${TOOL_LABELS[String(event.tool || "")] || String(event.tool || "")}`;
     bridgeState.value = "busy";
-    postBridge({ type: BRIDGE_REQUEST, request_id: callId, call_id: callId, tool_session_id: event.tool_session_id, tool: event.tool, arguments: event.arguments || {} });
+    // requested_at/expires_at 成对透传给插件：插件按二者之差（服务端 TTL）配合本机单调时钟
+    // 判过期，过期请求在出队时直接跳过，不再占用 Word 串行队列；不依赖用户机器时钟准确
+    postBridge({
+      type: BRIDGE_REQUEST,
+      request_id: callId,
+      call_id: callId,
+      tool_session_id: event.tool_session_id,
+      tool: event.tool,
+      arguments: event.arguments || {},
+      requested_at: event.requested_at || null,
+      expires_at: event.expires_at || null,
+    });
+  } else if (type === "vsto_tool_progress") {
+    // 服务端回显的扫描进度（分块窗口 / 插件心跳）：长文档检查不再是“没动静”
+    const checked = Number(event.checked_count ?? event.cursor ?? 0) || 0;
+    const total = Number(event.total ?? 0) || 0;
+    const label = TOOL_LABELS[String(event.tool || "")] || "全文扫描";
+    progressStep.value = Math.max(progressStep.value, 2);
+    progressMessage.value = total > 0
+      ? `正在检查${label}：已覆盖 ${formatMetric(checked)} / ${formatMetric(total)} 段`
+      : `正在检查${label}：已覆盖 ${formatMetric(checked)} 段`;
+  } else if (type === "vsto_tool_timeout" || type === "vsto_tool_cancel") {
+    // 后端已放弃该调用：转告插件立即中止，释放串行队列给后续工具
+    const callId = String(event.call_id || "");
+    if (callId && String(event.tool_session_id || "") === toolSessionId.value) {
+      postBridge({ type: BRIDGE_CANCEL, call_id: callId, tool_session_id: toolSessionId.value });
+    }
+  } else if (type === "vsto_tool_circuit_open") {
+    documentNotice.value = "Word 工具连续多次无响应，本次检查将基于已采集证据完成；请确认插件仍在运行";
   } else if (["vsto_tool_result", "llm_output", "tool_call_start", "tool_call_end"].includes(type)) {
     progressStep.value = Math.max(progressStep.value, 3);
     progressMessage.value = "全文证据读取完成，正在进行智能合规研判…";
@@ -396,6 +446,32 @@ async function forwardToolResult(message: Record<string, unknown>) {
   }
 }
 
+async function forwardToolProgress(message: Record<string, unknown>) {
+  const callId = String(message.call_id || "");
+  if (!callId || !toolSessionId.value) return;
+  if (String(message.tool_session_id || "") !== toolSessionId.value) return;
+  const checked = Number(message.checked_count ?? 0) || 0;
+  const cursor = Number(message.cursor ?? 0) || 0;
+  const total = Number(message.total ?? 0) || 0;
+  const label = TOOL_LABELS[String(lastToolName.value)] || "全文扫描";
+  progressStep.value = Math.max(progressStep.value, 2);
+  progressMessage.value = total > 0
+    ? `正在检查${label}：已覆盖 ${formatMetric(cursor || checked)} / ${formatMetric(total)} 段`
+    : `正在检查${label}：已覆盖 ${formatMetric(cursor || checked)} 段`;
+  // 转发给后端作活性心跳；失败静默——心跳丢了只是等待窗口变短，不影响结果
+  try {
+    await submitVstoToolProgress({
+      tool_session_id: toolSessionId.value,
+      call_id: callId,
+      checked_count: checked || null,
+      cursor: cursor || null,
+      total: total || null,
+    });
+  } catch {
+    /* 心跳尽力而为 */
+  }
+}
+
 async function loadResults() {
   if (!taskId.value) return;
   try {
@@ -411,6 +487,9 @@ async function loadResults() {
 async function cancelCheck() {
   if (!taskId.value) return;
   cancelling.value = true;
+  // 先让插件中止正在跑的扫描并丢弃排队请求，再取消后端任务：否则 Word 会继续
+  // 白算几分钟，用户紧接着重新发起的检查得排在它后面。
+  if (toolSessionId.value) postBridge({ type: BRIDGE_CANCEL, all: true, tool_session_id: toolSessionId.value });
   try { await cancelBlindCheckTask(taskId.value); finished.value = true; stopTaskStream(); progressMessage.value = "检查已取消"; } catch (error) { errorMessage.value = errorText(error, "取消检查失败"); } finally { cancelling.value = false; }
 }
 
