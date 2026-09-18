@@ -10,6 +10,7 @@ from sqlalchemy import select
 from backend.api.deps import CurrentUser, DBSession
 from backend.models import BlindCheckTask, VstoToolCall, VstoToolSession
 from backend.schemas.blind_check import (
+    VstoToolProgressRequest,
     VstoToolResultRequest,
     VstoToolSessionCreate,
     VstoToolSessionResponse,
@@ -17,6 +18,7 @@ from backend.schemas.blind_check import (
 from backend.services.vsto_tool_broker import (
     VSTO_TOOL_NAMES,
     discard_tool_result,
+    publish_tool_progress,
     publish_tool_result,
     validate_tool_result_payload,
 )
@@ -156,7 +158,7 @@ async def submit_tool_result(
         raise HTTPException(status_code=404, detail="暗标检查任务不存在")
     if call.tool_name not in VSTO_TOOL_NAMES:
         raise HTTPException(status_code=400, detail="工具不在允许列表中")
-    if call.status in {"completed", "failed", "expired"}:
+    if call.status in {"completed", "failed"}:
         return {"call_id": call.call_id, "status": call.status, "idempotent": True}
     if task.status not in {"created", "waiting_for_document", "running"}:
         error = "暗标检查任务已结束，拒绝接收迟到的 Word 工具结果"
@@ -172,11 +174,10 @@ async def submit_tool_result(
         await db.commit()
         publish_tool_result(call.call_id, call.result)
         raise HTTPException(status_code=409, detail=error)
-    if call.expires_at <= utc_now():
-        call.status = "expired"
-        call.error_message = "工具调用已超时"
-        await db.commit()
-        raise HTTPException(status_code=409, detail="工具调用已超时，请重新发起检查")
+    # 迟到结果（ADR-0003）：broker 可能已停止等待并把调用标为 expired，但只要任务仍在
+    # 进行且快照一致，这份结果就仍然有效——分块调用在重试同一范围前会先来取它。
+    # “已过期”与“已作废”解耦；任务结束 / 快照变化 / 会话关闭三条安全规则不变。
+    late = call.status == "expired" or (getattr(call, "expires_at", None) or utc_now()) <= utc_now()
 
     expected_snapshot_id = None
     if isinstance(call.arguments, dict):
@@ -201,6 +202,8 @@ async def submit_tool_result(
         "error": error,
         "snapshot_id": body.snapshot_id,
     }
+    if late:
+        result["late"] = True
     try:
         validate_tool_result_payload(result)
     except ValueError as exc:
@@ -215,4 +218,46 @@ async def submit_tool_result(
     session.last_seen_at = utc_now()
     await db.commit()
     publish_tool_result(call.call_id, result)
-    return {"call_id": call.call_id, "status": call.status}
+    return {"call_id": call.call_id, "status": call.status, "late": late}
+
+
+@router.post("/progress")
+async def submit_tool_progress(
+    body: VstoToolProgressRequest,
+    db: DBSession,
+    current_user: CurrentUser,
+):
+    """Record a VSTO scan heartbeat so the waiting agent keeps waiting (ADR-0003).
+
+    Progress carries counts only (no document text).  It extends the broker's
+    idle deadline for a pending call and is ignored once the call has settled.
+    """
+    session = await _session(body.tool_session_id, current_user, db)
+    call = (
+        await db.execute(select(VstoToolCall).where(VstoToolCall.call_id == body.call_id))
+    ).scalar_one_or_none()
+    if call is None or call.session_id != session.id:
+        raise HTTPException(status_code=404, detail="工具调用不存在或不属于当前会话")
+    task = (
+        await db.execute(select(BlindCheckTask).where(BlindCheckTask.id == call.task_id))
+    ).scalar_one_or_none()
+    if task is None or task.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="暗标检查任务不存在")
+    if call.status != "pending" or task.status not in {"created", "waiting_for_document", "running"}:
+        return {"call_id": call.call_id, "status": call.status, "ignored": True}
+    now = utc_now()
+    call.last_progress_at = now
+    if body.cursor is not None:
+        call.progress_cursor = body.cursor
+    session.last_seen_at = now
+    await db.commit()
+    publish_tool_progress(
+        call.call_id,
+        {
+            "ts": now.timestamp(),
+            "checked_count": body.checked_count,
+            "cursor": body.cursor,
+            "total": body.total,
+        },
+    )
+    return {"call_id": call.call_id, "status": call.status, "ignored": False}

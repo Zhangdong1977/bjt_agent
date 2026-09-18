@@ -27,6 +27,19 @@ logger = logging.getLogger(__name__)
 
 TOOL_SESSION_TTL_MINUTES = 30
 TOOL_CALL_TIMEOUT_SECONDS = 120
+# 活性判定（ADR-0003）：只要 VSTO 还在上报进度，就不按固定墙钟判超时；
+# 只有“无进展”持续超过该值才放弃本次调用。旧插件不上报进度时退化为固定超时。
+TOOL_CALL_IDLE_TIMEOUT_SECONDS = 45
+# 单次调用含所有活性续期的绝对上限，也是 DB / SSE 里 ``expires_at`` 的口径。
+TOOL_CALL_MAX_TIMEOUT_SECONDS = 600
+# 同一任务内累计在无应答调用上浪费的秒数超过该值后，不再向 Word 发起新的调用：
+# 防止“超时 → 模型再调 → 再超时”的重试放大把整个任务预算烧光。
+TOOL_CALL_WASTED_BUDGET_SECONDS = 240
+# 全文扫描类工具支持按正文段落范围分块调用；范围上限与 C# 侧 BlindMaxParagraphs 一致。
+PARAGRAPH_RANGE_MAX = 1_000_000
+_PARAGRAPH_RANGE_TOOLS = frozenset(
+    {"word_check_text_style", "word_check_paragraph_format", "word_check_heading_numbering"}
+)
 # ``requirement_text`` accepts up to 50,000 Unicode characters at the API
 # boundary.  A Chinese requirement can use roughly three UTF-8 bytes per
 # character, so the function-call envelope must use a byte limit that is
@@ -131,6 +144,8 @@ VSTO_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "require_no_underline": {"type": "boolean"},
             "check_white_background": {"type": "boolean"},
             "max_characters": {"type": "integer", "minimum": 1000, "maximum": 1000000},
+            "paragraph_start": {"type": "integer", "minimum": 1, "maximum": PARAGRAPH_RANGE_MAX},
+            "paragraph_end": {"type": "integer", "minimum": 1, "maximum": PARAGRAPH_RANGE_MAX},
         },
         "additionalProperties": False,
     },
@@ -145,6 +160,8 @@ VSTO_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "line_spacing_multiple": {"type": "number", "minimum": 0, "maximum": 10},
             "space_before_pt": {"type": "number", "minimum": 0, "maximum": 500},
             "space_after_pt": {"type": "number", "minimum": 0, "maximum": 500},
+            "paragraph_start": {"type": "integer", "minimum": 1, "maximum": PARAGRAPH_RANGE_MAX},
+            "paragraph_end": {"type": "integer", "minimum": 1, "maximum": PARAGRAPH_RANGE_MAX},
         },
         "additionalProperties": False,
     },
@@ -168,6 +185,8 @@ VSTO_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "items": {"type": "string", "maxLength": 200},
                 "maxItems": 50,
             },
+            "paragraph_start": {"type": "integer", "minimum": 1, "maximum": PARAGRAPH_RANGE_MAX},
+            "paragraph_end": {"type": "integer", "minimum": 1, "maximum": PARAGRAPH_RANGE_MAX},
         },
         "additionalProperties": False,
     },
@@ -281,6 +300,79 @@ def discard_tool_result(call_id: str) -> None:
     _LOCAL_RESULTS.pop(call_id, None)
 
 
+# Progress heartbeats are published by the page on behalf of VSTO while a long
+# scan is still running.  They are read (not consumed) by the waiting broker so
+# repeated polls see the latest marker until the call settles.
+_LOCAL_PROGRESS: dict[str, dict[str, Any]] = {}
+
+
+def _progress_key(call_id: str) -> str:
+    return f"vsto:tool:progress:{call_id}"
+
+
+def publish_tool_progress(call_id: str, payload: dict[str, Any], ttl: int = 600) -> None:
+    """Record the latest VSTO progress marker for a pending call."""
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:4_000]
+    client = _redis_client()
+    if client is not None:
+        try:
+            client.set(_progress_key(call_id), encoded, ex=ttl)
+            client.close()
+            return
+        except Exception as exc:
+            logger.warning("Redis progress publish for VSTO call %s failed: %s", call_id, exc)
+            try:
+                client.close()
+            except Exception:
+                pass
+    _LOCAL_PROGRESS[call_id] = dict(payload)
+
+
+def read_tool_progress(call_id: str) -> dict[str, Any] | None:
+    """Return the latest progress marker without consuming it."""
+    client = _redis_client()
+    if client is not None:
+        try:
+            encoded = client.get(_progress_key(call_id))
+            client.close()
+            if encoded:
+                return json.loads(encoded)
+        except Exception as exc:
+            logger.warning("Redis progress read for VSTO call %s failed: %s", call_id, exc)
+            try:
+                client.close()
+            except Exception:
+                pass
+    return _LOCAL_PROGRESS.get(call_id)
+
+
+def discard_tool_progress(call_id: str) -> None:
+    client = _redis_client()
+    if client is not None:
+        try:
+            client.delete(_progress_key(call_id))
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            logger.warning("Redis progress cleanup for VSTO call %s failed: %s", call_id, exc)
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+    _LOCAL_PROGRESS.pop(call_id, None)
+
+
+def _validate_paragraph_range(arguments: dict[str, Any]) -> None:
+    start = arguments.get("paragraph_start")
+    end = arguments.get("paragraph_end")
+    for key, value in (("paragraph_start", start), ("paragraph_end", end)):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= PARAGRAPH_RANGE_MAX
+        ):
+            raise ValueError(f"{key} must be an integer between 1 and {PARAGRAPH_RANGE_MAX}")
+    if start is not None and end is not None and start > end:
+        raise ValueError("paragraph_start must not exceed paragraph_end")
+
+
 def _validate_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
     if tool_name not in VSTO_TOOL_NAMES:
         raise ValueError(f"VSTO tool is not allowed: {tool_name}")
@@ -301,6 +393,8 @@ def _validate_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
         not isinstance(snapshot_id, str) or not snapshot_id.strip() or len(snapshot_id) > 36
     ):
         raise ValueError("snapshot_id must be a non-empty string up to 36 characters")
+    if tool_name in _PARAGRAPH_RANGE_TOOLS:
+        _validate_paragraph_range(arguments)
     if tool_name == "word_search":
         query = arguments.get("query")
         if not isinstance(query, str) or not query.strip():
@@ -413,6 +507,12 @@ async def _emit(
         logger.exception("VSTO broker event callback failed: %s", event_type)
 
 
+def _memo_key(tool_name: str, arguments: dict[str, Any]) -> str:
+    """Identity of one call for the per-task result memo (snapshot is task-wide)."""
+    stable = {key: value for key, value in arguments.items() if key != "snapshot_id"}
+    return tool_name + "|" + json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 class VstoToolBroker:
     """Create and await VSTO calls for one blind-check task."""
 
@@ -425,21 +525,86 @@ class VstoToolBroker:
         event_callback: Callable[[str, dict[str, Any]], Any] | None = None,
         timeout_seconds: int = TOOL_CALL_TIMEOUT_SECONDS,
         cancel_event: asyncio.Event | None = None,
+        idle_timeout_seconds: int = TOOL_CALL_IDLE_TIMEOUT_SECONDS,
+        wasted_budget_seconds: int = TOOL_CALL_WASTED_BUDGET_SECONDS,
     ) -> None:
         self.session_factory = session_factory
         self.task_id = task_id
         self.tool_session_id = tool_session_id
         self.event_callback = event_callback
-        self.timeout_seconds = max(5, min(int(timeout_seconds), 600))
+        self.timeout_seconds = self._clamp_timeout(timeout_seconds)
+        self.idle_timeout_seconds = max(5, int(idle_timeout_seconds))
+        self.wasted_budget_seconds = max(0, int(wasted_budget_seconds))
         self.cancel_event = cancel_event
+        # 同一任务内相同工具+相同参数的结果只向 Word 要一次（成功与失败都记）：
+        # 模型看到“必要工具未成功”后原样再调，直接命中缓存而不是再排一次队。
+        self._memo: dict[str, dict[str, Any]] = {}
+        # 累计在超时上浪费的秒数；超过预算后熔断，不再发起新的 Word 调用。
+        self.wasted_seconds = 0.0
+        self.circuit_open = False
 
-    async def request(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Issue one function call and wait for the VSTO result."""
+    @staticmethod
+    def _clamp_timeout(value: Any) -> int:
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError):
+            seconds = TOOL_CALL_TIMEOUT_SECONDS
+        return max(5, min(seconds, TOOL_CALL_MAX_TIMEOUT_SECONDS))
+
+    def cached_result(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        entry = self._memo.get(_memo_key(tool_name, dict(arguments or {})))
+        return json.loads(json.dumps(entry)) if entry is not None else None
+
+    async def request(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        timeout_seconds: int | None = None,
+        max_wait_seconds: int | None = None,
+        use_cache: bool = True,
+    ) -> dict[str, Any]:
+        """Issue one function call and wait for the VSTO result.
+
+        ``timeout_seconds`` is the initial wall-clock allowance; progress
+        heartbeats from VSTO extend the deadline by ``idle_timeout_seconds`` at
+        a time, never beyond ``max_wait_seconds`` (the DB/SSE ``expires_at``).
+        """
         arguments = dict(arguments or {})
         _validate_tool_arguments(tool_name, arguments)
+        memo_key = _memo_key(tool_name, arguments)
+        if use_cache and memo_key in self._memo:
+            cached = json.loads(json.dumps(self._memo[memo_key]))
+            cached["cached"] = True
+            if not cached.get("success"):
+                cached["error"] = "（本次检查已用相同参数调用过该工具，未再次执行）" + str(cached.get("error") or "")
+            await _emit(
+                self.event_callback,
+                "vsto_tool_cached",
+                {"tool": tool_name, "success": bool(cached.get("success"))},
+            )
+            return cached
+        if self.circuit_open or (
+            self.wasted_budget_seconds and self.wasted_seconds >= self.wasted_budget_seconds
+        ):
+            self.circuit_open = True
+            error = (
+                "Word 工具累计无应答时间已超过上限，本次检查不再发起新的文档扫描；"
+                "请确认插件是否仍在响应，或缩小文档后重新检查"
+            )
+            await _emit(
+                self.event_callback,
+                "vsto_tool_circuit_open",
+                {"tool": tool_name, "wasted_seconds": int(self.wasted_seconds)},
+            )
+            return {"success": False, "data": {}, "content": "", "error": error, "circuit_open": True}
+
+        timeout = self._clamp_timeout(timeout_seconds if timeout_seconds is not None else self.timeout_seconds)
+        absolute = self._clamp_timeout(max_wait_seconds if max_wait_seconds is not None else timeout * 2)
+        absolute = max(absolute, timeout)
         call_id = str(uuid.uuid4())
         requested_at = utc_now()
-        expires_at = requested_at + timedelta(seconds=self.timeout_seconds)
+        expires_at = requested_at + timedelta(seconds=absolute)
 
         async with self.session_factory() as db:
             task = (
@@ -489,42 +654,113 @@ class VstoToolBroker:
                 "tool_session_id": self.tool_session_id,
                 "tool": tool_name,
                 "arguments": arguments,
+                # requested_at 与 expires_at 成对下发：插件按二者之差（服务端 TTL）配合本机
+                # 单调时钟判过期，不直接拿本机墙钟比 expires_at——用户机器时钟偏差不再误判。
+                "requested_at": requested_at.isoformat(),
                 "expires_at": expires_at.isoformat(),
             },
         )
 
-        deadline = time.monotonic() + self.timeout_seconds
-        while time.monotonic() < deadline:
+        started = time.monotonic()
+        deadline = started + timeout
+        absolute_deadline = started + absolute
+        last_progress_marker: Any = None
+        now = started
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                break
             if self.cancel_event is not None and self.cancel_event.is_set():
                 error = "暗标检查已取消，已停止等待 Word 工具"
                 await self._mark_failed(call_id, error)
+                discard_tool_progress(call_id)
                 await _emit(
                     self.event_callback,
                     "vsto_tool_cancelled",
                     {"call_id": call_id, "tool": tool_name, "message": error},
                 )
-                return {"success": False, "error": error}
+                await self._emit_cancel(call_id, tool_name, "task_cancelled")
+                return {"success": False, "data": {}, "content": "", "error": error}
             payload = await asyncio.to_thread(consume_tool_result, call_id)
             if payload is not None:
-                return await self._finish_call(call_id, payload)
+                discard_tool_progress(call_id)
+                result = await self._finish_call(call_id, payload)
+                self._memo[memo_key] = json.loads(json.dumps(result))
+                return result
             # Polling the DB makes the broker work even when Redis is briefly
             # unavailable and lets cancellation/expiry be observed promptly.
             state = await self._get_call_state(call_id)
             if state and state[0] in {"completed", "failed", "expired"}:
+                discard_tool_progress(call_id)
                 if state[1] is not None:
+                    self._memo[memo_key] = json.loads(json.dumps(state[1]))
                     return state[1]
-                return {"success": False, "error": state[2] or "VSTO tool call failed"}
+                failure = {"success": False, "data": {}, "content": "", "error": state[2] or "VSTO tool call failed"}
+                self._memo[memo_key] = dict(failure)
+                return failure
+            progress = await asyncio.to_thread(read_tool_progress, call_id)
+            if progress:
+                marker = (progress.get("seq"), progress.get("ts"), progress.get("checked_count"), progress.get("cursor"))
+                if marker != last_progress_marker:
+                    last_progress_marker = marker
+                    # VSTO 仍在推进：把期限往后推一个空闲窗口，但绝不越过绝对上限。
+                    deadline = min(absolute_deadline, max(deadline, now + self.idle_timeout_seconds))
+                    await _emit(
+                        self.event_callback,
+                        "vsto_tool_progress",
+                        {
+                            "call_id": call_id,
+                            "tool": tool_name,
+                            "checked_count": progress.get("checked_count"),
+                            "cursor": progress.get("cursor"),
+                            "total": progress.get("total"),
+                        },
+                    )
             await asyncio.sleep(0.5)
 
+        self.wasted_seconds += max(0.0, now - started)
         error = "VSTO 工具调用超时，文档可能已关闭或页面未连接"
+        if last_progress_marker is not None:
+            error = "VSTO 工具长时间没有新的进展，已停止等待（文档过大或插件无响应）"
         await self._mark_failed(call_id, error, status="expired")
         discard_tool_result(call_id)
+        discard_tool_progress(call_id)
         await _emit(
             self.event_callback,
             "vsto_tool_timeout",
             {"call_id": call_id, "tool": tool_name, "message": error},
         )
-        return {"success": False, "error": error}
+        await self._emit_cancel(call_id, tool_name, "timeout")
+        failure = {"success": False, "data": {}, "content": "", "error": error, "call_id": call_id, "expired": True}
+        self._memo[memo_key] = {k: v for k, v in failure.items() if k != "call_id"}
+        return failure
+
+    async def _emit_cancel(self, call_id: str, tool_name: str, reason: str) -> None:
+        """Ask the page to abort the still-running Word operation for this call."""
+        await _emit(
+            self.event_callback,
+            "vsto_tool_cancel",
+            {
+                "call_id": call_id,
+                "tool": tool_name,
+                "tool_session_id": self.tool_session_id,
+                "reason": reason,
+            },
+        )
+
+    async def fetch_late_result(self, call_id: str) -> dict[str, Any] | None:
+        """Return a result that arrived after the broker stopped waiting.
+
+        Late results are accepted by the API while the task is still running
+        and the snapshot is unchanged; a chunked caller checks here before
+        paying for the same paragraph range again.
+        """
+        if not call_id:
+            return None
+        state = await self._get_call_state(call_id)
+        if state and state[0] == "completed" and isinstance(state[1], dict) and state[1].get("success"):
+            return state[1]
+        return None
 
     async def _finish_call(self, call_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         success = bool(payload.get("success"))
