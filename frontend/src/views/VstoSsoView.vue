@@ -13,6 +13,12 @@ const SSO_RESULT = "bjt.vsto.sso.result";
 
 // /vsto/* 专用页共用这一 SSO 壳：票据兑换成功后按路由挂载目标组件。
 // 新增 VSTO 页面时在这里登记一行即可。
+//
+// 身份的权威来源是插件当前登录账号（票据由插件签发），不是 WebView2 里残留的
+// 网页登录态：同一台机器插件换号登录后，localStorage 里上一账号的 token 在
+// refresh 有效期内仍能通过 /auth/me，若据此跳过票据兑换，页面就会以上一账号
+// 身份查余额/建任务（2026-09-18 生产实例：插件登录 A，页面却显示 B 的 0 余额）。
+// 所以只要在插件内打开，一律先向插件要票据；本地登录态只在插件迟迟不回票据时兜底。
 const TARGETS: Record<string, { component: Component; title: string; entering: string }> = {
   "/vsto/blind-check": { component: BlindCheckView, title: "暗标合规检查", entering: "正在进入暗标合规检查…" },
   "/vsto/bid-draft": { component: BidDraftView, title: "AI 标书生成", entering: "正在进入 AI 标书生成…" },
@@ -50,6 +56,24 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : "单点登录失败，请关闭页面后重试";
 }
 
+function ensureListener() {
+  const webview = (window as VstoWindow).chrome?.webview;
+  if (webview && !listener) {
+    listener = handleMessage;
+    webview.addEventListener("message", handleMessage);
+  }
+}
+
+function dropListener() {
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+    timeoutId = null;
+  }
+  const webview = (window as VstoWindow).chrome?.webview;
+  if (webview && listener) webview.removeEventListener("message", listener);
+  listener = null;
+}
+
 function requestTicket() {
   errorText.value = "";
   statusText.value = "正在读取插件登录状态…";
@@ -59,12 +83,22 @@ function requestTicket() {
     return;
   }
   insideVsto.value = true;
+  ensureListener();
   requestId = typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `sso-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   webview.postMessage({ type: SSO_REQUEST, request_id: requestId });
   if (timeoutId) clearTimeout(timeoutId);
   timeoutId = setTimeout(() => {
+    // 插件未回票据（桥异常或版本过旧）：本地已有登录态时降级放行，
+    // 否则视为插件未登录报错。绝不因本地有 token 就跳过票据兑换（见文件头注释）。
+    // 降级即摘掉监听：晚到的票据不再兑换，避免已按旧身份渲染的组件与
+    // 新 token 形成半新半旧状态；下次打开页面会重新走票据兑换。
+    if (authStore.isAuthenticated) {
+      dropListener();
+      ready.value = true;
+      return;
+    }
     errorText.value = "插件未返回登录票据，请确认插件已登录后重试";
   }, 10_000);
 }
@@ -88,6 +122,7 @@ async function handleMessage(event: MessageEvent) {
   statusText.value = target.value.entering;
   try {
     await authStore.loginWithVstoTicket(String(payload.ticket));
+    dropListener();
     ready.value = true;
   } catch (error) {
     errorText.value = messageOf(error);
@@ -101,20 +136,11 @@ onMounted(() => {
     errorText.value = `${target.value.title}只能从 Word VSTO 插件的任务面板中打开`;
     return;
   }
-  if (authStore.isAuthenticated) {
-    ready.value = true;
-    return;
-  }
-  listener = handleMessage;
-  webview.addEventListener("message", handleMessage);
+  // 不因本地已有登录态而跳过：见文件头注释，票据兑换是插件内身份的唯一刷新途径。
   requestTicket();
 });
 
-onUnmounted(() => {
-  if (timeoutId) clearTimeout(timeoutId);
-  const webview = (window as VstoWindow).chrome?.webview;
-  if (webview && listener) webview.removeEventListener("message", listener);
-});
+onUnmounted(() => dropListener());
 </script>
 
 <template>
