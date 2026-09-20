@@ -20,6 +20,7 @@ from backend.models import (
     ReviewTask,
     TaskDispatchOutbox,
     async_session_factory,
+    usage_session_factory,
 )
 from backend.services.billing import ensure_wallet
 from backend.services.sales import decimal_value, expire_user_lots, get_sales_config
@@ -36,17 +37,96 @@ _TASK_NAMES = {
     "blind_check": "backend.tasks.blind_check_tasks.run_blind_check",
     "bid_draft": "backend.tasks.bid_draft_tasks.run_bid_draft",
     "polish": "backend.tasks.polish_tasks.run_polish",
+    "bid_wizard_index": "backend.tasks.bid_wizard_tasks.run_bid_wizard_index",
+    "bid_wizard_write": "backend.tasks.bid_wizard_tasks.run_bid_wizard_write",
 }
 
-# Outbox delivery queue per kind. bid_draft runs on a dedicated "generation"
-# queue so long generation runs cannot starve review/duplicate workers.
+# Outbox delivery queue per kind. bid_draft / bid_wizard_* run on a dedicated
+# "generation" queue so long generation runs cannot starve review/duplicate workers.
 _TASK_QUEUES = {
     "review": "review",
     "duplicate": "review",
     "blind_check": "review",
     "polish": "review",
     "bid_draft": "generation",
+    "bid_wizard_index": "generation",
+    "bid_wizard_write": "generation",
 }
+
+
+async def count_unsettled_tasks(db: AsyncSession, *, user_id: str) -> int:
+    """Count billable top-level tasks that are running or awaiting settlement."""
+
+    review_count = (
+        await db.execute(
+            select(func.count(ReviewTask.id))
+            .select_from(ReviewTask)
+            .join(Project, Project.id == ReviewTask.project_id)
+            .where(
+                Project.user_id == user_id,
+                ReviewTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    blind_count = (
+        await db.execute(
+            select(func.count(BlindCheckTask.id)).where(
+                BlindCheckTask.user_id == user_id,
+                BlindCheckTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    bid_draft_count = (
+        await db.execute(
+            select(func.count(BidDraftTask.id)).where(
+                BidDraftTask.user_id == user_id,
+                BidDraftTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    polish_count = (
+        await db.execute(
+            select(func.count(PolishTask.id)).where(
+                PolishTask.user_id == user_id,
+                PolishTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    from backend.models import BidWizardIndexTask, BidWizardQaTask, BidWritingTask
+
+    wizard_qa_count = (
+        await db.execute(
+            select(func.count(BidWizardQaTask.id)).where(
+                BidWizardQaTask.user_id == user_id,
+                BidWizardQaTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    wizard_index_count = (
+        await db.execute(
+            select(func.count(BidWizardIndexTask.id)).where(
+                BidWizardIndexTask.user_id == user_id,
+                BidWizardIndexTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    wizard_write_count = (
+        await db.execute(
+            select(func.count(BidWritingTask.id)).where(
+                BidWritingTask.user_id == user_id,
+                BidWritingTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
+    return (
+        int(review_count or 0)
+        + int(blind_count or 0)
+        + int(bid_draft_count or 0)
+        + int(polish_count or 0)
+        + int(wizard_qa_count or 0)
+        + int(wizard_index_count or 0)
+        + int(wizard_write_count or 0)
+    )
 
 
 async def authorize_billable_task_start(
@@ -54,6 +134,7 @@ async def authorize_billable_task_start(
     *,
     user_id: str,
     operation_name: str,
+    max_active_tasks: int | None = None,
 ):
     """Lock the wallet and validate balance plus account-level concurrency.
 
@@ -62,6 +143,9 @@ async def authorize_billable_task_start(
 
     私有云模式（billing_mode=private_cloud）：余额预检替换为私有云后台的
     次数配额预检（企业共享池，无本地钱包）；并发任务限制照旧执行。
+
+    ``max_active_tasks`` optionally overrides the account-level limit — used by
+    the open API channel where the per-key quota replaces the default.
     """
 
     from backend.services.quota_client import QuotaExhausted, check_ai_quota, is_private_cloud
@@ -101,48 +185,15 @@ async def authorize_billable_task_start(
     # merely until its business status becomes terminal.  Otherwise a billing
     # outage would let a user run tasks one-by-one against a stale positive
     # wallet and accumulate unbounded debt despite the active-task limit.
-    review_count = (
-        await db.execute(
-            select(func.count(ReviewTask.id))
-            .select_from(ReviewTask)
-            .join(Project, Project.id == ReviewTask.project_id)
-            .where(
-                Project.user_id == user_id,
-                ReviewTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
-            )
-        )
-    ).scalar_one()
-    blind_count = (
-        await db.execute(
-            select(func.count(BlindCheckTask.id)).where(
-                BlindCheckTask.user_id == user_id,
-                BlindCheckTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
-            )
-        )
-    ).scalar_one()
-    bid_draft_count = (
-        await db.execute(
-            select(func.count(BidDraftTask.id)).where(
-                BidDraftTask.user_id == user_id,
-                BidDraftTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
-            )
-        )
-    ).scalar_one()
-    polish_count = (
-        await db.execute(
-            select(func.count(PolishTask.id)).where(
-                PolishTask.user_id == user_id,
-                PolishTask.billing_status.in_(UNSETTLED_BILLING_STATUSES),
-            )
-        )
-    ).scalar_one()
-    unsettled_count = (
-        int(review_count or 0)
-        + int(blind_count or 0)
-        + int(bid_draft_count or 0)
-        + int(polish_count or 0)
+    unsettled_count = await count_unsettled_tasks(db, user_id=user_id)
+    limit = max(
+        1,
+        int(
+            max_active_tasks
+            if max_active_tasks is not None
+            else get_settings().billing_max_active_tasks_per_user
+        ),
     )
-    limit = max(1, int(get_settings().billing_max_active_tasks_per_user))
     if unsettled_count >= limit:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -229,22 +280,29 @@ async def dispatch_task_outbox(outbox_id: str) -> bool:
         return False
 
 
-async def dispatch_pending_task_outbox(*, limit: int = 50) -> dict[str, int]:
+async def dispatch_pending_task_outbox(
+    *, limit: int = 50, kinds: list[str] | None = None
+) -> dict[str, int]:
     now = utc_now()
+    query = (
+        select(TaskDispatchOutbox.id)
+        .where(
+            TaskDispatchOutbox.status.in_(("pending", "retry")),
+            or_(
+                TaskDispatchOutbox.next_attempt_at.is_(None),
+                TaskDispatchOutbox.next_attempt_at <= now,
+            ),
+        )
+    )
+    if kinds:
+        # kind 白名单：本地联调清扫器只重派本环境认识的 kind，避免抢共享库里
+        # 其他环境（旧版预发布等）自己会派发的行。
+        query = query.where(TaskDispatchOutbox.task_kind.in_(kinds))
     async with async_session_factory() as db:
         ids = list(
             (
                 await db.execute(
-                    select(TaskDispatchOutbox.id)
-                    .where(
-                        TaskDispatchOutbox.status.in_(("pending", "retry")),
-                        or_(
-                            TaskDispatchOutbox.next_attempt_at.is_(None),
-                            TaskDispatchOutbox.next_attempt_at <= now,
-                        ),
-                    )
-                    .order_by(TaskDispatchOutbox.created_at.asc())
-                    .limit(limit)
+                    query.order_by(TaskDispatchOutbox.created_at.asc()).limit(limit)
                 )
             ).scalars()
         )
@@ -299,7 +357,12 @@ async def finalize_task_usage(task_kind: str, task_id: str) -> bool:
         return False
 
     model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
-    async with async_session_factory() as db:
+    # NullPool 短连接：finalize 会被业务任务的 finally 在 celery worker 里直调
+    # （每任务 asyncio.run 换 loop），池化工厂 checkout 到上一 loop 的连接必报
+    # "Event loop is closed"（2026-09-11 409 事故：索引任务结算卡 pending 占闸门）。
+    # billing_tasks 侧的 settle/reconcile 因有 _run_with_global_engine 前后 dispose
+    # 保护不受此影响；outbox 派发（208/280）同理，保持池化不动。
+    async with usage_session_factory() as db:
         task = (
             await db.execute(select(model).where(model.id == task_id).with_for_update())
         ).scalar_one_or_none()
@@ -333,7 +396,8 @@ def enqueue_billing_settlement(task_kind: str, task_id: str, *, countdown: int =
 
 async def mark_billing_retry(task_kind: str, task_id: str, exc: Exception) -> None:
     model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
-    async with async_session_factory() as db:
+    # 同 finalize：celery 上下文直调，NullPool 防 "Event loop is closed"
+    async with usage_session_factory() as db:
         task = (
             await db.execute(select(model).where(model.id == task_id).with_for_update())
         ).scalar_one_or_none()

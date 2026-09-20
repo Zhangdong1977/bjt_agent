@@ -18,6 +18,21 @@ export interface Token {
   token_type: string;
 }
 
+// API Key（Skill/开放接入）——明文只在创建响应出现一次，列表只回前缀
+export interface ApiKeyItem {
+  id: string;
+  name: string;
+  key_prefix: string;
+  max_active_tasks: number;
+  created_at: string;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+}
+
+export interface ApiKeyCreated extends ApiKeyItem {
+  api_key: string;
+}
+
 export interface Captcha {
   captcha_id: string;
   image: string;
@@ -193,11 +208,13 @@ export interface ProfileUpdateRequest {
 }
 
 // Project types
+export type ProjectType = "review" | "duplicate" | "bid_draft" | "bid_wizard";
+
 export interface Project {
   id: string;
   name: string;
   description: string | null;
-  project_type: "review" | "duplicate" | "bid_draft";
+  project_type: ProjectType;
   duplicate_mode?: "pair" | "batch";
   user_id: string;
   status: string;
@@ -211,7 +228,7 @@ export interface Project {
 export interface CreateProjectRequest {
   name: string;
   description?: string;
-  project_type?: "review" | "duplicate" | "bid_draft";
+  project_type?: ProjectType;
   duplicate_mode?: "pair" | "batch";
 }
 

@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 _CANCEL_PREFIX = "blind-check:cancel:"
 _cancel_local: set[str] = set()
 BLIND_CHECK_MAX_RUNTIME_SECONDS = 25 * 60
+# agent 在预算内自行收尾；外层再给的宽限只为让最终汇总调用（≤90 s）落地。
+BLIND_CHECK_GRACE_SECONDS = 120
 
 
 def _redis():
@@ -120,6 +122,7 @@ def _safe_progress_event(event_type: str, data: dict[str, Any]) -> dict[str, Any
             "tool_session_id": str(data.get("tool_session_id") or "")[:36],
             "tool": str(data.get("tool") or "")[:100],
             "arguments": data.get("arguments") if isinstance(data.get("arguments"), dict) else {},
+            "requested_at": str(data.get("requested_at") or "")[:100],
             "expires_at": str(data.get("expires_at") or "")[:100],
         }
     if event_type == "vsto_tool_result":
@@ -168,6 +171,22 @@ async def _cancel_watcher(task_id: str, event: asyncio.Event) -> None:
 
 def _finding_kwargs(task_id: str, value: dict[str, Any]) -> dict[str, Any]:
     """Clamp agent output before writing it to the database."""
+    evidences = value.get("evidences") if isinstance(value.get("evidences"), list) else None
+    if evidences:
+        evidences = [
+            {
+                "text": str(item.get("text") or "")[:2_000],
+                "page_number": item.get("page_number"),
+                "paragraph_index": item.get("paragraph_index"),
+                "story": item.get("story"),
+                "locateable": bool(item.get("locateable")),
+            }
+            for item in evidences[:50]
+            if isinstance(item, dict)
+        ]
+    rule_references = value.get("rule_references") if isinstance(value.get("rule_references"), list) else None
+    if rule_references:
+        rule_references = [str(ref)[:120] for ref in rule_references[:20]]
     return {
         "task_id": task_id,
         "category": str(value.get("category") or "other")[:40],
@@ -180,6 +199,8 @@ def _finding_kwargs(task_id: str, value: dict[str, Any]) -> dict[str, Any]:
         "paragraph_index": value.get("paragraph_index"),
         "location": value.get("location") if isinstance(value.get("location"), dict) else {},
         "rule_reference": str(value.get("rule_reference") or "")[:5_000] or None,
+        "evidences": evidences,
+        "rule_references": rule_references,
         "confidence": value.get("confidence"),
     }
 
@@ -242,6 +263,7 @@ async def _run_blind_check(task_id: str) -> dict[str, Any]:
             safe = _safe_progress_event(event_type, data or {})
             _publish(task_id, event_type, safe)
 
+        total_budget = min(get_settings().agent_total_timeout, BLIND_CHECK_MAX_RUNTIME_SECONDS)
         async with session_factory() as db:
             task = (
                 await db.execute(select(BlindCheckTask).where(BlindCheckTask.id == task_id))
@@ -255,6 +277,7 @@ async def _run_blind_check(task_id: str) -> dict[str, Any]:
                 cancel_event=cancel_event,
                 snapshot_id=task.snapshot_id,
                 scope=task.scope,
+                total_budget_seconds=total_budget,
             )
 
         from backend.services.usage_context import (
@@ -273,12 +296,11 @@ async def _run_blind_check(task_id: str) -> dict[str, Any]:
         )
         try:
             try:
+                # agent 自己按 total_budget 分阶段收尾（ADR-0003）；这里的外层上限只是
+                # 兜底安全网，多给一段宽限让“不再调工具”的最终汇总有机会写完。
                 result = await asyncio.wait_for(
                     agent.run_blind_check(),
-                    timeout=min(
-                        get_settings().agent_total_timeout,
-                        BLIND_CHECK_MAX_RUNTIME_SECONDS,
-                    ),
+                    timeout=total_budget + BLIND_CHECK_GRACE_SECONDS,
                 )
             except asyncio.TimeoutError as exc:
                 raise RuntimeError("暗标检查超过系统允许的最长执行时间") from exc

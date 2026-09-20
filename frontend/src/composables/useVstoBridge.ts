@@ -37,6 +37,11 @@ const RESULT_TYPES = new Set([
   "bjt.vsto.selection.result",
   "bjt.vsto.insert.result",
   "bjt.vsto.selection.replace.result",
+  "bjt.vsto.section.replace.result",
+  "bjt.vsto.bookmark.create.result",
+  "bjt.vsto.material.list.result",
+  "bjt.vsto.material.upload.result",
+  "bjt.vsto.sections.remove.result",
 ]);
 
 function newRequestId(prefix: string) {
@@ -51,7 +56,13 @@ export function useVstoBridge() {
   const documentContext = ref<VstoDocumentContext | null>(null);
   const pending = new Map<
     string,
-    { resolve: (value: VstoBridgeResult) => void; reject: (reason: Error) => void; timer: number }
+    {
+      resolve: (value: VstoBridgeResult) => void;
+      reject: (reason: Error) => void;
+      timer: number;
+      timeoutMs: number;
+      onProgress?: (done: number, total: number) => void;
+    }
   >();
   let listener: ((event: MessageEvent) => void) | null = null;
 
@@ -95,6 +106,22 @@ export function useVstoBridge() {
       return;
     }
 
+    if (type === "bjt.vsto.insert.progress" || type === "bjt.vsto.material.upload.progress") {
+      const requestId = String(payload.request_id || "");
+      const entry = pending.get(requestId);
+      if (entry) {
+        // 插件仍在逐块写入（全量标书实测 30 分钟量级）：续期超时计时器，
+        // 只在"距上次进度 timeoutMs 仍无消息"时才判定插件无响应。
+        window.clearTimeout(entry.timer);
+        entry.timer = window.setTimeout(() => {
+          pending.delete(requestId);
+          entry.reject(new Error("Word 插件未响应，请确认插件版本已更新后重试"));
+        }, entry.timeoutMs);
+        entry.onProgress?.(Number(payload.done) || 0, Number(payload.total) || 0);
+      }
+      return;
+    }
+
     if (RESULT_TYPES.has(type)) {
       const requestId = String(payload.request_id || "");
       const entry = pending.get(requestId);
@@ -117,6 +144,7 @@ export function useVstoBridge() {
   function request(
     message: Record<string, unknown>,
     timeoutMs = 20_000,
+    onProgress?: (done: number, total: number) => void,
   ): Promise<VstoBridgeResult> {
     return new Promise((resolve, reject) => {
       if (!webview()) {
@@ -128,7 +156,7 @@ export function useVstoBridge() {
         pending.delete(requestId);
         reject(new Error("Word 插件未响应，请确认插件版本已更新后重试"));
       }, timeoutMs);
-      pending.set(requestId, { resolve, reject, timer });
+      pending.set(requestId, { resolve, reject, timer, timeoutMs, onProgress });
       post({ ...message, request_id: requestId });
     });
   }
@@ -139,8 +167,9 @@ export function useVstoBridge() {
   }
 
   /** 在锚点/光标处插入 Markdown；返回 code="snapshot_stale" 时可重试。
-   * 全量标书写入按标题逐段进 Word，实测约 4s/标题、60 节 ≈ 6-7 分钟，
-   * timeoutMs 必须按内容规模给足（默认 60s 只适合小片段）。
+   * 全量标书写入按标题逐段进 Word，实测可达 30 分钟（含逐张插图表），timeoutMs
+   * 必须按内容规模给足；新插件每写完一块会回 progress 消息续期超时并触发
+   * onProgress，静态超时只在插件彻底停摆（无任何进度）时兜底。
    * images：图表附件（"bjt-chart://N" → PNG dataURL），Markdown 中以
    * `![题注](bjt-chart://N)` 独立图片行引用；仅新版插件识别，旧插件按普通文本降级。 */
   function insertMarkdown(
@@ -151,6 +180,7 @@ export function useVstoBridge() {
       anchor?: "cursor" | "end";
       timeoutMs?: number;
       images?: Record<string, string>;
+      onProgress?: (done: number, total: number) => void;
     } = {},
   ) {
     return request(
@@ -163,6 +193,7 @@ export function useVstoBridge() {
         ...(options.images && Object.keys(options.images).length ? { images: options.images } : {}),
       },
       options.timeoutMs ?? 60_000,
+      options.onProgress,
     );
   }
 
@@ -174,6 +205,135 @@ export function useVstoBridge() {
         original_text: originalText,
         content,
         label: label || "AI 替换",
+      },
+      60_000,
+    );
+  }
+
+  /** AI编标：在书签锚点后插入本章 Markdown，插件写完把锚点书签推进到本章末尾，
+   * 并按 sectionBookmarks 打章首/章尾书签对（ADR-0001 逐章写入）。
+   * 旧插件不认识 anchor_bookmark，按未知字段忽略后走光标插入——发版同步后不存在。 */
+  function insertSection(
+    content: string,
+    options: {
+      anchorBookmark: string;
+      sectionStartBookmark: string;
+      sectionEndBookmark: string;
+      label?: string;
+      images?: Record<string, string>;
+      timeoutMs?: number;
+      onProgress?: (done: number, total: number) => void;
+    },
+  ) {
+    return request(
+      {
+        type: "bjt.vsto.insert",
+        content,
+        label: options.label || "AI 撰写",
+        snapshot_id: null,
+        anchor: "bookmark",
+        anchor_bookmark: options.anchorBookmark,
+        section_bookmarks: {
+          start: options.sectionStartBookmark,
+          end: options.sectionEndBookmark,
+        },
+        ...(options.images && Object.keys(options.images).length
+          ? { images: options.images }
+          : {}),
+      },
+      options.timeoutMs ?? 10 * 60_000,
+      options.onProgress,
+    );
+  }
+
+  /** AI编标：在当前 Word 光标处创建/重建插入锚点书签（§5.6 初始锚点；
+   * 书签被删后的「重新定位插入点」软降级复用同一消息）。 */
+  function createBookmark(name: string, options: { timeoutMs?: number } = {}) {
+    return request(
+      { type: "bjt.vsto.bookmark.create", name },
+      options.timeoutMs ?? 15_000,
+    );
+  }
+
+  /** AI编标：单章重生成的落 Word 路径——按书签对删旧章插新章，同一撤销单元；
+   * 书签被用户删除时回 code="bookmark_missing"，页面引导重新定位。
+   * anchorBookmark：锚点书签落在被删范围内时由插件推进到新章末尾（可选）。 */
+  function sectionReplace(
+    startBookmark: string,
+    endBookmark: string,
+    content: string,
+    options: {
+      sectionStartBookmark?: string;
+      sectionEndBookmark?: string;
+      anchorBookmark?: string;
+      label?: string;
+      images?: Record<string, string>;
+      timeoutMs?: number;
+    } = {},
+  ) {
+    return request(
+      {
+        type: "bjt.vsto.section.replace",
+        start_bookmark: startBookmark,
+        end_bookmark: endBookmark,
+        content,
+        label: options.label || "AI 重写本章",
+        ...(options.anchorBookmark ? { anchor_bookmark: options.anchorBookmark } : {}),
+        ...(options.sectionStartBookmark && options.sectionEndBookmark
+          ? {
+              section_bookmarks: {
+                start: options.sectionStartBookmark,
+                end: options.sectionEndBookmark,
+              },
+            }
+          : {}),
+        ...(options.images && Object.keys(options.images).length
+          ? { images: options.images }
+          : {}),
+      },
+      options.timeoutMs ?? 10 * 60_000,
+    );
+  }
+
+  /** AI编标 M2：查客户端素材库元数据（分类筛选；插件经 localhost bridgeList 只回元数据）。
+   * 返回 data.items；客户端未启动时插件回 success=false + error。 */
+  function listClientMaterials(classifyId?: string, options: { timeoutMs?: number } = {}) {
+    return request(
+      { type: "bjt.vsto.material.list", classify_id: classifyId || null },
+      options.timeoutMs ?? 15_000,
+    );
+  }
+
+  /** AI编标 M2：把勾选的客户端素材逐份读流上传云端素材池（插件带短时 JWT 转发，
+   * 逐份回 progress，单份失败不阻断整批；结果在 result.results 里逐份列出）。 */
+  function uploadClientMaterials(
+    items: Array<{ id: string; url: string; filename: string }>,
+    uploadUrl: string,
+    authToken: string,
+    category?: string,
+    options: { timeoutMs?: number; onProgress?: (done: number, total: number) => void } = {},
+  ) {
+    return request(
+      {
+        type: "bjt.vsto.material.upload",
+        items,
+        upload_url: uploadUrl,
+        auth_token: authToken,
+        category: category || null,
+      },
+      options.timeoutMs ?? 180_000,
+      options.onProgress,
+    );
+  }
+
+  /** AI编标 M2：移除全部 AI 内容（决策 31）——插件按书签前缀整删全部章节、清残留书签，
+   * 单一撤销单元（一次 Ctrl+Z 整体恢复）；书签缺失章节跳过并在结果里计 removed/missing。 */
+  function sectionsRemove(sectionPrefix: string, label?: string) {
+    return request(
+      {
+        type: "bjt.vsto.sections.remove",
+        section_prefix: sectionPrefix,
+        label: label || "移除 AI 撰写内容",
       },
       60_000,
     );
@@ -198,5 +358,19 @@ export function useVstoBridge() {
     if (bridge && listener) bridge.removeEventListener("message", listener);
   });
 
-  return { available, contextReady, documentContext, requestSelection, insertMarkdown, replaceSelection, postBridge: post };
+  return {
+    available,
+    contextReady,
+    documentContext,
+    requestSelection,
+    insertMarkdown,
+    replaceSelection,
+    insertSection,
+    sectionReplace,
+    createBookmark,
+    listClientMaterials,
+    uploadClientMaterials,
+    sectionsRemove,
+    postBridge: post,
+  };
 }

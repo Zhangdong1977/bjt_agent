@@ -28,6 +28,10 @@ class SalesConfig(Base):
     blind_check_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     bid_draft_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     polish_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # AI编标（bid-wizard）三 kind 倍率（doc 20 §5.5；NULL 回退全局）
+    bid_wizard_qa_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    bid_wizard_index_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    bid_wizard_write_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     low_balance_threshold: Mapped[float] = mapped_column(
         Numeric(16, 2), nullable=False, default=0, server_default="0"
     )

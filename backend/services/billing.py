@@ -499,7 +499,16 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
     have been incurred before the terminal business status was reached.
     """
 
-    if task_kind not in {"review", "duplicate", "blind_check", "bid_draft", "polish"}:
+    if task_kind not in {
+        "review",
+        "duplicate",
+        "blind_check",
+        "bid_draft",
+        "polish",
+        "bid_wizard_qa",
+        "bid_wizard_index",
+        "bid_wizard_write",
+    }:
         raise ValueError(f"unsupported task kind: {task_kind}")
     model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
     try:
@@ -543,6 +552,16 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
                 user_id = task.user_id
                 project_id = None
                 project_name = "AI 润色"
+            elif task_kind == "bid_wizard_qa":
+                project = None
+                user_id = task.user_id
+                project_id = None
+                project_name = "AI编标问答"
+            elif task_kind == "bid_wizard_index":
+                project = None
+                user_id = task.user_id
+                project_id = None
+                project_name = "AI编标素材索引"
             else:
                 project = (
                     await db.execute(select(Project).where(Project.id == task.project_id))
@@ -674,11 +693,20 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
             record.profit_yuan = profit
             record.profit_margin = margin
             record.balance_after_wen = wallet.balance_wen
+            # delta 与 after 同口径：均按 sync_legacy_balance 的 HALF_UP 快照差计算。
+            # 之前 delta 独立对 sales_points 舍入，与 after-before 可能各差 1
+            # （2026-09-11 复盘发现流水 delta 与余额变化不链式自洽）。
+            before_wen = int(
+                (
+                    decimal_value(allocation["before_recharge"])
+                    + decimal_value(allocation["before_gift"])
+                ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
             db.add(
                 WalletTransaction(
                     user_id=user_id,
                     transaction_type="ai_check",
-                    balance_delta_wen=-int(sales_points.to_integral_value(rounding=ROUND_HALF_UP)),
+                    balance_delta_wen=wallet.balance_wen - before_wen,
                     balance_after_wen=wallet.balance_wen,
                     points_delta=record.earned_points,
                     points_after=wallet.points,

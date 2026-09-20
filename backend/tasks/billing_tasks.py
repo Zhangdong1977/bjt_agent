@@ -20,7 +20,7 @@ import logging
 from datetime import timedelta
 
 from backend.celery_app import celery_app
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +329,10 @@ async def _reconcile_task_billing_async() -> dict:
     )
     from backend.tasks.bid_draft_tasks import BID_DRAFT_MAX_RUNTIME_SECONDS
     from backend.tasks.polish_tasks import POLISH_MAX_RUNTIME_SECONDS
+    from backend.tasks.bid_wizard_tasks import (
+        BID_WIZARD_INDEX_MAX_RUNTIME_SECONDS,
+        BID_WIZARD_WRITE_MAX_RUNTIME_SECONDS,
+    )
     from backend.services.billing import settle_task_consumption
     from backend.services.usage_summary import refresh_task_summary
     from backend.utils.time_utils import utc_now
@@ -383,6 +387,10 @@ async def _reconcile_task_billing_async() -> dict:
             "blind_check": 25 * 60,
             "polish": POLISH_MAX_RUNTIME_SECONDS,
             "bid_draft": BID_DRAFT_MAX_RUNTIME_SECONDS,
+            # 同步问答微任务：请求内 asyncio 上限 120s（对账兜底取宽限值）
+            "bid_wizard_qa": 300,
+            "bid_wizard_index": BID_WIZARD_INDEX_MAX_RUNTIME_SECONDS,
+            "bid_wizard_write": BID_WIZARD_WRITE_MAX_RUNTIME_SECONDS,
         }
         stuck_tasks = []
         seen_models = set()
@@ -392,13 +400,20 @@ async def _reconcile_task_billing_async() -> dict:
                 continue
             seen_models.add(model)
             runtime_cutoff = utc_now() - timedelta(seconds=base + grace_seconds)
+            # 盲区修复（2026-09-11 全局审计）：只用 started_at 过滤会漏掉两类行——
+            # ① status 仍是 pending 但派发丢失/队列死亡（真实场景：outbox 耗尽），
+            #   此前无人兜底、永久占并发闸门坑位；② started_at 为 NULL 的行
+            #   （含 pytest 直写残留）。两类都按 coalesce(started_at, created_at)
+            #   计龄；pending 等待窗（索引 _AwaitParse 30s×20≈10min）远小于各
+            #   kind 的 base+grace，不会被误杀。
             stuck_tasks.extend(
                 (
                     await db.execute(
                         select(model).where(
-                            model.status == "running",
+                            model.status.in_(("running", "pending")),
                             model.billing_status != "legacy",
-                            model.started_at <= runtime_cutoff,
+                            func.coalesce(model.started_at, model.created_at)
+                            <= runtime_cutoff,
                         ).limit(200)
                     )
                 ).scalars()
@@ -439,8 +454,9 @@ async def _reconcile_task_billing_async() -> dict:
                         and not (task.billing_error or "").startswith("USAGE_WRITE_FAILED:")
                     )
                 )
-                and task.completed_at is not None
-                and task.completed_at <= cutoff
+                # completed_at 为 NULL 的终态行（历史/测试残留）按 updated/created 计龄，
+                # 否则永远进不了 orphan finalize（盲区修复，同上）
+                and (task.completed_at or task.updated_at or task.created_at) <= cutoff
             ):
                 orphaned.append((kind, task.id))
         await db.commit()

@@ -20,6 +20,10 @@ class SalesConfigPayload(BaseModel):
     blind_check_multiplier: float | None = Field(default=None, ge=0, le=1000)
     bid_draft_multiplier: float | None = Field(default=None, ge=0, le=1000)
     polish_multiplier: float | None = Field(default=None, ge=0, le=1000)
+    # AI编标（bid-wizard）三 kind 倍率；旧版 operate-two 不推送时保持 NULL 走全局
+    bid_wizard_qa_multiplier: float | None = Field(default=None, ge=0, le=1000)
+    bid_wizard_index_multiplier: float | None = Field(default=None, ge=0, le=1000)
+    bid_wizard_write_multiplier: float | None = Field(default=None, ge=0, le=1000)
 
 
 class SalesPackagePayload(BaseModel):

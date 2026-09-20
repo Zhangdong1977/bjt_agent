@@ -30,6 +30,10 @@ class Project(Base):
         String(10), default="pair", server_default="pair", nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String(50), default="draft", index=True)
+    # 发起通道：'web' / 'api'（开放通道隐式创建的项目，Web 历史列表默认隐藏）
+    source: Mapped[str] = mapped_column(
+        String(20), default="web", server_default="web", nullable=False, index=True
+    )
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False, index=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

@@ -33,6 +33,14 @@ export interface BlindCheckTask {
   created_at: string;
 }
 
+export interface BlindCheckEvidence {
+  text: string;
+  page_number: number | null;
+  paragraph_index: number | null;
+  story: string | null;
+  locateable: boolean;
+}
+
 export interface BlindCheckFinding {
   id: string;
   task_id: string;
@@ -46,6 +54,8 @@ export interface BlindCheckFinding {
   paragraph_index: number | null;
   location: Record<string, unknown> | null;
   rule_reference: string | null;
+  evidences: BlindCheckEvidence[] | null;
+  rule_references: string[] | null;
   confidence: number | null;
 }
 
@@ -64,6 +74,14 @@ export interface ToolResultPayload {
   content?: string;
   error?: string | null;
   snapshot_id?: string | null;
+}
+
+export interface ToolProgressPayload {
+  tool_session_id: string;
+  call_id: string;
+  checked_count?: number | null;
+  cursor?: number | null;
+  total?: number | null;
 }
 
 export async function createVstoToolSession(payload: Record<string, unknown> = {}) {
@@ -104,6 +122,11 @@ export async function cancelBlindCheckTask(taskId: string) {
 
 export async function submitVstoToolResult(payload: ToolResultPayload) {
   await apiClient.post("/vsto-tools/results", payload);
+}
+
+/** VSTO 扫描进度心跳（ADR-0003）：只带计数，让后端把等待期限往后推。 */
+export async function submitVstoToolProgress(payload: ToolProgressPayload) {
+  await apiClient.post("/vsto-tools/progress", payload);
 }
 
 export function blindCheckStreamUrl(taskId: string) {

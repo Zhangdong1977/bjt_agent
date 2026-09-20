@@ -226,7 +226,8 @@ async def _cancellation_monitor(session_factory, task_id: str, cancel_event: asy
             if task is None or task.status not in {"pending", "running"}:
                 cancel_event.set()
                 return
-            if task.last_heartbeat:
+            api_channel = getattr(task, "client_channel", "web") == "api"
+            if task.last_heartbeat and not api_channel:
                 elapsed = (
                     utc_now() - ensure_utc_aware(task.last_heartbeat)
                 ).total_seconds()

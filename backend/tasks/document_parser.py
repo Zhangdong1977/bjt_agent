@@ -621,6 +621,91 @@ async def _augment_duplicate_image_evidence(
     return parsed_data
 
 
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+_rapidocr_engine = None  # 进程级缓存（celery prefork 各进程独立加载一次）
+
+
+def _image_material_markdown(filename: str, ocr_text: str, provider_label: str) -> str:
+    """图片素材的解析产物 Markdown：文件名标题 + OCR 文本（纯函数，便于单测）。"""
+    body = ocr_text.strip() or "（未在图片中识别到文字内容）"
+    return f"# {filename}\n\n> 图片素材，由 {provider_label} 识别文字。\n\n{body}\n"
+
+
+def _run_local_rapidocr(image_path: Path) -> str:
+    global _rapidocr_engine
+    from rapidocr import RapidOCR
+
+    from backend.config import get_settings
+
+    if _rapidocr_engine is None:
+        _rapidocr_engine = RapidOCR(
+            params={"Global.model_root_dir": str(get_settings().ocr_model_dir)}
+        )
+    output = _rapidocr_engine(str(image_path))
+    return "\n".join(output.txts or [])
+
+
+async def _parse_image_with_ocr(file_path: Path, document: Document) -> dict:
+    """图片素材解析（反馈⑩）：整图 OCR 成 Markdown，产物与文档解析同构。
+
+    OCR 后端跟随 image_understanding_provider：baidu 且凭证在位 → 复用审查链路的
+    BaiduOcrTool（自带图片规范化/重试/用量记录，parse 任务已注入 UsageContext）；
+    其余或百度失败时回落本地 RapidOCR。OCR 文本为空不算失败（组织架构图可能
+    确无文字），各后端均异常才上抛、由 parse_document 记 failed。
+    """
+    from backend.config import get_settings
+
+    settings = get_settings()
+    provider = (settings.image_understanding_provider or "").strip().lower()
+    errors: list[str] = []
+    text = ""
+    parser_name = ""
+
+    if provider == "baidu":
+        from backend.agent.tools.baidu_ocr import BaiduOcrTool
+
+        result = await BaiduOcrTool().execute(
+            prompt="素材图片文字提取", image_source=str(file_path)
+        )
+        if result.success:
+            text = (result.content or "").strip()
+            parser_name = "baidu_ocr"
+        else:
+            errors.append(f"baidu_ocr: {result.error}")
+            logger.warning(
+                "[PARSE] IMAGE baidu_ocr failed, fallback to local rapidocr: %s",
+                result.error,
+            )
+
+    if not parser_name:
+        try:
+            text = (await asyncio.to_thread(_run_local_rapidocr, file_path)).strip()
+            parser_name = "rapidocr"
+        except Exception as exc:
+            errors.append(f"rapidocr: {exc}")
+            logger.warning("[PARSE] IMAGE local rapidocr failed: %s", exc)
+
+    if not text and errors:
+        raise RuntimeError("图片 OCR 识别失败：" + "；".join(errors))
+
+    logger.info(
+        "[PARSE] IMAGE ocr done: document_id=%s, provider=%s, text_length=%d",
+        document.id,
+        parser_name,
+        len(text),
+    )
+    markdown = _image_material_markdown(
+        document.original_filename or file_path.name, text, parser_name
+    )
+    return {
+        "text": markdown,
+        "images": [],
+        "page_count": 1,
+        "parser_name": parser_name,
+        "parser_version": "1",
+    }
+
+
 async def _parse_document_internal(document: Document, file_path: Path, settings) -> dict:
     """Internal document parsing logic for DOCX/PDF files."""
     import time as time_module
@@ -634,7 +719,14 @@ async def _parse_document_internal(document: Document, file_path: Path, settings
         f"type={suffix}, size={file_size_mb:.2f}MB"
     )
 
-    if suffix == ".pdf":
+    if suffix in _IMAGE_SUFFIXES:
+        parsed_data = await _parse_image_with_ocr(file_path, document)
+        elapsed = time_module.time() - start_time
+        logger.info(
+            f"[PARSE] IMAGE done: document_id={document.id}, elapsed={elapsed:.1f}s, "
+            f"md_length={len(parsed_data.get('text', ''))}"
+        )
+    elif suffix == ".pdf":
         parsed_data = await _parse_pdf_with_markitdown(file_path, document_id=document.id)
         elapsed = time_module.time() - start_time
         logger.info(

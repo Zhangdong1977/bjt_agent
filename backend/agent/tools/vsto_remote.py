@@ -16,11 +16,19 @@ from mini_agent.tools.base import Tool, ToolResult  # noqa: E402
 class VstoRemoteTool(Tool):
     """One allow-listed VSTO function exposed as an LLM tool."""
 
+    # 全文扫描类工具的耗时随文档规模线性增长；agent 读到概览后按规模改写该值。
+    default_timeout_seconds: int | None = None
+
     def __init__(self, *, tool_name: str, broker: VstoToolBroker):
         if tool_name not in VSTO_TOOL_SCHEMAS:
             raise ValueError(f"Unknown VSTO tool: {tool_name}")
         self._tool_name = tool_name
         self._broker = broker
+        self.default_timeout_seconds = None
+
+    @property
+    def broker(self) -> VstoToolBroker:
+        return self._broker
 
     @property
     def name(self) -> str:
@@ -73,11 +81,43 @@ class VstoRemoteTool(Tool):
         return json.loads(json.dumps(VSTO_TOOL_SCHEMAS[self._tool_name]))
 
     async def execute(self, **kwargs) -> ToolResult:
-        try:
-            result = await self._broker.request(self._tool_name, kwargs)
-        except Exception as exc:
-            return ToolResult(success=False, content="", error=str(exc))
+        return await self.execute_with_options(kwargs)
 
+    async def request_raw(
+        self,
+        arguments: dict[str, Any],
+        *,
+        timeout_seconds: int | None = None,
+        use_cache: bool = True,
+    ) -> dict[str, Any]:
+        """Broker-level normalized result (``success``/``data``/``content``/``error``)."""
+        options: dict[str, Any] = {}
+        timeout = timeout_seconds if timeout_seconds is not None else self.default_timeout_seconds
+        if timeout is not None:
+            options["timeout_seconds"] = int(timeout)
+        if not use_cache:
+            options["use_cache"] = False
+        try:
+            if options:
+                return await self._broker.request(self._tool_name, dict(arguments), **options)
+            return await self._broker.request(self._tool_name, dict(arguments))
+        except Exception as exc:
+            return {"success": False, "data": {}, "content": "", "error": str(exc)}
+
+    async def execute_with_options(
+        self,
+        arguments: dict[str, Any],
+        *,
+        timeout_seconds: int | None = None,
+        use_cache: bool = True,
+    ) -> ToolResult:
+        result = await self.request_raw(
+            arguments, timeout_seconds=timeout_seconds, use_cache=use_cache
+        )
+        return self.to_tool_result(result)
+
+    @staticmethod
+    def to_tool_result(result: dict[str, Any]) -> ToolResult:
         if result.get("success"):
             data = result.get("data") or {}
             content = result.get("content") or ""

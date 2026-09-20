@@ -41,6 +41,8 @@ import type {
   PaymentQr,
   OrderStatus,
   ProfileUpdateRequest,
+  ApiKeyItem,
+  ApiKeyCreated,
   PublicAnnouncement,
   Announcement,
   AnnouncementManage,
@@ -333,6 +335,20 @@ export const profileApi = {
       confirm_new_password: confirmNewPassword,
     });
   },
+
+  async listApiKeys(): Promise<ApiKeyItem[]> {
+    const response = await apiClient.get("/profile/api-keys");
+    return response.data;
+  },
+
+  async createApiKey(name?: string): Promise<ApiKeyCreated> {
+    const response = await apiClient.post("/profile/api-keys", name ? { name } : {});
+    return response.data;
+  },
+
+  async revokeApiKey(keyId: string): Promise<void> {
+    await apiClient.delete(`/profile/api-keys/${keyId}`);
+  },
 };
 
 export interface CloudFeatures {
@@ -440,7 +456,7 @@ export function getTokenClaims(): {
 
 // Projects API
 export const projectsApi = {
-  async list(projectType?: "review" | "duplicate" | "bid_draft"): Promise<Project[]> {
+  async list(projectType?: "review" | "duplicate" | "bid_draft" | "bid_wizard"): Promise<Project[]> {
     const response = await apiClient.get("/projects", {
       params: projectType ? { project_type: projectType } : undefined,
     });
@@ -454,6 +470,11 @@ export const projectsApi = {
 
   async create(data: CreateProjectRequest): Promise<Project> {
     const response = await apiClient.post("/projects", data);
+    return response.data;
+  },
+
+  async update(id: string, data: { name?: string; description?: string }): Promise<Project> {
+    const response = await apiClient.put(`/projects/${id}`, data);
     return response.data;
   },
 

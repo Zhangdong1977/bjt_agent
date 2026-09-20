@@ -172,6 +172,23 @@ async def regenerate_section(
     return await _dispatch_new_task(db, new_task)
 
 
+@router.get("/tasks/latest", response_model=BidDraftTaskResponse)
+async def get_latest_task(db: DBSession, current_user: CurrentUser) -> BidDraftTask | None:
+    """当前用户最近一条生成任务（任意状态）；无任务时 404。
+    供前端页面重开时恢复上下文（TaskPane 关闭后 localStorage 兜底失效的场景）。"""
+    row = (
+        await db.execute(
+            select(BidDraftTask)
+            .where(BidDraftTask.user_id == current_user.id)
+            .order_by(BidDraftTask.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="当前用户没有标书生成任务")
+    return row
+
+
 @router.get("/tasks/{task_id}", response_model=BidDraftTaskResponse)
 async def get_task(task_id: str, db: DBSession, current_user: CurrentUser) -> BidDraftTask:
     return await _owned_task(task_id, current_user, db)

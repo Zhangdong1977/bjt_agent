@@ -29,6 +29,10 @@ class BlindCheckFinding(Base):
     paragraph_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     location: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     rule_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ADR-0002（2026-09-12）：发现由 AI 按要求维度撰写，卡内聚合多条证据。
+    # evidences: [{text, page_number, paragraph_index, story, locateable}]
+    evidences: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    rule_references: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     confidence: Mapped[float | None] = mapped_column(nullable=True)
 
     task: Mapped["BlindCheckTask"] = relationship("BlindCheckTask", back_populates="findings")

@@ -64,6 +64,25 @@ async def create_task(
         raise HTTPException(status_code=409, detail="Word 文档已切换，请刷新页面后重新提交")
     if body.document_revision and body.document_revision != session.document_revision:
         raise HTTPException(status_code=409, detail="Word 文档已修改，请重新建立检查任务")
+    # 同一用户对同一份文档只允许一个进行中的检查：并行任务会在同一个 Word 串行
+    # 队列里互相拖累，把彼此的工具调用全部拖到超时（2026-09-17 生产实证）。
+    active = (
+        await db.execute(
+            select(BlindCheckTask)
+            .where(
+                BlindCheckTask.user_id == current_user.id,
+                BlindCheckTask.document_key == session.document_key,
+                BlindCheckTask.status.in_(["created", "waiting_for_document", "running"]),
+            )
+            .order_by(BlindCheckTask.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"这份文档已有一个暗标检查正在进行（{active.id[:8]}），请等待其完成或先取消后再提交",
+        )
 
     from backend.services.task_lifecycle import (
         add_task_dispatch,
@@ -195,6 +214,23 @@ async def cancel_task(task_id: str, db: DBSession, current_user: CurrentUser) ->
         # Redis publication is only a latency optimization.
         pass
     await db.refresh(task)
+    try:
+        # 让页面把“停止当前 Word 操作”转给插件：串行队列里还在算的扫描立即释放。
+        from backend.tasks.blind_check_tasks import _publish
+
+        for call in pending_calls:
+            _publish(
+                task.id,
+                "vsto_tool_cancel",
+                {
+                    "call_id": call.call_id,
+                    "tool": call.tool_name,
+                    "tool_session_id": call.session_id,
+                    "reason": "task_cancelled",
+                },
+            )
+    except Exception:
+        pass
     if cancelled_before_dispatch:
         await finalize_task_usage("blind_check", task_id)
     else:
