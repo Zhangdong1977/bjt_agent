@@ -172,7 +172,9 @@ router.beforeEach(async (to, _from, next) => {
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     // 携带原目标地址，登录成功后跳回（分享链接未登录场景的关键闭环）。
     next({ name: "login", query: { redirect: to.fullPath } });
-  } else if (to.meta.guest && authStore.isAuthenticated) {
+  } else if (to.meta.guest && authStore.isAuthenticated && !to.query.ssoTicket) {
+    // 带 ssoTicket 时不弹回：插件外链登录页必须先兑换票据——身份权威是
+    // 插件当前账号，不是浏览器里可能过期的旧 token（见 LoginView tryVstoSso）。
     next("/home/check");
   } else if (to.meta.interiorOnly && !authStore.isInteriorUser) {
     next("/home/check");

@@ -129,9 +129,34 @@ async function fetchMaintenance() {
   }
 }
 
+// ============ VSTO 插件带票进入（标书检查按钮外链 ?ssoTicket=…） ============
+// 插件用外部浏览器打开检查站，没有 WebView2 桥，票据只能经 URL 传入。
+// 浏览器里可能残留旧账号的 token，但插件票据才是当前身份权威（同
+// VstoSsoView 文件头的账号错位教训），所以有票就兑换，不用本地登录态短路；
+// 兑换前先把票据从地址栏摘掉，失败则回落手动登录表单。
+const ssoExchanging = ref(false)
+async function tryVstoSso() {
+  const ticket = route.query.ssoTicket
+  if (typeof ticket !== 'string' || !ticket) return
+  const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+  const query = { ...route.query }
+  delete query.ssoTicket
+  router.replace({ query })
+  ssoExchanging.value = true
+  try {
+    await authStore.loginWithVstoTicket(ticket)
+    router.replace(redirect || { name: 'home' })
+  } catch (e: unknown) {
+    loginError.value = '插件单点登录失败：' + extractDetail(e, '票据无效或已过期') + '，请手动登录'
+  } finally {
+    ssoExchanging.value = false
+  }
+}
+
 onMounted(() => {
   fetchCaptcha()
   fetchMaintenance()
+  tryVstoSso()
 })
 onUnmounted(clearSmsTimer)
 
