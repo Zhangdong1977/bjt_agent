@@ -30,12 +30,39 @@ from backend.schemas.auth import (
     VstoSsoRequest,
     RefreshTokenRequest,
 )
-from backend.services.captcha_service import generate_captcha, verify_captcha
+from backend.services.captcha_service import generate_captcha, verify_captcha_with_reason
 from backend.middleware.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+# 图形验证码失败原因 → 用户提示。区分"过期/失效"与"输错"：2026-10-07 生产案例
+# 中用户把"图形验证码错误或已失效"的 400 理解为"短信收不到"，反复盲试近 1 小时。
+_CAPTCHA_FAIL_DETAILS = {
+    "missing_input": "请输入图形验证码",
+    "expired": "图形验证码已过期，已为您刷新，请输入新图中的数字",
+    "bad_token": "图形验证码已失效，已为您刷新，请输入新图中的数字",
+    "mismatch": "图形验证码输入错误，请对照图片重新输入",
+}
+
+
+def _reject_bad_captcha(
+    captcha_id: str | None, captcha_code: str | None, endpoint: str
+) -> None:
+    """校验图形验证码，失败时抛 400（detail 按原因区分）并留 WARNING 日志。
+
+    2026-10-07 排查发现 verify 失败此前无任何日志（nginx 只见 400），无法区分
+    过期/输错/令牌异常。日志 reason 可与 nginx access log（IP/时间）对齐定位。
+    """
+    ok, reason = verify_captcha_with_reason(captcha_id, captcha_code)
+    if ok:
+        return
+    logger.warning("Captcha verify failed: endpoint=%s reason=%s", endpoint, reason)
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=_CAPTCHA_FAIL_DETAILS.get(reason, "图形验证码错误或已失效"),
+    )
 
 # 运营台认证端点。生产含 /prod-api，由 nginx 剥离前缀转后端 /aiCheckLogin；
 # dev/pre-release 经 .env 的 OPERATE_API_BASE_URL 指 operate-two 直连(无 /prod-api)。
@@ -122,11 +149,7 @@ async def get_captcha(request: Request) -> CaptchaResponse:
 async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
     """Login via external auth API and issue JWT tokens."""
     # 图形验证码先于外部认证校验，拦截暴力探测、避免无意义的外部调用
-    if not verify_captcha(body.captcha_id, body.captcha_code):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="图形验证码错误或已失效",
-        )
+    _reject_bad_captcha(body.captcha_id, body.captcha_code, "login")
     if MOCK_AUTH_ENABLED:
         logger.warning("Using mock auth data (external API disabled)")
         ext_result = MOCK_AUTH_RESPONSE["data"]
@@ -419,11 +442,7 @@ async def send_sms(request: Request, body: SendSmsRequest) -> dict:
     ``/aiGetCode``（明文 + X-Internal-Token）。运营平台内部已含 60 秒冷却，
     此处再叠 ``1/minute`` 限流做双保险。
     """
-    if not verify_captcha(body.captcha_id, body.captcha_code):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="图形验证码错误或已失效",
-        )
+    _reject_bad_captcha(body.captcha_id, body.captcha_code, "send-sms")
     # 手机号脱敏（中间4位），仅用于日志
     masked_phone = body.phone[:3] + "****" + body.phone[7:] if len(body.phone) == 11 else body.phone
     started_at = time.monotonic()
@@ -468,11 +487,7 @@ async def register(request: Request, body: RegisterRequest) -> dict:
     运营平台注册成功即置 ``use_check=1``（注册即开通），用户随后可用手机号+密码
     通过 ``/auth/login`` 登录。本端不自动登录——回到登录 tab 手动登录，流程清晰。
     """
-    if not verify_captcha(body.captcha_id, body.captcha_code):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="图形验证码错误或已失效",
-        )
+    _reject_bad_captcha(body.captcha_id, body.captcha_code, "register")
     payload = {
         # RegisterBody 约定：account=账号(手机号)、username=昵称
         "account": body.phone,
@@ -517,11 +532,7 @@ async def send_reset_sms(request: Request, body: SendSmsRequest) -> dict:
     ``/aiGetResetCode`` 要求已注册。复用 ``SendSmsRequest``（字段一致：
     phone/captcha_id/captcha_code）。
     """
-    if not verify_captcha(body.captcha_id, body.captcha_code):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="图形验证码错误或已失效",
-        )
+    _reject_bad_captcha(body.captcha_id, body.captcha_code, "send-reset-sms")
     masked_phone = body.phone[:3] + "****" + body.phone[7:] if len(body.phone) == 11 else body.phone
     started_at = time.monotonic()
     try:
