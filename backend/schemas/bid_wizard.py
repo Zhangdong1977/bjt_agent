@@ -166,6 +166,15 @@ class RequirementsUpdate(BaseModel):
     generation_options: GenerationOptions | None = None
 
 
+class QuestionnaireGenerateRequest(BaseModel):
+    """「开始检查」请求体：携带生成要求卡当前选择，用于按生成内容限定检查范围。
+
+    不带 generation_options 时后端回退用已保存值（存量向导/老客户端）。
+    """
+
+    generation_options: GenerationOptions | None = None
+
+
 class WizardQaAsk(BaseModel):
     """追问侧栏提问（决策 32a）。"""
 

@@ -105,6 +105,9 @@ __ANALYSIS_JSON__
 ## 公司素材索引（每行一段：编号｜标题｜摘要｜关键词）
 __MATERIAL_INDEX__
 
+## 检查范围（用户设定的生成内容，优先级高于下方通用规则）
+__SCOPE_CONSTRAINTS__
+
 请输出问卷 JSON：
 
 {"questions": [
@@ -117,7 +120,7 @@ __MATERIAL_INDEX__
 ]}
 
 规则：
-1. 共 6-15 题，按主题分组排序，只问编写标书真正必需、且招标文件与素材里都没有的信息；
+1. 共 6-15 题，按主题分组排序，只问「检查范围」内、编写标书真正必需、且招标文件与素材里都没有的信息；
 2. 能从素材索引直接回答的不要问，直接写进 suggested_answer 并给 source；
 3. 素材没有依据的建议答案必须 inferred=true，提示用户确认；
 4. 严禁在答案里虚构公司资质、业绩、人员与数据。"""
@@ -587,6 +590,29 @@ def build_generation_constraints_text(options: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+# 问卷/追问轮的检查范围（2026-10-07 需求：生成内容未含商务部分时，检查材料不检查商务材料）。
+# 措辞面向"提问与素材检查"，与 Spec 侧 _GENERATION_PART_EXCLUSIONS 的"章节"措辞区分。
+_QUESTIONNAIRE_PART_EXCLUSIONS = {
+    "technical": "商务部分相关内容（如资质证明、业绩证明、财务报表、报价策略、商务条款响应/偏离）",
+    "business": "技术部分相关内容（如技术方案、实施方案、质量保障、售后服务、技术人员配置）",
+}
+
+
+def build_questionnaire_scope_text(options: dict[str, Any] | None) -> str:
+    """问卷首轮/追问轮 prompt 的「检查范围」块：生成内容只勾某部分时，检查只针对该部分。"""
+    if not options:
+        return "无（按招标要素与素材情况全面检查）"
+    parts = [str(part) for part in options.get("parts") or ["technical"]]
+    scope = generation_parts_label(parts)
+    if len(parts) == 1 and parts[0] in _QUESTIONNAIRE_PART_EXCLUSIONS:
+        excluded = _QUESTIONNAIRE_PART_EXCLUSIONS[parts[0]]
+        return (
+            f"- 检查范围：仅{scope}——只针对{scope}编写所需的信息提问与检查素材，"
+            f"严禁提出或追问{excluded}的问题，也不要建议用户补充该类素材"
+        )
+    return f"- 检查范围：{scope}——按商务与技术两部分各自编写所需的信息提问与检查素材"
+
+
 def apply_generation_options_to_spec(
     spec: list[dict[str, Any]], options: dict[str, Any] | None
 ) -> list[dict[str, Any]]:
@@ -994,12 +1020,18 @@ async def analyze_tender(llm: WizardLLM, tender_markdown: str) -> dict[str, Any]
 
 
 async def generate_questionnaire(
-    llm: WizardLLM, *, analysis: dict[str, Any], material_index_text: str
+    llm: WizardLLM,
+    *,
+    analysis: dict[str, Any],
+    material_index_text: str,
+    generation_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     user_prompt = (
         QUESTIONNAIRE_USER_TEMPLATE.replace(
             "__ANALYSIS_JSON__", json.dumps(analysis, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]
-        ).replace("__MATERIAL_INDEX__", material_index_text or "（无素材）")
+        )
+        .replace("__MATERIAL_INDEX__", material_index_text or "（无素材）")
+        .replace("__SCOPE_CONSTRAINTS__", build_questionnaire_scope_text(generation_options))
     )
     payload = await llm.generate_json(QUESTIONNAIRE_SYSTEM_PROMPT, user_prompt)
     questionnaire = normalize_questionnaire(payload)
@@ -1021,6 +1053,9 @@ __ANALYSIS_JSON__
 ## 当前编写需求（已确认问答；[已补充素材] 表示用户刚为此问题补充了新素材）
 __REQUIREMENTS_TEXT__
 
+## 检查范围（用户设定的生成内容，优先级高于下方通用规则）
+__SCOPE_CONSTRAINTS__
+
 ## 公司素材索引（编号｜标题｜摘要｜关键词；已包含新补充素材）
 __MATERIAL_INDEX__
 
@@ -1040,9 +1075,9 @@ __EXISTING_QUESTIONS__
 
 规则：
 1. 是否追问由你判断：已确认的需求加上素材足以支撑标书编写时，返回空列表，不要为了凑数提问；
-2. 需要追问时输出 1-8 题，聚焦两类：标记[已补充素材]的问题若新素材已能回答，改问确认式问题（如「证书编号是否为 XX、有效期至 XX？」）并把素材中提取的具体事实写入 suggested_answer 与 source；
+2. 需要追问时输出 1-8 题，且都必须落在「检查范围」内，聚焦两类：标记[已补充素材]的问题若新素材已能回答，改问确认式问题（如「证书编号是否为 XX、有效期至 XX？」）并把素材中提取的具体事实写入 suggested_answer 与 source；
 3. 新素材仍回答不了的，换更具体的角度继续追问，不要原样重复已问过的问题；
-4. 已回答、已采纳或与素材无关的问题不再问；
+4. 已回答、已采纳、与素材无关或超出「检查范围」的问题不再问；
 5. 素材没有依据的建议答案必须 inferred=true；严禁在答案里虚构公司资质、业绩、人员与数据。"""
 
 
@@ -1071,6 +1106,7 @@ async def generate_questionnaire_round(
     requirements_text: str,
     material_index_text: str,
     existing_questions_text: str,
+    generation_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """再次检查/自动追问（多轮）：AI 判断是否需要新一轮；空列表=需求已充分、追问结束。"""
     user_prompt = (
@@ -1078,6 +1114,7 @@ async def generate_questionnaire_round(
             "__ANALYSIS_JSON__", json.dumps(analysis, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]
         )
         .replace("__REQUIREMENTS_TEXT__", (requirements_text or "无")[:SPEC_CONTEXT_MAX_CHARS])
+        .replace("__SCOPE_CONSTRAINTS__", build_questionnaire_scope_text(generation_options))
         .replace("__MATERIAL_INDEX__", material_index_text or "（无素材）")
         .replace("__EXISTING_QUESTIONS__", existing_questions_text or "（无）")
     )
