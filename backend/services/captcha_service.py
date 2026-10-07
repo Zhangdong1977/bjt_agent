@@ -24,7 +24,7 @@ import secrets
 import time
 from dataclasses import dataclass
 
-from jose import JWTError, jwt
+from jose import ExpiredSignatureError, JWTError, jwt
 from PIL import Image, ImageDraw, ImageFont
 
 from backend.config import get_settings
@@ -83,14 +83,17 @@ def _render_png(code: str) -> bytes:
         y = rng.randint(0, CAPTCHA_HEIGHT - 1)
         draw.point((x, y), fill=rng.choice(_NOISE_COLORS))
 
-    font = ImageFont.load_default(size=28)
+    # 字号与旋转角取"人眼可辨、机器难OCR"的平衡：2026-10-07 生产案例中用户
+    # 连续 4 次输错图形验证码（每次已换新图），28px+±28° 在 30px 字符格里旋转
+    # 后互相重叠、难以辨认。收紧到 24px+±18°，防 OCR 仍依赖旋转+噪点+干扰线。
+    font = ImageFont.load_default(size=24)
     tile = CAPTCHA_HEIGHT  # 单字画布边长（正方形，便于旋转）
     cell = CAPTCHA_WIDTH / max(len(code), 1)
     for i, ch in enumerate(code):
         # 每个字单独一层，独立旋转后再贴回，提升 OCR 抗识别
         layer = Image.new("RGBA", (tile, tile), (0, 0, 0, 0))
         ImageDraw.Draw(layer).text((6, 0), ch, font=font, fill=rng.choice(_DIGIT_COLORS))
-        layer = layer.rotate(rng.randint(-28, 28), resample=Image.BILINEAR)
+        layer = layer.rotate(rng.randint(-18, 18), resample=Image.BILINEAR)
 
         cx = int(cell * i + cell / 2)
         ox = cx - tile // 2 + rng.randint(-3, 3)
@@ -130,14 +133,18 @@ def generate_captcha() -> CaptchaArt:
     )
 
 
-def verify_captcha(captcha_id: str | None, code: str | None) -> bool:
-    """校验 captcha_id 与用户输入是否匹配。
+def verify_captcha_with_reason(
+    captcha_id: str | None, code: str | None
+) -> tuple[bool, str | None]:
+    """校验 captcha_id 与用户输入，返回 ``(是否通过, 失败原因)``。
 
-    令牌签名错误、过期、被篡改、或输入为空，一律返回 ``False``（不抛异常），
-    调用方只需根据布尔值分支即可。
+    原因取值：``missing_input``（空输入）/ ``expired``（令牌过 TTL）/
+    ``bad_token``（签名、格式、type、claims 异常）/ ``mismatch``（码不匹配）。
+    区分原因是为了让登录/发码端点能给出可行动的提示（"已过期，请看新图"
+    vs "输入错误"），并在日志里留下可排查的失败口径。
     """
     if not captcha_id or not code:
-        return False
+        return False, "missing_input"
     settings = get_settings()
     try:
         payload = jwt.decode(
@@ -145,15 +152,25 @@ def verify_captcha(captcha_id: str | None, code: str | None) -> bool:
             settings.secret_key,
             algorithms=[settings.algorithm],
         )
+    except ExpiredSignatureError:
+        return False, "expired"
     except JWTError:
-        return False
+        return False, "bad_token"
 
     if payload.get("type") != _TOKEN_TYPE:
-        return False
+        return False, "bad_token"
     nonce = payload.get("nonce")
     digest = payload.get("digest")
     if not nonce or not digest:
-        return False
+        return False, "bad_token"
 
     expected = _make_digest(nonce, code.strip())
-    return hmac.compare_digest(expected, digest)
+    if hmac.compare_digest(expected, digest):
+        return True, None
+    return False, "mismatch"
+
+
+def verify_captcha(captcha_id: str | None, code: str | None) -> bool:
+    """兼容包装：仅返回是否通过（历史调用方与测试依赖 bool 语义）。"""
+    ok, _ = verify_captcha_with_reason(captcha_id, code)
+    return ok

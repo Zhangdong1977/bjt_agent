@@ -36,6 +36,7 @@ from backend.models import (
 )
 from backend.schemas.bid_wizard import (
     QuestionnaireAnswer,
+    QuestionnaireGenerateRequest,
     RequirementsUpdate,
     SectionWrittenResponse,
     SectionsResetWrittenResponse,
@@ -1022,12 +1023,30 @@ async def reindex_material(
 
 @router.post("/wizards/{wizard_id}/questionnaire", response_model=WizardResponse)
 async def generate_questionnaire(
-    wizard_id: str, db: DBSession, current_user: CurrentUser
+    wizard_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+    body: QuestionnaireGenerateRequest | None = None,
 ) -> BidWizard:
-    """同步微任务：确保招标要素 → 生成结构化问卷（含素材依据建议答案）。"""
+    """同步微任务：确保招标要素 → 生成结构化问卷（含素材依据建议答案）。
+
+    生成要求（生成内容 商务/技术）限定检查范围：载荷带则用当前卡片选择，不带回退已保存值
+    （2026-10-07 需求：未要求生成商务资料时不检查商务材料）。
+    """
     wizard = await _owned_wizard(wizard_id, current_user, db)
     await _require_access(db, current_user)
     documents = await _require_parsed_tenders(db, wizard)
+
+    from backend.agent.bid_wizard_agent import (
+        generation_options_of,
+        normalize_generation_options,
+    )
+
+    generation_options = (
+        normalize_generation_options(body.generation_options.model_dump())
+        if body and body.generation_options is not None
+        else generation_options_of(wizard.requirements)
+    )
 
     wizard_id_ref = wizard.id
     analysis_ref = wizard.analysis if isinstance(wizard.analysis, dict) and wizard.analysis else None
@@ -1053,6 +1072,7 @@ async def generate_questionnaire(
                 llm,
                 analysis=analysis,
                 material_index_text=build_material_index_text(material_entries),
+                generation_options=generation_options,
             ),
         }
 
@@ -1171,6 +1191,7 @@ async def generate_questionnaire_round(
             build_material_index_text,
             build_requirements_text,
             generate_questionnaire_round as gen_round,
+            generation_options_of,
             _load_material_index_rows,
             render_existing_questions_text,
         )
@@ -1186,6 +1207,7 @@ async def generate_questionnaire_round(
             requirements_text=build_requirements_text(requirements_ref),
             material_index_text=build_material_index_text(material_entries),
             existing_questions_text=render_existing_questions_text(existing_view_ref),
+            generation_options=generation_options_of(requirements_ref),
         )
         return new_batch["questions"]
 

@@ -1268,6 +1268,67 @@ class TestUsageLedgerFixes:
         finally:
             await engine.dispose()
 
+    async def test_task_summary_keeps_duplicate_task_type(self, client, auth_headers):
+        """2026-09-18 回归：查重任务也住在 review_tasks（task_type='duplicate'），
+        用量汇总合并不得写死 'review'（生产 5/5 查重任务曾被误标成标书检查）。"""
+        import uuid as _uuid
+        from datetime import datetime, timezone
+
+        from sqlalchemy import text as sa_text
+
+        from backend.models import ReviewTask, async_session_factory, engine
+        from backend.models.ai_usage_record import AiUsageRecord
+        from backend.services.usage_summary import refresh_task_summary
+
+        project = (
+            await client.post(
+                "/api/projects",
+                json={"name": "dup-summary-regression"},
+                headers=auth_headers,
+            )
+        ).json()
+        async with async_session_factory() as session:
+            task = ReviewTask(
+                project_id=project["id"],
+                task_type="duplicate",
+                duplicate_mode="pair",
+                status="completed",
+            )
+            session.add(task)
+            await session.flush()
+            session.add(
+                AiUsageRecord(
+                    usage_type="llm",
+                    provider="tencent",
+                    model="test-model",
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                    latency_ms=1,
+                    status="success",
+                    cost_cny=Decimal("0.001"),
+                    user_name="regression",
+                    project_id=project["id"],
+                    task_id=task.id,
+                    usage_date=datetime.now(timezone.utc).date(),
+                )
+            )
+            await session.commit()
+            task_id = task.id
+        try:
+            await refresh_task_summary(task_id, strict=True)
+            async with async_session_factory() as session:
+                row = (
+                    await session.execute(
+                        sa_text("SELECT task_type FROM ai_usage_task_summary WHERE id = :tid"),
+                        {"tid": task_id},
+                    )
+                ).fetchone()
+            assert row is not None
+            assert row.task_type == "duplicate"
+        finally:
+            await engine.dispose()
+
     def test_index_meta_short_circuit(self):
         from backend.tasks.bid_wizard_tasks import index_meta_llm_needed
 
@@ -1380,6 +1441,31 @@ def test_build_generation_constraints_text_variants():
         {"parts": ["business", "technical"], "word_count": None, "charts": True}
     )
     assert "商务部分+技术部分" in both and "目标总字数" not in both and "需要配图" in both
+
+
+def test_build_questionnaire_scope_text_variants():
+    """2026-10-07 需求①：未要求生成商务资料时，检查材料不检查商务材料。"""
+    from backend.agent.bid_wizard_agent import build_questionnaire_scope_text
+
+    assert "全面检查" in build_questionnaire_scope_text(None)  # 未设置：存量向导不限范围
+    technical = build_questionnaire_scope_text({"parts": ["technical"], "charts": True})
+    assert "仅技术部分" in technical and "严禁提出或追问商务部分相关内容" in technical
+    assert "不要建议用户补充该类素材" in technical
+    business = build_questionnaire_scope_text({"parts": ["business"], "charts": True})
+    assert "仅商务部分" in business and "技术部分相关内容" in business
+    both = build_questionnaire_scope_text({"parts": ["technical", "business"], "charts": True})
+    assert "技术部分+商务部分" in both and "严禁" not in both
+    # parts 空（异常载荷）按默认仅技术处理，与 normalize_generation_options 口径一致
+    assert "仅技术部分" in build_questionnaire_scope_text({"parts": [], "charts": True})
+
+
+def test_questionnaire_templates_carry_scope_placeholder():
+    from backend.agent.bid_wizard_agent import QUESTIONNAIRE_USER_TEMPLATE, ROUND_USER_TEMPLATE
+
+    assert "__SCOPE_CONSTRAINTS__" in QUESTIONNAIRE_USER_TEMPLATE
+    assert "检查范围" in QUESTIONNAIRE_USER_TEMPLATE and "「检查范围」内" in QUESTIONNAIRE_USER_TEMPLATE
+    assert "__SCOPE_CONSTRAINTS__" in ROUND_USER_TEMPLATE
+    assert "超出「检查范围」" in ROUND_USER_TEMPLATE
 
 
 def test_apply_generation_options_clears_charts_only_when_disabled():
@@ -1898,6 +1984,76 @@ class TestGenerationOptionsApi:
         assert revised.status_code == 200
         assert "修订后的大纲仍须满足" in seen["prompt"] and "不配图" in seen["prompt"]
         assert revised.json()["spec"][0]["charts"] is None
+
+    async def test_questionnaire_generation_scoped_by_generation_options(
+        self, client, auth_headers, monkeypatch
+    ):
+        """2026-10-07 需求①：开始检查按生成内容限定范围——未勾商务 → 不检查商务材料。"""
+        from backend.agent import bid_wizard_agent
+
+        seen: dict[str, str] = {}
+
+        class FakeLLM:
+            def __init__(self, timeout=None):
+                pass
+
+            async def generate_json(self, system_prompt, user_prompt):
+                seen["prompt"] = user_prompt
+                return {
+                    "questions": [
+                        {"question": "交付周期？", "suggested_answer": "45 天", "topic": "交付"}
+                    ]
+                }
+
+        monkeypatch.setattr(bid_wizard_agent, "WizardLLM", FakeLLM)
+        wizard = await self._prepare_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+
+        generated = await client.post(
+            f"{base}/questionnaire",
+            json={"generation_options": {"parts": ["technical"], "charts": True}},
+            headers=auth_headers,
+        )
+        assert generated.status_code == 200
+        assert "仅技术部分" in seen["prompt"]
+        assert "严禁提出或追问商务部分相关内容" in seen["prompt"]
+
+        # 不带载荷且无已保存生成要求：不限范围（存量向导兼容，决策 42）
+        plain = await client.post(f"{base}/questionnaire", headers=auth_headers)
+        assert plain.status_code == 200
+        assert "全面检查" in seen["prompt"]
+
+    async def test_questionnaire_round_scoped_by_saved_generation_options(
+        self, client, auth_headers, monkeypatch
+    ):
+        """再次检查/自动追问按已保存的生成要求限定范围（保存作答时随 requirements 落库）。"""
+        from backend.agent import bid_wizard_agent
+
+        seen: dict[str, str] = {}
+
+        class FakeLLM:
+            def __init__(self, timeout=None):
+                pass
+
+            async def generate_json(self, system_prompt, user_prompt):
+                seen["prompt"] = user_prompt
+                return {"questions": []}
+
+        monkeypatch.setattr(bid_wizard_agent, "WizardLLM", FakeLLM)
+        wizard = await self._prepare_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+        await client.put(
+            f"{base}/requirements",
+            json={
+                "answers": self._answers(),
+                "generation_options": {"parts": ["technical"], "word_count": 20000, "charts": True},
+            },
+            headers=auth_headers,
+        )
+        rounded = await client.post(f"{base}/questionnaire/round", headers=auth_headers)
+        assert rounded.status_code == 200
+        assert "仅技术部分" in seen["prompt"]
+        assert "严禁提出或追问商务部分相关内容" in seen["prompt"]
 
     async def test_qa_history_persists_adopts_and_caps(self, client, auth_headers, monkeypatch):
         from backend.agent import bid_wizard_agent

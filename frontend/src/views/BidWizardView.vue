@@ -952,7 +952,8 @@ function onGenerateQuestionnaire() {
     return;
   }
   void withBusy("questionnaire", async () => {
-    wizard.value = await generateQuestionnaire(wizard.value!.id);
+    // 带上生成要求卡当前选择：未勾商务时检查只针对技术部分（2026-10-07 需求①）
+    wizard.value = await generateQuestionnaire(wizard.value!.id, genOptionsPayload.value);
     questionnaire.value = wizard.value.questionnaire?.questions || [];
     for (const question of questionnaire.value) ensureAnswerDraft(question);
   });

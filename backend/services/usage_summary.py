@@ -106,10 +106,13 @@ ON CONFLICT (id) DO UPDATE SET
 
 # 合并 review_tasks 的状态/时长维度。LEFT JOIN 保证 task 不存在时不清空（r.id IS NULL 时跳过）。
 # 这样即使 ai_usage_records 有 task_id 但 review_tasks 已被级联删除，也不会误覆盖为 NULL。
+# ⚠️ task_type 必须取 r.task_type：review_tasks 同时承载标书检查（review）与
+# 标书查重（duplicate）两类任务，写死 'review' 会把查重任务的用量汇总也标成
+# 标书检查（2026-09-18 生产实测 5/5 个查重任务全被误标）。
 _MERGE_STATUS_SQL = text("""
 UPDATE ai_usage_task_summary s
 SET
-    task_type        = 'review',
+    task_type        = r.task_type,
     task_status      = r.status,
     started_at       = r.started_at,
     completed_at     = r.completed_at,
