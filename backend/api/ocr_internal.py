@@ -1,7 +1,8 @@
 """私有云内部 OCR 识别接口（X-Internal-Token 鉴权，供私有云后台管理系统调用）。
 
-用途：私有云后台的"基础资料 OCR 自动录入"（营业执照/身份证/证书图片 → 文本）。
-复用与 ImageOcrTool 相同的本地 RapidOCR 引擎（无外网依赖）；本接口不写
+用途：私有云后台的"基础资料 OCR 自动录入"与"素材库图片识别"（营业执照/身份证/
+证书图片 → 文本）。引擎与公有云 bjt-agent 保持一致：百度云 accurate_basic
+（复用 BaiduOcrTool 的 token 缓存/图片规范化/重试实现）；本接口不写
 ai_usage_records、不调 record_ocr_usage —— 次数记账由调用方（私有云后台）
 直写其 pc_usage_record，避免双计。
 """
@@ -17,31 +18,48 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from backend.agent.tools.baidu_ocr import MAX_IMAGE_SIZE_BYTES, BaiduOcrTool
 from backend.config import get_settings
+from backend.services.ocr_image_normalizer import normalize_image_for_ocr
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["ocr-internal"])
 
-_engine = None
+_tool: Optional[BaiduOcrTool] = None
 
 
-def _get_engine():
-    global _engine
-    if _engine is None:
-        from rapidocr import RapidOCR
-
-        model_dir = str(get_settings().ocr_model_dir)
-        _engine = RapidOCR(params={"Global.model_root_dir": model_dir})
-    return _engine
+def _get_tool() -> BaiduOcrTool:
+    global _tool
+    if _tool is None:
+        _tool = BaiduOcrTool()
+    return _tool
 
 
-def _run_ocr(image_path: Path) -> str:
-    engine = _get_engine()
-    output = engine(str(image_path))
-    if output.txts is None or len(output.txts) == 0:
-        return ""
-    return "\n".join(output.txts)
+async def _run_ocr(image_path: Path) -> str:
+    tool = _get_tool()
+    # 与 BaiduOcrTool.execute 相同的前置规范化（格式转换/4MB 压缩/方向纠正）
+    normalized = await asyncio.to_thread(
+        normalize_image_for_ocr,
+        image_path,
+        cache_dir=tool._normalization_cache_dir,
+        max_output_bytes=MAX_IMAGE_SIZE_BYTES,
+    )
+    b64_image = base64.b64encode(normalized.path.read_bytes()).decode("utf-8")
+    data = {
+        "image": b64_image,
+        "detect_direction": "true",
+        "paragraph": "false",
+        "probability": "false",
+    }
+    result = await tool._request_ocr_with_retry(data)
+    if result.get("error_code"):
+        raise HTTPException(
+            status_code=502,
+            detail=f"百度OCR错误[{result.get('error_code')}]: {result.get('error_msg', '未知错误')}",
+        )
+    words_result = result.get("words_result") or []
+    return "\n".join(item.get("words", "") for item in words_result)
 
 
 class OcrRecognizeRequest(BaseModel):
@@ -80,7 +98,7 @@ async def ocr_recognize(request: Request, body: OcrRecognizeRequest) -> OcrRecog
     try:
         tmp.write(image_bytes)
         tmp.close()
-        text = await asyncio.to_thread(_run_ocr, Path(tmp.name))
+        text = await _run_ocr(Path(tmp.name))
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
