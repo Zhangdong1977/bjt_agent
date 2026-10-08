@@ -50,6 +50,8 @@ reportlab>=4.1.0  # splitInRow (in-row page splitting) needs >=4.1
 pymupdf>=1.24.0
 Pillow>=10.0.0
 rapidocr>=3.0.0
+# 服务器无 libGL：用 headless 变体提供 cv2（与 rapidocr 的 opencv-python 依赖互斥，须先装 headless 再卸 opencv-python）
+opencv-python-headless>=4.11
 pdf2image>=1.17.0
 python-docx>=1.1.0
 pdfplumber>=0.11.0
