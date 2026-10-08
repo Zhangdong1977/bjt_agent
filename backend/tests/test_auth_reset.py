@@ -76,7 +76,9 @@ class TestSendResetSms:
     @pytest.fixture(autouse=True)
     def _bypass_captcha(self, monkeypatch):
         # 图形验证码由 captcha_service 测试覆盖；此处默认放行，聚焦转发逻辑
-        monkeypatch.setattr(auth_module, "verify_captcha", lambda *a, **k: True)
+        monkeypatch.setattr(
+            auth_module, "verify_captcha_with_reason", lambda *a, **k: (True, None)
+        )
 
     @pytest.mark.asyncio
     async def test_forwards_to_aiGetResetCode(self, client: AsyncClient, monkeypatch):
@@ -99,7 +101,9 @@ class TestSendResetSms:
     @pytest.mark.asyncio
     async def test_captcha_invalid_returns_400(self, client: AsyncClient, monkeypatch):
         # 覆盖 autouse 默认：图形验证码错误应在转发前拦截
-        monkeypatch.setattr(auth_module, "verify_captcha", lambda *a, **k: False)
+        monkeypatch.setattr(
+            auth_module, "verify_captcha_with_reason", lambda *a, **k: (False, "mismatch")
+        )
         fake = _make_fake_client({"code": 200, "msg": "ok"})
         monkeypatch.setattr(httpx, "AsyncClient", fake)
 
@@ -110,7 +114,7 @@ class TestSendResetSms:
         )
 
         assert resp.status_code == 400
-        assert resp.json()["detail"] == "图形验证码错误或已失效"
+        assert resp.json()["detail"] == "图形验证码输入错误，请对照图片重新输入"
         assert fake.calls == []  # 未转发到运营平台
 
     @pytest.mark.asyncio

@@ -1443,6 +1443,31 @@ def test_build_generation_constraints_text_variants():
     assert "商务部分+技术部分" in both and "目标总字数" not in both and "需要配图" in both
 
 
+def test_build_questionnaire_scope_text_variants():
+    """2026-10-07 需求①：未要求生成商务资料时，检查材料不检查商务材料。"""
+    from backend.agent.bid_wizard_agent import build_questionnaire_scope_text
+
+    assert "全面检查" in build_questionnaire_scope_text(None)  # 未设置：存量向导不限范围
+    technical = build_questionnaire_scope_text({"parts": ["technical"], "charts": True})
+    assert "仅技术部分" in technical and "严禁提出或追问商务部分相关内容" in technical
+    assert "不要建议用户补充该类素材" in technical
+    business = build_questionnaire_scope_text({"parts": ["business"], "charts": True})
+    assert "仅商务部分" in business and "技术部分相关内容" in business
+    both = build_questionnaire_scope_text({"parts": ["technical", "business"], "charts": True})
+    assert "技术部分+商务部分" in both and "严禁" not in both
+    # parts 空（异常载荷）按默认仅技术处理，与 normalize_generation_options 口径一致
+    assert "仅技术部分" in build_questionnaire_scope_text({"parts": [], "charts": True})
+
+
+def test_questionnaire_templates_carry_scope_placeholder():
+    from backend.agent.bid_wizard_agent import QUESTIONNAIRE_USER_TEMPLATE, ROUND_USER_TEMPLATE
+
+    assert "__SCOPE_CONSTRAINTS__" in QUESTIONNAIRE_USER_TEMPLATE
+    assert "检查范围" in QUESTIONNAIRE_USER_TEMPLATE and "「检查范围」内" in QUESTIONNAIRE_USER_TEMPLATE
+    assert "__SCOPE_CONSTRAINTS__" in ROUND_USER_TEMPLATE
+    assert "超出「检查范围」" in ROUND_USER_TEMPLATE
+
+
 def test_apply_generation_options_clears_charts_only_when_disabled():
     from backend.agent.bid_wizard_agent import apply_generation_options_to_spec
 
@@ -1959,6 +1984,76 @@ class TestGenerationOptionsApi:
         assert revised.status_code == 200
         assert "修订后的大纲仍须满足" in seen["prompt"] and "不配图" in seen["prompt"]
         assert revised.json()["spec"][0]["charts"] is None
+
+    async def test_questionnaire_generation_scoped_by_generation_options(
+        self, client, auth_headers, monkeypatch
+    ):
+        """2026-10-07 需求①：开始检查按生成内容限定范围——未勾商务 → 不检查商务材料。"""
+        from backend.agent import bid_wizard_agent
+
+        seen: dict[str, str] = {}
+
+        class FakeLLM:
+            def __init__(self, timeout=None):
+                pass
+
+            async def generate_json(self, system_prompt, user_prompt):
+                seen["prompt"] = user_prompt
+                return {
+                    "questions": [
+                        {"question": "交付周期？", "suggested_answer": "45 天", "topic": "交付"}
+                    ]
+                }
+
+        monkeypatch.setattr(bid_wizard_agent, "WizardLLM", FakeLLM)
+        wizard = await self._prepare_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+
+        generated = await client.post(
+            f"{base}/questionnaire",
+            json={"generation_options": {"parts": ["technical"], "charts": True}},
+            headers=auth_headers,
+        )
+        assert generated.status_code == 200
+        assert "仅技术部分" in seen["prompt"]
+        assert "严禁提出或追问商务部分相关内容" in seen["prompt"]
+
+        # 不带载荷且无已保存生成要求：不限范围（存量向导兼容，决策 42）
+        plain = await client.post(f"{base}/questionnaire", headers=auth_headers)
+        assert plain.status_code == 200
+        assert "全面检查" in seen["prompt"]
+
+    async def test_questionnaire_round_scoped_by_saved_generation_options(
+        self, client, auth_headers, monkeypatch
+    ):
+        """再次检查/自动追问按已保存的生成要求限定范围（保存作答时随 requirements 落库）。"""
+        from backend.agent import bid_wizard_agent
+
+        seen: dict[str, str] = {}
+
+        class FakeLLM:
+            def __init__(self, timeout=None):
+                pass
+
+            async def generate_json(self, system_prompt, user_prompt):
+                seen["prompt"] = user_prompt
+                return {"questions": []}
+
+        monkeypatch.setattr(bid_wizard_agent, "WizardLLM", FakeLLM)
+        wizard = await self._prepare_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+        await client.put(
+            f"{base}/requirements",
+            json={
+                "answers": self._answers(),
+                "generation_options": {"parts": ["technical"], "word_count": 20000, "charts": True},
+            },
+            headers=auth_headers,
+        )
+        rounded = await client.post(f"{base}/questionnaire/round", headers=auth_headers)
+        assert rounded.status_code == 200
+        assert "仅技术部分" in seen["prompt"]
+        assert "严禁提出或追问商务部分相关内容" in seen["prompt"]
 
     async def test_qa_history_persists_adopts_and_caps(self, client, auth_headers, monkeypatch):
         from backend.agent import bid_wizard_agent

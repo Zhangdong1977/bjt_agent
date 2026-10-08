@@ -349,10 +349,17 @@ export async function reindexMaterial(wizardId: string, documentId: string) {
   );
 }
 
-export async function generateQuestionnaire(wizardId: string) {
+/** 开始检查：生成第一轮问卷。带生成要求时按生成内容限定检查范围（未含商务则不检查商务材料）。 */
+export async function generateQuestionnaire(
+  wizardId: string,
+  generationOptions?: GenerationOptions | null,
+) {
+  const body: Record<string, unknown> = {};
+  if (generationOptions) body.generation_options = generationOptions;
   return request<Wizard>(
     "post",
     `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/questionnaire`,
+    body,
   );
 }
 

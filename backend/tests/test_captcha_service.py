@@ -107,3 +107,29 @@ class TestVerifyCaptcha:
 
     def test_garbage_token_rejected(self):
         assert cs.verify_captcha("not-a-jwt", "0413") is False
+
+
+class TestVerifyCaptchaWithReason:
+    """带原因的校验：区分过期/输错/令牌异常，供端点给出可行动提示。"""
+
+    def test_correct_code_ok_with_none_reason(self):
+        assert cs.verify_captcha_with_reason(_forge_token("0413"), "0413") == (True, None)
+
+    def test_expired_reported_as_expired(self):
+        token = _forge_token("0413", ttl=90, issued_in_past=100)
+        assert cs.verify_captcha_with_reason(token, "0413") == (False, "expired")
+
+    def test_wrong_code_reported_as_mismatch(self):
+        assert cs.verify_captcha_with_reason(_forge_token("0413"), "9999") == (False, "mismatch")
+
+    def test_empty_inputs_reported_as_missing(self):
+        assert cs.verify_captcha_with_reason(None, "0413") == (False, "missing_input")
+        assert cs.verify_captcha_with_reason(_forge_token("0413"), "") == (False, "missing_input")
+
+    def test_bad_signature_reported_as_bad_token(self):
+        token = _forge_token("0413", secret="not-the-app-secret")
+        assert cs.verify_captcha_with_reason(token, "0413") == (False, "bad_token")
+
+    def test_wrong_token_type_reported_as_bad_token(self):
+        token = _forge_token("0413", token_type="access")
+        assert cs.verify_captcha_with_reason(token, "0413") == (False, "bad_token")
