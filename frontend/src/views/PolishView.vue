@@ -254,13 +254,31 @@ onUnmounted(stopPolling);
     <div class="brand-line" />
     <header class="panel-header">
       <img :src="logoUrl" alt="标书审查智能体" class="panel-logo">
-      <div class="account-strip" aria-label="账户余额">
-        <span class="metric-pill" :style="{ backgroundImage: `url(${iconWallet})` }">
-          <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.balanceWen) }}点</span>
-        </span>
-        <span class="metric-pill" :style="{ backgroundImage: `url(${iconPoints})` }">
-          <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.points) }}积分</span>
-        </span>
+      <div class="account-strip" :aria-label="billingStore.privateCloud ? '企业剩余次数' : '账户余额'">
+        <template v-if="billingStore.privateCloud">
+          <span
+            class="metric-pill"
+            :style="{ backgroundImage: `url(${iconWallet})` }"
+            title="AI 剩余次数（企业共享次数池，检查/查重/暗标/生成/润色等每个任务消耗 1 次）"
+          >
+            <span>AI 剩余 {{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.rechargeBalance) }} 次</span>
+          </span>
+          <span
+            class="metric-pill"
+            :style="{ backgroundImage: `url(${iconPoints})` }"
+            title="OCR 剩余次数（企业共享次数池，每次图片文字识别消耗 1 次）"
+          >
+            <span>OCR 剩余 {{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.giftBalance) }} 次</span>
+          </span>
+        </template>
+        <template v-else>
+          <span class="metric-pill" :style="{ backgroundImage: `url(${iconWallet})` }">
+            <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.balanceWen) }}点</span>
+          </span>
+          <span class="metric-pill" :style="{ backgroundImage: `url(${iconPoints})` }">
+            <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.points) }}积分</span>
+          </span>
+        </template>
       </div>
     </header>
 

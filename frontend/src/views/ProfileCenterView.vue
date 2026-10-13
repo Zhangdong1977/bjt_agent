@@ -613,7 +613,7 @@ onMounted(() => {
               <h2>API Key（Skill / 开放接入）</h2>
               <p class="api-key-intro">
                 用于 WorkBuddy 技能「标捷通·AI标书检查与查重」或其他开放 API 客户端调用 AI 标书检查/查重。
-                Key 只在生成时完整展示一次，请立即复制保存；任务按点计费，与网页端同一账户余额。
+                Key 只在生成时完整展示一次，请立即复制保存；任务{{ billingStore.privateCloud ? "按次计费（企业共享次数池），与网页端同一额度" : "按点计费，与网页端同一账户余额" }}。
               </p>
               <div class="api-key-toolbar">
                 <a-button
@@ -729,7 +729,7 @@ onMounted(() => {
             <a-input v-model:value="apiKeyName" placeholder="default" :maxlength="100" />
           </a-form-item>
           <p class="api-key-intro">
-            Key 只在生成后完整展示一次。生成前请确认账户已可登录本平台并有可用点数。
+            Key 只在生成后完整展示一次。生成前请确认账户已可登录本平台并有{{ billingStore.privateCloud ? "剩余次数额度" : "可用点数" }}。
           </p>
         </a-form>
       </a-modal>
