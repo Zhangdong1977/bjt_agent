@@ -15,6 +15,7 @@ import {
   type TenderParseRecord,
   type TenderParseResult,
 } from "@/api/tenderParse";
+import { apiErrorText } from "@/utils/apiError";
 import { useBillingStore } from "@/stores/billing";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 import iconWallet from "@/assets/images/ui/metric-icon-wallet.png";
@@ -79,8 +80,8 @@ function statusInfo(item: { status: string; stage: string }) {
 }
 
 function friendlyError(error: unknown, fallback: string): string {
-  if (error instanceof Error && error.message) return error.message;
-  return fallback;
+  // 优先取后端 detail（含 402/409 闸门对象的 message），再退回本地 Error 文案
+  return apiErrorText(error) || (error instanceof Error ? error.message : fallback);
 }
 
 // ------------------------------------------------------------------ 列表逻辑
