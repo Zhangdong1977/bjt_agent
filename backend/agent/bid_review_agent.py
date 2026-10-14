@@ -1400,7 +1400,7 @@ class BidReviewAgent(BaseAgent):
 - 禁止在一次工具调用中尝试完成多个检查项
 - 必须逐项检查，每个检查项至少调用 search_tender_doc 两次
 - 必须使用 write_file 写入最终结果
-- 图片分析优先使用 understand_image（VLM 视觉理解），understand_image 失败时再用 get_image_ocr
+- 图片分析优先使用 understand_image，understand_image 失败时再用 get_image_ocr
 - understand_image 的 prompt 中禁止使用"身份证""身份证号码""姓名""护照号码"等敏感词，使用"证件""证件编号""人员名称"等替代
 - 如 understand_image 报错（如 1026 敏感内容），回退使用 get_image_ocr 继续审查"""
             self.add_user_message(task)

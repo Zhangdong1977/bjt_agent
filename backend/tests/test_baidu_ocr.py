@@ -28,8 +28,8 @@ class _FakeResp:
         pass
 
 
-def _make_fake_client(token_payload, ocr_payload, recorder):
-    """Build a fake httpx.AsyncClient replacement routing token vs OCR by URL."""
+def _make_fake_client(token_payload, ocr_payload, recorder, seal_payload=None):
+    """Build a fake httpx.AsyncClient replacement routing token vs OCR/seal by URL."""
 
     class _FakeClient:
         def __init__(self, *args, **kwargs):
@@ -45,6 +45,8 @@ def _make_fake_client(token_payload, ocr_payload, recorder):
             recorder.append(url)
             if "oauth/2.0/token" in url:
                 return _FakeResp(token_payload)
+            if "/ocr/v1/seal" in url:
+                return _FakeResp(ocr_payload if seal_payload is None else seal_payload)
             return _FakeResp(ocr_payload)
 
     return _FakeClient
@@ -89,11 +91,16 @@ async def test_ocr_success_joins_words(monkeypatch, tmp_path):
     result = await tool.execute(prompt="审查", image_source=str(img))
 
     assert result.success is True
-    assert result.content == "第一行\n第二行"
+    # OCR 文字 + 印章检测小节（fake client 未提供印章响应时按 0 印章处理）
+    assert result.content.startswith("第一行\n第二行")
+    assert "【印章检测】未检出印章" in result.content
     assert result.data["provider"] == "baidu"
     assert result.data["words_result_num"] == 2
+    assert result.data["seal_detection"]["status"] == "success"
+    assert result.data["seal_detection"]["seals"] == []
     assert any("oauth/2.0/token" in u for u in recorder)
     assert any("accurate_basic" in u for u in recorder)
+    assert any("/ocr/v1/seal" in u for u in recorder)
 
 
 @pytest.mark.unit
@@ -156,6 +163,9 @@ async def test_ocr_timeout_retries_three_times_then_succeeds(monkeypatch, tmp_pa
             recorder.append(url)
             if "oauth/2.0/token" in url:
                 return _FakeResp({"access_token": "tok", "expires_in": 2592000})
+            if "/ocr/v1/seal" in url:
+                # 印章识别一次性成功，不参与 OCR 重试计数
+                return _FakeResp({"result": [], "result_num": 0, "log_id": 2})
             ocr_attempts += 1
             if ocr_attempts <= 3:
                 raise httpx.TimeoutException("temporary timeout")
@@ -170,7 +180,7 @@ async def test_ocr_timeout_retries_three_times_then_succeeds(monkeypatch, tmp_pa
     result = await tool.execute(prompt="p", image_source=str(img))
 
     assert result.success is True
-    assert result.content == "ok"
+    assert result.content.startswith("ok")
     assert ocr_attempts == 4
     assert sleep.await_count == 3
 
@@ -307,7 +317,7 @@ async def test_at_prefix_is_stripped(monkeypatch, tmp_path):
     result = await BaiduOcrTool().execute(prompt="p", image_source=f"@{img}")
 
     assert result.success is True
-    assert result.content == "ok"
+    assert result.content.startswith("ok")
 
 
 @pytest.mark.unit
@@ -354,6 +364,169 @@ async def test_large_image_compressed_then_recognized(monkeypatch, tmp_path):
     # compression kicked in (otherwise we'd get the "图片过大" error)
     assert result.success is True
     assert any("accurate_basic" in u for u in recorder)
+
+
+# ---------------------------------------------------------------------------
+# seal detection tests（understand_image 附带印章识别）
+# ---------------------------------------------------------------------------
+
+_SEAL_PAYLOAD_TWO = {
+    "result": [
+        {
+            "type": "circle",
+            "color": "red",
+            "probability": 0.9982,
+            "major": {"words": "深圳般若海科技有限公司", "probability": 0.98},
+            "minor": [{"words": "4403040793820", "probability": 0.99}],
+            "location": {"left": 736, "top": 1161, "width": 480, "height": 471},
+        },
+        {
+            "type": "perforation",
+            "color": "blue",
+            "probability": 0.91,
+            "major": {"words": "某某监理公司", "probability": 0.9},
+            "minor": [],
+            "location": {"left": 10, "top": 20, "width": 300, "height": 60},
+        },
+    ],
+    "result_num": 2,
+    "log_id": 3,
+}
+
+
+@pytest.mark.unit
+async def test_seal_results_appended_to_content(monkeypatch, tmp_path):
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "投标函"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr,
+        "AsyncClient",
+        _make_fake_client(token_payload, ocr_payload, recorder, seal_payload=_SEAL_PAYLOAD_TWO),
+    )
+
+    result = await BaiduOcrTool().execute(prompt="检查是否盖章", image_source=str(img))
+
+    assert result.success is True
+    assert result.content.startswith("投标函")
+    assert "【印章检测】共检出 2 个印章" in result.content
+    assert "红色圆形印章" in result.content
+    assert "章面文字「深圳般若海科技有限公司」" in result.content
+    assert "编号/其他文字「4403040793820」" in result.content
+    assert "蓝色骑缝章" in result.content
+    assert "位置(左上角x=736,y=1161" in result.content
+    assert "置信度0.998" in result.content
+    seals = result.data["seal_detection"]["seals"]
+    assert len(seals) == 2
+    assert seals[0]["major"] == "深圳般若海科技有限公司"
+    assert seals[1]["type"] == "perforation"
+    assert any("/ocr/v1/seal" in u for u in recorder)
+
+
+@pytest.mark.unit
+async def test_seal_zero_seals_reports_explicitly(monkeypatch, tmp_path):
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "正文"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr,
+        "AsyncClient",
+        _make_fake_client(
+            token_payload, ocr_payload, recorder, seal_payload={"result": [], "result_num": 0}
+        ),
+    )
+
+    result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+
+    assert result.success is True
+    assert "【印章检测】未检出印章" in result.content
+
+
+@pytest.mark.unit
+async def test_seal_api_error_degrades_but_ocr_succeeds(monkeypatch, tmp_path):
+    """印章接口业务错误只降级为提示行，不影响 OCR 成功返回。"""
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "证书内容"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr,
+        "AsyncClient",
+        _make_fake_client(
+            token_payload,
+            ocr_payload,
+            recorder,
+            seal_payload={"error_code": 17, "error_msg": "Open api daily request limit reached"},
+        ),
+    )
+
+    result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+
+    assert result.success is True
+    assert result.content.startswith("证书内容")
+    assert "【印章检测】不可用" in result.content
+    assert "百度错误[17]" in result.content
+    assert result.data["seal_detection"]["status"] == "error"
+    assert result.data["seal_detection"]["error_code"] == "17"
+
+
+@pytest.mark.unit
+async def test_seal_network_error_degrades_but_ocr_succeeds(monkeypatch, tmp_path):
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "ok"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            recorder.append(url)
+            if "oauth/2.0/token" in url:
+                return _FakeResp(token_payload)
+            if "/ocr/v1/seal" in url:
+                raise httpx.ConnectError("seal endpoint down")
+            return _FakeResp(ocr_payload)
+
+    monkeypatch.setattr(baidu_ocr, "AsyncClient", _Client)
+    monkeypatch.setattr(baidu_ocr.asyncio, "sleep", AsyncMock())
+
+    result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+
+    assert result.success is True
+    assert result.content.startswith("ok")
+    assert "【印章检测】失败" in result.content
+    assert result.data["seal_detection"]["status"] == "error"
+
+
+@pytest.mark.unit
+async def test_seal_disabled_skips_seal_call(monkeypatch, tmp_path):
+    """BAIDU_SEAL_DETECT_ENABLED=false 时不发印章请求，行为与旧版纯 OCR 一致。"""
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "ok"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr, "AsyncClient", _make_fake_client(token_payload, ocr_payload, recorder)
+    )
+
+    tool = BaiduOcrTool()
+    tool._seal_enabled = False
+    result = await tool.execute(prompt="p", image_source=str(img))
+
+    assert result.success is True
+    assert result.content == "ok"
+    assert not any("/ocr/v1/seal" in u for u in recorder)
+    assert result.data["seal_detection"] == {"enabled": False}
 
 
 # ---------------------------------------------------------------------------

@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     baidu_ocr_secret_key: str = ""  # env: BAIDU_OCR_SECRET_KEY
     baidu_ocr_endpoint: str = "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic"
 
+    # 百度云印章识别（rest/2.0/ocr/v1/seal）：provider=baidu 时 understand_image
+    # 附带印章检测并合并进返回文本。开关用于计费/故障时无需发版即可关闭。
+    baidu_seal_detect_enabled: bool = True  # env: BAIDU_SEAL_DETECT_ENABLED
+    baidu_seal_endpoint: str = "https://aip.baidubce.com/rest/2.0/ocr/v1/seal"
+
     # Duplicate S2 selective image/OCR channel.  Hashing is always local;
     # OCR/VLM calls are separately switchable and bounded so an upload never
     # fans out into unmetered paid calls.
