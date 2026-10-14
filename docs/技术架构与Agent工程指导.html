@@ -1,0 +1,1184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>bjt-agent 技术架构与 Agent 工程指导</title>
+<style>
+@page { size: A4; margin: 15mm 15mm 15mm 15mm; }
+html, body { margin: 0; padding: 0; background: #ffffff; }
+body {
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-size: 10.5pt; line-height: 1.75; color: #1f2937;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+h1, h2, h3, h4 { font-weight: 700; break-after: avoid; page-break-after: avoid; }
+h1 {
+  font-size: 20pt; color: #1e3a8a; line-height: 1.35;
+  margin: 0 0 10pt 0; padding: 0 0 8pt 0; border-bottom: 2.5pt solid #1d4ed8;
+}
+h2 {
+  font-size: 14.5pt; color: #1e3a8a; margin: 20pt 0 8pt 0;
+  padding: 0 0 4pt 0; border-bottom: 1.2pt solid #bfdbfe;
+}
+h3 { font-size: 12pt; color: #1d4ed8; margin: 14pt 0 6pt 0; }
+h4 { font-size: 11pt; color: #374151; margin: 12pt 0 5pt 0; }
+p { margin: 5pt 0; }
+strong { color: #111827; }
+a { color: #1d4ed8; text-decoration: none; }
+ul, ol { margin: 5pt 0 5pt 0; padding-left: 2em; }
+li { margin: 2.5pt 0; }
+blockquote {
+  margin: 8pt 0; padding: 6pt 10pt; background: #f8fafc;
+  border-left: 3pt solid #93c5fd; color: #374151;
+}
+blockquote p { margin: 3pt 0; }
+table {
+  width: 100%; border-collapse: collapse; margin: 8pt 0;
+  font-size: 9pt; line-height: 1.5;
+}
+thead { display: table-header-group; }
+th { background: #eff6ff; color: #1e3a8a; font-weight: 700; }
+th, td { border: 0.5pt solid #cbd5e1; padding: 3.5pt 5pt; text-align: left; vertical-align: top; }
+tr { break-inside: avoid; page-break-inside: avoid; }
+tbody tr:nth-child(even) { background: #f8fafc; }
+code {
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 8.6pt; background: #f1f5f9; padding: 0 2.5pt; border-radius: 2pt;
+}
+pre {
+  font-family: "NSimSun", "SimSun", monospace;
+  background: #f8fafc; border: 0.5pt solid #e2e8f0;
+  padding: 7pt 8pt; margin: 8pt 0; line-height: 1.32;
+  white-space: pre; overflow: hidden;
+  break-inside: avoid; page-break-inside: avoid;
+}
+pre code { background: none; padding: 0; font-size: inherit; border-radius: 0; }
+hr { border: none; border-top: 0.7pt solid #cbd5e1; margin: 14pt 0; }
+</style>
+</head>
+<body>
+<h1 id="bjt-agent-技术架构与-agent-工程指导">bjt-agent 技术架构与 Agent 工程指导</h1>
+<blockquote>
+<p><strong>面向 AI Agent 工程师的系统教程</strong>。基于 2026-10 生产代码现状编写（<code>bjt_agent</code> 仓库，sales 工作树 <code>E:\dvlp\dev\sales\bjt-agent</code>，<code>master-agent-sales</code> 分支）。
+约定：本文只写架构、协议与 IP，<strong>不写任何密码/密钥</strong>（凭证见 sales 工作树 <code>doc/workspace/05-production-env.md</code>）。文中代码引用格式为 <code>相对路径</code>（函数/类名），均相对 <code>bjt-agent/</code> 仓库根。</p>
+</blockquote>
+<hr />
+<h2 id="目录">目录</h2>
+<ol>
+<li><a href="#1-系统概览">系统概览</a></li>
+<li><a href="#2-总体架构">总体架构</a></li>
+<li><a href="#3-生产部署拓扑">生产部署拓扑</a></li>
+<li><a href="#4-核心框架层mini-agent">核心框架层：Mini-Agent</a></li>
+<li><a href="#5-领域-agent-层六种形态">领域 Agent 层：六种形态</a></li>
+<li><a href="#6-工具层设计">工具层设计</a></li>
+<li><a href="#7-llm-调用与用量治理">LLM 调用与用量治理</a></li>
+<li><a href="#8-任务工程与可靠性">任务工程与可靠性</a></li>
+<li><a href="#9-数据架构">数据架构</a></li>
+<li><a href="#10-核心工作流程走读">核心工作流程走读</a></li>
+<li><a href="#11-经验自学习闭环">经验自学习闭环</a></li>
+<li><a href="#12-agent-工程模式清单事故沉淀">Agent 工程模式清单（事故沉淀）</a></li>
+<li><a href="#13-扩展开发指南">扩展开发指南</a></li>
+<li><a href="#14-附录术语表与文档索引">附录：术语表与文档索引</a></li>
+</ol>
+<hr />
+<h2 id="1-系统概览">1. 系统概览</h2>
+<h3 id="11-产品形态">1.1 产品形态</h3>
+<p>bjt-agent（标捷通 · AI 标书审查平台）是一个面向投标业务的 <strong>AI Agent SaaS</strong>：用户上传招标文件与投标文件，平台用 LLM 智能体逐规则审查投标文件的符合性、检查格式违规（暗标）、比对多份标书的雷同度（查重），并反向提供 AI 编标（生成投标文件）能力。入口 <code>check.aibjt.com:30002</code>（公网 NAT 到 prod nginx :8000）。</p>
+<p>系统有两个使用终端：</p>
+<ul>
+<li><strong>Web 前端</strong>（Vue3 SPA）：项目/文档管理、发起审查、实时查看执行时间线、结果与报告；</li>
+<li><strong>Word 插件（VSTO）</strong>：用户在自己电脑的 Word 里装插件，平台 Agent 通过"远程工具协议"<strong>反向调用用户 Word 进程</strong>执行文档级检查（暗标检查的核心通道），插件经 WebView2 内嵌平台页面完成 SSO。</li>
+</ul>
+<p>登录体系外包给运营平台（operate-two，Java）：<code>POST /api/auth/login</code> 实际转发运营台 <code>/aiCheckLogin</code> 校验，成功后本地 find-or-create 用户并签发 JWT（claims 含 <code>interior_user</code> 内部员工标记与 <code>concurrency</code> 并发配额）。这决定了 bjt-agent 没有独立的账号密码体系。</p>
+<h3 id="12-业务能力清单">1.2 业务能力清单</h3>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>入口</th>
+<th>负责 Agent</th>
+<th>形态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>标书审查（多规则并行）</td>
+<td><code>/api/projects/{id}/review</code></td>
+<td>MasterAgent + BidReviewAgent</td>
+<td>Master-SubAgent 编排 + ReAct</td>
+</tr>
+<tr>
+<td>技术标查重（多文档比对）</td>
+<td><code>/api/projects/{id}/duplicate-check</code></td>
+<td>DuplicateMasterAgent + DuplicateCheckAgent</td>
+<td>编排 + 确定性检索 + 单次 LLM 判定</td>
+</tr>
+<tr>
+<td>暗标符合性检查（格式合规）</td>
+<td><code>/api/blind-check</code> + VSTO 插件</td>
+<td>BlindCheckAgent</td>
+<td>确定性优先 + 受限 ReAct</td>
+</tr>
+<tr>
+<td>AI 标书生成（V1）</td>
+<td><code>/api/bid-draft</code></td>
+<td>BidDraftAgent</td>
+<td>纯代码编排 LLM 管线</td>
+</tr>
+<tr>
+<td>AI 编标（V2，素材+问卷+逐章）</td>
+<td><code>/api/bid-wizard</code></td>
+<td>bid_wizard_agent 系列</td>
+<td>纯代码编排 LLM 管线</td>
+</tr>
+<tr>
+<td>扩写润色</td>
+<td><code>/api/polish</code></td>
+<td>polish 任务</td>
+<td>单次 LLM</td>
+</tr>
+<tr>
+<td>知识库（RAG）</td>
+<td><code>/api/knowledge</code></td>
+<td>RAGSearchTool（被审查 Agent 调用）</td>
+<td>独立检索服务</td>
+</tr>
+<tr>
+<td>经验自学习</td>
+<td>审查完成后异步</td>
+<td>experience/ 模块</td>
+<td>数据管线（Case→Skill）</td>
+</tr>
+<tr>
+<td>开放 API（第三方 AI 助手）</td>
+<td><code>/api/v1/open</code>（X-Api-Key）</td>
+<td>复用审查/查重</td>
+<td>见 <code>skill/bjt-bid-review/</code></td>
+</tr>
+</tbody>
+</table>
+<p>所有消耗 LLM 的能力都走<strong>统一计费链路</strong>（点数制），这是本系统区别于演示项目的工程重点，见 §7.4。</p>
+<h3 id="13-技术栈">1.3 技术栈</h3>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>技术</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>后端 API</td>
+<td>Python / FastAPI / SQLAlchemy(async) / slowapi / pydantic BaseSettings</td>
+</tr>
+<tr>
+<td>任务队列</td>
+<td>Celery（broker=Redis，beat 定时，三队列隔离）</td>
+</tr>
+<tr>
+<td>Agent 框架</td>
+<td>Mini-Agent 子模块（MiniMax 开源，ReAct 循环 + Tool/LLMClient 抽象）</td>
+</tr>
+<tr>
+<td>LLM</td>
+<td>OpenAI 兼容协议；provider 可配 minimax / volcengine / deepseek / tencent，生产现为腾讯 TokenHub（deepseek 系模型）</td>
+</tr>
+<tr>
+<td>主库</td>
+<td>PostgreSQL 15（docker），手写编号 SQL 迁移</td>
+</tr>
+<tr>
+<td>缓存/队列/事件</td>
+<td>Redis 7（docker），分 db0/1/2 三个用途</td>
+</tr>
+<tr>
+<td>向量检索</td>
+<td>rag_memory_service（Node/Express + better-sqlite3 + sqlite-vec + FTS5，智谱 embedding-3），<strong>不用 pgvector</strong></td>
+</tr>
+<tr>
+<td>文档解析</td>
+<td>docling / markitdown / mammoth / MinerU（third_party 子模块）；OCR：百度云 + 本地 RapidOCR 微服务(:8900)</td>
+</tr>
+<tr>
+<td>前端</td>
+<td>Vue 3.4 + TypeScript 5 + Vite 5 + Pinia 2，Element Plus + Ant Design Vue，marked/mermaid 渲染报告</td>
+</tr>
+<tr>
+<td>部署</td>
+<td>API/Celery 原生进程（gunicorn + systemd），PG/Redis docker；4 机集群</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-总体架构">2. 总体架构</h2>
+<pre style="font-size:7.1pt"><code>        ┌─────────────────────────────────────────────────────────────┐
+        │        用户浏览器（Vue3 SPA）      Word 插件 VSTO + WebView2  │
+        │        /home/* 业务页面            /vsto/* SSO 内嵌页         │
+        └──────────────┬──────────────────────────┬───────────────────┘
+                       │ HTTPS + SSE              │ SSE（vsto_tool_request 下发 /
+                       ▼                          ▼   插件执行结果走 Redis 回传）
+        ┌──────────────────────────────────────────────────────────────┐
+        │  nginx-LB（prod :8000 ssl，公网 30002→8000；ip_hash 保 SSE 粘滞）│
+        └──────┬──────────────────────────────────────────┬────────────┘
+               │ /api、/files                              │
+               ▼                                           ▼
+   ┌─────────────────────────┐              ┌──────────────────────────┐
+   │ FastAPI（gunicorn :8001）│   http       │ RAG Memory Service :3001 │
+   │ 24 个 router + 限流/节流 │─────────────→│ per-user SQLite 混合检索  │
+   │ SSE 端点（XREAD 转发）    │              └──────────────────────────┘
+   └──────┬────────┬─────────┘
+          │ 写库/Outbox          │ send_task
+          ▼                      ▼
+   ┌────────────────┐    ┌────────────────┐        ┌──────────────────┐
+   │ PostgreSQL     │    │ Redis :6379    │ consume│ Celery Workers   │
+   │ :5432          │←──→│ db0 缓存+SSE流 │───────→│ (node1/2/3)      │
+   │ 业务/任务/计费/ │    │ db1 broker     │        │ tasks/* →        │
+   │ 经验/用量台账   │    │ db2 result     │        │ asyncio.run(     │
+   └────────────────┘    └────────────────┘        │   领域 Agent)    │
+       ▲                     ▲    ▲                └────┬────────┬────┘
+       │                     │    │ LLM(OpenAI兼容)     │        │ OCR/VLM
+       │                     │    └────────────────────┘        ▼
+       │                     │                        ┌──────────────────┐
+       │   beat 单例(prod)：outbox 重派 10s / 计费对账   │ 百度OCR / RapidOCR │
+       │   120s / 充值订单轮询 60s / 点数批次过期 1h      │ 微服务 :8900      │
+       └──────────────────────────────────────────── └──────────────────┘
+</code></pre>
+<p>分层职责一句话版：</p>
+<ul>
+<li><strong>API 层</strong>（<code>backend/api/</code>）：鉴权（JWT + 运营台外包登录）、参数校验、<strong>计费授权闸门</strong>、建任务行 + Outbox、立即返回 task_id。不做任何重计算。</li>
+<li><strong>任务层</strong>（<code>backend/tasks/</code>）：Celery 任务是所有重计算的入口，负责认领、超时控制、心跳、事件流、结果落库、计费终局。每个任务体内 <code>asyncio.run()</code> 进入异步世界。</li>
+<li><strong>Agent 层</strong>（<code>backend/agent/</code>）：领域智能体与编排器，消费 Mini-Agent 框架的循环能力。</li>
+<li><strong>工具层</strong>（<code>backend/agent/tools/</code> + <code>backend/services/</code>）：Agent 的手和脚——文档检索、比对、RAG、OCR、VSTO 远程 Word 操作、用量计量。</li>
+<li><strong>数据层</strong>：PG 是唯一事实源（业务状态 + 计费台账）；Redis 承担队列/事件/缓存/取消标记四职；RAG 服务独立持有向量索引。</li>
+</ul>
+<p>关键设计立场：<strong>LLM 只做判断，不做记账</strong>。所有金额、点数、状态流转由确定性代码完成，LLM usage 只是记账的原始凭证（§7）。</p>
+<hr />
+<h2 id="3-生产部署拓扑">3. 生产部署拓扑</h2>
+<p>权威源：<a href="集群部署方案.md">集群部署方案.md</a> §3.9。要点如下（IP 只写内网，无凭证）：</p>
+<pre style="font-size:8.6pt"><code>                    公网 120.194.14.251:30002（云防火墙 NAT → 8000）
+                                  │
+                   ┌──────────────▼──────────────┐
+                   │ prod（10.1.3.241）—— 纯枢纽 │
+                   │ · nginx-LB :8000 (ssl)      │──ip_hash──→ node1/2/3 :8001
+                   │ · PostgreSQL :5432 (docker)  │
+                   │ · Redis :6379 (docker)       │
+                   │ · celery beat（全集群唯一）  │
+                   │ · RAG Memory :3001（单例）   │
+                   │ · PgBouncer :6432（备用）    │
+                   └─────────────────────────────┘
+        ┌────────────────┬────────────────┬────────────────┐
+   ┌────▼─────────┐ ┌────▼─────────┐ ┌────▼─────────┐
+   │ node1 .110   │ │ node2 .111   │ │ node3 .112   　 │
+   │ gunicorn :8001│ │ gunicorn :8001│ │ gunicorn :8001│
+   │ (4 UvicornW) │ │ (4 UvicornW) │ │ (4 UvicornW) 　 │
+   │ Review ×2(c3)│ │ Review ×2(c3)│ │ Review ×3(c3)│
+   │ Parser ×1(c2)│ │ Parser ×1(c2)│ │      —       │
+   │ NFS server   │ │ NFS client   │ │ NFS client   　 │
+   └──────────────┘ └──────────────┘ └──────────────┘
+</code></pre>
+<ul>
+<li><strong>prod 不跑计算</strong>：Phase 4 后 prod 只保留边缘与 DB/单例服务。计算全在 node1/2/3。</li>
+<li><strong>workspace 文件共享</strong>：NFS 实体在 node1 <code>/srv/bjt_workspace</code>，软链到各节点 <code>/home/bjt/bjt_agent/workspace</code>；<strong>prod 不挂载 NFS</strong>——这是"prod 禁止起 worker"的根因（prod 假 worker 抢到任务后读不到文件，全部误判失败，08-28 事故）。</li>
+<li><strong>队列容量</strong>：Review 槽位 (2+2+3)×3 = 21（目标并发 20）；Parser 2×2 = 4。</li>
+<li><strong>worker 保护参数</strong>（启动脚本 <code>scripts/bjt-cluster.sh</code>）：<code>--max-tasks-per-child=5</code>、Review <code>--max-memory-per-child=2500000</code>(约 2.5G)、Parser 2G——用进程自杀换内存泄漏免疫。</li>
+<li><strong>Redis 分库</strong>：db0 = 业务缓存 + SSE Stream（<code>sse:stream:&lt;task_id&gt;</code>）；db1 = celery broker；db2 = celery result。</li>
+<li><strong>nginx SSE 要点</strong>：upstream <code>ip_hash</code> 做会话粘滞（SSE 长连接必须落在同一节点）、<code>proxy_buffering off</code>、<code>max_fails=3 fail_timeout=30s</code> 自动摘除故障节点。</li>
+<li><strong>节点启动脚本</strong>：<code>scripts/bjt-cluster.sh</code>（节点）/ <code>scripts/bjt-proc.sh</code>（prod 单例）。集群维护铁律见 <a href="集群维护速查手册.md">集群维护速查手册.md</a>（如 rsync 必须排除 <code>.env</code>、SSH 远程操作一律脚本经 stdin 注入等）。</li>
+</ul>
+<p>单机形态（<code>docker-compose.yml</code>）只有 PG15 + Redis7 两个容器，backend/celery 仍是原生进程——<strong>API 与 Worker 不容器化</strong>是全形态共识。</p>
+<hr />
+<h2 id="4-核心框架层mini-agent">4. 核心框架层：Mini-Agent</h2>
+<h3 id="41-定位与引入方式">4.1 定位与引入方式</h3>
+<p><code>Mini-Agent/</code> 是 MiniMax-AI 开源的单 Agent 演示框架（MIT）的 git 子模块，提供"极简但专业"的 ReAct 循环骨架。引入方式不是 pip 安装，而是 <strong>sys.path 注入</strong>：<code>backend/utils/mini_agent_utils.py::setup_mini_agent_path()</code> 把仓库根的 <code>Mini-Agent/</code> 插入 <code>sys.path</code>，随后 <code>import mini_agent</code>。所有需要它的模块（<code>bid_review_agent.py</code>、<code>llm_factory.py</code> 等）在 import 前先调它。</p>
+<blockquote>
+<p>工程提示：本机克隆后必须 <code>git submodule update --init Mini-Agent</code>，否则 <code>No module named mini_agent</code>（<code>.gitignore</code> 相关坑，见 sales 工作树 AGENTS.md）。</p>
+</blockquote>
+<h3 id="42-四个核心抽象">4.2 四个核心抽象</h3>
+<table>
+<thead>
+<tr>
+<th>抽象</th>
+<th>位置</th>
+<th>要点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Agent</code></td>
+<td><code>Mini-Agent/mini_agent/agent.py</code></td>
+<td>单 Agent 执行循环。构造参数 <code>llm_client, system_prompt, tools, max_steps=50, workspace_dir, token_limit=80000, event_callback</code></td>
+</tr>
+<tr>
+<td><code>Tool</code></td>
+<td><code>Mini-Agent/mini_agent/tools/base.py</code></td>
+<td>抽象属性 <code>name / description / parameters</code>（JSON Schema）+ <code>async execute() -&gt; ToolResult(success, content, error)</code>；自带 <code>to_schema()</code>（Anthropic）/ <code>to_openai_schema()</code>（OpenAI function calling 双格式）</td>
+</tr>
+<tr>
+<td><code>LLMClient</code></td>
+<td><code>Mini-Agent/mini_agent/llm/llm_wrapper.py</code></td>
+<td>anthropic/openai 双 provider 门面；支持 <code>reasoning_split</code>（思维链分离进 <code>Message.thinking</code>）、<code>reasoning_mode="deepseek"</code>、内建指数退避重试</td>
+</tr>
+<tr>
+<td><code>Message</code>/<code>LLMResponse</code></td>
+<td><code>Mini-Agent/mini_agent/schema/schema.py</code></td>
+<td><code>Message(role, content, thinking, tool_calls, tool_call_id)</code>；<code>TokenUsage</code> 含 DeepSeek 风格缓存命中/未命中拆分</td>
+</tr>
+</tbody>
+</table>
+<p><strong>工具注册机制</strong>非常朴素：构造时 <code>self.tools = {tool.name: tool for tool in tools}</code>——一个按 <code>Tool.name</code> 字符串索引的 dict。后续可随时 <code>self.tools[name] = tool</code> 动态补注册（backend 的 MCP 工具、视觉工具都这样注入）。</p>
+<h3 id="43-react-执行循环agentrun">4.3 ReAct 执行循环（<code>Agent.run()</code>）</h3>
+<p>每个 step 的固定节奏：</p>
+<pre style="font-size:8.6pt"><code>while step &lt; max_steps:
+    1. 发 step_start 事件 → 检查 cancel_event（取消安全点①）
+    2. await _summarize_messages()          # 上下文记忆化（见 4.4）
+    3. response = await llm.generate(messages, tools)
+    4. append assistant Message（含 thinking / tool_calls）
+    5. 无 tool_calls → 任务完成，返回最终文本
+    6. 逐个执行工具：
+       - 未知工具   → ToolResult(success=False, error=&quot;Unknown tool&quot;)  # 不抛异常
+       - 执行异常   → 捕获全部异常 → 失败 ToolResult（带 traceback）    # 不中断循环
+       - append role=&quot;tool&quot; 消息 → 检查取消（安全点②）
+    7. 发 step_complete 事件
+耗尽 max_steps → 返回 &quot;Task couldn&#x27;t be completed after N steps.&quot;
+</code></pre>
+<p>对 Agent 工程师最重要的三个特性都藏在这个循环里：</p>
+<ol>
+<li><strong>异常即工具结果</strong>：工具层的任何崩溃都变成一条失败消息回给 LLM，让它自己决定重试还是换路——循环永不因工具异常而中断。</li>
+<li><strong>事件协议</strong>：<code>step_start / llm_output / tool_call_start / tool_call_end / step_complete / completed / cancelled / max_steps_reached</code>，经 <code>event_callback</code> 抛出，是 SSE 实时进度的唯一来源（领域 Agent 覆写 <code>_emit_event</code> 做聚合，见 §5.1）。</li>
+<li><strong>取消安全点</strong>：只在 step 边界与工具前后检查 <code>cancel_event</code>，即"协作式取消"，保证消息列表一致性（<code>_cleanup_incomplete_messages()</code> 清理半截消息）。</li>
+</ol>
+<h3 id="44-上下文记忆化_summarize_messages">4.4 上下文记忆化（<code>_summarize_messages</code>）</h3>
+<ul>
+<li>token 计量：tiktoken cl100k_base 精确计数，失败退化为 <code>chars/2.5</code> 估算；本地估计与 API 上报 <code>total_tokens</code> <strong>任一</strong>超 <code>token_limit</code> 即触发。</li>
+<li>压缩策略：<strong>保留 system + 全部 user 消息</strong>，把相邻 user 消息之间的执行过程（assistant + tool 消息）用一次额外 LLM 调用压缩成 <code>[Assistant Execution Summary]</code>。</li>
+<li>审查 Agent 的 <code>token_limit</code> 配到 800K（<code>config.py: agent_token_limit</code>），配合 max_steps=500 支撑长文档审查。</li>
+</ul>
+<h3 id="45-框架与领域的边界三个接缝">4.5 框架与领域的边界（三个接缝）</h3>
+<p>backend 不改框架源码，通过三个接缝组合出领域能力：</p>
+<table>
+<thead>
+<tr>
+<th>接缝</th>
+<th>用法</th>
+<th>例子</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>继承 Agent</strong></td>
+<td>领域 Agent 继承 <code>mini_agent.agent.Agent</code>，注入领域提示词与工具集，覆写 <code>_emit_event</code>、包裹 <code>llm_client.generate</code></td>
+<td><code>BidReviewAgent</code>、<code>BlindCheckAgent</code></td>
+</tr>
+<tr>
+<td><strong>扩展 Tool</strong></td>
+<td>领域工具继承 <code>mini_agent.tools.base.Tool</code>，但用 backend 自己的 <code>ToolResult</code>（多一个 <code>data: dict</code> 字段供代码消费结构化结果）</td>
+<td><code>backend/agent/tools/*</code> 全部</td>
+</tr>
+<tr>
+<td><strong>复用 LLMClient/Message</strong></td>
+<td>裸 LLM 调用（无工具循环）也走同一客户端与消息 schema，保证计量/重试/协议统一</td>
+<td><code>llm_factory.create_llm_client()</code>、experience 模块</td>
+</tr>
+</tbody>
+</table>
+<p>一句话分工：<strong>Mini-Agent 管"循环、协议、抽象、摘要、事件、取消"；backend 管"领域提示词、领域工具、编排、持久化、计费、SSE 落地"</strong>。单 Agent 时代的设计文档见 <a href="mini-agent-interaction.md">mini-agent-interaction.md</a>（描述的是早期单文档形态，现已演进为多文档 + 结构化工具 + max_steps=500）。</p>
+<hr />
+<h2 id="5-领域-agent-层六种形态">5. 领域 Agent 层：六种形态</h2>
+<p><code>backend/agent/</code> 下所有叫 "Agent" 的东西<strong>并不是同一种东西</strong>。这是本系统最重要的架构判断：<strong>按任务性质选择 Agent 形态，而不是把一切塞进 ReAct 循环</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>继承 Mini-Agent？</th>
+<th>形态</th>
+<th>适用判断</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BidReviewAgent</td>
+<td>✅</td>
+<td>完整 ReAct 工具循环</td>
+<td>开放式检索 + 判断，路径不可预知</td>
+</tr>
+<tr>
+<td>BlindCheckAgent</td>
+<td>✅</td>
+<td>固定编排 + 受限 ReAct + 守门员重问</td>
+<td>检查项确定性高，但需 LLM 组织结论</td>
+</tr>
+<tr>
+<td>BidDraftAgent（V1 生成）</td>
+<td>❌</td>
+<td>纯代码编排的多阶段 LLM 管线</td>
+<td>输出结构固定，无需自主探索</td>
+</tr>
+<tr>
+<td>bid_wizard 系列（V2 编标）</td>
+<td>❌</td>
+<td>素材索引→问卷→Spec→逐章，代码编排</td>
+<td>同上，且阶段间需人工介入</td>
+</tr>
+<tr>
+<td>DuplicateCheckAgent</td>
+<td>❌</td>
+<td>确定性检索 + 单次结构化 LLM 判定</td>
+<td>证据必须可复现，LLM 只做裁决</td>
+</tr>
+<tr>
+<td>MasterAgent / DuplicateMasterAgent</td>
+<td>❌</td>
+<td>纯 Python 编排器（不调 LLM）</td>
+<td>扇出并行与聚合</td>
+</tr>
+</tbody>
+</table>
+<h3 id="51-bidreviewagent-完整-react-审查子代理">5.1 BidReviewAgent —— 完整 ReAct 审查子代理</h3>
+<p><code>backend/agent/bid_review_agent.py</code>（约 2400 行，系统核心）。它审查<strong>一个规则文档</strong>（一个 TodoItem），由 MasterAgent 并行调度多个实例。</p>
+<p><strong>构造与工具集</strong>：<code>max_steps=500</code>；工具 = <code>search_tender_doc</code>（关键词行搜索，8000 字符分块、±5 行上下文、图片引用邻近扫描、文件级缓存）+ <code>rag_search</code> + <code>compare_bid</code>（工具内嵌独立 LLM 做单条合规判定）+ <code>decide_merge</code> + <code>get_document_toc / get_section_content / get_section_images / get_image_ocr</code>（结构化工具共享 loader，避免重复读文件）+ <code>understand_image</code>（按 provider 换实现：百度 OCR / 火山视觉 / MCP）+ <code>write_file / read_file</code>（复用框架 file_tools）。</p>
+<p><strong>LLM 调用包裹</strong>（<code>_wrap_llm_generate</code>，对 <code>llm_client.generate</code> 的 monkeypatch）——每次 LLM 调用依次经过：</p>
+<ol>
+<li>Redis 分布式滑窗限流（集群 LLM 并发上限）；</li>
+<li>进程内信号量（<code>max_llm_concurrency</code>，跨事件循环重建）；</li>
+<li><code>asyncio.timeout(180s)</code> 单次超时；</li>
+<li>TimeoutError 专项重试（默认 2 次）；</li>
+<li>成功后：更新任务心跳 → 检查取消 → 写 Redis 指标 → <strong><code>record_llm_usage</code> 计费记账</strong> → 交互日志（最终落 <code>logs/interaction_*.jsonl</code> 供复盘）。</li>
+</ol>
+<p><strong>运行时自治机制</strong>：</p>
+<ul>
+<li><strong>心跳</strong>：每次 LLM 调用/step 后更新 <code>ReviewTask.last_heartbeat</code>；后台协程 5s 轮询，API 取消标记优先，超时即 set <code>cancel_event</code>。</li>
+<li><strong>防重复动作</strong>：<code>deque(maxlen=20)</code> 记录 (tool, key_arg) 签名，同签名 ≥3 次即注入中文 <code>[系统提醒]</code> user 消息——用 prompt 干预替代硬熔断。</li>
+<li><strong>事件聚合</strong>：覆写 <code>_emit_event</code>，把细粒度事件聚合成一条 <code>sub_agent_step</code>（含 step_type/content/tool_calls/tool_results）供前端时间线。</li>
+</ul>
+<p><strong>结果抽取的兜底链</strong>（<code>_post_process</code>）：① 规则解析 Agent 写出的 markdown 报告（固定小节结构 <code>## 检查项N</code>）→ ② 失败则 LLM 从消息历史抽取 findings → ③ 再失败则关键词扫描（含合规否定短语防误报）→ severity 由规则推断。空 findings 是<strong>显式语义</strong>（全部合规），有专门的抑制逻辑防止关键词兜底把"全部合规"误报成违规。</p>
+<h3 id="52-masteragent-subagentexecutor-编排器模式">5.2 MasterAgent / SubAgentExecutor —— 编排器模式</h3>
+<p><code>backend/agent/master/master_agent.py</code>。<strong>纯 Python 编排器，自己不调 LLM</strong>。四阶段：</p>
+<pre style="font-size:8.6pt"><code>1. RuleLibraryScannerTool 扫描规则库 *.md（含 GBK 文件名自愈）
+2. 用户勾选大类过滤 → 每个规则文档建一个 TodoItem（session 内可观测）
+3. asyncio.Semaphore(max_sub_agent_concurrency) + gather(return_exceptions=True)
+   并行执行 SubAgentExecutor.execute（每 Todo 一个 BidReviewAgent）
+4. 纯统计聚合（不做 LLM 合并）→ report_agent 生成总体报告
+</code></pre>
+<p><code>SubAgentExecutor</code>（<code>master/sub_agent_executor.py</code>）是子代理的"保姆"：</p>
+<ul>
+<li><strong>用量归属</strong>：入口 <code>set_usage_context(UsageContext(task_id, todo_id, user...))</code>（contextvars，天然隔离到本协程树），出口 finally <code>reset_usage_context</code>——计费台账由此能精确到"哪个规则文档花了多少钱"（§7.3）。</li>
+<li><strong>重试语义</strong>：<code>max_steps</code> 耗尽 <strong>fail-fast 不重试</strong>（避免雪崩）；<code>detect_anomaly</code>（write_file 没被调用且 findings 空 = 异常行为）触发指数退避重试 2/4/8s；"被调用且空"判为全部合规不重试。</li>
+<li><strong>落库</strong>：<code>sub_agent_step</code> 事件异步写 <code>agent_steps</code> 表（时间线）；每个子代理完成即增量写 <code>ReviewResult</code>（前端无需等全部完成）。</li>
+</ul>
+<p><strong>为什么 Master 不用 LLM 编排？</strong> 规则库是结构化目录，扇出关系确定，用代码编排可获得：确定性（同样输入同样扇出）、免费（不耗 token）、可观测（TodoItem 即进度条）。LLM 编排只在"计划本身需要推理"时才值得。</p>
+<h3 id="53-blindcheckagent-确定性优先的暗标检查">5.3 BlindCheckAgent —— 确定性优先的暗标检查</h3>
+<p><code>backend/agent/blind_check_agent.py</code>。暗标检查 = 验证投标文件格式是否满足招标文件的无标识要求（字体、字号、行距、页边距、标题层级…）。这个领域吃过两次大亏（2026-09-12 大面积假阳性、09-17 大文档超时），现行设计是 ADR-0002/0003（位于 sales 工作树 <code>docs/adr/</code>）的落地，<strong>教科书级的"确定性优先 + LLM 收口"</strong>：</p>
+<ol>
+<li><strong>工具参数从要求文本解析，绝不落默认值</strong>（<code>_build_deterministic_arguments</code>）：纯正则解析字体名（含 <code>仿宋_GB2312</code> 归一）、字号（中文字号名→磅值表）、RGB/黑字、行距（固定值/倍数）、页边距、标题层级上限→锚定正则。<strong>解析不出的维度显式跳过并产出"待确认"note</strong>——历史事故根因就是工具参数硬编码样例值（28磅/2.5cm）。</li>
+<li><strong>回显校验</strong>（<code>_apply_echo_verification</code>）：插件回传的 <code>expected</code> 与传入意图逐维度比对，错配维度的"违规"被剔除——防旧版插件用内置默认值产生假阳性。</li>
+<li><strong>强制证据先行</strong>：先 <code>word_get_overview</code> 拿 snapshot_id，再固定采集身份线索（6 类），然后才进 ReAct。</li>
+<li><strong>时间预算分阶段</strong>：总预算 25min，证据采集最多占 60%，LLM 收尾预留 150s；全文扫描超时按文档规模自适应（1500 字符/s + 0.01s/段，clamp 90–480s）。</li>
+<li><strong>超预算降级</strong>：ReAct 超时 → <code>_final_summary_without_tools</code>（不再调工具的一次性汇总）；模型漏掉的违规维度由"守门员重问"（<code>_guardrail_reask</code>）带事实追问一次，仍未覆盖的降级为"待确认"卡——<strong>"AI 是用户可见发现的唯一作者"</strong>（ADR-0002：绝不把工具原始违规直接展示给用户）。</li>
+<li><strong>结果口径</strong>：只分「严重」「待确认」两类；无违规但覆盖不完整 → overall=unknown（不假装合规）。</li>
+</ol>
+<h3 id="54-biddraftagent-bid_wizard-代码编排的生成管线">5.4 BidDraftAgent / bid_wizard —— 代码编排的生成管线</h3>
+<p><strong>V1 BidDraftAgent</strong>（<code>bid_draft_agent.py</code>）：文件头注释明言不走 Mini-Agent 循环。四阶段：<code>_analyze</code>（招标要素提取 JSON）→ <code>_build_outline</code>（大纲规范化：层级编号、剥重复前缀、clamp 段落数，上限 60 节）→ <code>_generate_section</code> 逐节撰写（产物做 markdown 围栏修复、每节 mermaid 上限 2 张）→ <code>_assemble</code> 拼装。写作红线内置于 prompt：<strong>严禁虚构，事实空白写（请补充）</strong>。</p>
+<p><strong>V2 AI 编标</strong>（<code>bid_wizard_agent.py</code>，复用 V1 内核 import 而非复制）新增三件武器：</p>
+<ul>
+<li><strong>素材两阶段注入</strong>：确定性分块（标题感知，1500 字符/块，上限 200 块）→ LLM 为每块写摘要/关键词 → <code>index.md + chunks/NNN.md</code>。写作时<strong>再由一次 LLM 按章节挑选分段号</strong>，代码读选中分段入上下文——避免把全部素材塞进 prompt。</li>
+<li><strong>多轮问卷</strong>：AI 生成 6–15 题（建议答案优先来自素材事实），自判是否追问；用户答案四态（answered/adopted/skipped/supplemented）合并。</li>
+<li><strong>Spec 硬约束</strong>：商务/技术部分开关、目标总字数 ±20%、配图开关；平级劣化检测 + 带纠正指令重试一次。</li>
+<li><strong>JSON 容错链</strong>（<code>WizardLLM.generate_json</code>）：宽容解析（<code>raw_decode</code> 取首个完整 JSON）→ 时间预算允许则带纠正语重试 → <code>salvage_truncated_json</code>（括号栈扫描，保留已完整元素救援截断输出）→ 才报错。这是对抗长 JSON 输出被 max_tokens 截断的实用模式。</li>
+</ul>
+<h3 id="55-duplicatecheckagent-确定性检索-单次裁决">5.5 DuplicateCheckAgent —— 确定性检索 + 单次裁决</h3>
+<p>查重的证据必须可复现、可法庭级解释，所以 LLM 被压到最小面：</p>
+<pre style="font-size:8.6pt"><code>search_duplicate_candidates（确定性检索，S2 多通道：哈希/词法/结构/图像/语义）
+  → 规则过滤 → top-N 补上下文 → 来源候选检索
+  → 单次结构化 LLM 判定（JSON 校验失败带纠正语重试 1 次）
+  → _materialize_findings：模型决策绑回不可变候选证据
+      （相似度/原文/位置不得改——LLM 只能判定，不能改证据）
+  → 正则拦截&quot;串标/围标&quot;等法律结论（输出词表管控）
+</code></pre>
+<p>外层 <code>DuplicateMasterAgent</code> 同 Master 模式：规则（D001–D010）→ Todo → 信号量并行 → finding 与 Todo 状态同事务落库。</p>
+<h3 id="56-qualityevaluator-report_agent-llm-as-judge-与确定性报告">5.6 QualityEvaluator / report_agent —— LLM-as-Judge 与确定性报告</h3>
+<ul>
+<li><strong>QualityEvaluator</strong>（<code>quality_evaluation.py</code>）：三条维度各一次 LLM 调用——合规准确性 40% / 严重程度恰当性 30% / 完整性 30%，加权出 finding 级分数，批次均值 ≥70 通过。它同时服务于质量门禁与经验系统的 <code>quality_score</code>（§11）。</li>
+<li><strong>report_agent</strong>：<strong>统计、分组、废标风险评级全部由代码确定性计算</strong>，LLM 只做三件事（风险描述合并、废标语义判定、评分类得分提取），且 LLM 输出逐项校验、缺失就地降级为原文摘录拼接（<code>degraded=true</code>）。</li>
+</ul>
+<hr />
+<h2 id="6-工具层设计">6. 工具层设计</h2>
+<h3 id="61-工具抽象">6.1 工具抽象</h3>
+<p>backend 工具继承 <code>mini_agent.tools.base.Tool</code>（<code>name/description/parameters</code> + <code>async execute()</code>），但返回 backend 扩展的 <code>ToolResult</code>（多 <code>data: dict</code> 字段）——<strong>content 给 LLM 读（字符串），data 给代码消费（结构化）</strong>，两者职责分离。所有工具遵循<strong>软失败</strong>约定：404/超时/空结果都返回带建议的 <code>success</code> 结果，绝不让 Agent 循环因工具故障而中断（<code>rag_search.py</code> 是范本）。</p>
+<h3 id="62-工具清单backendagenttools">6.2 工具清单（<code>backend/agent/tools/</code>）</h3>
+<table>
+<thead>
+<tr>
+<th>工具名</th>
+<th>文件</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>search_tender_doc</code></td>
+<td>doc_search.py</td>
+<td>关键词行搜索（中文参数名兼容），分块 + 上下文 ±5 行 + 图片引用提取 + 缓存</td>
+</tr>
+<tr>
+<td><code>rag_search</code></td>
+<td>rag_search.py</td>
+<td>HTTP 调 RAG 服务 <code>/api/search</code>（X-User-ID 头），软失败</td>
+</tr>
+<tr>
+<td><code>compare_bid</code></td>
+<td>comparator.py</td>
+<td><strong>工具内嵌独立 LLM</strong> 做单条合规判定（JSON 多策略解析）</td>
+</tr>
+<tr>
+<td><code>decide_merge</code></td>
+<td>merge_decider.py</td>
+<td>LLM 合并决策 keep/replace/discard</td>
+</tr>
+<tr>
+<td><code>get_document_toc</code> / <code>get_section_content</code> / <code>get_section_images</code> / <code>get_image_ocr</code></td>
+<td>structure_tools.py</td>
+<td>markdown 标题树切章节，按节取内容/图片/OCR</td>
+</tr>
+<tr>
+<td><code>understand_image</code></td>
+<td>baidu_ocr.py / volcengine_vision.py</td>
+<td>同名工具按 provider 占位覆盖（百度版各出口记 OCR 用量）</td>
+</tr>
+<tr>
+<td><code>search_duplicate_candidates</code> 等 4 个</td>
+<td>duplicate_candidates.py</td>
+<td>查重候选检索/上下文（薄封装 service 层）</td>
+</tr>
+<tr>
+<td><code>word_*</code> ×12</td>
+<td>vsto_remote.py / vsto_chunked.py</td>
+<td>VSTO 远程 Word 工具（见 6.3）</td>
+</tr>
+<tr>
+<td><code>write_file</code> / <code>read_file</code></td>
+<td>Mini-Agent file_tools</td>
+<td>审查报告产物落 workspace</td>
+</tr>
+</tbody>
+</table>
+<p>另有 MCP 集成：<code>backend/mcp.json</code> 声明 <code>minimax_coding</code> MCP server（stdio，提供 understand_image/web_search），仅在 provider=minimax 默认路径经 <code>load_mcp_tools_async</code> 加载（在 Celery worker 里起 MCP 子进程需要 LoggingProxy/anyio 兼容补丁，见 <code>bid_review_agent.initialize()</code>——这是把桌面框架搬进 worker 的代价样本）。</p>
+<h3 id="63-vsto-远程工具协议本系统最独特的部分">6.3 VSTO 远程工具协议（本系统最独特的部分）</h3>
+<p><strong>问题</strong>：暗标检查需要读取用户<strong>本机 Word 进程里</strong>的实时文档对象（字体、行距、分节……），而 Agent 跑在云端 Celery worker 里。</p>
+<p><strong>架构</strong>：云端 Agent ↔ PG + Redis + SSE ↔ 用户 Word 内的 VSTO 插件（WebView2 桥）。Agent 调一个 <code>word_*</code> 工具 = 向用户 Word 发一次 RPC。</p>
+<p>调用时序（<code>backend/services/vsto_tool_broker.py::VstoToolBroker.request</code>）：</p>
+<pre style="font-size:8.6pt"><code>Agent(工具调用)                     broker                        用户侧
+   │ ①参数校验(白名单字段/256KB上限/逐工具类型校验)  │　　　　　　　　　│
+   │ ②per-task memo:同参数只发一次 ③熔断:累计无应答&gt;240s 拒发            │
+   │ ④DB 校验会话/任务/快照绑定 → 插入 VstoToolCall(pending)            │
+   │ ⑤SSE 事件 vsto_tool_request ─────────────────────────────────→ │ 插件收
+   │   {call_id, tool, arguments, requested_at, expires_at}          │ 到请求，
+   │ ⑥0.5s 轮询: Redis getdel vsto:tool:result:{call_id} ←────────── │ 执行 Word
+   │   （DB 状态兜底；有进度心跳则把 deadline 续 45s 空闲窗口，        │ COM 调用，
+   │     绝不越过 600s 绝对上限）                                      │ 结果 SET
+   │ ⑦回包校验快照一致性（换文档→作废）；content 截 200KB；             │ 到 Redis
+   │   超时→expired + vsto_tool_cancel 事件请页面中止                   │
+</code></pre>
+<p>这套协议里沉淀的防呆设计，每一条对应一次真实事故，值得逐条学习：</p>
+<table>
+<thead>
+<tr>
+<th>机制</th>
+<th>防的是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>工具 schema 白名单闭式注册</strong>（"adding a tool requires a protocol review"）</td>
+<td>插件与云端能力集漂移</td>
+</tr>
+<tr>
+<td><strong>快照绑定 + 回包快照一致性校验</strong></td>
+<td>用户在检查中途切换文档，结果张冠李戴</td>
+</tr>
+<tr>
+<td><strong>requested_at + expires_at 成对下发，插件用本机单调时钟判过期</strong></td>
+<td>用户机时钟偏差几分钟导致整体误判（墙钟不可信）</td>
+</tr>
+<tr>
+<td><strong>进度心跳续期（45s 空闲窗口 + 600s 绝对上限）</strong></td>
+<td>长扫描被固定超时误杀（ADR-0003：466 页文档 21 次调用仅 5 次成功的事故）</td>
+</tr>
+<tr>
+<td><strong>ChunkedVstoTool 分块窗口</strong>：首窗口探测耗时，后续按 ~25s 目标自适应窗口大小；失败窗口减半重试一次，仍失败记 uncovered gap；违规上限 300 条</td>
+<td>单次全文扫描超时 + Word 串行队列雪崩</td>
+</tr>
+<tr>
+<td><strong>旧插件兼容</strong>：不认范围参数时按 <code>scope</code> 回显识别并直接采用全文结果</td>
+<td>新旧插件并存期的协议平滑</td>
+</tr>
+<tr>
+<td><strong>迟到结果找回</strong>（<code>fetch_late_result</code>）</td>
+<td>超时判定后结果才到，白扫一遍</td>
+</tr>
+<tr>
+<td><strong>memo 缓存 + 熔断器</strong></td>
+<td>同参重复调用打爆用户 Word；插件已死还在发</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-llm-调用与用量治理">7. LLM 调用与用量治理</h2>
+<h3 id="71-provider-工厂">7.1 Provider 工厂</h3>
+<p><code>backend/services/llm_factory.py::create_llm_client()</code> 按 <code>settings.llm_provider</code> 构造 Mini-Agent <code>LLMClient</code>，全部走 <strong>OpenAI 兼容协议</strong>（volcengine / deepseek / tencent / minimax；deepseek 与 tencent 加 <code>reasoning_mode="deepseek"</code> 解析思维链）。当前生产：<code>LLM_PROVIDER=tencent</code>（腾讯 TokenHub，<code>tokenhub.tencentmaas.com/v1</code>，deepseek 系模型）。切换 provider = 纯 <code>.env</code> 操作 + 滚动重启，但<strong>必须先验 usage 字段风格</strong>（见 §12 教训）。</p>
+<h3 id="72-重试-限流-超时三层防御">7.2 重试 / 限流 / 超时（三层防御）</h3>
+<pre style="font-size:8.6pt"><code>① Mini-Agent 内层 async_retry     指数退避 1s 起、上限 60s、默认 3 次（网络/5xx/429）
+② BidReviewAgent 包装层            TimeoutError 专项重试（180s 单调超时 × 2 次重试）
+③ 编排层业务重试                   各编排器自带 2–3 次带纠正语重试（JSON 类输出）
+限流：Redis 分布式滑窗（集群级 LLM 并发上限）+ 进程内信号量（单 worker 级）
+</code></pre>
+<h3 id="73-用量计量管线从一次-generate-到一条台账">7.3 用量计量管线（从一次 generate 到一条台账）</h3>
+<pre style="font-size:8.6pt"><code>SubAgentExecutor.execute 入口
+  └ set_usage_context(UsageContext)        # contextvars: external_user/local_user/
+                                           #   project/task/todo + 企业维度（反查 User）
+      └ Agent 每次 llm.generate（被包装）
+          └ usage_recorder.record_llm_usage
+              ├ usage: TokenUsage（含缓存命中拆分）
+              ├ cost_calculator.estimate_cost → cost_cny   # 厂商标价表唯一来源；
+              │                                           #   只对 success 计费
+              └ 异步写 ai_usage_records（NullPool 短连接 × 3 次退避重试）
+                  └ fire-and-forget refresh_task_summary   # 增量聚合到
+                                                           #   ai_usage_task_summary
+</code></pre>
+<p>两个关键工程细节：</p>
+<ul>
+<li><strong>NullPool 双引擎</strong>（<code>backend/models/base.py</code>）：API 路径用池化 engine；Celery 路径的用量写入用 <strong>NullPool 短连接</strong>。原因：Celery 任务内 <code>asyncio.run()</code> 每次新建事件循环，池化连接绑定死循环会报 "Event loop is closed"。</li>
+<li><strong>计量接缝有两种</strong>：审查 Agent 用自研 <code>_wrap_llm_generate</code>（顺带做限流/心跳/指标）；其余 Agent（暗标/编标/生成/润色）用通用 <code>instrument_llm_client()</code> 包装——同一记账出口，两种插桩方式。</li>
+</ul>
+<h3 id="74-从计量到扣点可计费任务三段式">7.4 从计量到扣点：可计费任务三段式</h3>
+<p>所有花钱的任务（审查/查重/暗标/生成/编标/润色/开放 API）走同一生命周期（<code>backend/services/task_lifecycle.py</code>）：</p>
+<pre style="font-size:8.6pt"><code>【第一段·授权】API 层 authorize_billable_task_start
+    ├ ensure_wallet(FOR UPDATE)          # 钱包行锁 = 账户级串行化点
+    ├ 余额 ≤ 0 → 402；未结算任务 ≥ 3 → 409  # 结算未完成不放行新任务
+    └ 同一事务写 任务行(billing_status=pending) + TaskDispatchOutbox
+【第二段·执行】worker claim_task_for_execution(FOR UPDATE 认领，防重复消费)
+    └ 跑 Agent … 每笔 LLM 调用实时记账
+    └ 终态 finalize_task_usage：
+        flush_task_usage（等全部流水落库，失败→billing_status=retry）
+        → refresh_task_summary(strict) → enqueue settle_task_billing
+【第三段·结算】billing_tasks.settle_task_billing（max_retries=8 指数退避）
+    └ billing.settle_task_consumption：
+        幂等（已有 ConsumptionRecord 直接 settled）
+        SUM(ai_usage_records.cost_cny WHERE task_id) × billing_multiplier → 点数
+        allocate_consumption：recharge 批次先扣、gift 后扣（逐 lot 分配）
+        写 ConsumptionRecord + WalletTransaction → billing_status=settled
+兜底：beat 每 120s reconcile_task_billing 回收孤儿终态任务
+</code></pre>
+<p>设计立场：<strong>失败/取消的任务照样结算</strong>（成本已真实发生，<code>billing.py</code> 有意为之）；<strong>绝不产生 0 成本消费记录</strong>（flush 失败保持 retry 状态等重试，而不是按 0 元结算）。Redis 全挂也不影响已落库流水的结算正确性——outbox + 对账保证最终送达。</p>
+<hr />
+<h2 id="8-任务工程与可靠性">8. 任务工程与可靠性</h2>
+<h3 id="81-celery-拓扑">8.1 Celery 拓扑</h3>
+<p><code>backend/celery_app.py</code>：app 名 <code>bid_review_agent</code>，broker/result 均为 Redis。</p>
+<table>
+<thead>
+<tr>
+<th>队列</th>
+<th>消费内容</th>
+<th>隔离理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>review</code></td>
+<td>审查/查重/暗标/润色/计费/反馈/经验</td>
+<td>主业务</td>
+</tr>
+<tr>
+<td><code>parser</code></td>
+<td>仅 <code>parse_document</code></td>
+<td>解析吃 CPU/内存，不与审查抢 worker</td>
+</tr>
+<tr>
+<td><code>generation</code></td>
+<td>bid_draft / bid_wizard</td>
+<td>长生成任务（小时级）不阻塞审查</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>铁律：新增 Celery 任务必须同步补 <code>task_routes</code></strong>。漏配则 <code>.delay()</code> 直发默认 <code>celery</code> 队列，专用 worker 不消费，<strong>消息滞留且无任何报错</strong>（排查：<code>redis-cli LLEN celery</code> 非零即中招）。</p>
+</blockquote>
+<p>beat 定时（全集群单例，跑在 prod）：outbox 重派 10s / 计费对账 120s / 充值订单轮询 60s / 充值单过期 300s / 点数批次过期 3600s。</p>
+<p>worker 级配置：<code>prefetch_multiplier=1</code>（防饥饿积压）、<code>task_time_limit=28800</code> 全局兜底、<code>task_annotations</code> 按任务分级限时（review 5700/6000s、bid_draft 6900/7200s）、broker 无限重试 + keepalive + <code>visibility_timeout=3600</code>（对抗第三方 Redis 频繁断连）。每个任务体用 <code>asyncio.run()</code> 进入异步内核。</p>
+<h3 id="82-outbox-模式任务可靠派发">8.2 Outbox 模式（任务可靠派发）</h3>
+<p>"建任务行 + 发 MQ"若分两步，就有"行落库但消息没发出去"的窗口。本系统的解法：</p>
+<pre style="font-size:8.6pt"><code>同一 DB 事务：INSERT 任务行 + INSERT TaskDispatchOutbox
+提交后 best-effort：celery send_task + 标记 dispatched
+发送失败：outbox 行留 pending/retry → beat 每 10s dispatch_pending_task_outbox 重派（指数退避）
+</code></pre>
+<p>配合 worker 侧 <code>claim_task_for_execution</code>（<code>SELECT ... FOR UPDATE</code> 认领、状态机校验），实现<strong>至少一次投递 + 恰好一次执行</strong>。</p>
+<h3 id="83-心跳取消超时一组协作机制">8.3 心跳、取消、超时（一组协作机制）</h3>
+<table>
+<thead>
+<tr>
+<th>机制</th>
+<th>实现</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DB 心跳</td>
+<td>Agent 每次迭代更新 <code>ReviewTask.last_heartbeat</code>；<code>agent_progress_timeout=1200s</code></td>
+<td>进度活性判定；前端断连/关页超时自动取消</td>
+</tr>
+<tr>
+<td>取消标记</td>
+<td>Redis <code>set_task_cancelled / is_task_cancelled</code></td>
+<td>API 取消入口写；<strong>SIGTERM 优雅停机也写它</strong>（worker 收到 kill 先转成业务取消而非僵死）</td>
+</tr>
+<tr>
+<td>取消传播</td>
+<td>Mini-Agent <code>cancel_event</code>（协作式，§4.3）</td>
+<td>逐层 set，Agent 在安全点自停</td>
+</tr>
+<tr>
+<td>绝对兜底</td>
+<td>任务级 <code>asyncio.wait_for(agent_total_timeout=21600s)</code> + Celery time_limit</td>
+<td>任何单点失灵也有上限</td>
+</tr>
+<tr>
+<td>僵死清理</td>
+<td>启动时 pending/running 超 45min 标 failed + <code>/api/tasks/cleanup-on-restart</code>（HMAC 内部端点）</td>
+<td>重启后收尸 + 计费回退重派对账</td>
+</tr>
+</tbody>
+</table>
+<h3 id="85-sse-实时进度">8.5 SSE 实时进度</h3>
+<pre style="font-size:8.6pt"><code>Agent 事件回调 → _publish_event → Redis Stream sse:stream:{task_id}
+                                  （XADD + Lua 设 TTL 1h + MAXLEN 1000）
+浏览器 GET /api/events/tasks/{id}/stream
+  → 鉴权：EventSource 不能带 Authorization 头 → query token + 任务归属校验
+  → 每连接独立 async Redis 客户端 XREAD + 应用层心跳
+  → 外部用户过滤 sub_agent_* 明细事件（只给进度计数）
+nginx：ip_hash 粘滞 + proxy_buffering off（否则 SSE 被缓冲）
+step 事件同时落 agent_steps 表（时间线持久化，刷新页面可回放）
+</code></pre>
+<hr />
+<h2 id="9-数据架构">9. 数据架构</h2>
+<h3 id="91-postgresql唯一事实源约-40-张表">9.1 PostgreSQL（唯一事实源，约 40 张表）</h3>
+<p>按表域分组：</p>
+<table>
+<thead>
+<tr>
+<th>表域</th>
+<th>表</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>用户/项目</td>
+<td>users、projects、api_keys</td>
+<td>登录外包运营台，本地 find-or-create</td>
+</tr>
+<tr>
+<td>文档</td>
+<td>documents</td>
+<td>doc_type=tender/bid；parsed_markdown_path / parsed_images_dir 是 Agent 的食物</td>
+</tr>
+<tr>
+<td>审查</td>
+<td>review_tasks、review_results、agent_steps、review_share_tokens、project_review_results</td>
+<td>心跳列、时间线、分享</td>
+</tr>
+<tr>
+<td>查重</td>
+<td>duplicate_results / occurrences / pair_summaries / evidence_clusters / document_members</td>
+<td>证据不可变原则</td>
+</tr>
+<tr>
+<td>暗标</td>
+<td>blind_check_tasks、blind_check_findings</td>
+<td>只分严重/待确认</td>
+</tr>
+<tr>
+<td>生成/编标/润色</td>
+<td>bid_draft_tasks/sections、bid_wizards/materials/index_tasks/qa_tasks/writing_tasks、polish_tasks</td>
+<td>向导状态机</td>
+</tr>
+<tr>
+<td>计费可靠性三件套</td>
+<td><strong>task_dispatch_outbox</strong>（派发）、<strong>ai_usage_records / ai_usage_task_summary</strong>（用量台账）、<strong>consumption_records / wallet_transactions / billing_orders / user_wallets</strong>（钱包流水）</td>
+<td>§7.4 全链路的物证</td>
+</tr>
+<tr>
+<td>销售</td>
+<td>sales_configs / sales_packages / grant_batches / credit_lots / point_ledger_entries / consumption_allocations</td>
+<td>点数批次（recharge/gift）与分配</td>
+</tr>
+<tr>
+<td>经验</td>
+<td>experience_cases / skills / cluster_membership / feedback</td>
+<td>§11</td>
+</tr>
+<tr>
+<td>运维</td>
+<td>system_announcements、system_maintenance、vsto_tool_sessions / tool_calls</td>
+<td>VSTO 调用单据</td>
+</tr>
+</tbody>
+</table>
+<p>并发控制一律 <code>SELECT ... FOR UPDATE</code>（钱包行锁、任务认领锁、结算锁）。连接层注意：API 与 Celery 双引擎（§7.3）；PgBouncer 预留未启用。</p>
+<p><strong>迁移机制</strong>：47 个<strong>手写编号 SQL</strong>（<code>backend/migrations/NNN_描述.sql</code>），按运维手册 <code>docker exec bjt-postgres psql</code> 手工执行；alembic 仅在依赖里声明、未启用；新环境靠启动时 <code>create_all</code> 兜底建表。由此产生的新表铁律见 §13.4。</p>
+<h3 id="92-redis-的四个角色">9.2 Redis 的四个角色</h3>
+<p>① Celery broker + result（db1/db2）；② SSE 事件总线（Stream，db0）；③ 限流计数（slowapi 存储，强制 RESP2 兼容老 Redis）；④ 任务取消标记 + LLM 滑窗限流 + VSTO 工具结果信箱（<code>getdel</code> 单次消费）。<strong>Redis 定位为"可丢失的加速层"</strong>：挂了影响实时性，不影响正确性。</p>
+<h3 id="93-rag-知识库服务独立服务与-pg-无关">9.3 RAG 知识库服务（独立服务，与 PG 无关）</h3>
+<pre style="font-size:8.6pt"><code>rag-memory/（vendored TS 库：better-sqlite3 + sqlite-vec 向量 + FTS5 全文）
+rag_memory_service/（Express HTTP 封装，:3001，生产单例跑在 prod）
+  · 多租户：按 X-User-ID 懒建索引，{DOCUMENTS_PATH}/{userId}/data/memory.sqlite
+  · 混合检索：vector 0.7 + BM25 0.3；embedding=智谱 embedding-3（1024 维）
+  · 路由：POST /api/search（必带 X-User-ID）/ POST /api/sync（DOCX/PDF 先转 MD 再索引）
+          / GET /api/status / GET /api/readfile
+backend 侧消费：RAGSearchTool（Agent 工具，软失败）+ knowledge API + 经验检索召回
+</code></pre>
+<p>选型立场：<strong>不引入 pgvector</strong>，知识库是"每用户私有文档集"，per-user SQLite 文件天然隔离、可整体备份/删除，与主库业务数据完全解耦。</p>
+<h3 id="94-ocr-与文档解析">9.4 OCR 与文档解析</h3>
+<ul>
+<li><strong>ocr_service/</strong>：独立 FastAPI 微服务（RapidOCR，:8900，<code>POST /api/ocr</code> base64→文本），本地兜底通道；生产图像理解主用百度云 OCR（按次计量计费）。</li>
+<li><strong>third_party/</strong> 子模块：docling / markitdown / mammoth / MinerU / pdf.js。<code>backend/parsers/</code> 按类型分派：PDF→docling（表格结构+图片提取）、docx→mammoth、xlsx、图片→OCR/VLM。每任务新建独立 engine（<code>document_parser.py</code>）。</li>
+<li>解析结果落 workspace：<code>parsed.md + _images/</code>——<strong>markdown 是全系统统一的文档中间表示</strong>，Agent 的所有检索/结构化工具都吃它。</li>
+</ul>
+<hr />
+<h2 id="10-核心工作流程走读">10. 核心工作流程走读</h2>
+<h3 id="101-标书审查主链路">10.1 标书审查（主链路）</h3>
+<pre style="font-size:6.6pt"><code>浏览器            FastAPI                    PG/Redis            Celery(review)               Agent 层
+  │ POST /projects/{id}/review │                  │                    │                          │
+  │───────────────────────────→│ 授权闸门:          │                    │                         │
+  │                            │ 钱包FOR UPDATE     │                    │　　　　　　　　　　　　│
+  │                            │ 余额&gt;0 未结算&lt;3    │                    │　　　　　　　　　　　　│
+  │                            │─同事务───────────→│ ReviewTask+Outbox  │                         │
+  │ 202 {task_id}              │ send_task(review) │──broker db1───────→│                         │
+  │←───────────────────────────│                  │                    │ claim(FOR UPDATE)       │
+  │ GET /events/.../stream     │                  │                    │ asyncio.run              │
+  │←═══ SSE: sse:stream:{id} ══════════════════════│←───────────────────│ MasterAgent.run         │
+  │        (sub_agent_step / todo 状态 / 汇总)      │                    │ ①扫描规则库→TodoItems　│
+  │                            │                  │                    │ ②Semaphore 并行 SubAgent │
+  │                            │                  │                    │   ├ set_usage_context   │
+  │                            │                  │                    │   ├ BidReviewAgent      │
+  │                            │                  │                    │   │ ReAct: 检索/比对/OCR│
+  │                            │                  │                    │   │ → write_file 报告md│
+  │                            │                  │                    │   │ usage 实时记账　　　│
+  │                            │                  │←───────────────────│   └ ReviewResult 增量落库│
+  │                            │                  │                    │ ③report_agent 总报告     │
+  │                            │                  │                    │   (确定性组装+1次LLM)    │
+  │                            │                  │                    │ ④finalize→settle 扣点   │
+  │                            │                  │                    │ ⑤extract_experience.delay│
+</code></pre>
+<p>取消：前端断开心跳或点取消 → Redis 标记 → Agent 心跳协程 set cancel_event → 协作式停止 → 终态 cancelled（照常结算）。</p>
+<h3 id="102-暗标符合性检查">10.2 暗标符合性检查</h3>
+<p>上传投标文件（普通上传，不走计费闸门）→ 用户在插件/网页发起暗标检查（计费三段式）→ worker <code>run_blind_check</code>：建 VSTO 会话（绑定文档快照）→ <code>word_get_overview</code> → 确定性参数解析 + 固定身份线索采集 → 受限 ReAct（预算=总预算−150s，工具经 ChunkedVstoTool 分块扫 Word）→ 回显校验 → 守门员重问 → 归一化（严重/待确认）→ findings 落库 + SSE。全程插件经 SSE 收 <code>vsto_tool_request</code>、执行结果写 Redis。</p>
+<h3 id="103-ai-编标wizard">10.3 AI 编标（wizard）</h3>
+<p>上传素材 →（不走计费闸门）<code>run_bid_wizard_index</code>：分块→逐块摘要→index.md（generation 队列）→ 多轮问卷（同步 API，人机交互）→ <code>generate_spec</code>（硬约束+劣化检测重试）→ 用户确认 Spec → <code>run_bid_wizard_write</code>（generation 队列）：逐章生成，上下文=素材摘录+前 12 章标题摘要（支持断点续作）→ 逐章落库，前端拼装导出。</p>
+<h3 id="104-技术标查重">10.4 技术标查重</h3>
+<p>项目内上传多份技术标 → <code>run_duplicate_check</code>（review 队列）→ 文档解析 → 逐文档建 SourceIndex → 按规则（D001–D010）扇出 DuplicateCheckAgent（Master 模式）→ 确定性候选检索 → 单次 LLM 判定 → 证据物化落库（duplicate_occurrences / evidence_clusters）→ 报告。</p>
+<h3 id="105-文档解析一切的前置">10.5 文档解析（一切的前置）</h3>
+<p>上传（upload_throttle 64KB 分块限速 + 1GiB 上限）→ <code>parse_document.delay</code>（parser 队列，不计费闸门但照记 OCR/嵌入用量）→ 按类型分派解析引擎 → 产出 <code>parsed.md + _images/</code> → <code>documents</code> 状态 ready。<strong>解析失败 = 后续一切任务不可发</strong>，前端在文档 ready 前禁用发起按钮。</p>
+<hr />
+<h2 id="11-经验自学习闭环">11. 经验自学习闭环</h2>
+<p>设计文档：<a href="审查经验自学习方案.md">审查经验自学习方案.md</a>（v3.0，双层数据模型借鉴 EverOS）/ <a href="经验消化管道开发计划.md">经验消化管道开发计划.md</a>。代码：<code>backend/experience/</code>。</p>
+<h3 id="111-数据模型pg-四表">11.1 数据模型（PG 四表）</h3>
+<ul>
+<li><strong>experience_cases</strong>（微观案例）：task_intent / approach / key_insight / quality_score（三分量）/ finding_ids / 压缩步数比——AgentStep 轨迹的 LLM 压缩产物。</li>
+<li><strong>experience_skills</strong>（宏观 SOP）：content 为 <code>## Steps</code>（已验证）或 <code>## Potential Steps</code> + <code>## Pitfalls</code>（假设性）；confidence、maturity_score、source_case_ids（≤9）、retired_at。</li>
+<li><strong>experience_cluster_membership</strong>：case↔cluster（assigned_by=embedding/llm）。</li>
+<li><strong>experience_feedback</strong>：confirm / contradict / refine + 审批管线。</li>
+</ul>
+<h3 id="112-闭环数据流">11.2 闭环数据流</h3>
+<pre style="font-size:8.6pt"><code>【事后·消化】任务终态 → extract_experience.delay → ExperienceService:
+    LLM 过滤(值得提取吗) → LLM 压缩轨迹→Case
+    (quality_score = 0.6×QualityEvaluator + 0.4×LLM 主观分)
+    → 聚簇(embedding 召回[现为桩,全走 LLM] → LLM 从 top-5 判定归属/新建)
+    → Skill 双模提取: quality≥0.5 走成功 prompt 产出/更新 ## Steps
+                     否则走失败 prompt 产出 ## Potential Steps + ## Pitfalls
+    → 成熟度评分(四轴 completeness/executability/evidence/clarity /20,
+      带成本门控: 词集变化比&lt;0.2 跳过重评)
+    每步 try/except 吞错——绝不阻塞、绝不弄脏主流程
+【事前·注入】下次审查 BidReviewAgent.run_review:
+    ExperienceRetriever.retrieve(group_id=规则文档名, query=规则前500字)
+      SQL(maturity≥0.6 ∧ confidence≥0.1, 按 maturity×confidence 排序)
+      ∪ RAG 召回 → LLM 相关性校验(≥0.6) → 按 maturity×confidence×relevance 排序
+    → top-3 渲染进系统提示词 {experience_guidance}（hypothesis 标注&quot;来自失败案例，谨慎参考&quot;）
+【反馈·演化】用户 confirm/contradict/refine:
+    置信度锚定: 新增=0.5, confirm +0.05, 新分支 +0.1, contradict −0.2, cap 0.95
+    低于 0.1 → retired_at 退休; refine → LLM 重写 SOP + 条件性重评成熟度
+    假设晋升: 现有 skill 含 ## Potential Steps 而新成功案例含 ## Steps
+              → 重写为 verified, confidence=0.6, 记 last_promoted_at
+</code></pre>
+<p>租户策略是"<strong>全局共享 + 贡献者视图</strong>"：<code>group_id = 规则文档名</code> 是硬隔离边界（A001 规则的经验全平台共享），user_id 只用于"我贡献的经验"与审计。总开关 <code>experience_injection_enabled</code>（<strong>默认 False</strong>，灰度用），各环节静默降级。</p>
+<hr />
+<h2 id="12-agent-工程模式清单事故沉淀">12. Agent 工程模式清单（事故沉淀）</h2>
+<p>每条模式背后是一次生产事故或 ADR。AI Agent 工程师在做设计决策时，先查这张表。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>模式</th>
+<th>防的问题</th>
+<th>位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>确定性优先，LLM 收口</strong></td>
+<td>把可正则/可代码的判断交给 LLM → 不可复现、假阳性</td>
+<td>blind_check、report_agent、duplicate</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>解析不出就跳过+待确认，绝不落默认值</strong></td>
+<td>工具参数硬编码样例值与用户实际要求错配 → 大面积假阳性（09-12）</td>
+<td><code>_build_deterministic_arguments</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>回显校验</strong>：执行端回传 expected 与意图比对，错配即弃</td>
+<td>旧版客户端用内置默认值执行 → 假违规</td>
+<td><code>_apply_echo_verification</code>、broker 回包校验</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>AI 是用户可见发现的唯一作者</strong>：工具原始违规绝不直出</td>
+<td>原始数据脏/口径乱直接吓用户（ADR-0002）</td>
+<td>守门员重问 + normalize</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>分块扫描 + 进度心跳续期 + 按规模自适应超时</strong></td>
+<td>固定超时 × 串行队列雪崩（09-17，466 页文档 21 调用 5 成功）</td>
+<td>ChunkedVstoTool、ADR-0003</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>成对时间戳 + 单调时钟</strong>：下发 requested_at+expires_at，客户端 Stopwatch 判活</td>
+<td>用户机时钟偏差 → 整体误判</td>
+<td>vsto broker、暗标心跳</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>异常即工具结果</strong>：工具崩溃转失败 ToolResult，循环不中断</td>
+<td>Agent 因单工具故障整任务报废</td>
+<td>Mini-Agent run()</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>软失败工具</strong>：404/超时返回带建议的 success</td>
+<td>检索服务抖动打断审查主链</td>
+<td>rag_search 等</td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>结果抽取兜底链</strong>：结构化解析→LLM 抽取→关键词扫描</td>
+<td>模型输出格式漂移丢全部结果</td>
+<td><code>_post_process</code></td>
+</tr>
+<tr>
+<td>10</td>
+<td><strong>防重复注入 user 提醒</strong>（同签名≥3 次注入 [系统提醒]）</td>
+<td>Agent 死循环同一工具</td>
+<td><code>_check_duplicate_actions</code></td>
+</tr>
+<tr>
+<td>11</td>
+<td><strong>Outbox + 认领锁 + 幂等结算</strong></td>
+<td>发 MQ 与落库的窗口丢任务；重复消费；重复扣费</td>
+<td>task_lifecycle、billing</td>
+</tr>
+<tr>
+<td>12</td>
+<td><strong>usage 字段风格必须按 provider 实测</strong>：TokenHub 是 OpenAI 风格 <code>prompt_tokens_details.cached_tokens</code>，不返回 DeepSeek 风格字段；解析错则兜底全按未命中计价（30 倍价差，08-26 计费事故）</td>
+<td>换 provider 静默多扣钱</td>
+<td>cost_calculator</td>
+</tr>
+<tr>
+<td>13</td>
+<td><strong>只对 success 计费 + flush 闸门</strong>：流水没落齐绝不结算，不产生 0 成本记录</td>
+<td>计费口径漂移</td>
+<td>finalize_task_usage</td>
+</tr>
+<tr>
+<td>14</td>
+<td><strong>NullPool 双引擎</strong></td>
+<td>Celery 每任务新事件循环，池化连接 "Event loop is closed"</td>
+<td>models/base.py</td>
+</tr>
+<tr>
+<td>15</td>
+<td><strong>新 Celery 任务必须补 task_routes</strong></td>
+<td>消息滞留默认队列且零报错</td>
+<td>celery_app.py</td>
+</tr>
+<tr>
+<td>16</td>
+<td><strong>新表 DDL 双审计列 + 引用列全量比对</strong>：<code>created_at/updated_at TIMESTAMPTZ NOT NULL DEFAULT now()</code>，发布前对生产 information_schema 比对 ORM 引用的每一列（预发布 create_all 会掩盖 schema 缺失）</td>
+<td>UndefinedColumn 500（三踩）</td>
+<td>migrations/</td>
+</tr>
+<tr>
+<td>17</td>
+<td><strong>max_steps 耗尽 fail-fast，行为异常才重试</strong></td>
+<td>重试放大雪崩</td>
+<td>master_agent</td>
+</tr>
+<tr>
+<td>18</td>
+<td><strong>LLM 只判定，不改证据</strong>：模型输出绑回不可变候选（相似度/原文/位置）</td>
+<td>模型幻觉污染证据链</td>
+<td><code>_materialize_findings</code></td>
+</tr>
+<tr>
+<td>19</td>
+<td><strong>输出词表管控</strong>：正则拦截"串标/围标"法律结论</td>
+<td>LLM 越权下法律判断</td>
+<td>duplicate_check_agent</td>
+</tr>
+<tr>
+<td>20</td>
+<td><strong>JSON 容错链</strong>：宽容解析→纠正重试→截断救援</td>
+<td>长 JSON 被 max_tokens 截断全废</td>
+<td>WizardLLM.generate_json</td>
+</tr>
+<tr>
+<td>21</td>
+<td><strong>证据预算分段</strong>（证据≤60%、LLM 收尾预留 150s）</td>
+<td>采集吃光预算，结论草草</td>
+<td>blind_check 预算</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="13-扩展开发指南">13. 扩展开发指南</h2>
+<h3 id="131-新增一个-agent-工具">13.1 新增一个 Agent 工具</h3>
+<ol>
+<li>在 <code>backend/agent/tools/</code> 建类：继承 <code>mini_agent.tools.base.Tool</code>，实现 <code>name/description/parameters</code>（JSON Schema，中英文参数名双兼容可参考 doc_search.py）与 <code>async execute()</code>；返回 backend <code>ToolResult</code>，<strong>content 给 LLM 读，data 给代码用</strong>。</li>
+<li>遵守软失败约定：任何异常/空结果返回带下一步建议的 success 或明确 error，不让循环中断。</li>
+<li>注册：构造 Agent 时加入 tools 列表（或运行时 <code>self.tools[name] = tool</code> 动态注入）。</li>
+<li>若消耗外部计费资源（OCR/嵌入），在 success/error/timeout <strong>各出口</strong>调用 <code>record_*_usage</code>（参考 baidu_ocr.py）。</li>
+</ol>
+<h3 id="132-新增-celery-任务checklist">13.2 新增 Celery 任务（checklist）</h3>
+<ul>
+<li>[ ] <code>backend/celery_app.py</code> 的 <code>task_routes</code> 补路由（review/parser/generation 三选一）——<strong>漏配零报错</strong>。</li>
+<li>[ ] 需要 DB 的任务：每任务新建 session factory（参考 experience_tasks.py），别跨任务复用引擎连接。</li>
+<li>[ ] 长任务配 <code>task_annotations</code> 分级 soft/hard 限时。</li>
+<li>[ ] 异步内核用 <code>asyncio.run()</code> 包裹；任务体最外层 try/except 保证终态落库。</li>
+</ul>
+<h3 id="133-接入可计费任务三段式">13.3 接入可计费任务三段式</h3>
+<p>照抄现有任一任务（最简范本 polish）：API 层 <code>authorize_billable_task_start</code> → 同事务建任务行 + outbox → worker <code>claim_task_for_execution</code> → 入口 <code>set_usage_context</code> → LLM 客户端过 <code>instrument_llm_client()</code> → 终态 <code>finalize_task_usage</code> → <code>enqueue_billing_settlement</code>。<strong>不要自建旁路计费</strong>。</p>
+<h3 id="134-新增表列迁移铁律">13.4 新增表/列（迁移铁律）</h3>
+<ul>
+<li>新表 DDL 照 <code>migrations/040</code> 惯例：uuid 主键 + <code>created_at/updated_at TIMESTAMPTZ NOT NULL DEFAULT now()</code>；改表用幂等 <code>ADD COLUMN IF NOT EXISTS</code>。</li>
+<li><strong>ORM/原生 SQL 引用的每一列都必须有对应迁移文件</strong>——预发布由 <code>create_all</code> 建表会掩盖缺失，到生产才是 500。</li>
+<li>发布前对生产 <code>information_schema</code> 做引用列全量比对。</li>
+<li>文件在 <code>backend/migrations/NNN_描述.sql</code>，手工执行；本机编辑的 SQL 发往 Linux 前<strong>去 CRLF</strong>。</li>
+</ul>
+<h3 id="135-切换-llm-provider">13.5 切换 LLM provider</h3>
+<p>纯 <code>.env</code> 操作（<code>LLM_PROVIDER</code> + key/base/model）+ 滚动重启，但必须：① 先跑 <code>PYTHONPATH=&lt;仓库根&gt; python scripts/test_deepseek.py</code> 实测；② <strong>验证 usage 字段风格</strong>（DeepSeek 风格 <code>prompt_cache_hit_tokens</code> vs OpenAI 风格 <code>prompt_tokens_details.cached_tokens</code>），解析错 = 计费 30 倍价差事故；③ 留意 key 用量余量（旧账号曾 402 断供）。生产滚动重启按集群手册三铁律。</p>
+<h3 id="136-本地开发环境">13.6 本地开发环境</h3>
+<p>用 <code>scripts/bjt.ps1</code>（Windows）/ 参照 <a href="运行操作指导.md">运行操作指导.md</a>。三个前置坑：① <code>git submodule update --init Mini-Agent</code>；② <code>mkdir workspace</code>；③ 本地无 PG/Redis 时 <code>.env</code> 指内网预发布（需 VPN）。起来标志：<code>curl :8000/health</code> → <code>{"status":"healthy"}</code>。登录依赖本地/可达的 operate-two（<code>OPERATE_API_BASE_URL=http://127.0.0.1:40000</code>，不带 <code>/prod-api</code>），或开 <code>MOCK_AUTH_ENABLED</code> 旁路。杀本地 <code>--reload</code> 残留必须连 <code>spawn_main</code> 子进程一起杀。</p>
+<hr />
+<h2 id="14-附录术语表与文档索引">14. 附录：术语表与文档索引</h2>
+<h3 id="术语表">术语表</h3>
+<table>
+<thead>
+<tr>
+<th>术语</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>招标文件 / 投标文件</td>
+<td>tender / bid；doc_type 两态</td>
+</tr>
+<tr>
+<td>规则库</td>
+<td><code>docs/rules-all/</code> 等目录下的审查规则 markdown，审查扇出的单位</td>
+</tr>
+<tr>
+<td>暗标</td>
+<td>无标识要求的评标形式，检查其格式符合性</td>
+</tr>
+<tr>
+<td>TodoItem</td>
+<td>一次审查任务内的子任务单位（= 一个规则文档），进度条颗粒</td>
+</tr>
+<tr>
+<td>outbox</td>
+<td>TaskDispatchOutbox 表，任务可靠派发凭证</td>
+</tr>
+<tr>
+<td>点数 / credit lot</td>
+<td>计费单位；批次分 recharge（充值）/ gift（赠送），扣减先 recharge 后 gift</td>
+</tr>
+<tr>
+<td>interior_user</td>
+<td>运营台内部员工标记，决定管理页面可见性</td>
+</tr>
+<tr>
+<td>snapshot_id</td>
+<td>VSTO 会话绑定的文档快照，防中途换文档</td>
+</tr>
+<tr>
+<td>记忆化</td>
+<td><code>_summarize_messages</code> 对执行历史的 LLM 压缩</td>
+</tr>
+<tr>
+<td>物化</td>
+<td><code>_materialize_findings</code>：LLM 决策绑回不可变证据</td>
+</tr>
+</tbody>
+</table>
+<h3 id="文档索引延伸阅读">文档索引（延伸阅读）</h3>
+<table>
+<thead>
+<tr>
+<th>主题</th>
+<th>文档</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>需求与数据流/时序图</td>
+<td><a href="项目需求.md">项目需求.md</a> §2</td>
+</tr>
+<tr>
+<td>集群权威实况 / day-2 运维</td>
+<td><a href="集群部署方案.md">集群部署方案.md</a> §3.9 / <a href="集群维护速查手册.md">集群维护速查手册.md</a></td>
+</tr>
+<tr>
+<td>Mini-Agent 交互细节</td>
+<td><a href="mini-agent-interaction.md">mini-agent-interaction.md</a></td>
+</tr>
+<tr>
+<td>经验自学习设计/实施</td>
+<td><a href="审查经验自学习方案.md">审查经验自学习方案.md</a> / <a href="经验消化管道开发计划.md">经验消化管道开发计划.md</a></td>
+</tr>
+<tr>
+<td>查重设计与规划</td>
+<td><a href="技术投标文件查重功能-需求设计与开发计划.md">技术投标文件查重功能-需求设计与开发计划.md</a> 及第二阶段规划</td>
+</tr>
+<tr>
+<td>数据库</td>
+<td><a href="database_schema.md">database_schema.md</a>（⚠️ 缺计费两表）</td>
+</tr>
+<tr>
+<td>ADR（暗标系列决策）</td>
+<td>sales 工作树 <code>E:\dvlp\dev\sales\docs\adr\</code>：0001 编标逐章撰写 / 0002 AI 作者口径 / 0003 分块+心跳+预算</td>
+</tr>
+<tr>
+<td>部署历史/事故全记录</td>
+<td>sales 工作树 <code>doc/workspace/11-deploy-log.md</code>、<code>05-production-env.md</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<blockquote>
+<p><strong>维护约定</strong>：本文随架构演进更新；重大结构调整（新增 Agent 形态、换队列拓扑、换 LLM 协议）必须同步改 §5/§8/§12。凭证类信息勿写本文。</p>
+</blockquote>
+</body>
+</html>

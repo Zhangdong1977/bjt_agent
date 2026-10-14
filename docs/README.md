@@ -35,6 +35,8 @@
 | [技术投标文件查重功能-需求设计与开发计划.md](技术投标文件查重功能-需求设计与开发计划.md) | 标书查重已确认需求、数据/API/代理/权限设计、开发计划与验收标准 |
 | [技术投标文件查重第二阶段能力规划.md](技术投标文件查重第二阶段能力规划.md) | 第二阶段能力边界、实施顺序、数据流、评测指标与发布门槛 |
 | [mini-agent-interaction.md](mini-agent-interaction.md) | BidReviewAgent 与 Mini-Agent 子模块交互（工具、消息 schema、Agent 循环、SSE）|
+| [技术架构与Agent工程指导.md](技术架构与Agent工程指导.md) | **面向 AI Agent 工程师的系统教程**：总体架构、六种 Agent 形态、工具层/VSTO 协议、计费三段式、可靠性工程、经验闭环、事故沉淀模式清单、扩展开发指南 |
+| [Agent规划与Skill-Tool-MCP说明.md](Agent规划与Skill-Tool-MCP说明.md) | **面向用户的简要说明**：agent 家族规划（六种形态/主从编排/队列路由）+ Tool、MCP、Skill 三种技术各一个本系统示例（compare_bid / MiniMax MCP / bjt-bid-review 技能包） |
 
 ### 数据
 | 文档 | 看什么 |
