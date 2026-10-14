@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { shareApi, type ShareTokenInfo } from '@/api/client'
+import { apiErrorText } from '@/utils/apiError'
 
 const props = defineProps<{
   open: boolean
@@ -30,7 +31,7 @@ async function ensureToken() {
     // share_url 是站内相对路径（/shared/{token}），拼成绝对链接便于二维码/复制。
     shareUrl.value = `${window.location.origin}${info.share_url}`
   } catch (e: any) {
-    errorMsg.value = e?.response?.data?.detail || '生成分享链接失败，请稍后重试'
+    errorMsg.value = apiErrorText(e) || '生成分享链接失败，请稍后重试'
   } finally {
     loading.value = false
   }
@@ -78,7 +79,7 @@ function handleRevoke() {
         message.success('分享已撤销')
         emit('update:open', false)
       } catch (e: any) {
-        message.error(e?.response?.data?.detail || '撤销失败，请稍后重试')
+        message.error(apiErrorText(e) || '撤销失败，请稍后重试')
       } finally {
         revoking.value = false
       }
