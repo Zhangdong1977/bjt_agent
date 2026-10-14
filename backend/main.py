@@ -20,7 +20,7 @@ from backend.config import get_settings
 from backend.models import init_db, close_db
 from backend.api.config_features import router as config_features_router
 from backend.api.ocr_internal import router as ocr_internal_router
-from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, review_rule_docs_router, duplicate_check_router, duplicate_check_capabilities_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, admin_sales_router, admin_bid_wizard_router, profile_router, billing_router, announcements_router, system_status_router, blind_check_router, vsto_tools_router, bid_draft_router, polish_router, bid_wizard_router, open_router
+from backend.api import auth_router, projects_router, documents_router, documents_drafts_router, review_router, review_rule_docs_router, duplicate_check_router, duplicate_check_capabilities_router, share_router, knowledge_router, feedback_router, experience_router, admin_router, admin_sales_router, admin_bid_wizard_router, profile_router, billing_router, announcements_router, system_status_router, blind_check_router, vsto_tools_router, bid_draft_router, polish_router, bid_wizard_router, tender_parse_router, open_router
 from backend.api.events import router as events_router
 from backend.services.sse_service import sse_manager
 from backend.middleware.rate_limit import limiter, rate_limit_exceeded_handler
@@ -231,6 +231,7 @@ app.include_router(vsto_tools_router, prefix=settings.api_prefix)
 app.include_router(bid_draft_router, prefix=settings.api_prefix)
 app.include_router(polish_router, prefix=settings.api_prefix)
 app.include_router(bid_wizard_router, prefix=settings.api_prefix)
+app.include_router(tender_parse_router, prefix=settings.api_prefix)
 # 开放通道：绝对前缀 /api/v1/open（有意不带 settings.api_prefix）；总开关在
 # 认证依赖里（OPEN_API_ENABLED=False 时整层 404）。
 app.include_router(open_router)

@@ -23,6 +23,7 @@ from .admin_bid_wizard import router as admin_bid_wizard_router
 from .bid_draft import router as bid_draft_router
 from .polish import router as polish_router
 from .bid_wizard import router as bid_wizard_router
+from .tender_parse import router as tender_parse_router
 from .open import router as open_router
 
 __all__ = [
@@ -50,5 +51,6 @@ __all__ = [
     "bid_draft_router",
     "polish_router",
     "bid_wizard_router",
+    "tender_parse_router",
     "open_router",
 ]

@@ -39,10 +39,12 @@ _TASK_NAMES = {
     "polish": "backend.tasks.polish_tasks.run_polish",
     "bid_wizard_index": "backend.tasks.bid_wizard_tasks.run_bid_wizard_index",
     "bid_wizard_write": "backend.tasks.bid_wizard_tasks.run_bid_wizard_write",
+    "tender_parse": "backend.tasks.tender_parse_tasks.run_tender_parse",
 }
 
 # Outbox delivery queue per kind. bid_draft / bid_wizard_* run on a dedicated
 # "generation" queue so long generation runs cannot starve review/duplicate workers.
+# tender_parse 第一段跑 docling 解析（内存重），与 parse_document 同走 parser 队列。
 _TASK_QUEUES = {
     "review": "review",
     "duplicate": "review",
@@ -51,6 +53,7 @@ _TASK_QUEUES = {
     "bid_draft": "generation",
     "bid_wizard_index": "generation",
     "bid_wizard_write": "generation",
+    "tender_parse": "parser",
 }
 
 
@@ -118,6 +121,16 @@ async def count_unsettled_tasks(db: AsyncSession, *, user_id: str) -> int:
             )
         )
     ).scalar_one()
+    from backend.models import TenderParseRecord
+
+    tender_parse_count = (
+        await db.execute(
+            select(func.count(TenderParseRecord.id)).where(
+                TenderParseRecord.user_id == user_id,
+                TenderParseRecord.billing_status.in_(UNSETTLED_BILLING_STATUSES),
+            )
+        )
+    ).scalar_one()
     return (
         int(review_count or 0)
         + int(blind_count or 0)
@@ -126,6 +139,7 @@ async def count_unsettled_tasks(db: AsyncSession, *, user_id: str) -> int:
         + int(wizard_qa_count or 0)
         + int(wizard_index_count or 0)
         + int(wizard_write_count or 0)
+        + int(tender_parse_count or 0)
     )
 
 

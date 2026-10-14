@@ -232,6 +232,7 @@ _EXTRA_TASK_MERGES = (
     _extra_task_merge_sql("bid_writing_tasks", "bid_wizard_write"),
     _extra_task_merge_sql("bid_draft_tasks", "bid_draft"),
     _extra_task_merge_sql("polish_tasks", "polish"),
+    _extra_task_merge_sql("tender_parse_records", "tender_parse"),
 )
 
 

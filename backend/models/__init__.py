@@ -46,6 +46,7 @@ from .bid_wizard import (
     BidWizardSetting,
     BidWizardWhitelist,
 )
+from .tender_parse import TenderParseDocument, TenderParseRecord
 from backend.experience.models import ExperienceFeedback, ExperienceCase, ExperienceSkill, ExperienceClusterMembership
 
 # Billable top-level task registry: task kind -> ORM model. Shared by
@@ -59,6 +60,7 @@ TASK_MODEL_BY_KIND = {
     "bid_wizard_qa": BidWizardQaTask,
     "bid_wizard_index": BidWizardIndexTask,
     "bid_wizard_write": BidWritingTask,
+    "tender_parse": TenderParseRecord,
 }
 
 __all__ = [
@@ -116,6 +118,8 @@ __all__ = [
     "BidWizardSection",
     "BidWizardSetting",
     "BidWizardWhitelist",
+    "TenderParseDocument",
+    "TenderParseRecord",
     "TASK_MODEL_BY_KIND",
     "ExperienceFeedback",
     "ExperienceCase",

@@ -508,6 +508,7 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
         "bid_wizard_qa",
         "bid_wizard_index",
         "bid_wizard_write",
+        "tender_parse",
     }:
         raise ValueError(f"unsupported task kind: {task_kind}")
     model = TASK_MODEL_BY_KIND.get(task_kind, ReviewTask)
@@ -562,6 +563,12 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
                 user_id = task.user_id
                 project_id = None
                 project_name = "AI编标素材索引"
+            elif task_kind == "tender_parse":
+                # 招标文件解析：独立记录不挂 Project（需求 §8 Q10 默认）
+                project = None
+                user_id = task.user_id
+                project_id = None
+                project_name = "招标文件解析"
             else:
                 project = (
                     await db.execute(select(Project).where(Project.id == task.project_id))

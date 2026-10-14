@@ -78,6 +78,9 @@ celery_app.conf.update(
         "backend.tasks.bid_wizard_tasks.run_bid_wizard_index": {"queue": "generation"},
         "backend.tasks.bid_wizard_tasks.run_bid_wizard_write": {"queue": "generation"},
         "backend.tasks.bid_wizard_tasks.cleanup_wizard_workspace": {"queue": "review"},
+        # 招标文件解析：第一段跑 docling（内存重），与 parse_document 同走 parser 队列
+        "backend.tasks.tender_parse_tasks.run_tender_parse": {"queue": "parser"},
+        "backend.tasks.tender_parse_tasks.cleanup_tender_parse_workspace": {"queue": "review"},
         "backend.tasks.billing_tasks.poll_pending_recharge_orders": {"queue": "review"},
         "backend.tasks.billing_tasks.expire_credit_lots": {"queue": "review"},
         "backend.tasks.billing_tasks.settle_task_billing": {"queue": "review"},
@@ -159,6 +162,11 @@ celery_app.conf.update(
         "backend.tasks.bid_wizard_tasks.run_bid_wizard_write": {
             "time_limit": 7200,
             "soft_time_limit": 6900,
+        },
+        # 招标文件解析：docling 大 PDF + 一次 LLM 提取（worker 侧 asyncio 上限 40min）。
+        "backend.tasks.tender_parse_tasks.run_tender_parse": {
+            "time_limit": 2700,
+            "soft_time_limit": 2520,
         },
         # 充值轮询：扫一批 pending 订单 + 每条调一次交行查单（最多 ~10 条 × 5s 超时），
         # 给 90s 软超时 / 120s 硬超时兜底。
