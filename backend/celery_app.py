@@ -22,7 +22,7 @@ celery_app = Celery(
     "bid_review_agent",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["backend.tasks.review_tasks", "backend.tasks.duplicate_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks", "backend.tasks.blind_check_tasks", "backend.tasks.bid_draft_tasks", "backend.tasks.polish_tasks", "backend.tasks.bid_wizard_tasks"],
+    include=["backend.tasks.review_tasks", "backend.tasks.duplicate_tasks", "backend.tasks.document_parser", "backend.tasks.feedback_tasks", "backend.tasks.experience_tasks", "backend.tasks.billing_tasks", "backend.tasks.blind_check_tasks", "backend.tasks.bid_draft_tasks", "backend.tasks.polish_tasks", "backend.tasks.bid_wizard_tasks", "backend.tasks.tender_parse_tasks"],
 )
 
 # Ensure celery.current_app points to our app, so @shared_task binds correctly
