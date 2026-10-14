@@ -11,8 +11,8 @@ import AnnouncementPopup from './announcement/AnnouncementPopup.vue'
 import AnnouncementInbox from './announcement/AnnouncementInbox.vue'
 import AnnouncementMarquee from './announcement/AnnouncementMarquee.vue'
 import logoUrl from '@/assets/images/ui/common-logo-black.png'
-import iconWallet from '@/assets/images/ui/common-icon-wallet.png'
-import iconPoints from '@/assets/images/ui/common-icon-points.png'
+import iconWallet from '@/assets/images/ui/metric-icon-wallet.png'
+import iconPoints from '@/assets/images/ui/metric-icon-points.png'
 import iconCart from '@/assets/images/ui/common-icon-cart-full.png'
 import iconUser from '@/assets/images/ui/common-icon-user.png'
 import wecomQrcode from '@/assets/images/ui/common-wecom-qrcode.jpg'
@@ -72,7 +72,7 @@ function formatMetric(value: number) {
           <template v-if="billingStore.privateCloud">
             <span
               class="metric metric--pill metric--points"
-              :style="{ backgroundImage: `url(${iconWallet})` }"
+              :style="{ '--pill-icon': `url(${iconWallet})` }"
               title="AI 剩余次数（企业共享次数池，检查/查重/暗标/生成/润色等每个任务消耗 1 次）"
             >
               <span class="metric-value">AI 剩余 {{
@@ -83,7 +83,7 @@ function formatMetric(value: number) {
             </span>
             <span
               class="metric metric--pill metric--points"
-              :style="{ backgroundImage: `url(${iconPoints})` }"
+              :style="{ '--pill-icon': `url(${iconPoints})` }"
               title="OCR 剩余次数（企业共享次数池，每次图片文字识别消耗 1 次）"
             >
               <span class="metric-value">OCR 剩余 {{
@@ -96,7 +96,7 @@ function formatMetric(value: number) {
           <span
             v-if="!billingStore.privateCloud"
             class="metric metric--pill metric--points"
-            :style="{ backgroundImage: `url(${iconWallet})` }"
+            :style="{ '--pill-icon': `url(${iconWallet})` }"
             title="账户可用点数余额（有效订单剩余之和）"
           >
             <span class="metric-value">{{
@@ -108,7 +108,7 @@ function formatMetric(value: number) {
           <span
             v-if="!billingStore.privateCloud"
             class="metric metric--pill metric--points"
-            :style="{ backgroundImage: `url(${iconPoints})` }"
+            :style="{ '--pill-icon': `url(${iconPoints})` }"
             title="账户积分"
           >
             <span class="metric-value">{{
@@ -260,14 +260,22 @@ function formatMetric(value: number) {
   height: 32px;
   min-width: 96px;
   box-sizing: border-box;
-  padding: 0 14px 0 40px;
+  padding: 0 14px 0 11px;
   border: 0;
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 100% 100%;
+  border-radius: 999px;
+  background: linear-gradient(180deg,#fafafa 0%,#fbe3be 9%,#fbe1ba 50%,#fbe3be 91%,#fafafa 100%);
   align-items: center;
   white-space: nowrap;
   cursor: default;
+}
+
+/* 图标走 ::before 固定尺寸：胶囊随文字变宽时图标不再被拉伸（旧方案背景图 100% 100% 拉伸导致图标压字） */
+.metric--pill::before {
+  content: "";
+  width: 19px;
+  height: 22px;
+  flex: 0 0 19px;
+  background: var(--pill-icon) center/contain no-repeat;
 }
 
 .metric--cart {
@@ -459,12 +467,18 @@ function formatMetric(value: number) {
     gap: 10px;
   }
 
-  /* 背景图和容器同步缩小，并继续覆盖完整文字区域。 */
+  /* 胶囊与图标同步缩小。 */
   .metric--pill {
     height: 28px;
     min-width: 84px;
-    padding: 0 10px 0 34px;
+    padding: 0 10px 0 9px;
     font-size: 13px;
+  }
+
+  .metric--pill::before {
+    width: 16px;
+    height: 19px;
+    flex-basis: 16px;
   }
 }
 

@@ -17,8 +17,8 @@ import {
 } from "@/api/tenderParse";
 import { useBillingStore } from "@/stores/billing";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
-import iconWallet from "@/assets/images/ui/common-icon-wallet.png";
-import iconPoints from "@/assets/images/ui/common-icon-points.png";
+import iconWallet from "@/assets/images/ui/metric-icon-wallet.png";
+import iconPoints from "@/assets/images/ui/metric-icon-points.png";
 
 /**
  * 招标文件解析（/vsto/tender-parse，插件 TaskPane 500px 窄面板）。
@@ -368,24 +368,24 @@ onUnmounted(() => {
         <template v-if="billingStore.privateCloud">
           <span
             class="metric-pill"
-            :style="{ backgroundImage: `url(${iconWallet})` }"
+            :style="{ '--pill-icon': `url(${iconWallet})` }"
             title="AI 剩余次数（企业共享次数池，检查/查重/暗标/生成/润色等每个任务消耗 1 次）"
           >
             <span>AI 剩余 {{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.rechargeBalance) }} 次</span>
           </span>
           <span
             class="metric-pill"
-            :style="{ backgroundImage: `url(${iconPoints})` }"
+            :style="{ '--pill-icon': `url(${iconPoints})` }"
             title="OCR 剩余次数（企业共享次数池，每次图片文字识别消耗 1 次）"
           >
             <span>OCR 剩余 {{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.giftBalance) }} 次</span>
           </span>
         </template>
         <template v-else>
-          <span class="metric-pill" :style="{ backgroundImage: `url(${iconWallet})` }">
+          <span class="metric-pill" :style="{ '--pill-icon': `url(${iconWallet})` }">
             <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.balanceWen) }}点</span>
           </span>
-          <span class="metric-pill" :style="{ backgroundImage: `url(${iconPoints})` }">
+          <span class="metric-pill" :style="{ '--pill-icon': `url(${iconPoints})` }">
             <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.points) }}积分</span>
           </span>
         </template>
@@ -629,7 +629,7 @@ onUnmounted(() => {
 .panel-header{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:60px;padding:10px 4px}
 .panel-logo{width:108px;height:auto;object-fit:contain}
 .account-strip{display:flex;align-items:center;gap:7px;min-width:0}
-.metric-pill{display:inline-flex;align-items:center;justify-content:flex-end;box-sizing:border-box;height:29px;min-width:88px;padding:0 9px 0 34px;background-position:center;background-repeat:no-repeat;background-size:100% 100%;white-space:nowrap;color:#333;font-size:11px;font-weight:600}
+.metric-pill{display:inline-flex;align-items:center;box-sizing:border-box;height:29px;min-width:88px;padding:0 11px 0 9px;border-radius:999px;background:linear-gradient(180deg,#fafafa 0%,#fbe3be 9%,#fbe1ba 50%,#fbe3be 91%,#fafafa 100%);white-space:nowrap;color:#333;font-size:11px;font-weight:600}.metric-pill::before{content:"";width:17px;height:20px;flex:0 0 17px;margin-right:5px;background:var(--pill-icon) center/contain no-repeat}
 .card{box-sizing:border-box;width:100%;margin-bottom:12px;padding:17px;background:#fff;border:1px solid #e8e8e8;border-radius:12px;box-shadow:0 3px 14px rgba(40,28,30,.045)}
 .hero-card{position:relative;overflow:hidden;border-top:3px solid var(--brand)}
 .hero-card::after{content:"";position:absolute;right:-34px;top:-52px;width:116px;height:116px;border-radius:50%;background:linear-gradient(135deg,rgba(215,4,26,.12),rgba(215,4,26,0));pointer-events:none}
@@ -709,6 +709,6 @@ onUnmounted(() => {
 .edit-tip{margin:11px 0 0;color:#aaa;font-size:10px;line-height:1.6}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-@media (max-width:560px){.tender-parse-view{padding:0 8px 28px}.brand-line{margin:0 -8px}.panel-header{min-height:56px}.panel-logo{width:96px}.metric-pill{height:27px;min-width:80px;padding-left:30px;font-size:10px}.card{padding:14px 12px;margin-bottom:9px;border-radius:9px}.hero-card h1{font-size:19px}.actions{flex-direction:column}.actions button{width:100%}}
+@media (max-width:560px){.tender-parse-view{padding:0 8px 28px}.brand-line{margin:0 -8px}.panel-header{min-height:56px}.panel-logo{width:96px}.metric-pill{height:27px;min-width:80px;font-size:10px}.metric-pill::before{width:15px;height:18px;flex-basis:15px}.card{padding:14px 12px;margin-bottom:9px;border-radius:9px}.hero-card h1{font-size:19px}.actions{flex-direction:column}.actions button{width:100%}}
 @media (max-width:390px){.panel-header{align-items:flex-start;flex-direction:column;padding:10px 3px}.account-strip{width:100%}.metric-pill{flex:1}}
 </style>
