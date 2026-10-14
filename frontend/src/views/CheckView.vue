@@ -12,7 +12,7 @@ import RuleDocSelectModal from '@/components/RuleDocSelectModal.vue'
 import { isLegacyDocFile, legacyDocWarning, isLegacyXlsFile, legacyXlsWarning, uploadDocumentWarning } from '@/utils/uploadValidation'
 import { showCheckDurationNotice } from '@/utils/checkDurationNotice'
 import { apiErrorText } from '@/utils/apiError'
-import illustration from '@/assets/images/ui/home-illustration.png'
+import promoIllustration from '@/assets/images/ui/promo-illustration.jpg'
 import iconFileTheme from '@/assets/images/ui/common-icon-file-theme.png'
 import iconSearch from '@/assets/images/ui/common-icon-search.png'
 
@@ -387,8 +387,50 @@ function getStatusClass(status: string) {
         </div>
       </div>
 
-      <div class="card-project__art">
-        <img :src="illustration" alt="" />
+      <!-- 右侧宣传区：AI 智能标书审查七大维度（2026-10 设计稿） -->
+      <div class="promo-section">
+        <div class="promo-left">
+          <img class="promo-illustration" :src="promoIllustration" alt="AI 智能标书审查" />
+          <div class="promo-title">AI 智能标书审查</div>
+          <div class="promo-subtitle">七大维度全覆盖</div>
+        </div>
+        <div class="promo-right">
+          <div class="check-list">
+            <div class="check-item">
+              <div class="check-icon">✓</div>
+              <span>标书一致性检查</span>
+            </div>
+            <div class="check-item">
+              <div class="check-icon">✓</div>
+              <span>实质性响应检查</span>
+            </div>
+            <div class="check-item">
+              <div class="check-icon">✓</div>
+              <span>合规性检查</span>
+            </div>
+            <div class="check-item">
+              <div class="check-icon">✓</div>
+              <span>废标条款检查</span>
+            </div>
+            <div class="check-item">
+              <div class="check-icon">✓</div>
+              <span>规范性检查</span>
+            </div>
+            <div class="check-item">
+              <div class="check-icon">✓</div>
+              <span>错别字等细节检查</span>
+            </div>
+            <div class="check-item full-row">
+              <div class="check-icon">✓</div>
+              <span>客观项评分测算</span>
+            </div>
+          </div>
+          <div class="promo-features">
+            <div class="feature-tag"><div class="feature-dot"></div>智能审查</div>
+            <div class="feature-tag"><div class="feature-dot"></div>精准高效</div>
+            <div class="feature-tag"><div class="feature-dot"></div>安全可靠</div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -668,8 +710,8 @@ function getStatusClass(status: string) {
 /* ============ 卡片①：创建新项目 ============ */
 .card-project {
   display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 32px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 40px;
   align-items: center;
 }
 
@@ -677,19 +719,124 @@ function getStatusClass(status: string) {
   min-width: 0;
 }
 
-.card-project__art {
+/* 右侧宣传区（2026-10 设计稿）：左侧插画 + 标题，右侧七大检查项 + 特性标签 */
+.promo-section {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 36px;
+  padding: 32px 36px;
+  background: linear-gradient(135deg, #fff5f5 0%, #fff0f0 50%, #ffe8e8 100%);
+  border: 1px solid #ffd6d6;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.promo-section::before {
+  content: '';
+  position: absolute;
+  top: -40px;
+  right: -40px;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(215, 4, 26, 0.06) 0%, transparent 70%);
+}
+
+.promo-left {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 220px;
+  flex-shrink: 0;
+}
+
+.promo-illustration {
+  width: 200px;
+  height: 150px;
+  object-fit: contain;
+  margin-bottom: 10px;
+  border-radius: 10px;
+}
+
+.promo-title {
+  font-size: 21px;
+  font-weight: 700;
+  color: #D7041A;
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.promo-subtitle {
+  font-size: 14px;
+  color: #888;
+  text-align: center;
+}
+
+.promo-right {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.check-list {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 10px 14px;
+  justify-content: start;
+}
+
+.check-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: #fff;
+  border: 1px solid #ffe0e0;
+  border-radius: 8px;
+  font-size: 15px;
+  color: #444;
+  white-space: nowrap;
+}
+
+.check-item.full-row {
+  grid-column: 1 / -1;
+}
+
+.check-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff1f0;
+  color: #D7041A;
+  font-size: 13px;
 }
 
-.card-project__art img {
-  width: 100%;
-  max-width: 320px;
-  height: 100%;
-  max-height: 240px;
-  object-fit: contain;
+.promo-features {
+  display: flex;
+  justify-content: flex-end;
+  gap: 20px;
+  padding-top: 14px;
+  border-top: 1px dashed #ffccc7;
+}
+
+.feature-tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #999;
+}
+
+.feature-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #D7041A;
 }
 
 .field {
@@ -1155,19 +1302,31 @@ function getStatusClass(status: string) {
 /* Markdown 内容复用全局 .markdown-content 样式（common.css） */
 
 /* ============ 响应式 ============ */
-@media (max-width: 900px) {
+/* 中屏起卡片改单列：表单在上，宣传区整行铺开（右侧宣传区固定宽约 700px，两列需 ≥1400px 视口） */
+@media (max-width: 1400px) {
   .card-project {
     grid-template-columns: 1fr;
     gap: 20px;
   }
+}
 
-  .card-project__art {
-    order: -1;
+@media (max-width: 900px) {
+  .promo-section {
+    flex-direction: column;
+    gap: 20px;
   }
 
-  .card-project__art img {
-    max-width: 220px;
-    max-height: 160px;
+  .promo-left {
+    width: auto;
+  }
+
+  .promo-illustration {
+    width: 170px;
+    height: 128px;
+  }
+
+  .check-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1183,6 +1342,14 @@ function getStatusClass(status: string) {
   .check-btn {
     width: 100%;
     max-width: 360px;
+  }
+
+  .check-list {
+    grid-template-columns: 1fr;
+  }
+
+  .promo-features {
+    justify-content: flex-start;
   }
 }
 </style>
