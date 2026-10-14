@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from "vue";
 import { message, Modal } from "ant-design-vue";
 import { announcementApi } from "@/api/client";
+import { apiErrorText } from "@/utils/apiError";
 import type {
   AnnouncementManage,
   AnnouncementSeverity,
@@ -187,11 +188,8 @@ function formatTime(iso: string | null): string {
 }
 
 function extractErr(e: unknown, fallback: string): string {
-  if (e && typeof e === "object" && "response" in e) {
-    const resp = (e as { response?: { data?: { detail?: string } } }).response;
-    return resp?.data?.detail || fallback;
-  }
-  return e instanceof Error ? e.message : fallback;
+  // detail 可能是 {code, message} 对象（计费/并发闸门），交给 apiErrorText 提取文案
+  return apiErrorText(e) || (e instanceof Error ? e.message : fallback);
 }
 
 onMounted(fetchList);

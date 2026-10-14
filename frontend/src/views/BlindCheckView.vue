@@ -13,6 +13,7 @@ import {
   submitVstoToolResult,
   type BlindCheckFinding,
 } from "@/api/blindCheck";
+import { apiErrorText } from "@/utils/apiError";
 import { useBillingStore } from "@/stores/billing";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 import iconWallet from "@/assets/images/ui/common-icon-wallet.png";
@@ -545,12 +546,10 @@ const compliantFindings = computed(() => findings.value.filter((item) => item.ve
 
 function categoryText(value: string) { return ({ format: "格式", company_identity: "公司身份", person_identity: "人员身份", metadata: "文件属性", other: "其他" } as Record<string, string>)[value] || value || "其他"; }
 function verdictText(value: string) { return ({ violation: "疑似违规", compliant: "已符合", unknown: "待确认" } as Record<string, string>)[value] || "待确认"; }
+// 后端 402/409 计费闸门的 detail 是 {code, message, ...} 对象，必须经 apiErrorText
+// 提取 message，否则模板会把整个对象渲染成原始 JSON。
 function errorText(error: unknown, fallback: string) {
-  if (error && typeof error === "object" && "response" in error) {
-    const response = (error as { response?: { data?: { detail?: string; message?: string } } }).response;
-    if (response?.data?.detail || response?.data?.message) return response.data.detail || response.data.message || fallback;
-  }
-  return error instanceof Error ? error.message : fallback;
+  return apiErrorText(error) || (error instanceof Error ? error.message : fallback);
 }
 
 onMounted(() => {
