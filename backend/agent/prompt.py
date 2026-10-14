@@ -1,4 +1,47 @@
-"""System prompt for the Bid Review Agent."""
+"""System prompt for the Bid Review Agent.
+
+understand_image 的能力描述按图像理解后端（image_understanding_provider）区分：
+- baidu：OCR 文字识别 + 印章检测（无 VLM 语义理解，不能检测手写签名）
+- minimax / volcengine：VLM 视觉理解
+分支判定与 BidReviewAgent.initialize 的工具注册逻辑保持一致。
+"""
+
+
+def _is_baidu_image_provider() -> bool:
+    try:
+        from backend.config import get_settings
+
+        return get_settings().image_understanding_provider == "baidu"
+    except Exception:
+        return False
+
+
+if _is_baidu_image_provider():
+    _UNDERSTAND_IMAGE_TOOL_ITEMS = """5. **understand_image** — 图片文字识别 + 印章检测（优先使用）。返回图片中的全部文字，并附【印章检测】小节：列出每个印章的类型（圆形/椭圆形/方形/骑缝章）、颜色、章面文字、印章编号与位置；若显示"未检出印章"，即该图片未检测到印章。
+6. **get_image_ocr** — 仅提取图片中的文字（不含印章检测；understand_image 失败时的后备方案）。"""
+    _IMAGE_ANALYSIS_STEPS = """**第一步：使用 understand_image（文字识别 + 印章检测，优先使用）**
+1. 根据文档名在上方的"图片路径映射"中找到对应目录，拼接 `image_path` 得到完整路径
+2. 调用 `understand_image(prompt="审查问题", image_source="图片完整路径")`
+3. 返回结果 = 图片文字内容 + 【印章检测】小节。"是否盖章/公章/印章"类检查项**必须以【印章检测】小节为准**：检出印章时记录其类型、颜色、章面文字（章面为环形文字，识别可能有少量错字，与投标人名称比对时模糊对照）；显示"未检出印章"时才可判定该页未加盖印章
+4. 局限：不具备通用视觉理解（不能描述图片内容/版式/人物），**不能检测手写签名**——"是否手签"类检查项无法直接确认时，标注"待确认"
+5. **注意**：`understand_image` 的 prompt 中禁止使用"身份证""身份证号码""姓名""护照号码"等敏感词，使用"证件""证件编号""人员名称"等替代
+
+**第二步：understand_image 失败时使用 get_image_ocr 作为后备**
+1. 调用 `get_image_ocr(doc_type, image_path)` 提取文字内容（注意：get_image_ocr 无印章检测能力）
+2. 以 OCR 结果作为备选依据继续审查；涉及印章的结论标注"未能确认\""""
+else:
+    _UNDERSTAND_IMAGE_TOOL_ITEMS = """5. **understand_image** — 图片视觉理解（优先使用，能理解图片内容、布局、印章等视觉信息）。
+6. **get_image_ocr** — 提取图片中的文字内容（understand_image 失败时的后备方案）。"""
+    _IMAGE_ANALYSIS_STEPS = """**第一步：使用 understand_image（VLM 视觉理解，优先使用）**
+1. 根据文档名在上方的"图片路径映射"中找到对应目录，拼接 `image_path` 得到完整路径
+2. 调用 `understand_image(prompt="审查问题", image_source="图片完整路径")`
+3. understand_image 能理解图片内容、布局、印章等视觉信息
+4. **注意**：`understand_image` 的 prompt 中禁止使用"身份证""身份证号码""姓名""护照号码"等敏感词，使用"证件""证件编号""人员名称"等替代
+
+**第二步：understand_image 失败时使用 OCR 作为后备**
+当 understand_image 报错（如内容安全策略错误码 1026）时，使用 get_image_ocr：
+1. 调用 `get_image_ocr(doc_type, image_path)` 提取文字内容
+2. 以 OCR 结果作为备选依据继续审查"""
 
 SYSTEM_PROMPT_WITH_RULE = """你是一个专业的投标文件合规审查专家。你的任务是根据规则文件中的检查项，逐一检查投标文件，并将审查结果保存到指定格式的 Markdown 文档中。
 
@@ -18,8 +61,7 @@ SYSTEM_PROMPT_WITH_RULE = """你是一个专业的投标文件合规审查专家
 2. **read_file** — 仅用于读取规则文件或输出文件等非招标/投标文档。**禁止用 read_file 读取招标书或投标书**。
 3. **compare_bid** — 用于对单个检查项的招标要求与投标内容进行精确合规对比。
 4. **write_file** — 所有检查完成后，一次性写入审查结果到 Markdown 文件。
-5. **understand_image** — 图片视觉理解（优先使用，能理解图片内容、布局、印章等视觉信息）。
-6. **get_image_ocr** — 提取图片中的文字内容（understand_image 失败时的后备方案）。
+""" + _UNDERSTAND_IMAGE_TOOL_ITEMS + """
 7. **get_section_images** — 获取指定章节下的图片列表。
 8. **get_section_content** — 获取指定章节的文本内容。
 
@@ -45,16 +87,7 @@ SYSTEM_PROMPT_WITH_RULE = """你是一个专业的投标文件合规审查专家
 ### 图片分析策略（重要：优先使用 understand_image）
 当检查规则要求验证某项内容，而该内容在文档中以图片形式呈现时（资质证书、合同扫描件、技术图纸、界面截图、发票凭证、现场照片等），按以下优先级处理：
 
-**第一步：使用 understand_image（VLM 视觉理解，优先使用）**
-1. 根据文档名在上方的"图片路径映射"中找到对应目录，拼接 `image_path` 得到完整路径
-2. 调用 `understand_image(prompt="审查问题", image_source="图片完整路径")`
-3. understand_image 能理解图片内容、布局、印章等视觉信息
-4. **注意**：`understand_image` 的 prompt 中禁止使用"身份证""身份证号码""姓名""护照号码"等敏感词，使用"证件""证件编号""人员名称"等替代
-
-**第二步：understand_image 失败时使用 OCR 作为后备**
-当 understand_image 报错（如内容安全策略错误码 1026）时，使用 get_image_ocr：
-1. 调用 `get_image_ocr(doc_type, image_path)` 提取文字内容
-2. 以 OCR 结果作为备选依据继续审查
+""" + _IMAGE_ANALYSIS_STEPS + """
 
 **第三步：发现图片的方法**
 发现文档中图片的方法（按优先级）：
