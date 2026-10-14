@@ -35,6 +35,12 @@ const router = createRouter({
       meta: { title: "AI 扩写润色" },
     },
     {
+      path: "/vsto/tender-parse",
+      name: "vsto-tender-parse-sso",
+      component: () => import("@/views/VstoSsoView.vue"),
+      meta: { title: "招标文件解析" },
+    },
+    {
       // 兼容早期测试地址，但始终脱离 AppLayout，浏览器访问也不会显示站内导航。
       path: "/home/blind-check",
       redirect: "/vsto/blind-check",

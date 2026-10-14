@@ -6,6 +6,7 @@ import BlindCheckView from "@/views/BlindCheckView.vue";
 import BidDraftView from "@/views/BidDraftView.vue";
 import BidWizardView from "@/views/BidWizardView.vue";
 import PolishView from "@/views/PolishView.vue";
+import TenderParseView from "@/views/TenderParseView.vue";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 
 const SSO_REQUEST = "bjt.vsto.sso.request";
@@ -24,6 +25,7 @@ const TARGETS: Record<string, { component: Component; title: string; entering: s
   "/vsto/bid-draft": { component: BidDraftView, title: "AI 标书生成", entering: "正在进入 AI 标书生成…" },
   "/vsto/bid-wizard": { component: BidWizardView, title: "标书生成", entering: "正在进入标书生成…" },
   "/vsto/polish": { component: PolishView, title: "AI 扩写润色", entering: "正在进入 AI 扩写润色…" },
+  "/vsto/tender-parse": { component: TenderParseView, title: "招标文件解析", entering: "正在进入招标文件解析…" },
 };
 
 const route = useRoute();
