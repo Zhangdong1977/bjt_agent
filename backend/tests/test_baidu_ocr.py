@@ -1,5 +1,6 @@
 """Unit + integration tests for BaiduOcrTool (understand_image via 百度云 OCR)."""
 
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -54,10 +55,12 @@ def _make_fake_client(token_payload, ocr_payload, recorder, seal_payload=None):
 
 @pytest.fixture(autouse=True)
 def _reset_token_cache():
-    """Clear module-level token cache before/after each test to avoid pollution."""
+    """Clear module-level token/seal-registry caches before/after each test."""
     baidu_ocr._token_cache.clear()
+    baidu_ocr._seal_registries.clear()
     yield
     baidu_ocr._token_cache.clear()
+    baidu_ocr._seal_registries.clear()
 
 
 def _make_png(path: Path, size=(50, 50)) -> Path:
@@ -527,6 +530,189 @@ async def test_seal_disabled_skips_seal_call(monkeypatch, tmp_path):
     assert result.content == "ok"
     assert not any("/ocr/v1/seal" in u for u in recorder)
     assert result.data["seal_detection"] == {"enabled": False}
+
+
+# ---------------------------------------------------------------------------
+# seal throttling tests（任务门控 / 指纹收敛 / 调用上限 / 落款门控）
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _seal_ctx(task_id="task-seal-1", seal_required=True):
+    """在印章测试期间注入 UsageContext（真实链路由 SubAgentExecutor 设置）。"""
+    from backend.services.usage_context import (
+        UsageContext,
+        reset_usage_context,
+        set_usage_context,
+    )
+
+    token = set_usage_context(
+        UsageContext(
+            external_user_id=1,
+            local_user_id="u1",
+            user_name="tester",
+            enterprise_name=None,
+            interior_user=False,
+            project_id="p1",
+            task_id=task_id,
+            todo_id=None,
+            seal_required=seal_required,
+        )
+    )
+    try:
+        yield
+    finally:
+        reset_usage_context(token)
+
+
+@pytest.fixture
+def _no_usage_recording(monkeypatch):
+    """注入 UsageContext 后 record_ocr_usage 会尝试异步落库，单测里屏蔽。"""
+    monkeypatch.setattr(
+        "backend.services.usage_recorder.record_ocr_usage", lambda **kwargs: None
+    )
+
+
+@pytest.mark.unit
+async def test_seal_skipped_when_not_required(monkeypatch, tmp_path, _no_usage_recording):
+    """seal_required=False（未勾选 E001 等印章相关规则）不发印章请求。"""
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "ok"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr, "AsyncClient", _make_fake_client(token_payload, ocr_payload, recorder)
+    )
+
+    with _seal_ctx(task_id="task-gated", seal_required=False):
+        result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+
+    assert result.success is True
+    assert result.content == "ok"
+    assert not any("/ocr/v1/seal" in u for u in recorder)
+    assert result.data["seal_detection"] == {"enabled": False}
+
+
+@pytest.mark.unit
+async def test_seal_fires_when_required(monkeypatch, tmp_path, _no_usage_recording):
+    """seal_required=True 时照常发起印章识别并合并结果。"""
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "投标函"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr,
+        "AsyncClient",
+        _make_fake_client(token_payload, ocr_payload, recorder, seal_payload=_SEAL_PAYLOAD_TWO),
+    )
+
+    with _seal_ctx(task_id="task-fire", seal_required=True):
+        result = await BaiduOcrTool().execute(prompt="检查盖章", image_source=str(img))
+
+    assert result.success is True
+    assert any("/ocr/v1/seal" in u for u in recorder)
+    assert "【印章检测】共检出 2 个印章" in result.content
+
+
+@pytest.mark.unit
+async def test_seal_converges_and_skips_after_window(monkeypatch, tmp_path, _no_usage_recording):
+    """连续 N 张图无新指纹即收敛：重复印章去重输出，收敛后不再发请求。"""
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "正文"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr,
+        "AsyncClient",
+        _make_fake_client(token_payload, ocr_payload, recorder, seal_payload=_SEAL_PAYLOAD_TWO),
+    )
+
+    with _seal_ctx(task_id="task-conv", seal_required=True):
+        # 用两个工具实例模拟同一任务下的两个子 agent：收敛状态必须跨实例共享
+        tool = BaiduOcrTool()
+        tool._seal_converge_after = 2
+        # 第 1 张：新指纹，完整明细
+        r1 = await tool.execute(prompt="p", image_source=str(img))
+        assert "【印章检测】共检出 2 个印章" in r1.content
+        assert "章面文字「深圳般若海科技有限公司」" in r1.content
+
+        tool2 = BaiduOcrTool()
+        tool2._seal_converge_after = 2
+        # 第 2 张：同指纹 → 去重行（consecutive=1，未收敛）
+        r2 = await tool2.execute(prompt="p", image_source=str(img))
+        assert "另有 2 个印章与本卷已识别印章一致" in r2.content
+        assert "红色圆形「深圳般若海科技有限公司」" in r2.content
+        # 第 3 张：仍无新指纹 → 收敛（consecutive=2），当次结果带收敛说明
+        r3 = await tool2.execute(prompt="p", image_source=str(img))
+        assert "本卷印章识别已收敛" in r3.content
+        # 第 4 张：不再发印章请求，输出收敛提示（防「未盖章」误判）
+        r4 = await tool2.execute(prompt="p", image_source=str(img))
+        assert "【印章检测】本卷印章识别已收敛" in r4.content
+        assert "请勿因后续图片未显示印章信息而判定" in r4.content
+        assert r4.data["seal_detection"]["status"] == "skipped"
+        assert r4.data["seal_detection"]["reason"] == "converged"
+
+    seal_hits = [u for u in recorder if "/ocr/v1/seal" in u]
+    assert len(seal_hits) == 3
+
+
+@pytest.mark.unit
+async def test_seal_cap_limits_calls_per_task(monkeypatch, tmp_path, _no_usage_recording):
+    """BAIDU_SEAL_MAX_CALLS_PER_TASK 达上限后跳过，提示行注明原因。"""
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "正文"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr,
+        "AsyncClient",
+        _make_fake_client(token_payload, ocr_payload, recorder, seal_payload=_SEAL_PAYLOAD_TWO),
+    )
+
+    with _seal_ctx(task_id="task-cap", seal_required=True):
+        tool = BaiduOcrTool()
+        tool._seal_max_calls = 1
+        r1 = await tool.execute(prompt="p", image_source=str(img))
+        assert "共检出 2 个印章" in r1.content
+        r2 = await tool.execute(prompt="p", image_source=str(img))
+        assert "已达单任务印章调用上限（1 次）" in r2.content
+
+    seal_hits = [u for u in recorder if "/ocr/v1/seal" in u]
+    assert len(seal_hits) == 1
+
+
+@pytest.mark.unit
+async def test_seal_signature_gate_mode(monkeypatch, tmp_path, _no_usage_recording):
+    """signature_gate 模式：仅 OCR 文本含落款/签署关键词的图片才调印章。"""
+    img = _make_png(tmp_path / "a.png")
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+
+    plain_payload = {"words_result": [{"words": "第一章 工程概况与技术参数"}], "words_result_num": 1}
+    monkeypatch.setattr(
+        baidu_ocr, "AsyncClient", _make_fake_client(token_payload, plain_payload, recorder)
+    )
+    with _seal_ctx(task_id="task-gate", seal_required=True):
+        tool = BaiduOcrTool()
+        tool._seal_mode = "signature_gate"
+        r1 = await tool.execute(prompt="p", image_source=str(img))
+        assert r1.success is True
+        assert "印章" not in r1.content  # 非落款页：完全不带印章小节
+        assert not any("/ocr/v1/seal" in u for u in recorder)
+
+    sign_payload = {"words_result": [{"words": "投标函\n兹授权并承诺盖章"}], "words_result_num": 2}
+    monkeypatch.setattr(
+        baidu_ocr,
+        "AsyncClient",
+        _make_fake_client(token_payload, sign_payload, recorder, seal_payload=_SEAL_PAYLOAD_TWO),
+    )
+    with _seal_ctx(task_id="task-gate", seal_required=True):
+        tool = BaiduOcrTool()
+        tool._seal_mode = "signature_gate"
+        r2 = await tool.execute(prompt="p", image_source=str(img))
+        assert r2.success is True
+        assert "【印章检测】共检出 2 个印章" in r2.content
+        assert any("/ocr/v1/seal" in u for u in recorder)
 
 
 # ---------------------------------------------------------------------------

@@ -25,9 +25,12 @@ logger = logging.getLogger(__name__)
 #     否则 asyncpg 对同一参数在 INSERT 值与 WHERE 两种上下文推断类型冲突
 #     （AmbiguousParameterError: inconsistent types deduced）。
 #   - created_at 在 ON CONFLICT 时保留原值（首次创建时间），不覆盖。
+#   - ocr_* 指标排除 provider='baidu_seal' 流水、另以 seal_calls 单独计数
+#     （2026-10-15：印章检测与文字 OCR 同记 usage_type='ocr'，混计使运营台
+#     自 10-14 印章上线起 ocr_calls/ocr_images 虚高一倍）。
 _UPSERT_SQL = text("""
 INSERT INTO ai_usage_task_summary (
-    id, llm_calls, ocr_calls, embedding_calls, vision_calls, failed_calls,
+    id, llm_calls, ocr_calls, seal_calls, embedding_calls, vision_calls, failed_calls,
     prompt_tokens, completion_tokens, total_tokens,
     prompt_cache_hit_tokens, prompt_cache_miss_tokens,
     ocr_images, ocr_words_result_num,
@@ -42,7 +45,8 @@ INSERT INTO ai_usage_task_summary (
 SELECT
     MIN(task_id),
     COUNT(*) FILTER (WHERE usage_type = 'llm'),
-    COUNT(*) FILTER (WHERE usage_type = 'ocr'),
+    COUNT(*) FILTER (WHERE usage_type = 'ocr' AND provider IS DISTINCT FROM 'baidu_seal'),
+    COUNT(*) FILTER (WHERE usage_type = 'ocr' AND provider = 'baidu_seal'),
     COALESCE(SUM(embedding_calls) FILTER (WHERE usage_type = 'embedding'), 0),
     COALESCE(SUM(vision_calls) FILTER (WHERE usage_type = 'vision'), 0),
     COUNT(*) FILTER (WHERE status <> 'success'),
@@ -51,8 +55,8 @@ SELECT
     COALESCE(SUM(total_tokens)   FILTER (WHERE usage_type = 'llm'),  0),
     COALESCE(SUM(prompt_cache_hit_tokens),  0),
     COALESCE(SUM(prompt_cache_miss_tokens), 0),
-    COALESCE(SUM(ocr_images)         FILTER (WHERE usage_type = 'ocr'), 0),
-    COALESCE(SUM(ocr_words_result_num) FILTER (WHERE usage_type = 'ocr'), 0),
+    COALESCE(SUM(ocr_images)         FILTER (WHERE usage_type = 'ocr' AND provider IS DISTINCT FROM 'baidu_seal'), 0),
+    COALESCE(SUM(ocr_words_result_num) FILTER (WHERE usage_type = 'ocr' AND provider IS DISTINCT FROM 'baidu_seal'), 0),
     COALESCE(SUM(embedding_inputs) FILTER (WHERE usage_type = 'embedding'), 0),
     COALESCE(SUM(embedding_input_chars) FILTER (WHERE usage_type = 'embedding'), 0),
     COALESCE(SUM(embedding_input_tokens) FILTER (WHERE usage_type = 'embedding'), 0),
@@ -77,6 +81,7 @@ HAVING COUNT(*) > 0
 ON CONFLICT (id) DO UPDATE SET
     llm_calls              = EXCLUDED.llm_calls,
     ocr_calls              = EXCLUDED.ocr_calls,
+    seal_calls             = EXCLUDED.seal_calls,
     embedding_calls        = EXCLUDED.embedding_calls,
     vision_calls           = EXCLUDED.vision_calls,
     failed_calls           = EXCLUDED.failed_calls,
@@ -146,7 +151,7 @@ INSERT INTO ai_usage_task_summary (
     id, task_status, started_at, completed_at, duration_seconds, error_message,
     external_user_id, local_user_id, user_name, enterprise_name, interior_user,
     project_id,
-    llm_calls, ocr_calls, embedding_calls, vision_calls, failed_calls,
+    llm_calls, ocr_calls, seal_calls, embedding_calls, vision_calls, failed_calls,
     prompt_tokens, completion_tokens, total_tokens,
     prompt_cache_hit_tokens, prompt_cache_miss_tokens,
     ocr_images, ocr_words_result_num,
@@ -158,7 +163,7 @@ SELECT
     r.id, r.status, r.started_at, r.completed_at, r.duration_seconds, r.error_message,
     u.external_user_id, u.id, u.username, u.enterprise_name, u.interior_user,
     p.id,
-    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0,
     0, now(), now()
@@ -174,7 +179,7 @@ INSERT INTO ai_usage_task_summary (
     id, task_status, started_at, completed_at, duration_seconds, error_message,
     external_user_id, local_user_id, user_name, enterprise_name, interior_user,
     project_id,
-    llm_calls, ocr_calls, embedding_calls, vision_calls, failed_calls,
+    llm_calls, ocr_calls, seal_calls, embedding_calls, vision_calls, failed_calls,
     prompt_tokens, completion_tokens, total_tokens,
     prompt_cache_hit_tokens, prompt_cache_miss_tokens,
     ocr_images, ocr_words_result_num,
@@ -188,7 +193,7 @@ SELECT
          THEN EXTRACT(EPOCH FROM (b.completed_at - b.started_at))::INTEGER ELSE NULL END,
     b.error_message, u.external_user_id, u.id, u.username, u.enterprise_name,
     u.interior_user, NULL,
-    0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0,
     0, now(), now()

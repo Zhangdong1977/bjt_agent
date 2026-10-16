@@ -12,6 +12,8 @@ import asyncio
 import base64
 import logging
 import time
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,7 @@ from backend.services.ocr_image_normalizer import (
     OcrImageNormalizationError,
     normalize_image_for_ocr,
 )
+from backend.services.usage_context import get_usage_context
 from mini_agent.tools.base import Tool as BaseTool
 
 logger = logging.getLogger(__name__)
@@ -59,6 +62,140 @@ SEAL_COLOR_LABELS = {"red": "红色", "black": "黑色", "blue": "蓝色"}
 _token_cache: dict[str, tuple[str, float]] = {}
 
 
+# ---------------------------------------------------------------------------
+# 印章识别节流（2026-10-15）：同一任务内同一枚印章只识别一次。
+#
+# 背景：印章检测捆绑在 understand_image 上，agent 每看一张图就发一次
+# /ocr/v1/seal（10-14 生产实测 81~230 次/审查任务），而同一标书的印章来自
+# 固定几枚实体章，重复识别无信息增量；且未勾选 E001 签字盖章检查（默认不勾）
+# 的任务也在白烧配额。
+#
+# 三重门控（_plan_seal_call）：
+#   ① BAIDU_SEAL_DETECT_ENABLED 总开关；
+#   ② UsageContext.seal_required 任务门控 —— 仅印章相关规则的执行流发起
+#     （SubAgentExecutor 按子 agent 的规则文档判定）；无上下文=脚本/测试，
+#     保持旧行为不门控；
+#   ③ BAIDU_SEAL_MODE 节流模式（见 config.py）。
+#
+# 收敛状态按 UsageContext.task_id 键控放模块级：BaiduOcrTool 在三处被按次
+# 创建（bid_review_agent / document_parser / duplicate_image_evidence），
+# 同一审查任务的多个子 agent 不共享实例，状态不能挂 self。
+# ---------------------------------------------------------------------------
+SEAL_MODE_CONVERGE = "converge"
+SEAL_MODE_SIGNATURE_GATE = "signature_gate"
+
+# signature_gate 模式：OCR 文本命中任一关键词才补发印章请求（落款/签署语境）
+SEAL_SIGNATURE_KEYWORDS = (
+    "签字", "盖章", "公章", "印鉴", "落款", "授权", "承诺",
+    "法定代表人", "投标函", "投标保证金", "签署",
+)
+
+# 收敛注册表 LRU 上限：每注册表只有指纹字符串集合，极小；64 个任务
+# 足够覆盖并发窗口，防长驻 worker 内存无限增长。
+_SEAL_REGISTRY_MAX_TASKS = 64
+
+
+@dataclass
+class _SealRegistry:
+    """一个任务内的印章指纹收敛状态（模块级，按 task_id 键控 LRU）。"""
+
+    fingerprints: set[str] = field(default_factory=set)
+    known: list[str] = field(default_factory=list)  # 已识别印章简述，如 红色圆形「XX」
+    consecutive_no_new: int = 0
+    calls: int = 0
+    converged: bool = False
+    converged_reason: str = ""  # window=连续无新指纹 / cap=达调用上限
+
+
+_seal_registries: "OrderedDict[str, _SealRegistry]" = OrderedDict()
+
+
+def _seal_registry_for(task_id: str | None) -> _SealRegistry | None:
+    """取（或建）任务的印章收敛注册表；无 task_id 返回 None（不做收敛）。"""
+    if not task_id:
+        return None
+    registry = _seal_registries.get(task_id)
+    if registry is None:
+        registry = _SealRegistry()
+        _seal_registries[task_id] = registry
+        while len(_seal_registries) > _SEAL_REGISTRY_MAX_TASKS:
+            _seal_registries.popitem(last=False)
+    else:
+        _seal_registries.move_to_end(task_id)
+    return registry
+
+
+def _normalize_seal_text(value: str) -> str:
+    """指纹文本规范化：全角→半角、去空白、ASCII 小写（容忍 OCR 噪声）。"""
+    out: list[str] = []
+    for ch in value or "":
+        code = ord(ch)
+        if code == 0x3000:
+            continue
+        if 0xFF01 <= code <= 0xFF5E:
+            ch = chr(code - 0xFEE0)
+        if ch.isspace():
+            continue
+        out.append(ch.lower())
+    return "".join(out)
+
+
+def _seal_fingerprint(seal: dict[str, Any]) -> str:
+    """印章身份指纹：规范化章面文字 + 编号。
+
+    同一枚实体章在所有页面上指纹一致（业务前提：印章不可能更换）。章面文字
+    识别不出时退化为 形状/颜色 —— 不同单位的空章会合并，由调用上限兜底。
+    """
+    major = _normalize_seal_text(str(seal.get("major") or ""))
+    minors = ";".join(
+        _normalize_seal_text(str(m)) for m in (seal.get("minor") or []) if m
+    )
+    if major or minors:
+        return f"{major}#{minors}"
+    return f"@{seal.get('type') or ''}/{seal.get('color') or ''}"
+
+
+def _seal_descriptor(seal: dict[str, Any]) -> str:
+    """印章简述（去重/收敛提示行用）：红色圆形「章面文字」。"""
+    raw_type = str(seal.get("type") or "")
+    type_label = SEAL_TYPE_LABELS.get(raw_type, raw_type or "未知类型")
+    raw_color = str(seal.get("color") or "")
+    color_label = SEAL_COLOR_LABELS.get(raw_color, raw_color)
+    desc = f"{color_label}{type_label}"
+    if seal.get("major"):
+        desc += f"「{seal['major']}」"
+    return desc
+
+
+def _render_seal_line(index: int, seal: dict[str, Any]) -> str:
+    """单印章明细行（与 2026-10-14 版输出格式逐字兼容）。"""
+    raw_type = str(seal.get("type") or "")
+    type_label = SEAL_TYPE_LABELS.get(raw_type, raw_type or "未知类型")
+    raw_color = str(seal.get("color") or "")
+    color_label = SEAL_COLOR_LABELS.get(raw_color, raw_color)
+    prob = seal.get("probability")
+    try:
+        prob_s = f"，置信度{float(prob):.3f}" if prob is not None else ""
+    except (TypeError, ValueError):
+        prob_s = ""
+    desc = f"{index}. {color_label}{type_label}印章{prob_s}"
+    if seal.get("major"):
+        desc += f"：章面文字「{seal['major']}」"
+    if seal.get("minor"):
+        desc += f"，编号/其他文字「{'；'.join(seal['minor'])}」"
+    loc = seal.get("location") or {}
+    if loc.get("left") is not None:
+        desc += (
+            f"，位置(左上角x={loc.get('left')},y={loc.get('top')}，"
+            f"宽{loc.get('width')}×高{loc.get('height')})"
+        )
+    return desc
+
+
+def _signature_gate_matched(ocr_text: str) -> bool:
+    return any(kw in (ocr_text or "") for kw in SEAL_SIGNATURE_KEYWORDS)
+
+
 class BaiduOcrTool(BaseTool):
     """百度云 OCR 文字识别工具，作为 understand_image 的可切换实现。"""
 
@@ -71,6 +208,17 @@ class BaiduOcrTool(BaseTool):
         self._endpoint = settings.baidu_ocr_endpoint.rstrip("/")
         self._seal_enabled = settings.baidu_seal_detect_enabled
         self._seal_endpoint = settings.baidu_seal_endpoint.rstrip("/")
+        mode = (settings.baidu_seal_mode or SEAL_MODE_CONVERGE).strip().lower()
+        if mode not in (SEAL_MODE_CONVERGE, SEAL_MODE_SIGNATURE_GATE):
+            logger.warning(
+                "[BaiduOcrTool] 未知 BAIDU_SEAL_MODE=%r，回退 %s",
+                settings.baidu_seal_mode,
+                SEAL_MODE_CONVERGE,
+            )
+            mode = SEAL_MODE_CONVERGE
+        self._seal_mode = mode
+        self._seal_converge_after = max(0, int(settings.baidu_seal_converge_after))
+        self._seal_max_calls = max(0, int(settings.baidu_seal_max_calls_per_task))
         self._normalization_cache_dir = settings.workspace_path / ".ocr_image_cache"
 
     @property
@@ -171,18 +319,19 @@ class BaiduOcrTool(BaseTool):
             return ToolResult(success=False, error=err)
 
         # 印章识别与文字识别并发执行（同一份规范化图片字节）。
+        # 是否发起/何时发起由 _plan_seal_call 三重门控决定（总开关 → 任务门控
+        # → 收敛/落款门控）；signature_gate 模式推迟到 OCR 文本返回后再定。
         # 先预热共享 access_token 缓存，避免两个并发请求冷启动时重复取 token；
         # 预热失败则不建印章任务，让下方 OCR 路径以原有方式统一报错。
+        usage_ctx = get_usage_context()
+        registry = _seal_registry_for(usage_ctx.task_id if usage_ctx else None)
+        seal_plan = self._plan_seal_call(registry)
         seal_task: asyncio.Task | None = None
-        if self._seal_enabled and self._seal_endpoint:
-            try:
-                await self._get_access_token()
-            except Exception:
-                seal_task = None
-            else:
-                seal_task = asyncio.create_task(
-                    self._call_seal_api(base64.b64encode(image_bytes).decode("utf-8"))
-                )
+        seal_skip_note: str | None = None
+        if seal_plan == "fire":
+            seal_task = await self._start_seal_task(image_bytes, registry)
+        elif seal_plan == "skip:converged":
+            seal_skip_note = self._converged_seal_note(registry)
 
         try:
             b64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -260,8 +409,15 @@ class BaiduOcrTool(BaseTool):
             ocr_text = "\n".join(item.get("words", "") for item in words_result)
             words_num = result.get("words_result_num", len(words_result))
 
+            # signature_gate 模式：OCR 文本命中落款/签署关键词才补发印章请求
+            # （印章与 OCR 从并发改为串行，每图多付 ~0.5s 换取逐位置印章语义）
+            if seal_plan == "defer" and _signature_gate_matched(ocr_text):
+                seal_task = await self._start_seal_task(image_bytes, registry)
+
             # 合并印章识别结果（失败降级为提示行，不影响文字结果）
-            seal_text, seal_meta = await self._collect_seal_result(seal_task)
+            seal_text, seal_meta = await self._collect_seal_result(
+                seal_task, registry=registry, skip_note=seal_skip_note
+            )
             content = "\n\n".join(part for part in (ocr_text, seal_text) if part)
             if seal_meta.get("status") == "success":
                 logger.info(
@@ -396,14 +552,116 @@ class BaiduOcrTool(BaseTool):
         except Exception:
             pass
 
+    def _plan_seal_call(self, registry: _SealRegistry | None) -> str:
+        """决定本次印章识别策略：fire / defer / skip:disabled / skip:converged。"""
+        if not (self._seal_enabled and self._seal_endpoint):
+            return "skip:disabled"
+        ctx = get_usage_context()
+        if ctx is not None and not ctx.seal_required:
+            return "skip:disabled"
+        if registry is None:
+            # 无任务上下文（脚本/测试）：保持旧版每图必测行为
+            return "fire"
+        if self._seal_mode == SEAL_MODE_SIGNATURE_GATE:
+            return "defer"
+        if registry.converged:
+            return "skip:converged"
+        if self._seal_max_calls and registry.calls >= self._seal_max_calls:
+            registry.converged = True
+            registry.converged_reason = "cap"
+            return "skip:converged"
+        return "fire"
+
+    async def _start_seal_task(
+        self, image_bytes: bytes, registry: _SealRegistry | None
+    ) -> "asyncio.Task[dict[str, Any]] | None":
+        """预热 token 后发起印章识别并发任务；预热失败返回 None（沿用旧行为）。"""
+        try:
+            await self._get_access_token()
+        except Exception:
+            return None
+        if registry is not None:
+            registry.calls += 1
+        return asyncio.create_task(
+            self._call_seal_api(base64.b64encode(image_bytes).decode("utf-8"))
+        )
+
+    def _update_seal_registry(
+        self, registry: _SealRegistry | None, seals: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """按指纹去重记账，返回 (新印章列表, 重复印章列表)。无注册表时原样透传。
+
+        无新指纹的图片（含未检出印章）推进收敛计数；印章侧失败不进入本方法，
+        不推进也不重置（失败不产出指纹，不该影响收敛判定）。
+        """
+        if registry is None:
+            return seals, []
+        new_seals: list[dict[str, Any]] = []
+        dup_seals: list[dict[str, Any]] = []
+        for seal in seals:
+            fingerprint = _seal_fingerprint(seal)
+            if fingerprint in registry.fingerprints:
+                dup_seals.append(seal)
+                continue
+            registry.fingerprints.add(fingerprint)
+            registry.known.append(_seal_descriptor(seal))
+            new_seals.append(seal)
+        if new_seals:
+            registry.consecutive_no_new = 0
+        else:
+            registry.consecutive_no_new += 1
+            if (
+                self._seal_converge_after
+                and registry.consecutive_no_new >= self._seal_converge_after
+                and not registry.converged
+            ):
+                registry.converged = True
+                registry.converged_reason = "window"
+        return new_seals, dup_seals
+
+    def _converged_seal_note(self, registry: _SealRegistry | None) -> str:
+        """收敛后跳过印章检测时的提示行。
+
+        必须显式告知 agent「跳过 ≠ 未盖章」，否则 E001 会把无印章信息的
+        后续图片误判为未盖章（2026-09-12 同类误判的教训）。
+        """
+        known = list(registry.known) if registry else []
+        if known:
+            shown = "；".join(known[:5])
+            if len(known) > 5:
+                shown += f" 等 {len(known)} 种"
+            listing = f"已识别 {len(known)} 种印章：{shown}"
+        else:
+            listing = "未识别到印章"
+        if registry is not None and registry.converged_reason == "cap":
+            cause = f"已达单任务印章调用上限（{self._seal_max_calls} 次）"
+        else:
+            cause = "连续多张图片未检出新印章"
+        return (
+            f"【印章检测】本卷印章识别已收敛（{listing}；{cause}），"
+            "后续图片跳过印章检测；请勿因后续图片未显示印章信息而判定「未盖章」。"
+        )
+
     async def _collect_seal_result(
-        self, seal_task: "asyncio.Task[dict[str, Any]] | None"
+        self,
+        seal_task: "asyncio.Task[dict[str, Any]] | None",
+        registry: "_SealRegistry | None" = None,
+        skip_note: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """等待并格式化印章识别结果，返回 (文本小节, 结构化元数据)。
 
         印章侧任何失败都只降级为提示行，绝不影响 OCR 文字结果的成功返回。
+        registry 非 None 时附带任务级指纹去重与收敛记账：已识别过的印章不再
+        逐字展开（降低 prompt 噪声），并驱动收敛停叫。
         """
         if seal_task is None:
+            if skip_note:
+                return skip_note, {
+                    "enabled": True,
+                    "status": "skipped",
+                    "reason": "converged",
+                    "known_seals": list(registry.known) if registry else [],
+                }
             return "", {"enabled": False}
 
         try:
@@ -430,46 +688,48 @@ class BaiduOcrTool(BaseTool):
 
         seals_raw = result.get("result") or []
         if not seals_raw:
+            # 无印章也是一次"无新指纹"观测，推进收敛计数
+            self._update_seal_registry(registry, [])
             return "【印章检测】未检出印章", {"enabled": True, "status": "success", "seals": []}
 
         seals: list[dict[str, Any]] = []
-        lines = [f"【印章检测】共检出 {len(seals_raw)} 个印章："]
-        for i, s in enumerate(seals_raw, 1):
-            raw_type = str(s.get("type") or "")
-            type_label = SEAL_TYPE_LABELS.get(raw_type, raw_type or "未知类型")
-            raw_color = str(s.get("color") or "")
-            color_label = SEAL_COLOR_LABELS.get(raw_color, raw_color)
+        for s in seals_raw:
             major = ((s.get("major") or {}).get("words") or "").strip()
             minor_words = []
             for item in s.get("minor") or []:
                 words = (item.get("words") or "").strip()
                 if words:
                     minor_words.append(words)
-            prob = s.get("probability")
-            try:
-                prob_s = f"，置信度{float(prob):.3f}" if prob is not None else ""
-            except (TypeError, ValueError):
-                prob_s = ""
-            desc = f"{i}. {color_label}{type_label}印章{prob_s}"
-            if major:
-                desc += f"：章面文字「{major}」"
-            if minor_words:
-                desc += f"，编号/其他文字「{'；'.join(minor_words)}」"
-            loc = s.get("location") or {}
-            if loc.get("left") is not None:
-                desc += (
-                    f"，位置(左上角x={loc.get('left')},y={loc.get('top')}，"
-                    f"宽{loc.get('width')}×高{loc.get('height')})"
-                )
-            lines.append(desc)
             seals.append({
                 "type": s.get("type"),
                 "color": s.get("color"),
                 "major": major,
                 "minor": minor_words,
-                "probability": prob,
-                "location": loc,
+                "probability": s.get("probability"),
+                "location": s.get("location") or {},
             })
+
+        was_converged = bool(registry and registry.converged)
+        new_seals, dup_seals = self._update_seal_registry(registry, seals)
+
+        lines: list[str] = [f"【印章检测】共检出 {len(seals)} 个印章："]
+        for i, seal in enumerate(new_seals, 1):
+            lines.append(_render_seal_line(i, seal))
+        if dup_seals:
+            dup_desc = "；".join(_seal_descriptor(s) for s in dup_seals)
+            lines.append(
+                f"另有 {len(dup_seals)} 个印章与本卷已识别印章一致（{dup_desc}），不重复展开。"
+            )
+        if (
+            registry is not None
+            and registry.converged
+            and not was_converged
+            and registry.converged_reason == "window"
+        ):
+            lines.append(
+                f"（连续 {self._seal_converge_after} 张图片未检出新印章，本卷印章识别已收敛，"
+                "后续图片将跳过印章检测）"
+            )
         return "\n".join(lines), {"enabled": True, "status": "success", "seals": seals}
 
     async def _request_api_with_retry(

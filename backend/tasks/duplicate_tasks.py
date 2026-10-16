@@ -403,6 +403,8 @@ def run_duplicate_check(self, task_id: str) -> dict:
                     project_id=project_id,
                     task_id=task_id,
                     todo_id=None,
+                    # 查重只比对图片文字，不消费印章信息
+                    seal_required=False,
                 )
             )
             try:

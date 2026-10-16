@@ -43,6 +43,9 @@ class AiUsageTaskSummary(Base):
     # —— 调用次数 ——
     llm_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     ocr_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    # 印章识别调用（provider=baidu_seal；2026-10-15 从 ocr_calls 拆出，
+    # 修正两类流水混计导致的 ocr_calls 虚高一倍）
+    seal_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     embedding_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     vision_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     failed_calls: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
