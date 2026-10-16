@@ -111,6 +111,17 @@ class Settings(BaseSettings):
     baidu_seal_detect_enabled: bool = True  # env: BAIDU_SEAL_DETECT_ENABLED
     baidu_seal_endpoint: str = "https://aip.baidubce.com/rest/2.0/ocr/v1/seal"
 
+    # 印章识别节流（同一任务内同一枚印章只识别一次）：
+    #   converge（默认）  —— 任务级指纹收敛：连续 N 张图无新印章指纹后跳过
+    #                        后续印章调用（指纹 = 规范化章面文字 + 编号）；
+    #   signature_gate    —— 落款门控：仅 OCR 文本含签署/落款关键词的图片才调
+    #                        （印章调用改到 OCR 返回后串行，保逐位置语义）。
+    # 另有 UsageContext.seal_required 任务门控（仅勾选 E001 等印章相关规则的
+    # 执行流发起），与本节流模式叠加生效。
+    baidu_seal_mode: str = "converge"  # env: BAIDU_SEAL_MODE
+    baidu_seal_converge_after: int = 8  # env: BAIDU_SEAL_CONVERGE_AFTER（0=不按窗口收敛）
+    baidu_seal_max_calls_per_task: int = 30  # env: BAIDU_SEAL_MAX_CALLS_PER_TASK（0=不限）
+
     # Duplicate S2 selective image/OCR channel.  Hashing is always local;
     # OCR/VLM calls are separately switchable and bounded so an upload never
     # fans out into unmetered paid calls.

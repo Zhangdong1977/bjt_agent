@@ -150,7 +150,12 @@ class SubAgentExecutor:
         """执行子代理检查任务."""
         import logging
         from backend.config import get_settings
-        from backend.services.usage_context import UsageContext, set_usage_context, reset_usage_context
+        from backend.services.usage_context import (
+            UsageContext,
+            reset_usage_context,
+            seal_required_for_rule_doc,
+            set_usage_context,
+        )
         from sqlalchemy import select
         from backend.models import User
         settings = get_settings()
@@ -178,6 +183,9 @@ class SubAgentExecutor:
                 project_id=self.todo_item.project_id,
                 task_id=self.session_id,
                 todo_id=self.todo_item.id,
+                # 印章门控：仅印章相关规则（E001 签字盖章检查）的子 agent 发起
+                # 印章识别，其余规则不白烧 /ocr/v1/seal 配额
+                seal_required=seal_required_for_rule_doc(self.todo_item.rule_doc_path),
             )
             usage_token = set_usage_context(ctx)
         except Exception as e:

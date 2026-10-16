@@ -110,6 +110,8 @@ class DuplicateCheckAgent:
                 project_id=self.project_id,
                 task_id=self.task_id,
                 todo_id=self.todo_id,
+                # 查重只比对图片文字，不消费印章信息
+                seal_required=False,
             )
         )
 

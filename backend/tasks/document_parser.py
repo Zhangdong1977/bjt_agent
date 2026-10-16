@@ -854,6 +854,10 @@ def parse_document(self, document_id: str) -> dict:
                             project_id=document.project_id,
                             task_id=None,
                             todo_id=None,
+                            # 素材图的印章小节会写进 parsed.md 供 E001 审查消费；
+                            # 解析时不知道下游是否勾选 E001，保持开启（量有界：
+                            # 每张素材图一次；task_id=None 不做收敛）
+                            seal_required=True,
                         )
                     )
             except Exception:

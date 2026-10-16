@@ -146,6 +146,8 @@ def _serialize_task(t: AiUsageTaskSummary) -> dict:
         # 调用次数
         "llm_calls": t.llm_calls,
         "ocr_calls": t.ocr_calls,
+        # 印章识别调用（2026-10-15 从 ocr_calls 拆出，修正混计虚高一倍）
+        "seal_calls": t.seal_calls,
         "embedding_calls": t.embedding_calls,
         "vision_calls": t.vision_calls,
         "failed_calls": t.failed_calls,
