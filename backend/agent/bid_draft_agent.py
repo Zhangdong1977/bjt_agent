@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy import select
 
+from backend.agent.bidfig import clamp_bidfig_blocks, close_unterminated_bidfig_fence
 from backend.models import BidDraftSection, BidDraftTask
 from backend.services.llm_factory import create_llm_client
 from backend.services.usage_recorder import instrument_llm_client
@@ -73,18 +74,52 @@ __OUTLINE_HINT__
 2. level 为标题层级（1=一级标题），子章节依次加深；
 3. article_count 为建议段落数（1-8），text_count 为每段建议字数（100-3000）。"""
 
-SECTION_SYSTEM_PROMPT = (
-    "你是资深投标文件编写专家。撰写指定章节的正文，内容专业、具体、结构清晰、可直接用于投标文件。"
-    "只输出 Markdown 正文：不要输出本节标题（系统会自动添加），不要输出解释或前言，"
-    "不要把整节内容包进代码块围栏（mermaid 图表除外）。"
-    "严禁虚构公司的资质、业绩、项目、人员与数据；需要事实性内容时用“（请补充）”占位。"
-    "图表运用要求："
-    "①对比、参数、人员配置、职责分工、进度安排等结构化内容，优先用 Markdown 表格表达，不要堆砌长句；"
+_CHART_RULES_MERMAID = (
     "②适合图示表达的内容（项目组织架构、实施/服务流程、应急处理流程、进度计划横道图、占比构成等）"
     "用 mermaid 代码块（```mermaid 围栏）输出，语法必须严格合法（flowchart/gantt/pie/timeline 等），"
     "节点与标签使用中文，整段代码块独占成块、前后留空行，每节 mermaid 图最多 2 张；"
+)
+
+# fig_mode=bidfig（generation_options 开关，默认关）：架构/进度两类高频且真机翻车最多的图
+# 改为输出结构化 JSON，由服务端 bidfig 原语库确定性渲染（见 docs/标书生成-图表原语库-原型）。
+_CHART_RULES_BIDFIG = (
+    "②系统总体架构、分层结构、项目组织架构用 ```bidfig 围栏输出一段 JSON（独占成块、前后留空行，"
+    "JSON 外不要添加解释），格式："
+    '{"kind":"arch","title":"图题","layers":[{"name":"层名","modules":[{"name":"模块名","sub":["要点1","要点2"]}]}],'
+    '"side":[{"name":"保障体系","items":["要点1","要点2"]}]}'
+    "（layers 自上而下为层次顺序，side 可省略，最多 3 条）；"
+    "③进度计划（横道图/甘特图）与里程碑用 ```bidfig 围栏输出 JSON，格式："
+    '{"kind":"gantt","title":"图题","phases":[{"name":"阶段名"}],'
+    '"tasks":[{"name":"任务名","phase":0,"start":"2026-11-01","end":"2026-12-10"}],'
+    '"milestones":[{"name":"M1 里程碑","date":"2026-12-10"}]}'
+    "（phase 填 phases 数组下标，milestones 可省略）；"
+    "④以上两类图的日期、名称严禁虚构，日期一律 YYYY-MM-DD 且与正文一致，每节 bidfig 图最多 2 张；"
+    "⑤其余类型图示（实施/服务流程、应急处理流程、占比构成等）仍用 mermaid 代码块（```mermaid 围栏）"
+    "输出，语法必须严格合法，节点与标签使用中文，每节 mermaid 图最多 2 张；"
+)
+
+SECTION_SYSTEM_PROMPT = (
+    "你是资深投标文件编写专家。撰写指定章节的正文，内容专业、具体、结构清晰、可直接用于投标文件。"
+    "只输出 Markdown 正文：不要输出本节标题（系统会自动添加），不要输出解释或前言，"
+    "不要把整节内容包进代码块围栏（图表代码块除外）。"
+    "严禁虚构公司的资质、业绩、项目、人员与数据；需要事实性内容时用“（请补充）”占位。"
+    "图表运用要求："
+    "①对比、参数、人员配置、职责分工、进度安排等结构化内容，优先用 Markdown 表格表达，不要堆砌长句；"
+    + _CHART_RULES_MERMAID +
     "③图表涉及的名称、日期、数值必须与正文一致，同样严禁虚构；"
     "④纯论述性内容保持文本段落，不要为凑图表而强行图示化。"
+)
+
+SECTION_SYSTEM_PROMPT_BIDFIG = (
+    "你是资深投标文件编写专家。撰写指定章节的正文，内容专业、具体、结构清晰、可直接用于投标文件。"
+    "只输出 Markdown 正文：不要输出本节标题（系统会自动添加），不要输出解释或前言，"
+    "不要把整节内容包进代码块围栏（图表代码块除外）。"
+    "严禁虚构公司的资质、业绩、项目、人员与数据；需要事实性内容时用“（请补充）”占位。"
+    "图表运用要求："
+    "①对比、参数、人员配置、职责分工、进度安排等结构化内容，优先用 Markdown 表格表达，不要堆砌长句；"
+    + _CHART_RULES_BIDFIG +
+    "⑥图表涉及的名称、日期、数值必须与正文一致，同样严禁虚构；"
+    "⑦纯论述性内容保持文本段落，不要为凑图表而强行图示化。"
 )
 
 SECTION_USER_TEMPLATE = """## 项目招标要素（摘要）
@@ -410,7 +445,8 @@ class BidDraftAgent:
         return scope
 
     async def _generate_section(
-        self, node: dict[str, Any], analysis: dict[str, Any], outline: list[dict[str, Any]]
+        self, node: dict[str, Any], analysis: dict[str, Any], outline: list[dict[str, Any]],
+        fig_mode: str = "mermaid",
     ) -> None:
         self._publish(
             "section_started",
@@ -438,10 +474,13 @@ class BidDraftAgent:
             .replace("__ARTICLE_COUNT__", str(node.get("article_count") or 2))
             .replace("__TEXT_COUNT__", str(node.get("text_count") or 400))
         )
-        body = strip_code_fence(await self._generate(SECTION_SYSTEM_PROMPT, user_prompt))
+        system_prompt = SECTION_SYSTEM_PROMPT_BIDFIG if fig_mode == "bidfig" else SECTION_SYSTEM_PROMPT
+        body = strip_code_fence(await self._generate(system_prompt, user_prompt))
         if not body:
             raise RuntimeError(f"章节「{node['title']}」生成结果为空")
         body = clamp_mermaid_blocks(close_unterminated_mermaid_fence(body))
+        if fig_mode == "bidfig":
+            body = clamp_bidfig_blocks(close_unterminated_bidfig_fence(body))
         level = max(1, min(6, int(node.get("level") or 1)))
         content = f"{'#' * level} {node['title']}\n\n{body}"[:SECTION_RESULT_MAX_CHARS]
 
@@ -541,6 +580,7 @@ class BidDraftAgent:
 
         options = task.generation_options if isinstance(task.generation_options, dict) else {}
         only_sections = options.get("only_sections") if isinstance(options.get("only_sections"), list) else None
+        fig_mode = "bidfig" if options.get("fig_mode") == "bidfig" else "mermaid"
 
         if isinstance(task.outline, list) and task.outline:
             outline = normalize_outline(task.outline)
@@ -555,7 +595,7 @@ class BidDraftAgent:
         for node in scope:
             self._check_cancel()
             try:
-                await self._generate_section(node, analysis, outline)
+                await self._generate_section(node, analysis, outline, fig_mode)
             except BidDraftCancelled:
                 raise
             except Exception as exc:

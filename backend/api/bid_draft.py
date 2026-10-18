@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
+from backend.agent.bidfig import render_bidfig_fences
 from backend.api.deps import CurrentUser, DBSession
 from backend.config import get_settings
 from backend.models import BidDraftSection, BidDraftTask, Document, Project
@@ -229,9 +230,11 @@ async def get_section_content(
     content = None
     if row.content_path:
         try:
-            content = _resolve_workspace_path(row.content_path).read_text(
+            raw = _resolve_workspace_path(row.content_path).read_text(
                 encoding="utf-8", errors="replace"
-            )[:200_000]
+            )
+            # ```bidfig JSON 围栏在此确定性渲染为 ```bidfig-svg（磁盘上始终是 JSON 源）
+            content = render_bidfig_fences(raw)[:200_000]
         except Exception:
             content = None
     return BidDraftSectionContentResponse(
@@ -270,8 +273,10 @@ async def get_assembled_content(
             continue
         try:
             parts.append(
-                _resolve_workspace_path(row.content_path).read_text(
-                    encoding="utf-8", errors="replace"
+                render_bidfig_fences(
+                    _resolve_workspace_path(row.content_path).read_text(
+                        encoding="utf-8", errors="replace"
+                    )
                 )
             )
             generated += 1

@@ -1,10 +1,13 @@
 /**
- * 标书生成图表资产：LLM 在章节 Markdown 中输出 ```mermaid 代码块，
- * 由本模块在 WebView2（用户机器，中文字体天然可用）内渲染为 PNG dataURL，
- * 随 bjt.vsto.insert 的 images 附件发给 VSTO 插入 Word。
+ * 标书生成图表资产：LLM 在章节 Markdown 中输出 ```mermaid 代码块，或
+ * （fig_mode=bidfig 时）后端已确定性渲染好的 ```bidfig-svg SVG 块，由本
+ * 模块在 WebView2（用户机器，中文字体天然可用）内统一光栅化为 PNG
+ * dataURL，随 bjt.vsto.insert 的 images 附件发给 VSTO 插入 Word。
  *
  * 服务端不做 mermaid 渲染：生产 4 台 + 3 节点均为最小化 Ubuntu，装
  * node/chromium/CJK 字体的部署成本与风险远高于前端现成 Chromium 环境。
+ * bidfig 原语图则是服务端纯 Python 拼 SVG 文本（零渲染依赖），前端只做
+ * 光栅化——良构性与版式由 backend/agent/bidfig 保证。
  *
  * 安全说明：本模块产出的 SVG 一律经 <img> 沙箱消费（禁脚本/禁外链），
  * 不做 DOMPurify 整段消毒——那会剥掉 foreignObject 内的 HTML 标签导致
@@ -47,29 +50,32 @@ function ensureMermaid() {
 }
 
 export interface MarkdownSegment {
-  kind: "text" | "mermaid";
+  kind: "text" | "mermaid" | "svg";
   content: string;
 }
 
-/** 把 Markdown 按 ```mermaid 围栏拆成 文本/图表 片段（非 mermaid 代码块保持原样归入文本）。 */
+/** 把 Markdown 按 ```mermaid / ```bidfig-svg 围栏拆成 文本/图表 片段（其余代码块归入文本）。 */
 export function splitMermaidFences(markdown: string): MarkdownSegment[] {
   const segments: MarkdownSegment[] = [];
   const lines = (markdown || "").split("\n");
   let text: string[] = [];
   let index = 0;
   while (index < lines.length) {
-    const trimmed = lines[index].trim();
+    const trimmed = lines[index]!.trim();
     if (trimmed.startsWith("```")) {
       const language = trimmed.slice(3).trim().toLowerCase();
       let closing = index + 1;
-      while (closing < lines.length && !lines[closing].trim().startsWith("```")) closing += 1;
+      while (closing < lines.length && !lines[closing]!.trim().startsWith("```")) closing += 1;
       if (closing < lines.length) {
-        if (language === "mermaid") {
+        if (language === "mermaid" || language === "bidfig-svg") {
           if (text.length) {
             segments.push({ kind: "text", content: text.join("\n") });
             text = [];
           }
-          segments.push({ kind: "mermaid", content: lines.slice(index + 1, closing).join("\n") });
+          segments.push({
+            kind: language === "mermaid" ? "mermaid" : "svg",
+            content: lines.slice(index + 1, closing).join("\n"),
+          });
         } else {
           text = text.concat(lines.slice(index, closing + 1));
         }
@@ -77,11 +83,17 @@ export function splitMermaidFences(markdown: string): MarkdownSegment[] {
         continue;
       }
     }
-    text.push(lines[index]);
+    text.push(lines[index]!);
     index += 1;
   }
   if (text.length) segments.push({ kind: "text", content: text.join("\n") });
   return segments;
+}
+
+/** 从 bidfig SVG 根元素取 <title>（原生元数据、不参与显示），用作 Word 题注。 */
+export function svgTitle(svgText: string): string {
+  const match = (svgText || "").match(/<title[^>]*>([^<]*)<\/title>/i);
+  return match ? (match[1] || "").trim().slice(0, 60) : "";
 }
 
 /** 渲染 mermaid 为 SVG 字符串；失败返回 null（调用方降级）。
@@ -324,15 +336,26 @@ export async function prepareChartAssets(markdown: string): Promise<ChartInsertP
       parts.push(segment.content);
       continue;
     }
-    const svg = await renderMermaidSvg(segment.content);
+    let svg: string | null;
+    let title = "";
+    let mermaidGantt = false;
+    if (segment.kind === "svg") {
+      // bidfig：后端已渲染的良构 SVG，前端只光栅化；题注取 <title> 元数据
+      svg = segment.content.trim();
+      title = svgTitle(svg);
+    } else {
+      svg = await renderMermaidSvg(segment.content);
+      title = mermaidTitle(segment.content);
+      mermaidGantt = /^gantt\b/.test(segment.content.trim());
+    }
     let dataUrl = svg ? await svgToPngDataUrl(svg).catch(() => null) : null;
-    const title = mermaidTitle(segment.content);
-    if (dataUrl && title && /^gantt\b/.test(segment.content.trim())) {
+    if (dataUrl && title && mermaidGantt) {
       dataUrl = await composeGanttHeader(dataUrl, title).catch(() => dataUrl);
     }
     if (!dataUrl) {
       failed += 1;
-      parts.push("```mermaid\n" + segment.content.trim() + "\n```");
+      parts.push("```" + (segment.kind === "svg" ? "bidfig-svg" : "mermaid")
+        + "\n" + segment.content.trim() + "\n```");
       continue;
     }
     figureNo += 1;

@@ -76,3 +76,6 @@ bjt-frontend-*.tar.gz
 skill/bjt-bid-review/config.json
 skill/bjt-bid-review/bjt-files/
 skill/**/__pycache__/
+
+# 图表原语库对比 demo 产物（脚本可随时再生）
+scripts/demo-out/

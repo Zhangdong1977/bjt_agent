@@ -28,6 +28,7 @@ import type { Document, Project } from "@/types";
 import { useVstoBridge } from "@/composables/useVstoBridge";
 import { prepareChartAssets, splitMermaidFences } from "@/utils/chartAssets";
 import MermaidFigure from "@/components/MermaidFigure.vue";
+import SvgFigure from "@/components/SvgFigure.vue";
 import { useBillingStore } from "@/stores/billing";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 import iconWallet from "@/assets/images/ui/metric-icon-wallet.png";
@@ -1039,6 +1040,7 @@ onUnmounted(() => {
           <template v-for="(segment, index) in sectionSegments" :key="index">
             <pre v-if="segment.kind === 'text' && segment.content.trim()" class="modal-pre">{{ segment.content }}</pre>
             <MermaidFigure v-else-if="segment.kind === 'mermaid'" :code="segment.content" />
+            <SvgFigure v-else-if="segment.kind === 'svg'" :svg="segment.content" />
           </template>
           <p v-if="!sectionSegments.length" class="modal-empty">（暂无内容）</p>
         </div>

@@ -60,7 +60,7 @@ import { documentsApi, projectsApi } from "@/api/client";
 import type { Document } from "@/types";
 import { useVstoBridge } from "@/composables/useVstoBridge";
 import { useBillingStore } from "@/stores/billing";
-import { prepareChartAssets, splitMermaidFences } from "@/utils/chartAssets";
+import { prepareChartAssets, splitMermaidFences, svgToDataUrl } from "@/utils/chartAssets";
 import { renderMarkdown } from "@/utils/markdown";
 import StatusDot from "@/components/StatusDot.vue";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
@@ -3280,6 +3280,12 @@ onUnmounted(() => {
       <div class="preview-body">
         <template v-for="(segment, index) in previewSegments" :key="index">
           <pre v-if="segment.kind === 'text'" class="preview-text">{{ segment.content }}</pre>
+          <img
+            v-else-if="segment.kind === 'svg'"
+            :src="svgToDataUrl(segment.content)"
+            alt="图表预览"
+            style="max-width: 100%; height: auto"
+          >
           <blockquote v-else class="preview-mermaid">
             <pre>{{ segment.content }}</pre>
           </blockquote>
