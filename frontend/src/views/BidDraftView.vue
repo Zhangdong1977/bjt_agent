@@ -75,6 +75,8 @@ const submitting = ref(false);
 const cancelling = ref(false);
 const terminalStatus = ref("");
 const taskErrorMessage = ref("");
+// 图表管线选择（默认关=mermaid 现状）：架构图/进度横道图改由服务端原语库渲染
+const figModeBidfig = ref(false);
 
 const assembledContent = ref("");
 const inserting = ref(false);
@@ -417,6 +419,7 @@ async function startGeneration() {
     const created = await createBidDraftTask({
       project_id: projectId.value,
       tender_document_id: tenderDoc.value.id,
+      options: figModeBidfig.value ? { fig_mode: "bidfig" } : undefined,
     });
     trackTask(created);
   } catch (error) {
@@ -914,6 +917,10 @@ onUnmounted(() => {
         </label>
         <div v-if="docErrorMessage" class="error">{{ docErrorMessage }}</div>
         <div v-if="taskErrorMessage" class="error">{{ taskErrorMessage }}</div>
+        <label v-if="canStart" class="fig-mode-toggle">
+          <input type="checkbox" v-model="figModeBidfig" />
+          新版图表渲染（架构图 / 进度横道图由服务端精确绘制，其余图示不变）
+        </label>
         <div class="actions">
           <button class="primary" :disabled="!canStart" @click="startGeneration">
             {{ submitting ? "正在创建任务…" : "开始生成标书" }}
@@ -1090,4 +1097,6 @@ onUnmounted(() => {
 @keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(215,4,26,.07)}50%{box-shadow:0 0 0 6px rgba(215,4,26,.03)}}
 @media (max-width:560px){.bid-draft-view{padding:0 8px 28px}.brand-line{margin:0 -8px}.panel-header{min-height:56px}.panel-logo{width:96px}.metric-pill{height:27px;min-width:80px;font-size:10px}.metric-pill::before{width:15px;height:18px;flex-basis:15px}.card{padding:14px 12px;margin-bottom:9px;border-radius:9px}.hero-card h1{font-size:19px}.document-state{align-items:flex-start;flex-wrap:wrap}.document-name{flex-basis:100%;margin-left:14px}.new-project{flex-direction:column}.actions{flex-direction:column}.actions button{width:100%}}
 @media (max-width:390px){.panel-header{align-items:flex-start;flex-direction:column;padding:10px 3px}.account-strip{width:100%}.metric-pill{flex:1}}
+.fig-mode-toggle{display:flex;align-items:center;gap:7px;margin:2px 0 10px;color:#777;font-size:11px;line-height:1.5;cursor:pointer;user-select:none}
+.fig-mode-toggle input{accent-color:var(--brand);width:14px;height:14px;cursor:pointer}
 </style>
