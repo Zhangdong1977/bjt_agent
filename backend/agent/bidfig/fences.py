@@ -12,26 +12,41 @@ from __future__ import annotations
 import json
 import logging
 
-from . import arch, gantt
+from . import arch, flow, gantt, seq
 from .gantt import BidfigSpecError
+from .primitives import svg_bounds_issues, tightened
 
 logger = logging.getLogger(__name__)
 
 BIDFIG_LANG = "bidfig"
 BIDFIG_SVG_LANG = "bidfig-svg"
 INVALID_PLACEHOLDER = "（图表数据无效，已省略）"
-_RENDERS = {"gantt": gantt.render, "arch": arch.render}
+_RENDERS = {"gantt": gantt.render, "arch": arch.render, "flow": flow.render, "seq": seq.render}
 
 
 def render_spec(spec: dict) -> str:
-    """按 spec['kind'] 分发渲染；数据不合法抛 BidfigSpecError。"""
+    """按 spec['kind'] 分发渲染；数据不合法抛 BidfigSpecError。
+
+    P2 渲染自检：产出 SVG 先过 svg_bounds_issues 几何机检（文字估宽 ×1.08 余量、
+    rect/line 越界扫描）；发现越界时在 tightened(0.92) 里重渲一次（折行/截断宽度
+    整体收紧 8%，同数据确定性重渲=版式级自动修复），仍越界则保留原稿并记 error。
+    """
     if not isinstance(spec, dict):
         raise BidfigSpecError("图表数据必须是 JSON 对象")
     kind = str(spec.get("kind") or "").strip()
     fn = _RENDERS.get(kind)
     if fn is None:
-        raise BidfigSpecError("不支持的图表类型 kind=%r（支持 gantt/arch）" % kind)
-    return fn(spec)
+        raise BidfigSpecError("不支持的图表类型 kind=%r（支持 gantt/arch/flow/seq）" % kind)
+    svg = fn(spec)
+    issues = svg_bounds_issues(svg)
+    if issues:
+        logger.warning("bidfig self-check 越界 %s，收紧重渲一次", issues[:2])
+        with tightened(0.92):
+            retry = fn(spec)
+        if not svg_bounds_issues(retry):
+            return retry
+        logger.error("bidfig self-check 收紧后仍越界，保留原稿: %s", issues[:2])
+    return svg
 
 
 def _iter_open_lines(lines: list[str]):

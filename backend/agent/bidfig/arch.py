@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from xml.sax.saxutils import escape
 
-from .primitives import (BORDER, CANVAS_W, INK, MUTED, PALETTE,
+from .primitives import (BORDER, CANVAS_W, INK, LINE_H, MUTED, PALETTE,
                          arrow_v, ellipsize, rect, svg_open, wrap)
 from .gantt import BidfigSpecError
 
@@ -27,7 +27,6 @@ LAYER_GAP = 20
 SIDE_W = 108
 SIDE_GAP = 12
 MIN_BOX_W = 158
-LINE_H = 15
 
 
 def validate(spec: dict) -> dict:

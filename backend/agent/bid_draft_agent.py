@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy import select
 
+from backend.agent.bid_doc_checks import assemble_checks
 from backend.agent.bidfig import (INVALID_PLACEHOLDER, clamp_bidfig_blocks,
                                   close_unterminated_bidfig_fence,
                                   extract_bidfig_fences, render_spec)
@@ -85,8 +86,8 @@ _CHART_RULES_MERMAID = (
 # fig_mode=bidfig（generation_options 开关，默认关）：架构/进度两类高频且真机翻车最多的图
 # 改为输出结构化 JSON，由服务端 bidfig 原语库确定性渲染（见 docs/标书生成-图表原语库-原型）。
 _CHART_RULES_BIDFIG = (
-    "②系统总体架构、分层结构、项目组织架构用 ```bidfig 围栏输出一段 JSON（独占成块、前后留空行，"
-    "JSON 外不要添加解释），格式："
+    "②架构类（系统总体架构、分层结构、项目组织架构）用 ```bidfig 围栏输出一段 JSON"
+    "（独占成块、前后留空行，JSON 外不要添加解释），格式："
     '{"kind":"arch","title":"图题","layers":[{"name":"层名","modules":[{"name":"模块名","sub":["要点1","要点2"]}]}],'
     '"side":[{"name":"保障体系","items":["要点1","要点2"]}]}'
     "（layers 自上而下为层次顺序，side 可省略，最多 3 条）；"
@@ -95,8 +96,15 @@ _CHART_RULES_BIDFIG = (
     '"tasks":[{"name":"任务名","phase":0,"start":"2026-11-01","end":"2026-12-10"}],'
     '"milestones":[{"name":"M1 里程碑","date":"2026-12-10"}]}'
     "（phase 填 phases 数组下标，milestones 可省略）；"
-    "④以上两类图的日期、名称严禁虚构，日期一律 YYYY-MM-DD 且与正文一致，每节 bidfig 图最多 2 张；"
-    "⑤其余类型图示（实施/服务流程、应急处理流程、占比构成等）仍用 mermaid 代码块（```mermaid 围栏）"
+    "④流程类（实施流程、服务流程、故障/应急处理流程、验收流程）用 ```bidfig 围栏输出 JSON，格式："
+    '{"kind":"flow","title":"图题","phases":[{"name":"阶段名","steps":[{"name":"步骤名","note":"要点（可省略）"}]}]}'
+    "（阶段即列、1-5 个，可省略 phases 改用顶层 steps 表示单列线性流程）；"
+    "⑤交互时序类（系统对接、模块调用、业务交互过程）用 ```bidfig 围栏输出 JSON，格式："
+    '{"kind":"seq","title":"图题","actors":["参与方A","参与方B","参与方C"],'
+    '"messages":[{"from":0,"to":1,"text":"消息或调用说明"}]}'
+    "（from/to 填 actors 数组下标，返回消息可加 \"dash\":true，参与方 2-6 个）；"
+    "⑥以上图表的日期、名称、数值严禁虚构，日期一律 YYYY-MM-DD 且与正文一致，每节 bidfig 图最多 2 张；"
+    "⑦其余类型图示（占比构成等）仍用 mermaid 代码块（```mermaid 围栏）"
     "输出，语法必须严格合法，节点与标签使用中文，每节 mermaid 图最多 2 张；"
 )
 
@@ -120,8 +128,8 @@ SECTION_SYSTEM_PROMPT_BIDFIG = (
     "图表运用要求："
     "①对比、参数、人员配置、职责分工、进度安排等结构化内容，优先用 Markdown 表格表达，不要堆砌长句；"
     + _CHART_RULES_BIDFIG +
-    "⑥图表涉及的名称、日期、数值必须与正文一致，同样严禁虚构；"
-    "⑦纯论述性内容保持文本段落，不要为凑图表而强行图示化。"
+    "⑧图表涉及的名称、日期、数值必须与正文一致，同样严禁虚构；"
+    "⑨纯论述性内容保持文本段落，不要为凑图表而强行图示化。"
 )
 
 SECTION_USER_TEMPLATE = """## 项目招标要素（摘要）
@@ -594,6 +602,8 @@ class BidDraftAgent:
             "word_count": total_words,
             "assembled_path": str(assembled_path),
             "charts": chart_quality_stats(joined),
+            # P1 组装期全文档机检：围栏配平/空章节/重复标题/模板残留/术语口径（只报告不改写）
+            "doc_checks": assemble_checks(joined),
         }
 
     # ------------------------------------------------------------------- run

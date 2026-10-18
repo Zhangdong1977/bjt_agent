@@ -39,6 +39,10 @@ OUTLINE = [
      "requirement": "说明系统分层结构与各层职责，需配系统总体架构图"},
     {"title": "项目实施进度计划", "level": 1, "article_count": 2, "text_count": 350,
      "requirement": "给出实施阶段划分、任务与里程碑，需配进度横道图（甘特图）"},
+    {"title": "项目实施与服务流程", "level": 1, "article_count": 2, "text_count": 350,
+     "requirement": "说明实施与服务各阶段步骤，需配实施/服务流程图"},
+    {"title": "系统对接与交互设计", "level": 1, "article_count": 2, "text_count": 350,
+     "requirement": "说明与既有系统及各参与方的交互过程，需配交互时序图"},
 ]
 ANALYSIS = {
     "basic": {"project_name": "智慧园区信息化项目（图表对比联调）"},
@@ -71,6 +75,14 @@ def run_task(session, headers, project_id, document_id, tag, options):
     final = wait_status(session, f"{BASE}/bid-draft/tasks/{task_id}",
                         {"completed", "failed", "cancelled"}, TIMEOUT_S, headers)
     assert final.get("status") == "completed", f"[{tag}] status={final.get('status')} err={final.get('error_message')}"
+    # 任务 completed ≠ 章节全部成功（fail-soft 设计），必须核 bid_draft_sections.status
+    secs = session.get(f"{BASE}/bid-draft/tasks/{task_id}/sections", headers=headers, timeout=60)
+    metas = secs.json() if secs.status_code == 200 else []
+    bad = [m for m in metas if m.get("status") != "generated"]
+    assert len(metas) == len(OUTLINE) and not bad, \
+        f"[{tag}] sections={[(m.get('node_id'), m.get('status')) for m in metas]}"
+    if options and options.get("fig_mode") == "bidfig":
+        print(f"[{tag}] summary={json.dumps(final.get('summary') or {}, ensure_ascii=False)[:600]}", flush=True)
     return task_id
 
 
@@ -171,6 +183,14 @@ def main() -> None:
     stat_m = analyze(task_m, "M")
     stat_b = analyze(task_b, "B")
 
+    kinds: dict[str, int] = {}
+    for st, info in stat_b["bidfig"]:
+        if st == "ok":
+            k = json.loads(info).get("kind", "?")
+            kinds[k] = kinds.get(k, 0) + 1
+    # 本轮验证目标：flow/seq 两类新原语被 LLM 真实采用且渲染成功
+    assert {"flow", "seq"} <= set(kinds), f"B 任务 bidfig 类型分布缺 flow/seq: {kinds}"
+
     blocks = {}
     for i, code in enumerate(stat_m["mermaid"]):
         blocks[f"M-mm-{i + 1}"] = code
@@ -199,7 +219,7 @@ def main() -> None:
         f"| mermaid 图表块 | {len(stat_m['mermaid'])} | {len(stat_b['mermaid'])}（流程类兜底） |",
         f"| mermaid 渲染成功 | {mm_m_ok}/{len(stat_m['mermaid'])} | {mm_b_ok}/{len(stat_b['mermaid'])} |",
         f"| bidfig JSON 块 | 0 | {len(stat_b['bidfig'])} |",
-        f"| bidfig 校验+渲染成功 | - | {bf_ok}/{len(stat_b['bidfig'])} |",
+        f"| bidfig 校验+渲染成功 | - | {bf_ok}/{len(stat_b['bidfig'])}（类型分布 {kinds}） |",
         f"| API 出口 bidfig-svg 围栏 | 0 | {asm_b.count('```bidfig-svg')} |",
         f"| API 出口降级占位 | {asm_m.count(INVALID_PLACEHOLDER)} | {asm_b.count(INVALID_PLACEHOLDER)} |",
         "",

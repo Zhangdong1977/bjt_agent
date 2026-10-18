@@ -42,6 +42,28 @@ ARCH_SPEC = {
     "side": [{"name": "安全体系", "items": ["传输加密"]}],
 }
 
+FLOW_SPEC = {
+    "kind": "flow",
+    "title": "项目实施与验收流程",
+    "phases": [
+        {"name": "准备阶段", "steps": [{"name": "需求调研", "note": "对接各业务部门"}]},
+        {"name": "实施阶段", "steps": [{"name": "平台部署"}, {"name": "定制开发"}]},
+        {"name": "验收阶段", "steps": [{"name": "初验与终验", "note": "按招标文件验收口径"}]},
+    ],
+}
+
+SEQ_SPEC = {
+    "kind": "seq",
+    "title": "系统对接交互时序",
+    "actors": ["投标人客户端", "评标平台", "运营后台"],
+    "messages": [
+        {"from": 0, "to": 1, "text": "上传投标文件"},
+        {"from": 1, "to": 2, "text": "发起解析与合规校验"},
+        {"from": 2, "to": 2, "text": "生成审查报告"},
+        {"from": 2, "to": 0, "text": "返回审查结果", "dash": True},
+    ],
+}
+
 
 def _parse(svg: str) -> ET.Element:
     assert svg.startswith("<svg")
@@ -181,6 +203,8 @@ def test_agent_prompt_fig_mode_default_off():
     assert "```bidfig" in agent.SECTION_SYSTEM_PROMPT_BIDFIG
     assert '"kind":"gantt"' in agent.SECTION_SYSTEM_PROMPT_BIDFIG
     assert '"kind":"arch"' in agent.SECTION_SYSTEM_PROMPT_BIDFIG
+    assert '"kind":"flow"' in agent.SECTION_SYSTEM_PROMPT_BIDFIG
+    assert '"kind":"seq"' in agent.SECTION_SYSTEM_PROMPT_BIDFIG
 
 
 def test_chart_quality_stats_summary_slice():
@@ -195,3 +219,121 @@ def test_chart_quality_stats_summary_slice():
     assert chart_quality_stats(md) == {
         "mermaid": 1, "bidfig": 2, "bidfig_valid": 1, "degraded": 1, "fact_gaps": 1,
     }
+
+
+# ---------------------------------------------------------------- P4 扩类：flow / seq
+
+
+def test_flow_render_wellformed_and_deterministic():
+    svg = render_spec(FLOW_SPEC)
+    _parse(svg)
+    assert render_spec(FLOW_SPEC) == svg
+    assert "<title>项目实施与验收流程</title>" in svg
+    assert "需求调研" in svg and "验收阶段" in svg
+
+
+def test_flow_single_column_without_phases():
+    spec = {"kind": "flow", "title": "故障响应流程",
+            "steps": [{"name": "受理报修", "note": "7×24 热线"}, {"name": "分级派单"}, {"name": "处理与回访"}]}
+    svg = render_spec(spec)
+    _parse(svg)
+    assert "受理报修" in svg
+
+
+def test_flow_escapes_markup_in_names():
+    spec = {"kind": "flow", "title": "转义",
+            "steps": [{"name": "A&B<测试>"}, {"name": "正常"}]}
+    _parse(render_spec(spec))  # 含 & < > 的名称不得破坏 XML 良构性
+
+
+def test_flow_validation():
+    with pytest.raises(BidfigSpecError):
+        render_spec({"kind": "flow", "title": "无步骤", "steps": []})
+    with pytest.raises(BidfigSpecError):
+        render_spec({"kind": "flow", "title": "超列",
+                     "phases": [{"name": "P%d" % i, "steps": [{"name": "s"}]} for i in range(6)]})
+    with pytest.raises(BidfigSpecError):
+        render_spec({"kind": "flow", "title": "缺名",
+                     "phases": [{"name": "A", "steps": [{"name": "s"}]}, {"steps": [{"name": "s"}]}]})
+
+
+def test_seq_render_wellformed_and_deterministic():
+    svg = render_spec(SEQ_SPEC)
+    _parse(svg)
+    assert render_spec(SEQ_SPEC) == svg
+    assert "投标人客户端" in svg and "返回审查结果" in svg
+    assert "1. 上传投标文件" in svg  # 消息自动编号
+
+
+def test_seq_self_message_loop():
+    spec = {"kind": "seq", "title": "自交互", "actors": ["A 系统", "B 系统"],
+            "messages": [{"from": 0, "to": 0, "text": "本地校验"}, {"from": 0, "to": 1, "text": "提交"}]}
+    _parse(render_spec(spec))
+
+
+def test_seq_validation():
+    with pytest.raises(BidfigSpecError):
+        render_spec({"kind": "seq", "title": "单参与方", "actors": ["A"], "messages": [{"from": 0, "to": 0, "text": "x"}]})
+    with pytest.raises(BidfigSpecError):
+        render_spec({"kind": "seq", "title": "越界", "actors": ["A", "B"],
+                     "messages": [{"from": 0, "to": 5, "text": "x"}]})
+    with pytest.raises(BidfigSpecError):
+        render_spec({"kind": "seq", "title": "空消息", "actors": ["A", "B"],
+                     "messages": [{"from": 0, "to": 1, "text": ""}]})
+
+
+def test_seq_index_accepts_numeric_string():
+    spec = {"kind": "seq", "title": "字符串下标", "actors": ["A", "B"],
+            "messages": [{"from": "0", "to": "1", "text": "调用"}]}
+    _parse(render_spec(spec))
+
+
+# ---------------------------------------------------------------- P2 渲染自检
+
+
+def test_svg_bounds_issues_catches_overflow():
+    from backend.agent.bidfig.primitives import svg_bounds_issues
+    bad = ('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">'
+           '<text x="150" y="50" font-size="12">很长的一段文字超出画布右边界了</text></svg>')
+    assert svg_bounds_issues(bad)  # start 锚点 x=150 + 文字宽 > 200
+    ok = ('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">'
+          '<rect x="10" y="10" width="100" height="50" fill="none"/></svg>')
+    assert not svg_bounds_issues(ok)
+
+
+def test_all_primitives_pass_selfcheck():
+    from backend.agent.bidfig.primitives import svg_bounds_issues
+    for spec in (GANTT_SPEC, ARCH_SPEC, FLOW_SPEC, SEQ_SPEC):
+        assert not svg_bounds_issues(render_spec(spec)), spec["kind"]
+
+
+def test_render_spec_autotighten_retry(monkeypatch):
+    """自检发现越界 → tightened(0.92) 重渲一次；修复则采用重渲稿。"""
+    import backend.agent.bidfig.fences as fences
+    import backend.agent.bidfig.primitives as primitives
+
+    good = render_spec(FLOW_SPEC)
+    calls = []
+
+    def fake(spec):
+        calls.append(primitives._TIGHTEN)
+        if primitives._TIGHTEN >= 1.0:
+            return good.replace("</svg>", (
+                '<text x="1050" y="20" font-size="13">很长很长很长很长很长的占位文字串</text></svg>'))
+        return good
+
+    monkeypatch.setitem(fences._RENDERS, "flow", fake)
+    result = fences.render_spec(FLOW_SPEC)
+    assert calls == [1.0, 0.92]          # 默认一遍 + 收紧重渲一遍
+    assert result == good                # 重渲稿通过自检被采用
+    assert primitives._TIGHTEN == 1.0    # 上下文退出后恢复
+
+
+def test_render_spec_selfcheck_fallback_keeps_original(monkeypatch):
+    """收紧后仍越界 → 保留原稿不抛异常（图表坏不阻断）。"""
+    import backend.agent.bidfig.fences as fences
+
+    always_bad = ('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">'
+                  '<text x="150" y="50" font-size="12">超宽文字超宽文字超宽文字超宽</text></svg>')
+    monkeypatch.setitem(fences._RENDERS, "flow", lambda spec: always_bad)
+    assert fences.render_spec({"kind": "flow", "title": "t"}) == always_bad
