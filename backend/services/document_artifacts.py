@@ -26,6 +26,7 @@ from backend.schemas.document_artifacts import (
     CoverageSummary,
     DuplicateEvidenceBlock,
 )
+from backend.utils.markdown_images import IMAGE_REF_RE
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,8 @@ EVIDENCE_SCHEMA_VERSION = "duplicate-evidence/v1"
 MANIFEST_SCHEMA_VERSION = "duplicate-artifact-manifest/v1"
 ADAPTER_VERSION = "s2-0.1"
 
-_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+# src 允许一层成对括号：文件名带 "(1)" 后缀时旧 [^)]+ 会截断路径致哈希缺失
+_IMAGE_RE = IMAGE_REF_RE
 _HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+?)\s*#*\s*$")
 _TABLE_SEPARATOR_RE = re.compile(
     r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$"

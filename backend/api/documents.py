@@ -25,6 +25,7 @@ from backend.services.document_artifacts import (
     load_artifact_manifest,
     load_evidence_blocks,
 )
+from backend.utils.markdown_images import IMAGE_REF_RE
 
 settings = get_settings()
 router = APIRouter(prefix="/projects/{project_id}/documents", tags=["Documents"])
@@ -400,7 +401,7 @@ async def get_document_content(
                     # Relative path -> prefix with workspace rel path
                     new_src = f"/files/{workspace_rel_path}/{src}"
                     return f"![{alt_text}]({new_src})"
-                content = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', fix_markdown_img_src, content)
+                content = IMAGE_REF_RE.sub(fix_markdown_img_src, content)
         elif document.parsed_html_path and Path(document.parsed_html_path).exists():
             # Fallback to HTML if markdown is not available (legacy DOCX)
             content_format = "html"
@@ -1131,7 +1132,7 @@ async def get_draft_document_content(
                     new_src = f"/files/{workspace_rel_path}/{src}"
                     return f"![{alt_text}]({new_src})"
 
-                content = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', fix_markdown_img_src, content)
+                content = IMAGE_REF_RE.sub(fix_markdown_img_src, content)
         elif document.parsed_html_path and Path(document.parsed_html_path).exists():
             content_format = "html"
             content = Path(document.parsed_html_path).read_text(encoding="utf-8")

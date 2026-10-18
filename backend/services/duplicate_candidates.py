@@ -17,6 +17,7 @@ from backend.services.document_artifacts import load_evidence_blocks
 from backend.services.duplicate_tables import compare_table_blocks
 from backend.services.duplicate_image_evidence import perceptual_similarity
 from backend.services.embedding_service import EmbeddingService
+from backend.utils.markdown_images import IMAGE_SRC
 
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$")
 # ``\w`` treats Chinese characters as word characters.  That made values such
@@ -32,7 +33,7 @@ _NUMBER_RE = re.compile(
 )
 _SPACE_RE = re.compile(r"\s+")
 _PUNCT_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
-_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((?:" + IMAGE_SRC + r")\)")
 
 
 @dataclass(slots=True)
