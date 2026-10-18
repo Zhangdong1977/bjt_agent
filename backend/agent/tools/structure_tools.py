@@ -21,12 +21,14 @@ import httpx
 
 from backend.agent.tools.base import ToolResult
 from backend.services.ocr_image_normalizer import normalize_image_for_ocr
+from backend.utils.markdown_images import IMAGE_REF_RE
 from mini_agent.tools.base import Tool as BaseTool
 
 logger = logging.getLogger(__name__)
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
-_IMAGE_REF_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+# src 允许一层成对括号：文件名带 "(1)" 后缀时旧 [^)]+ 会截断取图路径
+_IMAGE_REF_RE = IMAGE_REF_RE
 OCR_MAX_RETRIES = 3
 OCR_RETRY_BASE_DELAY_SECONDS = 1.0
 RETRYABLE_HTTP_STATUS_CODES = {408, 429, 500, 502, 503, 504}

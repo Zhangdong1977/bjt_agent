@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from backend.agent.tools.base import ToolResult
+from backend.utils.markdown_images import IMAGE_REF_RE
 from mini_agent.tools.base import Tool as BaseTool
 
 # 大文档分块大小
@@ -170,7 +171,7 @@ class DocSearchTool(BaseTool):
         image_refs = []
         lines = content.split("\n")
         for i, line in enumerate(lines):
-            matches = re.finditer(r'!\[([^\]]*)\]\(([^)]+)\)', line)
+            matches = IMAGE_REF_RE.finditer(line)
             for match in matches:
                 image_refs.append({
                     "alt_text": match.group(1),
@@ -214,7 +215,7 @@ class DocSearchTool(BaseTool):
 
                 # 从当前行提取图片引用
                 image_refs = []
-                img_matches = re.finditer(r'!\[([^\]]*)\]\(([^)]+)\)', line)
+                img_matches = IMAGE_REF_RE.finditer(line)
                 for img_match in img_matches:
                     image_refs.append({
                         "alt_text": img_match.group(1),
@@ -231,7 +232,7 @@ class DocSearchTool(BaseTool):
                         nearby_idx = i + offset
                         if nearby_idx < 0 or nearby_idx >= len(lines):
                             continue
-                        for img_match in re.finditer(r'!\[([^\]]*)\]\(([^)]+)\)', lines[nearby_idx]):
+                        for img_match in IMAGE_REF_RE.finditer(lines[nearby_idx]):
                             image_refs.append({
                                 "alt_text": img_match.group(1),
                                 "path": img_match.group(2),

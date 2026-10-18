@@ -14,6 +14,7 @@ from billiard.exceptions import SoftTimeLimitExceeded
 
 from backend.celery_app import celery_app
 from backend.models import Document
+from backend.utils.markdown_images import IMAGE_SRC_NO_WS
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +265,9 @@ def _embed_image_descriptions_in_md(
     if not normalized:
         return markdown
 
-    image_pattern = re.compile(r"^([ \t]*!\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)[ \t]*)$")
+    image_pattern = re.compile(
+        r"^([ \t]*!\[[^\]]*\]\((" + IMAGE_SRC_NO_WS + r")(?:\s+[^)]*)?\)[ \t]*)$"
+    )
     output: list[str] = []
     for line in markdown.splitlines(keepends=True):
         body = line.rstrip("\r\n")
