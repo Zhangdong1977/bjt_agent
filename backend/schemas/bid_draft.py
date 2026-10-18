@@ -1,7 +1,7 @@
 """Pydantic schemas for bid draft generation tasks."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,6 +19,9 @@ class OutlineNode(BaseModel):
 class BidDraftOptions(BaseModel):
     only_sections: list[str] | None = Field(default=None, max_length=OUTLINE_MAX_NODES)
     outline_hint: str | None = Field(default=None, max_length=2_000)
+    # 图表管线：默认 mermaid（现状）；bidfig=架构/进度两类图改走服务端原语库
+    # （LLM 出 JSON、确定性渲染 SVG，见 docs/标书生成-图表原语库-原型-20261018.md）
+    fig_mode: Literal["mermaid", "bidfig"] | None = None
 
 
 class BidDraftTaskCreate(BaseModel):

@@ -19,7 +19,9 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy import select
 
-from backend.agent.bidfig import clamp_bidfig_blocks, close_unterminated_bidfig_fence
+from backend.agent.bidfig import (INVALID_PLACEHOLDER, clamp_bidfig_blocks,
+                                  close_unterminated_bidfig_fence,
+                                  extract_bidfig_fences, render_spec)
 from backend.models import BidDraftSection, BidDraftTask
 from backend.services.llm_factory import create_llm_client
 from backend.services.usage_recorder import instrument_llm_client
@@ -294,6 +296,31 @@ def close_unterminated_mermaid_fence(body: str) -> str:
     return "\n".join(lines) + ("\n" if body.endswith("\n") else "")
 
 
+def chart_quality_stats(text: str) -> dict[str, int]:
+    """assemble 汇总时的图表质检统计（P1 机检最小切片，进任务 summary）：
+
+    - mermaid / bidfig 图表块数与 bidfig 有效数（JSON 可解析且通过原语校验）；
+    - degraded=落盘前 clamp/出口渲染已降级的图块数；
+    - fact_gaps="（请补充）"事实性占位数（写作红线的不虚构出口，量化缺口供运营跟进）。
+    """
+    bidfig_valid = 0
+    lines = text.split("\n")
+    for fence in extract_bidfig_fences(text):
+        payload = "\n".join(lines[fence["start"] + 1: fence["end"]]).strip()
+        try:
+            render_spec(json.loads(payload))
+            bidfig_valid += 1
+        except Exception:  # noqa: BLE001 - 统计口径：任何失败都计入无效
+            pass
+    return {
+        "mermaid": len(extract_mermaid_fences(text)),
+        "bidfig": len(extract_bidfig_fences(text)),
+        "bidfig_valid": bidfig_valid,
+        "degraded": text.count(INVALID_PLACEHOLDER),
+        "fact_gaps": text.count("（请补充）"),
+    }
+
+
 def _bound_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
     def _strings(value: Any, limit: int, max_items: int) -> list[str]:
         if not isinstance(value, list):
@@ -558,13 +585,15 @@ class BidDraftAgent:
 
         assembled_path = self.workspace_dir / "assembled.md"
         assembled_path.parent.mkdir(parents=True, exist_ok=True)
-        assembled_path.write_text("\n\n".join(parts), encoding="utf-8")
+        joined = "\n\n".join(parts)
+        assembled_path.write_text(joined, encoding="utf-8")
         return {
             "section_total": len(scope),
             "section_generated": generated,
             "section_failed": failed,
             "word_count": total_words,
             "assembled_path": str(assembled_path),
+            "charts": chart_quality_stats(joined),
         }
 
     # ------------------------------------------------------------------- run

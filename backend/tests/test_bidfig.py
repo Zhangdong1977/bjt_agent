@@ -181,3 +181,17 @@ def test_agent_prompt_fig_mode_default_off():
     assert "```bidfig" in agent.SECTION_SYSTEM_PROMPT_BIDFIG
     assert '"kind":"gantt"' in agent.SECTION_SYSTEM_PROMPT_BIDFIG
     assert '"kind":"arch"' in agent.SECTION_SYSTEM_PROMPT_BIDFIG
+
+
+def test_chart_quality_stats_summary_slice():
+    from backend.agent.bid_draft_agent import chart_quality_stats
+    md = (
+        "# 进度\n\n正文（请补充）一处。\n\n"
+        "```mermaid\nflowchart TD\nA-->B\n```\n\n"
+        "```bidfig\n" + json.dumps(GANTT_SPEC, ensure_ascii=False) + "\n```\n\n"
+        '```bidfig\n{"kind":"gantt","bad":1}\n```\n\n'
+        + INVALID_PLACEHOLDER + "\n"
+    )
+    assert chart_quality_stats(md) == {
+        "mermaid": 1, "bidfig": 2, "bidfig_valid": 1, "degraded": 1, "fact_gaps": 1,
+    }
