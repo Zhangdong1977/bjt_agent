@@ -55,10 +55,6 @@ const allDraftsParsed = computed(() => {
 })
 const hasParsedTender = computed(() => tenderDrafts.value.some((d) => d.status === 'parsed'))
 const hasParsedBid = computed(() => bidDrafts.value.some((d) => d.status === 'parsed'))
-// 「开始检查」启用条件：招标≥1 parsed + 投标≥1 parsed + 所有草稿解析完成
-const canStartCheck = computed(() =>
-  allDraftsParsed.value && hasParsedTender.value && hasParsedBid.value
-)
 
 // 文档查看器
 const showDocViewer = ref(false)
@@ -102,6 +98,21 @@ const isUploadingTender = computed(() =>
 )
 const isUploadingBid = computed(() =>
   bidTempUploads.value.some((t) => t.status === 'uploading' || t.status === 'queued'),
+)
+
+// 是否还有文件在字节上传阶段（含排队）。此时必须禁止「开始检查」——
+// 2026-10-19 生产事故：上传中可点开始检查，router.push 跳转后浏览器 abort 未完成的上传
+// （nginx 499），该文件静默丢失，审查因缺文件误判材料"未提供"。
+const hasUploadingTemp = computed(() =>
+  tempUploads.some((t) => t.status === 'uploading' || t.status === 'queued'),
+)
+
+// 「开始检查」启用条件：招标≥1 parsed + 投标≥1 parsed + 所有草稿解析完成 + 无文件还在上传
+const canStartCheck = computed(() =>
+  allDraftsParsed.value &&
+  hasParsedTender.value &&
+  hasParsedBid.value &&
+  !hasUploadingTemp.value
 )
 
 // 某类文档当前占用数（已传草稿 + 上传中的临时卡），用于每类数量上限的入队闸门
@@ -287,7 +298,11 @@ function startCheck() {
     return
   }
   if (!canStartCheck.value) {
-    message.warning('请确保招标和投标文件各有至少一份解析完成，且所有文件解析结束')
+    message.warning(
+      hasUploadingTemp.value
+        ? '还有文件正在上传，请等待全部上传并解析完成后再开始检查'
+        : '请确保招标和投标文件各有至少一份解析完成，且所有文件解析结束',
+    )
     return
   }
   ruleDocModalOpen.value = true
@@ -626,6 +641,9 @@ function getStatusClass(status: string) {
       <img :src="iconSearch" alt="" class="check-btn__icon" />
       <span>{{ submitting ? '提交中...' : '立即检查' }}</span>
     </button>
+    <p v-if="hasUploadingTemp" class="check-btn-note">
+      还有文件正在上传，全部上传并解析完成后才能开始检查（未传完就检查会导致该文件丢失）
+    </p>
 
     <!-- 检查项大类多选弹窗：确认后才开始检查 -->
     <RuleDocSelectModal v-model:open="ruleDocModalOpen" @confirm="onRuleDocsConfirm" />
@@ -1168,6 +1186,13 @@ function getStatusClass(status: string) {
   cursor: not-allowed;
   opacity: 0.5;
   box-shadow: none;
+}
+
+.check-btn-note {
+  margin-top: 10px;
+  text-align: center;
+  font-size: 13px;
+  color: #B80015;
 }
 
 /* ============ 文档查看器 Modal ============ */
