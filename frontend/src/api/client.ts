@@ -538,6 +538,8 @@ export const documentsApi = {
       };
 
       xhr.onerror = () => reject(new Error("网络连接异常，请检查网络后重试"));
+      // 页面切换/组件卸载会 abort 进行中的上传，不处理则 Promise 永远 pending、用户无感知
+      xhr.onabort = () => reject(new Error("上传已中断（页面发生跳转），请重新上传该文件"));
       xhr.send(formData);
     });
   },
@@ -639,6 +641,7 @@ export const documentsApi = {
       };
 
       xhr.onerror = () => reject(new Error("网络连接异常，请检查网络后重试"));
+      xhr.onabort = () => reject(new Error("上传已中断（页面发生跳转），请重新上传该文件"));
       xhr.send(formData);
     });
   },
