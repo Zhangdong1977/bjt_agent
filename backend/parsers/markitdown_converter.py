@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -14,7 +15,18 @@ logger = logging.getLogger(__name__)
 # screenshots in (borderless) tables; losing those refs made the review agent
 # see empty sections and report missing evidence.  Whitelist the tags mammoth
 # uses around cell images so `![alt](path)` refs survive inside tables.
-_KEEP_INLINE_IMAGES_IN = ["p", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6"]
+#
+# markdownify checks only the <img>'s DIRECT parent tag.  mammoth wraps an
+# image in <strong>/<em> when its DOCX run is bold/italic — certificate scans
+# in bold section rows therefore lost their refs and the review agent reported
+# "扫描件缺失，仅文件名占位文字" for documents that actually contained the
+# scans (2026-10-19 false-positive incident, review task 110fa702).  Whitelist
+# every inline wrapper mammoth emits; _repair_dropped_image_refs below is the
+# safety net for any wrapper still missing from this list.
+_KEEP_INLINE_IMAGES_IN = [
+    "p", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
+    "strong", "em", "b", "i", "u", "a", "span", "li", "blockquote",
+]
 
 # 1x1 transparent PNG substituted for DOCX images whose part is missing or
 # unreadable inside the archive (e.g. bid-authoring tools emitting image
@@ -103,9 +115,17 @@ class DirectFileImageHandler:
         self._counter = 0
         self.images: list[ImageInfo] = []
         self.failed_images = 0
+        # mammoth exposes the DOCX alt text (wp:docPr/@descr) as image.alt_text;
+        # kept per output filename so _repair_dropped_image_refs can splice
+        # refs back into the position where markdownify dropped them.
+        self.alt_by_filename: dict[str, str] = {}
 
     def __call__(self, image):
         self._counter += 1
+        try:
+            alt_text = str(getattr(image, "alt_text", "") or "")
+        except Exception:
+            alt_text = ""
         content_type = str(image.content_type or "").lower()
         ext = {
             "image/jpeg": "jpeg",
@@ -145,7 +165,77 @@ class DirectFileImageHandler:
         dest.write_bytes(data)
 
         self.images.append(ImageInfo(filename=filename, data=data))
+        self.alt_by_filename[filename] = alt_text
         return {"src": f"{self._images_dir_name}/{filename}"}
+
+
+def _escaped_pattern(text: str) -> str:
+    """Regex matching ``text`` whether or not markdownify escaped its specials."""
+    return "".join(r"\\?" + re.escape(ch) for ch in text)
+
+
+def _repair_dropped_image_refs(
+    markdown: str, handler: DirectFileImageHandler, images_dir_name: str
+) -> str:
+    """Return markdown in which every materialized image is referenced.
+
+    markdownify's ``keep_inline_images_in`` check looks only at the <img>'s
+    direct parent tag, so an image inside any non-whitelisted wrapper loses
+    its ``![alt](path)`` ref while the file stays on disk (see
+    _KEEP_INLINE_IMAGES_IN).  That silently removed review evidence once
+    (2026-10-19 incident); never let it happen silently again:
+
+    * collect materialized images the markdown no longer references;
+    * when the surviving alt text matches exactly one position, splice the
+      ref back in place, restoring positional context for the review agent;
+    * otherwise append a trailing repair section so the image stays visible;
+    * always log a warning so the drop is observable in parse logs.
+    """
+    unreferenced = [
+        img.filename
+        for img in handler.images
+        if f"{images_dir_name}/{img.filename}" not in markdown
+    ]
+    if not unreferenced:
+        return markdown
+
+    unrepaired: list[str] = []
+    for filename in unreferenced:
+        alt = handler.alt_by_filename.get(filename, "")
+        ref = f"![{alt}]({images_dir_name}/{filename})"
+        repaired = False
+        if alt:
+            pattern = _escaped_pattern(alt)
+            matches = list(re.finditer(pattern, markdown))
+            # exactly one hit, and it is not the alt of an already-present ref
+            if len(matches) == 1 and markdown[matches[0].start() - 2 : matches[0].start()] != "![":
+                markdown = re.sub(pattern, lambda _m, _ref=ref: _ref, markdown, count=1)
+                repaired = True
+        if not repaired:
+            unrepaired.append(filename)
+
+    logger.warning(
+        "DOCX conversion dropped %s inline image ref(s) (non-whitelisted parent "
+        "tag); %s spliced back in place, %s appended in repair section: %s",
+        len(unreferenced),
+        len(unreferenced) - len(unrepaired),
+        len(unrepaired),
+        ", ".join(unreferenced),
+    )
+
+    if unrepaired:
+        lines = [
+            "",
+            "> ⚠️ 解析兜底：以下 "
+            f"{len(unrepaired)} 张嵌入图片位于特殊格式段落，正文原位引用在转换中丢失，"
+            "现补录于此（图片文件均已正常提取，内容真实存在于原文档，审查时须一并进行核验）：",
+            ">",
+        ]
+        for filename in unrepaired:
+            alt = handler.alt_by_filename.get(filename, "")
+            lines.append(f"> ![{alt}]({images_dir_name}/{filename})")
+        markdown += "\n" + "\n".join(lines)
+    return markdown
 
 
 class MarkitdownConverter:
@@ -224,6 +314,9 @@ class MarkitdownConverter:
             bullets="-",
             keep_inline_images_in=_KEEP_INLINE_IMAGES_IN,
         ).strip()
+        markdown_content = _repair_dropped_image_refs(
+            markdown_content, handler, images_dir_name
+        )
         if progress_callback:
             progress_callback(1, 1)
 
