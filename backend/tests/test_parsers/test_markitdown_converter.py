@@ -161,12 +161,15 @@ class TestDirectFileImageHandler:
 
         mock_image = MagicMock()
         mock_image.content_type = "image/png"
+        mock_image.alt_text = "证书[扫描件]"
         mock_image.open.return_value.__enter__ = lambda s: MagicMock(read=lambda: b"\x89PNG\r\n\x1a\n")
         mock_image.open.return_value.__exit__ = MagicMock(return_value=False)
 
         result = handler(mock_image)
 
-        assert result == {"src": "doc_images/image_1.png"}
+        assert result["src"] == "doc_images/image_1.png"
+        # alt 按 CommonMark 转义，防止裸 ] 截断 IMAGE_REF_RE 消费方（2026-10-21）
+        assert result["alt"] == "证书\\[扫描件\\]"
         assert (images_dir / "image_1.png").exists()
         assert (images_dir / "image_1.png").read_bytes() == b"\x89PNG\r\n\x1a\n"
         assert len(handler.images) == 1
@@ -217,7 +220,7 @@ class TestDirectFileImageHandler:
 
         result = handler(mock_image)
 
-        assert result == {"src": "doc_images/image_1.png"}
+        assert result["src"] == "doc_images/image_1.png"
         assert handler.images[0].filename == "image_1.png"
 
     def test_handler_returns_file_path_reference(self, tmp_path):
@@ -248,7 +251,7 @@ class TestDirectFileImageHandler:
 
         result = handler(mock_image)
 
-        assert result == {"src": "doc_images/image_1.jpx"}
+        assert result["src"] == "doc_images/image_1.jpx"
         assert (images_dir / "image_1.jpx").read_bytes() == b"jpeg-2000-source"
 
     def test_handler_substitutes_placeholder_when_image_part_missing(self, tmp_path):
@@ -264,7 +267,7 @@ class TestDirectFileImageHandler:
 
         result = handler(mock_image)
 
-        assert result == {"src": "doc_images/image_1.png"}
+        assert result["src"] == "doc_images/image_1.png"
         assert handler.failed_images == 1
         assert len(handler.images) == 1
         placeholder_file = images_dir / "image_1.png"
@@ -282,7 +285,7 @@ class TestDirectFileImageHandler:
 
         result = handler(mock_image)
 
-        assert result == {"src": "doc_images/image_1.png"}
+        assert result["src"] == "doc_images/image_1.png"
         assert (images_dir / "image_1.png").is_file()
 
     def test_handler_failed_image_does_not_break_numbering(self, tmp_path):
@@ -301,7 +304,7 @@ class TestDirectFileImageHandler:
         good.open.return_value.__exit__ = MagicMock(return_value=False)
         result = handler(good)
 
-        assert result == {"src": "doc_images/image_2.png"}
+        assert result["src"] == "doc_images/image_2.png"
         assert (images_dir / "image_2.png").read_bytes() == b"real-data"
         assert [img.filename for img in handler.images] == ["image_1.png", "image_2.png"]
         assert handler.failed_images == 1
