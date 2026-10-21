@@ -89,3 +89,39 @@ def test_duplicate_candidates_strips_paren_image_refs():
     raw = f"质保期 3 年 ![图]({PAREN_DIR}/image_1.png) 详见附件"
     stripped = duplicate_candidates._MARKDOWN_IMAGE_RE.sub("", raw)
     assert stripped == "质保期 3 年  详见附件"
+
+
+# ---- alt 含半角方括号（2026-10-21 发现，存量 42 份中招）----
+#
+# alt 来自原文档 wp:docPr/@descr，转换器现按 CommonMark 反斜杠转义后产出；
+# IMAGE_REF_RE 的 alt 模式必须容忍 ``\]`` 等转义序列，否则 alt 的 ``]``
+# 处截断、把 alt 片段误当 src（证据哈希缺/agent 取图失败/预览改写错位）。
+
+
+def test_image_ref_re_tolerates_escaped_bracket_alt():
+    md = f"证明材料：![证书\\[批注\\](第3版)]({PAREN_DIR}/image_1.png)"
+    match = IMAGE_REF_RE.search(md)
+    assert match is not None
+    assert match.group(2) == f"{PAREN_DIR}/image_1.png"
+    assert "批注" in match.group(1)
+
+
+def test_image_ref_re_sub_removes_ref_with_escaped_alt():
+    md = f"前文 ![证书\\[批注\\]]({PAREN_DIR}/image_1.png) 后文"
+    assert IMAGE_REF_RE.sub("", md) == "前文  后文"
+
+
+def test_image_ref_re_multiple_refs_with_escaped_alt_stay_separate():
+    md = f"![a\\[1\\]](x.png) 文本 ![b](y.png)"
+    refs = [(m.group(1), m.group(2)) for m in IMAGE_REF_RE.finditer(md)]
+    assert refs == [("a\\[1\\]", "x.png"), ("b", "y.png")]
+
+
+def test_image_ref_re_legacy_unescaped_bracket_still_truncates():
+    """历史产物（未转义 alt）保持旧截断语义：只保证新产物正确，不猜歧义。"""
+    md = "![证书[批注](第3版)](dir/image_1.png)"
+    match = IMAGE_REF_RE.search(md)
+    assert match is not None
+    # 与 2026-10-21 实测的旧行为一致：alt 在首个 ] 处截断、src 误取 "第3版"
+    assert match.group(1) == "证书[批注"
+    assert match.group(2) == "第3版"

@@ -413,6 +413,17 @@ async def _save_parsed_content(file_path: Path, parsed_data: dict, document: Doc
     document.page_count = parsed_data.get("page_count")
     document.artifact_manifest_path = None
     document.evidence_blocks_path = None
+    # 解析质量信号持久化（JSONB，无迁移）：DOCX 路径恒有（含 images_total
+    # 基线），PDF/XLSX 暂无；供巡检与运营排查"解析静默丢内容"类问题
+    # （2026-10-21，doc 21 §八）。
+    parse_quality = parsed_data.get("parse_quality")
+    if parse_quality:
+        metadata = dict(document.source_metadata or {})
+        metadata["parse_quality"] = parse_quality
+        document.source_metadata = metadata
+        logger.info(
+            f"[PARSE] quality: document_id={document_id}, {parse_quality}"
+        )
     if not parsed_data.get("source_basis"):
         parsed_data["source_basis"] = _SOURCE_BASIS_BY_DOC_TYPE.get(
             document.doc_type, "unknown"
@@ -1213,7 +1224,10 @@ async def _parse_docx(file_path: Path, progress_callback=None, document_id: str 
         # contract instead of leaking a mock/provider-specific value.
         "page_count": None,
         "parser_name": "markitdown",
-        "parser_version": "mammoth-direct-images/v2",
+        "parser_version": "mammoth-direct-images/v3-blindspots",
+        # 解析质量信号（无盲区/无修复时为空 dict 语义上的 None）：巡检与运营经
+        # documents.source_metadata.parse_quality 可查；不进 md、不影响审查链路。
+        "parse_quality": getattr(result, "parse_quality", None),
     }
 
 

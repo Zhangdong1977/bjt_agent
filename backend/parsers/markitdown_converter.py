@@ -99,6 +99,10 @@ class ConversionResult:
     markdown_content: str
     images: list[ImageInfo]
     page_count: Optional[int] = None
+    # 解析质量信号（DOCX 路径填充）：mammoth warning 条数、盲区结构统计。
+    # 由 document_parser 持久化到 documents.source_metadata 供巡检/运营查询；
+    # 不进 markdown，对审查 agent 不可见。
+    parse_quality: Optional[dict] = None
 
 
 class DirectFileImageHandler:
@@ -166,12 +170,35 @@ class DirectFileImageHandler:
 
         self.images.append(ImageInfo(filename=filename, data=data))
         self.alt_by_filename[filename] = alt_text
-        return {"src": f"{self._images_dir_name}/{filename}"}
+        # mammoth's img_element lets handler attrs override its own alt, and
+        # markdownify copies the attribute verbatim — emitting the escaped alt
+        # here covers every whitelisted-parent ref in one place (see
+        # _escape_alt_text).
+        return {
+            "src": f"{self._images_dir_name}/{filename}",
+            "alt": _escape_alt_text(alt_text),
+        }
 
 
 def _escaped_pattern(text: str) -> str:
     """Regex matching ``text`` whether or not markdownify escaped its specials."""
     return "".join(r"\\?" + re.escape(ch) for ch in text)
+
+
+def _escape_alt_text(alt: str) -> str:
+    """Escape alt text so the emitted ``![alt](src)`` ref stays one ref.
+
+    markdownify passes the HTML alt attribute through **verbatim** (convert_img
+    does no markdown escaping), so a raw ``[``/``]`` from the document author's
+    ``wp:docPr/@descr`` lands unescaped inside the alt — IMAGE_REF_RE then
+    truncates at the first ``]`` and every consumer (evidence hashing, agent
+    image lookup, frontend preview rewrite) mis-parses the ref (2026-10-21
+    finding; 2.2% of production stock affected).  Backslash-escape brackets
+    per CommonMark; newlines would break the single-line ref and collapse to
+    spaces.
+    """
+    alt = alt.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+    return re.sub(r"[\r\n]+", " ", alt)
 
 
 def _repair_dropped_image_refs(
@@ -202,7 +229,7 @@ def _repair_dropped_image_refs(
     unrepaired: list[str] = []
     for filename in unreferenced:
         alt = handler.alt_by_filename.get(filename, "")
-        ref = f"![{alt}]({images_dir_name}/{filename})"
+        ref = f"![{_escape_alt_text(alt)}]({images_dir_name}/{filename})"
         repaired = False
         if alt:
             pattern = _escaped_pattern(alt)
@@ -233,9 +260,248 @@ def _repair_dropped_image_refs(
         ]
         for filename in unrepaired:
             alt = handler.alt_by_filename.get(filename, "")
-            lines.append(f"> ![{alt}]({images_dir_name}/{filename})")
+            lines.append(f"> ![{_escape_alt_text(alt)}]({images_dir_name}/{filename})")
         markdown += "\n" + "\n".join(lines)
     return markdown
+
+
+# ---- DOCX 盲区结构探测与廉价恢复（2026-10-21 评估，见 doc/workspace/21 号 §八）----
+#
+# mammoth 只读 document.xml 正文：SmartArt/chart 的 graphicData 分支不产生
+# "unrecognised element" warning（零可观测丢弃）、mc:Choice-only 形状整块消失、
+# 页眉/页脚 part 完全不读、m:oMath 丢弃仅留日志 warning。这些结构里的审查
+# 材料会"无声消失"，agent 只能误判「未提供」。生产存量实测频率（1915 份）：
+# SmartArt 22、页眉图 291、公式 15、Choice-only 2、chart 0。
+# 对策：字节级探测 + md 文末标注（agent 据此改判「待确认」而非「未提供」），
+# 并对 SmartArt/公式文字、页眉图片做有上限的廉价恢复。
+
+_BLIND_SPOT_MAX_ITEMS = 120
+_BLIND_SPOT_MAX_CHARS = 2000
+_BLIND_SPOT_MAX_MATH = 60
+_BLIND_SPOT_MAX_HEADER_IMAGES = 20
+
+# graphicData 的 uri 属性值要整串锚定：只匹配子串会把根元素上的
+# xmlns 命名空间声明（如 xmlns:c=".../chart"）也计入，造成误报。
+_DIAGRAM_URI_RE = re.compile(
+    rb'uri="http://schemas\.openxmlformats\.org/drawingml/2006/diagram"'
+)
+_CHART_URI_RE = re.compile(
+    rb'uri="http://schemas\.openxmlformats\.org/drawingml/2006/chart"'
+)
+
+_NOTE_HEADER = (
+    "> ⚠️ 解析覆盖提示：原文档含有以下当前解析器不能完整提取的结构。"
+    "审查时若涉及对应材料，请标记「待确认（需人工核验原文档）」，"
+    "不得仅因解析产物中缺失而判定「未提供」："
+)
+
+
+def _xml_unescape(text: str) -> str:
+    for entity, char in (
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", '"'),
+        ("&apos;", "'"),
+        ("&amp;", "&"),
+    ):
+        text = text.replace(entity, char)
+    return text
+
+
+def _collect_xml_texts(
+    xml_bytes: bytes, tag: str, limit_items: int, limit_chars: int
+) -> tuple[list[str], int]:
+    """Extract the texts of ``tag`` elements (a:t of SmartArt, m:t of formulas)."""
+    pattern = re.compile(
+        rf"<{re.escape(tag)}(?:\s[^>]*)?>(.*?)</{re.escape(tag)}\s*>".encode(), re.S
+    )
+    texts: list[str] = []
+    total_chars = 0
+    omitted = 0
+    for match in pattern.finditer(xml_bytes):
+        text = _xml_unescape(match.group(1).decode("utf-8", "replace")).strip()
+        if not text:
+            continue
+        if len(texts) >= limit_items or total_chars + len(text) > limit_chars:
+            omitted += 1
+            continue
+        texts.append(text)
+        total_chars += len(text)
+    return texts, omitted
+
+
+def _format_recovered_texts(texts: list[str], omitted: int) -> str:
+    joined = "、".join(texts)
+    if omitted:
+        joined += f"…（其余 {omitted} 条省略）"
+    return joined
+
+
+def _recover_part_images(
+    zf,
+    part_name: str,
+    images_dir: Path,
+    images_dir_name: str,
+    images: list[ImageInfo],
+    used_targets: set[str],
+) -> tuple[list[str], int]:
+    """Materialize images referenced by a header/footer part.
+
+    mammoth never reads those parts, so their images (company letterheads and,
+    in some templates, seal scans) vanish without any trace.  Resolve the
+    part's image relationships directly and write the media bytes out.
+    """
+    import posixpath
+
+    rels_name = "word/_rels/" + part_name.split("/", 1)[1] + ".rels"
+    try:
+        rels_xml = zf.read(rels_name)
+    except KeyError:
+        return [], 0
+
+    image_targets: dict[str, str] = {}
+    for element in re.finditer(rb"<Relationship\b[^>]*>", rels_xml):
+        element_xml = element.group(0)
+        rid = re.search(rb'Id="([^"]+)"', element_xml)
+        rel_type = re.search(rb'Type="([^"]+)"', element_xml)
+        target = re.search(rb'Target="([^"]+)"', element_xml)
+        if rid and rel_type and target and rel_type.group(1).endswith(b"/image"):
+            image_targets[rid.group(1).decode()] = target.group(1).decode()
+
+    try:
+        content = zf.read(part_name)
+    except KeyError:
+        return [], 0
+    referenced_rids = set()
+    for attr in (b"r:embed", b"r:link", b"r:id"):
+        for match in re.finditer(attr + rb'="([^"]+)"', content):
+            referenced_rids.add(match.group(1).decode())
+
+    refs: list[str] = []
+    skipped = 0
+    for rid in referenced_rids:
+        target = image_targets.get(rid)
+        if not target:
+            continue
+        part_target = posixpath.normpath(posixpath.join("word", target))
+        if part_target in used_targets:
+            continue
+        if len(used_targets) >= _BLIND_SPOT_MAX_HEADER_IMAGES:
+            skipped += 1
+            continue
+        try:
+            data = zf.read(part_target)
+        except KeyError:
+            continue
+        ext = target.rsplit(".", 1)[-1].lower() if "." in target.rsplit("/", 1)[-1] else "png"
+        filename = f"headerimg_{len(used_targets) + 1}.{ext}"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        (images_dir / filename).write_bytes(data)
+        used_targets.add(part_target)
+        images.append(ImageInfo(filename=filename, data=data))
+        refs.append(f"![页眉/页脚图片 {filename}]({images_dir_name}/{filename})")
+    return refs, skipped
+
+
+def _scan_docx_blind_spots(
+    zf, images_dir: Path, images_dir_name: str, images: list[ImageInfo]
+) -> tuple[str, dict]:
+    """Detect mammoth-unreadable structures; recover text/images where cheap.
+
+    Returns ``(markdown_notes, quality_summary)`` — byte-level scans only, no
+    XML parse (deterministic on real-world files; validated against the
+    production stock scan of 2026-10-21).
+    """
+    try:
+        document_xml = zf.read("word/document.xml")
+    except KeyError:
+        return "", {}
+
+    lines: list[str] = []
+    summary: dict[str, int] = {}
+
+    smartart = len(_DIAGRAM_URI_RE.findall(document_xml))
+    chart = len(_CHART_URI_RE.findall(document_xml))
+    choice_only = document_xml.count(b"<mc:AlternateContent") - document_xml.count(
+        b"<mc:Fallback"
+    )
+    math_count = document_xml.count(b"<m:oMath")
+
+    if smartart:
+        texts: list[str] = []
+        omitted = 0
+        for name in zf.namelist():
+            if name.startswith("word/diagrams/") and name.rsplit("/", 1)[-1].startswith("data"):
+                part_texts, part_omitted = _collect_xml_texts(
+                    zf.read(name), "a:t", _BLIND_SPOT_MAX_ITEMS, _BLIND_SPOT_MAX_CHARS
+                )
+                texts.extend(part_texts)
+                omitted += part_omitted
+        seen: set[str] = set()
+        texts = [t for t in texts if not (t in seen or seen.add(t))]
+        entry = f"SmartArt 图示 {smartart} 处"
+        if texts:
+            entry += f"（图内文字已补录、结构丢失：{_format_recovered_texts(texts, omitted)}）"
+        else:
+            entry += "（内容未能提取）"
+        lines.append(entry)
+        summary["smartart"] = smartart
+
+    if chart:
+        lines.append(f"图表对象 {chart} 处（图表数据未能提取，如涉及报价/业绩数据请人工核验原文档）")
+        summary["chart"] = chart
+
+    if choice_only > 0:
+        lines.append(
+            f"仅现代格式(Choice)的形状/文本框 {choice_only} 处"
+            "（该部分文字或图片未能提取）"
+        )
+        summary["choice_only_shapes"] = choice_only
+
+    if math_count:
+        texts, omitted = _collect_xml_texts(
+            document_xml, "m:t", _BLIND_SPOT_MAX_MATH, _BLIND_SPOT_MAX_CHARS
+        )
+        entry = f"数学公式 {math_count} 处"
+        if texts:
+            entry += f"（公式文字已补录、排版丢失：{_format_recovered_texts(texts, omitted)}）"
+        else:
+            entry += "（内容未能提取）"
+        lines.append(entry)
+        summary["math"] = math_count
+
+    recovered_refs: list[str] = []
+    part_names = [
+        name
+        for name in zf.namelist()
+        if re.match(r"word/(?:header|footer)\d*\.xml$", name)
+    ]
+    if part_names:
+        used_targets: set[str] = set()
+        skipped = 0
+        for part_name in part_names:
+            refs, part_skipped = _recover_part_images(
+                zf, part_name, images_dir, images_dir_name, images, used_targets
+            )
+            recovered_refs.extend(refs)
+            skipped += part_skipped
+        if recovered_refs or skipped:
+            entry = f"页眉/页脚图片 {len(recovered_refs)} 张（已提取，引用见文末）"
+            if skipped:
+                entry += f"，另有 {skipped} 张超出提取上限未提取"
+            lines.append(entry)
+            summary["header_footer_images"] = len(recovered_refs) + skipped
+
+    if not lines:
+        return "", summary
+
+    note_lines = ["", _NOTE_HEADER, ">"]
+    note_lines.extend(f"> - {line}" for line in lines)
+    markdown_notes = "\n".join(note_lines)
+    if recovered_refs:
+        markdown_notes += "\n\n" + "\n\n".join(recovered_refs)
+    logger.warning("DOCX blind spots detected: %s", "; ".join(lines))
+    return markdown_notes, summary
 
 
 class MarkitdownConverter:
@@ -314,9 +580,30 @@ class MarkitdownConverter:
             bullets="-",
             keep_inline_images_in=_KEEP_INLINE_IMAGES_IN,
         ).strip()
+        dropped_before_repair = sum(
+            1
+            for img in handler.images
+            if f"{images_dir_name}/{img.filename}" not in markdown_content
+        )
         markdown_content = _repair_dropped_image_refs(
             markdown_content, handler, images_dir_name
         )
+
+        # 盲区结构探测与廉价恢复；非 zip（老 .doc 在 mammoth 阶段会响亮失败）
+        # 或无盲区时返回空串/空 dict，零影响。
+        blind_spot_notes, blind_spot_summary = "", {}
+        try:
+            import zipfile
+
+            with zipfile.ZipFile(file_path) as zf:
+                blind_spot_notes, blind_spot_summary = _scan_docx_blind_spots(
+                    zf, images_dir, images_dir_name, handler.images
+                )
+        except zipfile.BadZipFile:
+            pass
+        if blind_spot_notes:
+            markdown_content += "\n" + blind_spot_notes
+
         if progress_callback:
             progress_callback(1, 1)
 
@@ -335,6 +622,13 @@ class MarkitdownConverter:
             markdown_content=markdown_content,
             images=handler.images,
             page_count=None,
+            parse_quality={
+                "mammoth_warnings": len(html_result.messages),
+                "images_total": len(handler.images),
+                "images_failed_placeholder": handler.failed_images,
+                "dropped_refs_repaired": dropped_before_repair,
+                "blind_spots": blind_spot_summary,
+            },
         )
 
     def _convert_xlsx(self, file_path: Path, images_dir: Path, progress_callback) -> ConversionResult:
