@@ -2113,3 +2113,93 @@ class TestGenerationOptionsApi:
         capped = (await client.get(base, headers=auth_headers)).json()["qa_history"]
         assert len(capped) == 50
         assert capped[0]["question"] == "旧问题 1" and capped[-1]["question"] == "第 51 问"
+
+
+# ------------------------------------------------- 父章节导语化（2026-10-22 生产重复缺陷）
+
+
+def test_chapter_intro_plan_marks_parents_with_selected_children():
+    from backend.agent.bid_wizard_agent import chapter_intro_plan
+
+    spec_scope = [
+        {"node_id": "1", "title": "商务报价方案", "level": 1},
+        {"node_id": "1.1", "title": "报价总体策略", "level": 2},
+        {"node_id": "2", "title": "无子节同批的章", "level": 1},
+        {"node_id": "10", "title": "父章", "level": 1},
+        {"node_id": "10.4", "title": "父节", "level": 2},
+        {"node_id": "10.4.1", "title": "叶子小节", "level": 3},
+    ]
+    plan = chapter_intro_plan(spec_scope)
+    # 同批含子节的父节点逐层进 plan："10" 有同批子节 "10.4"（写导语），"10.4" 又有
+    # "10.4.1"（也只写导语）；"2" 无子节同批、叶子节点不进
+    assert plan == {"1": ["报价总体策略"], "10": ["父节"], "10.4": ["叶子小节"]}
+
+
+def test_chapter_intro_plan_childless_and_empty():
+    from backend.agent.bid_wizard_agent import chapter_intro_plan
+
+    assert chapter_intro_plan([]) == {}
+    assert chapter_intro_plan([{"node_id": "3", "title": "整章单独生成", "level": 1}]) == {}
+
+
+def test_sanitize_chapter_intro_truncates_at_first_heading():
+    from backend.agent.bid_wizard_agent import sanitize_chapter_intro
+
+    body = "导语段落一。\n\n导语段落二。\n\n### 2.1 越界小节\n\n小节正文。\n"
+    assert sanitize_chapter_intro(body) == "导语段落一。\n\n导语段落二。"
+
+
+def test_sanitize_chapter_intro_leading_heading_falls_back_to_first_para():
+    from backend.agent.bid_wizard_agent import sanitize_chapter_intro
+
+    body = "### 2.1 小节\n小节内首段。\n\n后续段落。\n"
+    assert sanitize_chapter_intro(body) == "小节内首段。"
+
+
+def test_sanitize_chapter_intro_plain_body_passthrough():
+    from backend.agent.bid_wizard_agent import sanitize_chapter_intro
+
+    assert sanitize_chapter_intro("  只有一段导语。 ") == "只有一段导语。"
+
+
+async def test_generate_section_intro_only_uses_intro_prompt(tmp_path, monkeypatch):
+    from backend.agent import bid_wizard_agent
+
+    agent = bid_wizard_agent.BidWizardWriteAgent(
+        task_id="t-intro", workspace_dir=tmp_path, session_factory=None
+    )
+    monkeypatch.setattr(agent, "_publish", lambda *args, **kwargs: None)
+
+    async def noop_set_status(node_id, **fields):
+        return None
+
+    monkeypatch.setattr(agent, "_set_section_status", noop_set_status)
+    monkeypatch.setattr(bid_wizard_agent, "read_material_chunks_text", lambda *args, **kwargs: "素材")
+
+    class FakeLLM:
+        def __init__(self):
+            self.calls = []
+
+        async def generate(self, system_prompt, user_prompt):
+            self.calls.append((system_prompt, user_prompt))
+            return "本章导语总起段。\n\n### 2.1 越界小节\n\n小节正文。"
+
+    fake = FakeLLM()
+    agent.llm = fake
+    node = {"node_id": "2", "title": "商务报价方案", "level": 1, "article_count": 4, "text_count": 800}
+    await agent._generate_section(
+        node,
+        analysis={},
+        requirements_text="",
+        spec=[node, {"node_id": "2.1", "title": "报价总体策略", "level": 2}],
+        material_refs=[],
+        prev_sections=[],
+        intro_children=["报价总体策略"],
+    )
+    system_prompt, user_prompt = fake.calls[0]
+    assert "章首导语" in system_prompt
+    assert "报价总体策略" in user_prompt  # 子节标题只作预告
+    content = (tmp_path / "sections" / "2.md").read_text(encoding="utf-8")
+    assert content.startswith("# 商务报价方案")
+    assert "越界小节" not in content and "###" not in content
+    assert "本章导语总起段" in content
