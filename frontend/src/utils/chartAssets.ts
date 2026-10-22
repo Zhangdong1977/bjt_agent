@@ -325,8 +325,16 @@ async function composeGanttHeader(chartDataUrl: string, title: string): Promise<
 /**
  * 写入 Word 前的图表预处理：渲染全部 mermaid 块并替换为图片引用。
  * 渲染失败的块保持 ```mermaid 原样（插件按代码块文本降级插入），不阻断写入。
+ * @param options.numberPrefix 题注编号前缀（如章节 node_id "5.3"→"5-3"）：
+ *   向导逐节调用本函数，无前缀时每节都从"图 1"重新起号（2026-10-22 生产发现全篇 14 图
+ *   皆为"图 1"）；带前缀后题注形如"图 5-3-1"，按节确定、断点续写/单节重写不漂移。
  */
-export async function prepareChartAssets(markdown: string): Promise<ChartInsertPayload> {
+export async function prepareChartAssets(
+  markdown: string,
+  options?: { numberPrefix?: string },
+): Promise<ChartInsertPayload> {
+  const numberPrefix = (options?.numberPrefix || "").replace(/[^0-9A-Za-z-]/g, "-").replace(/^-+|-+$/g, "");
+  const captionNo = (no: number) => (numberPrefix ? `${numberPrefix}-${no}` : `${no}`);
   const images: Record<string, string> = {};
   const parts: string[] = [];
   let figureNo = 0;
@@ -361,7 +369,7 @@ export async function prepareChartAssets(markdown: string): Promise<ChartInsertP
     figureNo += 1;
     const key = `bjt-chart://${figureNo}`;
     images[key] = dataUrl;
-    const caption = title ? `图 ${figureNo} ${title}` : `图 ${figureNo}`;
+    const caption = title ? `图 ${captionNo(figureNo)} ${title}` : `图 ${captionNo(figureNo)}`;
     parts.push(`![${caption}](${key})`);
   }
   return { content: parts.join("\n"), images, figureCount: figureNo, failedCount: failed };

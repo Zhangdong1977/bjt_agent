@@ -2113,7 +2113,8 @@ async function writeSectionForRow(rowTaskId: string, nodeId: string) {
   try {
     const content = await getWritingSectionContent(rowTaskId, nodeId);
     if (!content.content) throw new Error("章节内容为空");
-    const prepared = await prepareChartAssets(content.content);
+    // 题注按节编号（图 节号-N）：逐节写入时避免每节都从"图 1"重新起号
+    const prepared = await prepareChartAssets(content.content, { numberPrefix: nodeId });
     const marks = sectionBookmarks(nodeId);
     const result = await bridge.insertSection(prepared.content, {
       anchorBookmark: ANCHOR_BOOKMARK,
@@ -2199,7 +2200,8 @@ async function replaceSectionInWord(nodeId: string) {
   try {
     const content = await getWritingSectionContent(taskId.value, nodeId);
     if (!content.content) throw new Error("章节内容为空");
-    const prepared = await prepareChartAssets(content.content);
+    // 题注按节编号（图 节号-N）：替换旧章时与本节原编号口径保持一致
+    const prepared = await prepareChartAssets(content.content, { numberPrefix: nodeId });
     const marks = sectionBookmarks(nodeId);
     const result = await bridge.sectionReplace(marks.start, marks.end, prepared.content, {
       sectionStartBookmark: marks.start,

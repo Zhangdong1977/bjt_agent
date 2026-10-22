@@ -263,6 +263,39 @@ __PREV_SECTIONS__
 
 请撰写该章节正文（Markdown，不含本节标题）。"""
 
+# 父章节与子节同批生成时，父节点只写章首导语（2026-10-22 生产发现：章级节点按全量正文
+# 撰写会自带一套编号小节，与随后单独生成的子节内容成对重复——同一主题在成稿里出现两遍）。
+_WIZARD_CHAPTER_INTRO_SYSTEM_PROMPT = (
+    "你是资深投标文件编写专家。本节点是大纲中的父章节，其下的小节将由系统另行单独撰写、"
+    "紧接在本导语之后插入投标文件，因此你只负责撰写「章首导语」："
+    "概述本章在整份投标文件中的定位、本章覆盖的招标要求与响应思路，"
+    "并用一两句话按标题预告本章各小节的安排。"
+    "严禁展开任何小节的正文内容；严禁输出任何标题（含编号小节标题）、表格、mermaid 图或代码块围栏；"
+    "只输出 1-2 个自然段的导语正文。不要输出本章标题（系统会自动添加），不要输出解释或前言。"
+    "导语只作结构性概述，不引用具体证书、业绩、人员与金额，不虚构任何事实。"
+)
+
+WIZARD_CHAPTER_INTRO_USER_TEMPLATE = """## 项目招标要素（摘要）
+__ANALYSIS_JSON__
+
+## 编写需求（用户确认）
+__REQUIREMENTS_TEXT__
+
+## 投标文件大纲（整体结构）
+__OUTLINE_TEXT__
+
+## 本次撰写：章首导语（本节点为父章节）
+章节标题：__TITLE__
+本章摘要：__SUMMARY__
+本章后续小节（由系统另行单独撰写，导语中只按标题预告，严禁展开其内容）：
+__CHILD_TITLES__
+篇幅：__ARTICLE_COUNT__ 段，每段约 __TEXT_COUNT__ 字。
+
+## 已完成章节（保持前后呼应，不要重复）
+__PREV_SECTIONS__
+
+请撰写本章导语正文（纯文字自然段，不含任何标题、表格与图示）。"""
+
 
 class BidWizardCancelled(RuntimeError):
     """Raised when the user cancels a running wizard writing task."""
@@ -731,6 +764,58 @@ def _outline_text(spec: list[dict[str, Any]]) -> str:
         indent = "  " * (max(1, int(node.get("level") or 1)) - 1)
         lines.append(f"{indent}- {node.get('title')}")
     return "\n".join(lines)[:OUTLINE_CONTEXT_MAX_CHARS]
+
+
+def chapter_intro_plan(spec_scope: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """父节点同批含子节时只写导语：返回 {node_id: 同批直属子节标题列表}。
+
+    node_id 由 normalize_outline 按层级分配（"2" / "2.1" / "10.4.1"），
+    前缀即结构父子；key 命中的节点本轮改为章首导语，value 用于导语中预告结构。
+    仅选中子节（未选父节）或仅选父节（无子节同批）都不受影响，仍走全量正文。
+    """
+    plan: dict[str, list[str]] = {}
+    for node in spec_scope:
+        node_id = str(node.get("node_id") or "")
+        if not node_id:
+            continue
+        prefix = node_id + "."
+        children = [
+            str(other.get("title") or "")
+            for other in spec_scope
+            if str(other.get("node_id") or "").startswith(prefix)
+            and "." not in str(other.get("node_id"))[len(prefix):]
+        ]
+        if children:
+            plan[node_id] = children
+    return plan
+
+
+_HEADING_LINE_RE = re.compile(r"^\s*#{1,6}\s+\S")
+
+
+def sanitize_chapter_intro(body: str) -> str:
+    """导语兜底：模型越界输出小节标题时，截断到首个标题行之前。
+
+    成稿的重复来自"章级正文自带编号小节"；导语被截断后最多损失越界部分，
+    保底不空——开篇即标题时剥标题行取首个非空自然段，仍空则原样返回交由
+    上层空结果校验兜错。
+    """
+    lines = (body or "").splitlines()
+    cut = next((i for i, line in enumerate(lines) if _HEADING_LINE_RE.match(line)), None)
+    if cut is None:
+        return (body or "").strip()
+    kept = "\n".join(lines[:cut]).strip()
+    if kept:
+        return kept
+    first_para: list[str] = []
+    for line in lines:
+        if _HEADING_LINE_RE.match(line):
+            continue
+        if line.strip():
+            first_para.append(line)
+        elif first_para:
+            break
+    return "\n".join(first_para).strip() or (body or "").strip()
 
 
 def parse_chunk_refs(payload: Any, valid_doc_ids: set[str]) -> list[str]:
@@ -1357,6 +1442,7 @@ class BidWizardWriteAgent:
         self.event_callback = event_callback
         self.cancel_event = cancel_event
         self.llm = WizardLLM(timeout=llm_timeout)
+        self._wizard_id = ""  # run() 加载上下文后覆写；提前调用生成辅助方法时不至于炸属性
 
     def _publish(self, event_type: str, data: dict[str, Any]) -> None:
         if self.event_callback is not None:
@@ -1464,6 +1550,7 @@ class BidWizardWriteAgent:
         material_refs: list[str],
         prev_sections: list[tuple[str, str, Optional[str]]],
         charts_enabled: bool = True,
+        intro_children: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         self._publish("section_started", {"node_id": node["node_id"], "title": node["title"]})
         await self._set_section_status(node["node_id"], status="generating")
@@ -1483,21 +1570,44 @@ class BidWizardWriteAgent:
             or "（本章节之前没有已完成的章节）"
         )
         analysis_json = json.dumps(analysis, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]
-        user_prompt = (
-            WIZARD_SECTION_USER_TEMPLATE.replace("__ANALYSIS_JSON__", analysis_json)
-            .replace("__REQUIREMENTS_TEXT__", requirements_text or "无")
-            .replace("__OUTLINE_TEXT__", _outline_text(spec))
-            .replace("__TITLE__", node["title"])
-            .replace("__SUMMARY__", str(node.get("summary") or "（无摘要，按标题与大纲撰写）"))
-            .replace("__CHART_PLAN_TEXT__", build_chart_plan_text(node, charts_enabled=charts_enabled))
-            .replace("__MATERIAL_CHUNKS__", material_chunks)
-            .replace("__PREV_SECTIONS__", prev_text)
-            .replace("__ARTICLE_COUNT__", str(node.get("article_count") or 2))
-            .replace("__TEXT_COUNT__", str(node.get("text_count") or 400))
-        )
-        body = strip_code_fence(
-            await self.llm.generate(section_system_prompt(charts_enabled=charts_enabled), user_prompt)
-        )
+        if intro_children is not None:
+            # 父节点与子节同批：只写章首导语，子节标题交给导语预告、正文由子节点自己生成
+            user_prompt = (
+                WIZARD_CHAPTER_INTRO_USER_TEMPLATE.replace("__ANALYSIS_JSON__", analysis_json)
+                .replace("__REQUIREMENTS_TEXT__", requirements_text or "无")
+                .replace("__OUTLINE_TEXT__", _outline_text(spec))
+                .replace("__TITLE__", node["title"])
+                .replace("__SUMMARY__", str(node.get("summary") or "（无摘要，按标题与大纲撰写）"))
+                .replace(
+                    "__CHILD_TITLES__",
+                    "\n".join(f"- {title}" for title in intro_children) or "（无）",
+                )
+                .replace("__PREV_SECTIONS__", prev_text)
+                .replace("__ARTICLE_COUNT__", str(min(int(node.get("article_count") or 2), 2)))
+                .replace("__TEXT_COUNT__", str(min(int(node.get("text_count") or 400), 400)))
+            )
+            body = strip_code_fence(
+                await self.llm.generate(_WIZARD_CHAPTER_INTRO_SYSTEM_PROMPT, user_prompt)
+            )
+            body = sanitize_chapter_intro(body)
+        else:
+            user_prompt = (
+                WIZARD_SECTION_USER_TEMPLATE.replace("__ANALYSIS_JSON__", analysis_json)
+                .replace("__REQUIREMENTS_TEXT__", requirements_text or "无")
+                .replace("__OUTLINE_TEXT__", _outline_text(spec))
+                .replace("__TITLE__", node["title"])
+                .replace("__SUMMARY__", str(node.get("summary") or "（无摘要，按标题与大纲撰写）"))
+                .replace(
+                    "__CHART_PLAN_TEXT__", build_chart_plan_text(node, charts_enabled=charts_enabled)
+                )
+                .replace("__MATERIAL_CHUNKS__", material_chunks)
+                .replace("__PREV_SECTIONS__", prev_text)
+                .replace("__ARTICLE_COUNT__", str(node.get("article_count") or 2))
+                .replace("__TEXT_COUNT__", str(node.get("text_count") or 400))
+            )
+            body = strip_code_fence(
+                await self.llm.generate(section_system_prompt(charts_enabled=charts_enabled), user_prompt)
+            )
         if not body:
             raise RuntimeError(f"章节「{node['title']}」生成结果为空")
         body = clamp_mermaid_blocks(close_unterminated_mermaid_fence(body))
@@ -1550,6 +1660,7 @@ class BidWizardWriteAgent:
         generation_options = generation_options_of(context["requirements"])
         charts_enabled = bool(generation_options.get("charts", True)) if generation_options else True
         prev_sections = await self._load_prev_sections(wizard.id, spec)
+        intro_plan = chapter_intro_plan(spec_scope)
 
         done: list[dict[str, Any]] = []
         failed: list[str] = []
@@ -1564,6 +1675,7 @@ class BidWizardWriteAgent:
                     material_refs=ref_mapping.get(node["node_id"], []),
                     prev_sections=prev_sections,
                     charts_enabled=charts_enabled,
+                    intro_children=intro_plan.get(node["node_id"]),
                 )
                 done.append(result)
                 prev_sections.append((node["node_id"], node["title"], node.get("summary")))
