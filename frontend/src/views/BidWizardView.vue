@@ -345,6 +345,7 @@ const tenderDocs = ref<Document[]>([]);
 const materials = ref<WizardMaterial[]>([]);
 const tenderUploading = ref(false);
 const materialUploading = ref(false);
+const uploadProgressText = ref("");
 let materialPollTimer: ReturnType<typeof setInterval> | null = null;
 let tenderPollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -447,6 +448,48 @@ function onDeleteTenderDocument(documentId: string) {
   });
 }
 
+/** 批量上传素材（2026-10-23 修复）：单份失败不中断整批；409（活跃计费任务满——
+ *  素材索引任务实测 5-45s 结算）按退避重试；402 余额不足或 409 重试耗尽则终止整批。
+ *  此前串行循环遇 409 直接抛出且跳过列表刷新，导致 24 份传成功 5 份界面却毫无显示。 */
+async function uploadMaterialsResilient(
+  files: File[],
+  category: string | null,
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ uploaded: WizardMaterial[]; failed: { name: string; reason: string }[]; abortedReason?: string }> {
+  const uploaded: WizardMaterial[] = [];
+  const failed: { name: string; reason: string }[] = [];
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        uploaded.push((await apiUploadMaterial(wizard.value!.id, file, category)) as WizardMaterial);
+        break;
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        const reason = friendlyError(error, "上传失败");
+        if (status === 402) {
+          return { uploaded, failed, abortedReason: reason };
+        }
+        if (status === 409) {
+          if (attempt >= 8) {
+            return {
+              uploaded,
+              failed,
+              abortedReason: "素材索引任务并发已达上限且持续未释放，已上传的素材不受影响，请稍等一分钟再继续上传剩余素材",
+            };
+          }
+          await new Promise((resolve) => setTimeout(resolve, 3000 + attempt * 2000));
+          continue;
+        }
+        failed.push({ name: file.name, reason });
+        break;
+      }
+    }
+    onProgress?.(index + 1, files.length);
+  }
+  return { uploaded, failed };
+}
+
 function onUploadMaterials(event: Event) {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files || []);
@@ -474,14 +517,22 @@ function onUploadMaterials(event: Event) {
     });
     if (!confirmed) return;
     materialUploading.value = true;
-    try {
-      for (const file of files) {
-        await apiUploadMaterial(wizard.value!.id, file, localCategory.value || null);
-      }
-      await Promise.all([refreshWizard(), loadMaterials()]);
-      startMaterialPoll();
-    } finally {
+    const outcome = await uploadMaterialsResilient(files, localCategory.value || null, (done, total) => {
+      uploadProgressText.value = `上传中 ${done}/${total}…`;
+    }).finally(() => {
       materialUploading.value = false;
+      uploadProgressText.value = "";
+    });
+    // 无论整批结果如何，已成功的素材必须立即显示：列表刷新与轮询不再被异常跳过
+    await Promise.all([refreshWizard(), loadMaterials()]);
+    startMaterialPoll();
+    if (outcome.abortedReason) {
+      pageError.value = outcome.abortedReason;
+    } else if (outcome.failed.length) {
+      Modal.warning({
+        title: "部分素材上传失败",
+        content: `已上传 ${outcome.uploaded.length}/${files.length} 份，失败 ${outcome.failed.length} 份（可稍后重试）：${outcome.failed.map((item) => item.name).join("、")}`,
+      });
     }
   });
 }
@@ -1184,25 +1235,31 @@ function onSupplementFilesChange(event: Event) {
         });
       });
       if (!confirmed) return;
-      const createdIds: string[] = [];
-      for (const file of files) {
-        const created = await apiUploadMaterial(wizard.value!.id, file, null);
-        createdIds.push(created.id);
-        supplementMaterialIds.value.push(created.id);
-      }
+      const outcome = await uploadMaterialsResilient(files, null);
+      const createdIds = outcome.uploaded.map((item) => item.id);
+      supplementMaterialIds.value.push(...createdIds);
       if (targetQuestion) {
-        supplementBindings.value = {
-          ...supplementBindings.value,
-          [targetQuestion.id]: [...(supplementBindings.value[targetQuestion.id] || []), ...createdIds],
-        };
-        const draft = ensureAnswerDraft(targetQuestion);
-        draft.action = "supplemented";
-        draft.answer = "";
-      } else {
-        supplementInfo.value = files.map((file) => file.name).join("、");
+        if (createdIds.length) {
+          supplementBindings.value = {
+            ...supplementBindings.value,
+            [targetQuestion.id]: [...(supplementBindings.value[targetQuestion.id] || []), ...createdIds],
+          };
+          const draft = ensureAnswerDraft(targetQuestion);
+          draft.action = "supplemented";
+          draft.answer = "";
+        }
+      } else if (outcome.uploaded.length) {
+        supplementInfo.value = outcome.uploaded.map((item) => item.original_filename).join("、");
       }
+      // 与素材准备阶段同口径：已成功的素材必须显示，刷新与轮询不再被单份失败跳过
       await Promise.all([refreshWizard(), loadMaterials()]);
       startMaterialPoll();
+      const failNote = outcome.abortedReason
+        ? outcome.abortedReason
+        : outcome.failed.length
+          ? `已上传 ${outcome.uploaded.length}/${files.length} 份，失败 ${outcome.failed.length} 份（可稍后重试）：${outcome.failed.map((item) => item.name).join("、")}`
+          : "";
+      if (failNote) reqActionError.value = failNote;
     } catch (error) {
       reqActionError.value = friendlyError(error, "补充素材失败，请稍后重试");
     }
@@ -2740,7 +2797,7 @@ onUnmounted(() => {
               </select>
             </div>
             <label class="upload-btn" :class="{ disabled: materialUploading || Boolean(busy) }">
-              {{ materialUploading ? "上传中…" : "点击上传素材（可多选）" }}
+              {{ materialUploading ? uploadProgressText || "上传中…" : "点击上传素材（可多选）" }}
               <input type="file" multiple accept=".pdf,.docx,.doc,.xlsx,.md,.markdown,.png,.jpg,.jpeg,.bmp,.webp" hidden :disabled="materialUploading || Boolean(busy)" @change="onUploadMaterials">
             </label>
             <p class="hint">支持 PDF / Word / Excel / 图片（PNG、JPG 等），图片将自动 OCR 识别文字后建立索引。</p>

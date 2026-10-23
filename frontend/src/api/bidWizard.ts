@@ -194,7 +194,7 @@ export async function getWizardAccess() {
 export async function estimateIndexCost(bytes: number) {
   return request<{ chars: number; estimated_tokens: number; estimated_points: number | null }>(
     "get",
-    `/bid-wizard/estimate?bytes=${encodeURIComponent(bytes)}`,
+    `/bid-wizard/estimate?bytes_size=${encodeURIComponent(bytes)}`,
   );
 }
 
