@@ -86,6 +86,33 @@ def close_unterminated_bidfig_fence(body: str) -> str:
     return "\n".join(fixed)
 
 
+def validate_bidfig_payload(payload: str) -> str:
+    """校验单个围栏 JSON 是否可渲染：可渲染返回空串，否则返回具体错误。
+
+    生成期收紧重渲（23 号批次五 E2）用它把报错原样喂回 LLM 修正
+    （如「phases 最多 5 个阶段列」），API 出口渲染则只关心真假。
+    """
+    try:
+        render_spec(json.loads(payload))
+        return ""
+    except BidfigSpecError as exc:
+        return str(exc)
+    except (ValueError, TypeError) as exc:
+        return "JSON 解析失败: %s" % exc
+
+
+def bidfig_fence_payloads(md: str) -> list[dict]:
+    """每个已闭合 ```bidfig 围栏 {start, end, payload, error}（error 空串=可渲染）。"""
+    lines = (md or "").split("\n")
+    result: list[dict] = []
+    for start, close in _iter_open_lines(lines):
+        if close is None:
+            continue
+        payload = "\n".join(lines[start + 1:close]).strip()
+        result.append({"start": start, "end": close, "payload": payload, "error": validate_bidfig_payload(payload)})
+    return result
+
+
 def clamp_bidfig_blocks(body: str, limit: int = 2) -> str:
     """每节 bidfig 图上限（与 mermaid clamp 同款占位文案）；倒序替换防行号位移。"""
     lines = (body or "").split("\n")

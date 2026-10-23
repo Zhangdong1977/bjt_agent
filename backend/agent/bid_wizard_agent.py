@@ -41,12 +41,19 @@ from backend.agent.bid_draft_agent import (
     _bound_analysis,
     clamp_mermaid_blocks,
     close_unterminated_mermaid_fence,
+    extract_mermaid_fences,
     normalize_outline,
     parse_json_payload,
     strip_code_fence,
 )
 from backend.agent.bid_doc_checks import draft_checks, strip_leading_title_headings
-from backend.agent.bidfig import clamp_bidfig_blocks, close_unterminated_bidfig_fence
+from backend.agent.bidfig import (
+    INVALID_PLACEHOLDER,
+    bidfig_fence_payloads,
+    clamp_bidfig_blocks,
+    close_unterminated_bidfig_fence,
+    extract_bidfig_fences,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -573,6 +580,19 @@ def build_requirements_text(requirements: dict[str, Any] | None) -> str:
 # ------------------------------------------------------------------ 评分台账（23 号 O2：S1 提取/S9 覆盖核查）
 
 
+def is_business_scoring_item(title: str, criteria: str = "") -> bool:
+    """评分项是否属商务/报价范畴（23 号批次五 E3）——词表口径复用问卷侧
+    is_business_question（硬词命中即商务；资质/业绩等宽泛词需无技术语境）。
+    商务项由投标人线下准备，技术章不认领商务分（E2E 实测"报价 60 分"
+    被产品商务标模块设计章误认领为已覆盖）。"""
+    text = "%s %s" % (title or "", criteria or "")
+    if any(keyword in text for keyword in _BUSINESS_QUESTION_HARD_KEYWORDS):
+        return True
+    return any(keyword in text for keyword in _BUSINESS_QUESTION_BROAD_KEYWORDS) and not _TECHNICAL_CONTEXT_RE.search(
+        text
+    )
+
+
 def scoring_items_of(analysis: dict[str, Any] | None) -> list[dict[str, str]]:
     """从招标要素里取结构化评分台账；旧向导/无评分办法时为空列表（全链路判空跳过，决策 42 口径）。"""
     if not isinstance(analysis, dict):
@@ -580,18 +600,21 @@ def scoring_items_of(analysis: dict[str, Any] | None) -> list[dict[str, str]]:
     items = analysis.get("scoring_items")
     if not isinstance(items, list):
         return []
-    result: list[dict[str, str]] = []
+    result: list[dict[str, Any]] = []
     for item in items[:30]:
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "").strip()
         if not title:
             continue
+        criteria = str(item.get("criteria") or "").strip()
         result.append(
             {
                 "title": title,
                 "weight": str(item.get("weight") or "").strip(),
-                "criteria": str(item.get("criteria") or "").strip(),
+                "criteria": criteria,
+                # 商务/报价类评分项（E3）：不注入章节 prompt、覆盖矩阵不认领
+                "is_business": is_business_scoring_item(title, criteria),
             }
         )
     return result
@@ -623,6 +646,8 @@ def score_items_for_node(
     )
     hits: list[dict[str, str]] = []
     for item in scoring_items:
+        if item.get("is_business"):
+            continue  # 商务得分点不注入技术章 prompt（E3）：商务标内容由投标人线下准备
         key = _norm_match_key(item["title"])
         if key and key in chain_text:
             hits.append(item)
@@ -652,9 +677,12 @@ def score_coverage_matrix(
     matrix: list[dict[str, Any]] = []
     generated = [str(node_id) for node_id in generated_node_ids or []]
     for item in scoring_items:
+        is_business = bool(item.get("is_business"))
         key = _norm_match_key(item["title"])
         covered_by: list[str] = []
-        if key:
+        # 商务项不认领（E3）：covered_by 恒空、前端覆盖卡标"商务人工准备"——
+        # 技术章写的是产品/方案实现，不等于响应了本标书的商务得分点
+        if key and not is_business:
             for node_id in generated:
                 chain_text = "".join(
                     _norm_match_key(f"{n.get('title') or ''}{n.get('summary') or ''}")
@@ -667,10 +695,93 @@ def score_coverage_matrix(
                 "title": item["title"],
                 "weight": item["weight"],
                 "criteria": item["criteria"],
+                "is_business": is_business,
                 "covered_by": covered_by,
             }
         )
     return matrix
+
+
+# ------------------------------------------------------------------ 图表加固（23 号批次五 E1/E2）
+
+
+def fig_stats_of(done: list[dict[str, Any]], fig_mode: str) -> dict[str, Any]:
+    """全稿图表统计（E1 观察）：mermaid/bidfig/降级块计数进 summary.fig_stats，
+    前端质检区展示；bidfig 模式下 mermaid 占比是批次五验收指标（E2E 实测基线 29%）。"""
+    stats: dict[str, Any] = {"fig_mode": fig_mode, "mermaid": 0, "bidfig": 0, "degraded": 0}
+    nodes: dict[str, dict[str, int]] = {}
+    for item in done:
+        content = str(item.get("content") or "")
+        mermaid = len(extract_mermaid_fences(content))
+        bidfig = len(extract_bidfig_fences(content))
+        degraded = content.count(INVALID_PLACEHOLDER)
+        stats["mermaid"] += mermaid
+        stats["bidfig"] += bidfig
+        stats["degraded"] += degraded
+        if mermaid or bidfig or degraded:
+            nodes[str(item.get("node_id") or "")] = {"mermaid": mermaid, "bidfig": bidfig, "degraded": degraded}
+    stats["nodes"] = nodes
+    return stats
+
+
+_BIDFIG_REPAIR_SYSTEM_PROMPT = (
+    "你是图表数据修正器。给你若干不合法的 bidfig 图表 JSON 与具体报错，"
+    "只输出修正后的 ```bidfig 围栏（围栏块数与输入一致、顺序一致），不要输出任何解释。"
+    "修正时只改报错指出的字段，其余数据原样保留，严禁虚构新的任务、日期与数值。"
+)
+
+_BIDFIG_REPAIR_USER_TEMPLATE = """以下 __COUNT__ 块 bidfig 图表数据不合法：
+
+__BLOCKS__
+
+请输出修正后的 __COUNT__ 块 ```bidfig 围栏（每块格式：```bidfig 换行、一行修正后的 JSON、换行 ```），
+顺序与上面一致，除围栏外不要输出任何文字。"""
+
+
+async def tighten_bidfig_fences(llm, body: str) -> tuple[str, dict[str, int]]:
+    """生成期收紧重渲（E2）：落盘前试渲染全部 bidfig 围栏，失败块带具体报错
+    （如「phases 最多 5 个阶段列」）回炉一次 LLM 修正，仍不合法才降级为占位说明。
+
+    必须在 generation worker 落盘前做——API 出口的 render_bidfig_fences 无法回炉。
+    返回 (正文, {"repaired": n, "degraded": m})；无失败块原样返回（零额外 LLM 调用）。
+    回炉输出围栏数对不上时按整体降级处理（宁降级不误替）。
+    """
+    stats = {"repaired": 0, "degraded": 0}
+    failed = [fence for fence in bidfig_fence_payloads(body) if fence["error"]]
+    if not failed:
+        return body, stats
+    blocks = "\n\n".join(
+        "第 %d 块（```bidfig 围栏内 JSON 原文）：\n%s\n报错：%s" % (index + 1, fence["payload"], fence["error"])
+        for index, fence in enumerate(failed)
+    )
+    repaired_payloads: list[Optional[str]] = [None] * len(failed)
+    try:
+        answer = strip_code_fence(
+            await llm.generate(
+                _BIDFIG_REPAIR_SYSTEM_PROMPT,
+                _BIDFIG_REPAIR_USER_TEMPLATE.replace("__COUNT__", str(len(failed))).replace("__BLOCKS__", blocks),
+            )
+        )
+        fixed_blocks = bidfig_fence_payloads(close_unterminated_bidfig_fence(answer))
+        if len(fixed_blocks) == len(failed):
+            for index, block in enumerate(fixed_blocks):
+                if not block["error"]:
+                    repaired_payloads[index] = block["payload"]
+    except Exception:
+        logger.warning("bidfig tighten repair llm call failed", exc_info=True)
+
+    lines = body.split("\n")
+    # 倒序替换防行号位移：修好的只换围栏内 JSON 行，仍坏的整块换占位说明
+    for index in range(len(failed) - 1, -1, -1):
+        fence = failed[index]
+        payload = repaired_payloads[index]
+        if payload is not None:
+            lines[fence["start"] + 1: fence["end"]] = payload.split("\n")
+            stats["repaired"] += 1
+        else:
+            lines[fence["start"]: fence["end"] + 1] = [INVALID_PLACEHOLDER]
+            stats["degraded"] += 1
+    return "\n".join(lines), stats
 
 
 # ------------------------------------------------------------------ 生成要求（决策 38-41）
@@ -1839,6 +1950,16 @@ class BidWizardWriteAgent:
         body = clamp_mermaid_blocks(close_unterminated_mermaid_fence(body))
         if fig_mode == "bidfig" and intro_children is None:
             body = clamp_bidfig_blocks(close_unterminated_bidfig_fence(body))
+            # 生成期收紧重渲（E2）：落盘前试渲染，失败块带具体报错回炉一次 LLM 修正，仍败降级占位
+            body, fig_repair = await tighten_bidfig_fences(self.llm, body)
+            if fig_repair["repaired"] or fig_repair["degraded"]:
+                logger.info(
+                    "bidfig tighten: task=%s node=%s repaired=%d degraded=%d",
+                    self.task_id,
+                    node["node_id"],
+                    fig_repair["repaired"],
+                    fig_repair["degraded"],
+                )
         # 拼装时会拼接标题行，剥掉正文开头模型自己重复输出的同名标题（防成稿双标题，
         # 也避免机检 duplicate_heading/empty_section 假信号——2026-10-23 预发布实测 60 节出现 3 处）
         body = strip_leading_title_headings(body, str(node.get("title") or ""))
@@ -1952,6 +2073,11 @@ class BidWizardWriteAgent:
             )
         except Exception:
             logger.exception("bid-wizard score_coverage failed: task=%s", self.task_id)
+        # 全稿图表统计（23 号批次五 E1 观察）：mermaid 混出占比/降级块数供前端与 E2E 复算
+        try:
+            summary["fig_stats"] = fig_stats_of(done, fig_mode)
+        except Exception:
+            logger.exception("bid-wizard fig_stats failed: task=%s", self.task_id)
         return summary
 
 

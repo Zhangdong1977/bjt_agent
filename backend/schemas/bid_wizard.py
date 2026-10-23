@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from backend.agent.bid_draft_agent import OUTLINE_MAX_NODES
+from backend.agent.bid_draft_agent import OUTLINE_MAX_NODES, normalize_rejection_items
 from backend.agent.bid_wizard_agent import (
     GENERATION_WORD_COUNT_MAX,
     GENERATION_WORD_COUNT_MIN,
@@ -64,12 +64,20 @@ class WizardResponse(BaseModel):
 
     @field_validator("analysis")
     @classmethod
-    def _strip_business_material_suggestions(cls, value: dict[str, Any] | None):
-        """2026-10-23 商务屏蔽：存量解读 JSON 里已落库的商务素材建议在出参时一并过滤——
-        新解读由 prompt + _bound_suggested_materials 双防线收口，这里兜住历史数据。"""
-        if not isinstance(value, dict) or not isinstance(value.get("suggested_materials"), list):
+    def _normalize_analysis(cls, value: dict[str, Any] | None):
+        """出参兜底（不落库）：
+        - 2026-10-23 商务屏蔽：存量解读 JSON 里已落库的商务素材建议一并过滤——
+          新解读由 prompt + _bound_suggested_materials 双防线收口，这里兜住历史数据；
+        - 2026-10-23 批次五 E4：存量平铺 rejection_items 出参归一为 {title, requirement}
+          （新解读由 prompt + normalize_rejection_items 收口），前端按统一结构两行展示。"""
+        if not isinstance(value, dict):
             return value
-        return {**value, "suggested_materials": _bound_suggested_materials(value["suggested_materials"])}
+        result = value
+        if isinstance(result.get("suggested_materials"), list):
+            result = {**result, "suggested_materials": _bound_suggested_materials(result["suggested_materials"])}
+        if isinstance(result.get("rejection_items"), list):
+            result = {**result, "rejection_items": normalize_rejection_items(result["rejection_items"])}
+        return result
 
     @field_validator("questionnaire")
     @classmethod

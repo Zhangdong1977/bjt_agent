@@ -2428,7 +2428,7 @@ def test_scoring_items_of_and_render_text():
 
     assert scoring_items_of(None) == []
     assert scoring_items_of({"scoring_items": [{"title": "技术方案", "weight": "12分"}]}) == [
-        {"title": "技术方案", "weight": "12分", "criteria": ""}
+        {"title": "技术方案", "weight": "12分", "criteria": "", "is_business": False}
     ]
     text = render_score_items_text([{"title": "技术方案", "weight": "12分", "criteria": "完整可行"}])
     assert "技术方案" in text and "12分" in text and "完整可行" in text
@@ -2479,3 +2479,209 @@ def test_section_system_prompt_switches_fig_mode():
     # bidfig 引擎：切 V1 bidfig 系统 prompt；不配图时以 charts_enabled 为准（无图就无引擎）
     assert section_system_prompt(charts_enabled=True, fig_mode="bidfig") == SECTION_SYSTEM_PROMPT_BIDFIG
     assert "不得输出任何 Markdown 表格" in section_system_prompt(charts_enabled=False, fig_mode="bidfig")
+
+
+# ------------------------------------------------------------------ 批次五 E2E 加固（2026-10-23）
+
+
+def test_section_system_prompt_bidfig_forbids_mermaid():
+    """E1：bidfig 模式系统 prompt 明令禁止 mermaid——撰写 E2E 实测混出 29%（16/56）。"""
+    from backend.agent.bid_draft_agent import SECTION_SYSTEM_PROMPT_BIDFIG
+
+    assert "严禁输出任何 mermaid 代码块" in SECTION_SYSTEM_PROMPT_BIDFIG
+    assert "仍用 mermaid" not in SECTION_SYSTEM_PROMPT_BIDFIG
+    assert "一律改用 Markdown 表格表达" in SECTION_SYSTEM_PROMPT_BIDFIG  # 占比类改表格
+
+
+def test_bidfig_fence_payloads_and_validate():
+    """E2 基础：validate_bidfig_payload 带具体报错（供回炉反馈），bidfig_fence_payloads 定位失败块。"""
+    import json
+
+    from backend.agent.bidfig import bidfig_fence_payloads, validate_bidfig_payload
+
+    ok = json.dumps(
+        {"kind": "gantt", "title": "进度", "tasks": [{"name": "部署", "phase": 0, "start": "2026-11-01", "end": "2026-12-10"}]}
+    )
+    bad = json.dumps(
+        {
+            "kind": "flow",
+            "title": "实施流程",
+            "phases": [{"name": "P%d" % i} for i in range(6)],
+            "steps": [{"name": "调研"}],
+        }
+    )
+    assert validate_bidfig_payload(ok) == ""
+    assert "phases 最多 5 个阶段列" in validate_bidfig_payload(bad)
+    assert "JSON 解析失败" in validate_bidfig_payload("{not-json")
+
+    md = "前文\n\n```bidfig\n%s\n```\n\n```bidfig\n%s\n```\n" % (ok, bad)
+    fences = bidfig_fence_payloads(md)
+    assert [fence["error"] == "" for fence in fences] == [True, False]
+
+
+def test_tighten_bidfig_fences_repairs_degrades_and_skips_valid():
+    """E2 收紧重渲：失败块带报错回炉一次——修好换 JSON；回炉无效/块数对不上降级占位；全好零调用。"""
+    import asyncio
+    import json
+
+    from backend.agent.bid_wizard_agent import tighten_bidfig_fences
+    from backend.agent.bidfig import INVALID_PLACEHOLDER, validate_bidfig_payload
+
+    bad = json.dumps(
+        {
+            "kind": "flow",
+            "title": "实施流程",
+            "phases": [{"name": "P%d" % i} for i in range(6)],
+            "steps": [{"name": "调研"}],
+        }
+    )
+    good = json.dumps(
+        {
+            "kind": "flow",
+            "title": "实施流程",
+            "phases": [{"name": "准备", "steps": [{"name": "调研"}]}, {"name": "实施", "steps": [{"name": "部署"}]}],
+        }
+    )
+    body = "说明文字\n\n```bidfig\n%s\n```\n\n收尾段落" % bad
+
+    class RepairLLM:
+        async def generate(self, system_prompt, user_prompt):
+            assert "phases 最多 5 个阶段列" in user_prompt  # 具体报错原样喂回 LLM
+            return "```bidfig\n%s\n```" % good
+
+    fixed, stats = asyncio.run(tighten_bidfig_fences(RepairLLM(), body))
+    assert stats == {"repaired": 1, "degraded": 0}
+    assert good in fixed and bad not in fixed
+    assert validate_bidfig_payload(fixed.split("```bidfig\n")[1].split("\n```")[0]) == ""
+
+    class GarbageLLM:
+        async def generate(self, system_prompt, user_prompt):
+            return "抱歉，我无法修正。"
+
+    degraded, stats2 = asyncio.run(tighten_bidfig_fences(GarbageLLM(), body))
+    assert stats2 == {"repaired": 0, "degraded": 1}
+    assert INVALID_PLACEHOLDER in degraded and bad not in degraded
+
+    class WrongCountLLM:
+        async def generate(self, system_prompt, user_prompt):
+            return "```bidfig\n%s\n```\n```bidfig\n%s\n```" % (good, good)  # 失败 1 块却回 2 块
+
+    mismatch, stats3 = asyncio.run(tighten_bidfig_fences(WrongCountLLM(), body))
+    assert stats3 == {"repaired": 0, "degraded": 1}
+    assert INVALID_PLACEHOLDER in mismatch and good not in mismatch  # 宁降级不误替
+
+    class BoomLLM:
+        async def generate(self, system_prompt, user_prompt):
+            raise AssertionError("valid body must not trigger repair call")
+
+    ok_body = "```bidfig\n%s\n```" % good
+    same, stats4 = asyncio.run(tighten_bidfig_fences(BoomLLM(), ok_body))
+    assert same == ok_body and stats4 == {"repaired": 0, "degraded": 0}
+
+
+def test_fig_stats_of_counts_fences_and_degradations():
+    """E1 观察：summary.fig_stats 统计全稿 mermaid/bidfig/降级块与命中章节。"""
+    import json
+
+    from backend.agent.bid_wizard_agent import fig_stats_of
+    from backend.agent.bidfig import INVALID_PLACEHOLDER
+
+    good = json.dumps(
+        {"kind": "flow", "title": "流程", "phases": [{"name": "准备"}], "steps": [{"name": "调研"}]}
+    )
+    done = [
+        {"node_id": "5", "content": "# 5\n\n```bidfig\n%s\n```\n" % good},
+        {"node_id": "6", "content": "# 6\n\n```mermaid\nflowchart TD\nA-->B\n```\n\n%s\n" % INVALID_PLACEHOLDER},
+        {"node_id": "7", "content": "# 7\n纯文字\n"},
+    ]
+    stats = fig_stats_of(done, "bidfig")
+    assert stats["fig_mode"] == "bidfig"
+    assert (stats["bidfig"], stats["mermaid"], stats["degraded"]) == (1, 1, 1)
+    assert stats["nodes"] == {"5": {"mermaid": 0, "bidfig": 1, "degraded": 0},
+                              "6": {"mermaid": 1, "bidfig": 0, "degraded": 1}}
+
+
+def test_is_business_scoring_item_and_matrix_claim_rules():
+    """E3：商务/报价类得分点——不注入技术章 prompt、覆盖矩阵不认领（covered_by 恒空）。"""
+    from backend.agent.bid_wizard_agent import (
+        is_business_scoring_item,
+        score_coverage_matrix,
+        score_items_for_node,
+        scoring_items_of,
+    )
+
+    assert is_business_scoring_item("报价", "投标报价得分") is True
+    assert is_business_scoring_item("商务部分响应") is True
+    assert is_business_scoring_item("总体建设方案", "方案完整性") is False
+    assert is_business_scoring_item("项目班子人员资质") is False  # 宽泛词 + 技术语境豁免
+
+    items = scoring_items_of(
+        {
+            "scoring_items": [
+                {"title": "报价", "weight": "60分", "criteria": "最低价得分"},
+                {"title": "技术方案", "weight": "9分", "criteria": ""},
+            ]
+        }
+    )
+    assert [item["is_business"] for item in items] == [True, False]
+
+    spec = [
+        {"node_id": "2", "title": "商务标生成模块设计", "summary": "响应得分点：报价（60分）"},
+        {"node_id": "5", "title": "技术方案", "summary": "响应得分点：技术方案"},
+    ]
+    # 商务项不注入章节 prompt（E2E 实测曾出现"报价 60 分"被产品商务标模块设计章认领）
+    assert [h["title"] for h in score_items_for_node(spec, spec[0], items)] == []
+    assert [h["title"] for h in score_items_for_node(spec, spec[1], items)] == ["技术方案"]
+    # 矩阵：商务项即便被章节点名也不认领，行上带 is_business 供前端标"商务人工准备"
+    matrix = score_coverage_matrix(spec, ["2", "5"], items)
+    by_title = {row["title"]: row for row in matrix}
+    assert by_title["报价"]["is_business"] is True and by_title["报价"]["covered_by"] == []
+    assert by_title["技术方案"]["is_business"] is False and by_title["技术方案"]["covered_by"] == ["5"]
+
+
+def test_rejection_items_structured_upgrade_backcompat():
+    """E4：rejection_items 升级 {title, requirement}——存量平铺字符串兼容读取，key 名不变。"""
+    from backend.agent.bid_draft_agent import ANALYSIS_USER_TEMPLATE, _bound_analysis, normalize_rejection_items
+
+    assert normalize_rejection_items(
+        [{"title": "保证金", "requirement": "足额缴纳，否则否决"}, "未按要求盖章签字", {"requirement": "无标题丢弃"}, 42]
+    ) == [
+        {"title": "保证金", "requirement": "足额缴纳，否则否决"},
+        {"title": "未按要求盖章签字", "requirement": ""},
+        {"title": "42", "requirement": ""},  # 非字符串照旧口径 str 化保留（与 _strings 行为一致）
+    ]
+    assert normalize_rejection_items("bad") == []
+    assert normalize_rejection_items(None) == []
+    assert _bound_analysis({"rejection_items": [{"title": "保证金", "requirement": "x"}]})["rejection_items"] == [
+        {"title": "保证金", "requirement": "x"}
+    ]
+    # 分析 prompt 同步结构化（key 只增不改口径：名字不变、形状升级并声明兼容）
+    assert '"rejection_items": [{"title"' in ANALYSIS_USER_TEMPLATE
+
+
+def test_wizard_response_analysis_egress_normalizes_rejection():
+    """E4：存量平铺 rejection_items 经 WizardResponse 出参归一为 {title, requirement}（前端统一两行展示）。"""
+    from datetime import datetime, timezone
+
+    from backend.schemas.bid_wizard import WizardResponse
+
+    wizard = WizardResponse.model_validate(
+        {
+            "id": "w1",
+            "project_id": "p1",
+            "stage": "material",
+            "status": "active",
+            "analysis": {"rejection_items": ["未按要求盖章签字"]},
+            "questionnaire": None,
+            "requirements": None,
+            "spec": None,
+            "spec_previous": None,
+            "spec_confirmed_at": None,
+            "requirements_stale": False,
+            "spec_stale": False,
+            "error_message": None,
+            "created_at": datetime(2026, 10, 23, tzinfo=timezone.utc),
+            "updated_at": datetime(2026, 10, 23, tzinfo=timezone.utc),
+        }
+    )
+    assert wizard.analysis["rejection_items"] == [{"title": "未按要求盖章签字", "requirement": ""}]

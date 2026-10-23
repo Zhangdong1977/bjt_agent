@@ -53,12 +53,13 @@ __TENDER_TEXT__
   "basic": {"project_name": "", "tendering_unit": "", "opening_date": "", "bid_deadline": "", "budget": ""},
   "tender_requirements": ["招标需求/技术要求要点，每条一句话"],
   "scoring_criteria": ["评分标准要点，每条一句话"],
-  "rejection_items": ["废标/否决条款要点，每条一句话"],
+  "rejection_items": [{"title": "废标/否决条款要点（短语）", "requirement": "该条款的具体要求，一句话"}],
   "scoring_items": [{"title": "评分项名称（照抄评分办法原文）", "weight": "分值或分值区间，如 9分；提取不到留空字符串", "criteria": "该评分项的评审标准要点，一句话"}]
 }
 
 评分办法（评标办法/评分细则章节）逐项拆出可独立计分的评分项进 scoring_items（含分值与评审标准），
-与 scoring_criteria（要点罗列）并存；评分办法整章缺失时 scoring_items 为空数组。"""
+与 scoring_criteria（要点罗列）并存；评分办法整章缺失时 scoring_items 为空数组。
+rejection_items 每条拆 {title, requirement}（title=条款要点短语，requirement=具体要求；提取不到 requirement 留空字符串，不要虚构）。"""
 
 OUTLINE_SYSTEM_PROMPT = (
     "你是资深投标文件编写专家，根据招标要素设计投标文件（标书）章节大纲。"
@@ -108,8 +109,10 @@ _CHART_RULES_BIDFIG = (
     '"messages":[{"from":0,"to":1,"text":"消息或调用说明"}]}'
     "（from/to 填 actors 数组下标，返回消息可加 \"dash\":true，参与方 2-6 个）；"
     "⑥以上图表的日期、名称、数值严禁虚构，日期一律 YYYY-MM-DD 且与正文一致，每节 bidfig 图最多 2 张；"
-    "⑦其余类型图示（占比构成等）仍用 mermaid 代码块（```mermaid 围栏）"
-    "输出，语法必须严格合法，节点与标签使用中文，每节 mermaid 图最多 2 张；"
+    # 2026-10-23 批次五 E1：bidfig 模式实测 mermaid 混出 29%（16/56）——本模式图表只允许
+    # bidfig 围栏与 Markdown 表格，占比构成等无原语的图示一律表格化，严禁输出 mermaid 代码块。
+    "⑦其余类型图示（占比构成、构成分析等）一律改用 Markdown 表格表达；"
+    "本模式严禁输出任何 mermaid 代码块（```mermaid 围栏）；"
 )
 
 SECTION_SYSTEM_PROMPT = (
@@ -333,6 +336,25 @@ def chart_quality_stats(text: str) -> dict[str, int]:
     }
 
 
+def normalize_rejection_items(value: Any) -> list[dict[str, str]]:
+    """废标/否决条款归一（23 号批次五 E4）：新数据 {title, requirement} 结构化，
+    存量平铺字符串兼容读取（title=原文、requirement 留空）。"""
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, str]] = []
+    for raw in value[:50]:
+        if isinstance(raw, dict):
+            title = str(raw.get("title") or "").strip()
+            if not title:
+                continue
+            items.append({"title": title[:200], "requirement": str(raw.get("requirement") or "").strip()[:500]})
+        else:
+            title = str(raw or "").strip()
+            if title:
+                items.append({"title": title[:200], "requirement": ""})
+    return items
+
+
 def _bound_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
     def _strings(value: Any, limit: int, max_items: int) -> list[str]:
         if not isinstance(value, list):
@@ -365,7 +387,7 @@ def _bound_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
         "basic": basic,
         "tender_requirements": _strings(analysis.get("tender_requirements"), 1_000, 50),
         "scoring_criteria": _strings(analysis.get("scoring_criteria"), 1_000, 50),
-        "rejection_items": _strings(analysis.get("rejection_items"), 1_000, 50),
+        "rejection_items": normalize_rejection_items(analysis.get("rejection_items")),
         "scoring_items": _scoring_items(analysis.get("scoring_items")),
     }
 

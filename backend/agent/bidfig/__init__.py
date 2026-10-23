@@ -8,13 +8,14 @@
 - close_unterminated_bidfig_fence / clamp_bidfig_blocks   agent 落盘前修补
 """
 from .fences import (BIDFIG_LANG, BIDFIG_SVG_LANG, INVALID_PLACEHOLDER,
-                     clamp_bidfig_blocks, close_unterminated_bidfig_fence,
-                     extract_bidfig_fences, render_bidfig_fences, render_spec)
+                     bidfig_fence_payloads, clamp_bidfig_blocks,
+                     close_unterminated_bidfig_fence, extract_bidfig_fences,
+                     render_bidfig_fences, render_spec, validate_bidfig_payload)
 from .gantt import BidfigSpecError
 
 __all__ = [
     "BIDFIG_LANG", "BIDFIG_SVG_LANG", "INVALID_PLACEHOLDER",
     "BidfigSpecError",
-    "clamp_bidfig_blocks", "close_unterminated_bidfig_fence",
-    "extract_bidfig_fences", "render_bidfig_fences", "render_spec",
+    "bidfig_fence_payloads", "clamp_bidfig_blocks", "close_unterminated_bidfig_fence",
+    "extract_bidfig_fences", "render_bidfig_fences", "render_spec", "validate_bidfig_payload",
 ]

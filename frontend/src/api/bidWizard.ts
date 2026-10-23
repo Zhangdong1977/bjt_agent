@@ -124,12 +124,21 @@ export interface WizardDocCheck {
   detail: string;
 }
 
-/** 得分点覆盖矩阵行（23 号 O2，summary.score_coverage）。 */
+/** 得分点覆盖矩阵行（23 号 O2，summary.score_coverage；is_business=批次五 E3 商务口径）。 */
 export interface WizardScoreCoverage {
   title: string;
   weight?: string | null;
   criteria?: string | null;
+  is_business?: boolean;
   covered_by: string[];
+}
+
+/** 全稿图表统计（23 号批次五 E1，summary.fig_stats）；旧任务无该字段。 */
+export interface WizardFigStats {
+  fig_mode: string;
+  mermaid: number;
+  bidfig: number;
+  degraded: number;
 }
 
 export interface WizardSection {

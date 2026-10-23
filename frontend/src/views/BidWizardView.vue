@@ -48,6 +48,7 @@ import {
   type GenerationPart,
   type Wizard,
   type WizardDocCheck,
+  type WizardFigStats,
   type WizardListItem,
   type WizardMaterial,
   type WizardQaHistoryItem,
@@ -790,9 +791,23 @@ function analysisStrings(field: string): string[] {
 }
 const analysisRequirements = computed(() => analysisStrings("tender_requirements"));
 const analysisScoring = computed(() => analysisStrings("scoring_criteria"));
-const analysisRejection = computed(() => analysisStrings("rejection_items"));
+/** 废标/否决条款（批次五 E4）：结构化 {title, requirement} 两行展示；存量平铺字符串兼容为 title-only。 */
+const analysisRejection = computed<{ title: string; requirement: string }[]>(() => {
+  const raw = analysis.value?.rejection_items;
+  if (!Array.isArray(raw)) return [];
+  return (raw as unknown[])
+    .map((item) => {
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        return { title: String(record.title || "").trim(), requirement: String(record.requirement || "").trim() };
+      }
+      return { title: String(item || "").trim(), requirement: "" };
+    })
+    .filter((item) => item.title)
+    .slice(0, 50);
+});
 /** 评分台账（23 号 O2）：结构化得分点 {title, weight, criteria}——旧向导/无评分办法时为空（模板自动隐藏）。 */
-const analysisScoringItems = computed<{ title: string; weight?: string; criteria?: string }[]>(() => {
+const analysisScoringItems = computed<{ title: string; weight?: string; criteria?: string; isBusiness?: boolean }[]>(() => {
   const raw = analysis.value?.scoring_items;
   if (!Array.isArray(raw)) return [];
   return (raw as Record<string, unknown>[])
@@ -801,6 +816,7 @@ const analysisScoringItems = computed<{ title: string; weight?: string; criteria
       title: String(item.title).trim(),
       weight: typeof item.weight === "string" ? item.weight.trim() : "",
       criteria: typeof item.criteria === "string" ? item.criteria.trim() : "",
+      isBusiness: item.is_business === true,
     }))
     .slice(0, 30);
 });
@@ -2328,11 +2344,28 @@ const scoreCoverage = computed<WizardScoreCoverage[]>(() => {
       title: String(item.title || ""),
       weight: typeof item.weight === "string" ? item.weight : "",
       criteria: typeof item.criteria === "string" ? item.criteria : "",
+      is_business: item.is_business === true,
       covered_by: Array.isArray(item.covered_by) ? (item.covered_by as unknown[]).map(String) : [],
     }))
     .filter((item) => item.title);
 });
-const uncoveredScoreItems = computed(() => scoreCoverage.value.filter((item) => !item.covered_by.length));
+/** 商务/报价类得分点（E3）：商务人工准备、不计入覆盖；技术类未覆盖才提示补章。 */
+const businessScoreItems = computed(() => scoreCoverage.value.filter((item) => item.is_business));
+const uncoveredScoreItems = computed(
+  () => scoreCoverage.value.filter((item) => !item.is_business && !item.covered_by.length)
+);
+/** summary.fig_stats（批次五 E1 观察）：全稿图表块计数；旧任务无该字段。 */
+const figStats = computed<WizardFigStats | null>(() => {
+  const raw = task.value?.summary?.fig_stats;
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  return {
+    fig_mode: typeof record.fig_mode === "string" ? record.fig_mode : "mermaid",
+    mermaid: Number(record.mermaid) || 0,
+    bidfig: Number(record.bidfig) || 0,
+    degraded: Number(record.degraded) || 0,
+  };
+});
 const copyDraftBusy = ref(false);
 /** 复制全稿 Markdown（23 号 O9 轻量版）：按大纲序聚合已生成章节内容。 */
 async function copyFullDraft() {
@@ -2744,15 +2777,20 @@ onUnmounted(() => {
               <ul class="analysis-reqs score-items">
                 <li v-for="(item, index) in analysisScoringItems" :key="index">
                   <span class="score-title">{{ item.title }}</span>
+                  <span v-if="item.isBusiness" class="score-weight">商务</span>
                   <span v-if="item.weight" class="score-weight">{{ item.weight }}</span>
                   <span v-if="item.criteria" class="score-criteria">{{ item.criteria }}</span>
                 </li>
               </ul>
             </div>
+            <!-- 批次五 E4：废标条款结构化两行（要点短语 + 具体要求）；存量平铺数据经出参归一后同构展示 -->
             <div v-if="analysisRejection.length" class="analysis-group">
               <strong>废标风险条款</strong>
-              <ul class="analysis-reqs">
-                <li v-for="(item, index) in analysisRejection" :key="index">{{ item }}</li>
+              <ul class="analysis-reqs score-items">
+                <li v-for="(item, index) in analysisRejection" :key="index">
+                  <span class="score-title">{{ item.title }}</span>
+                  <span v-if="item.requirement" class="score-criteria">{{ item.requirement }}</span>
+                </li>
               </ul>
             </div>
             <div v-if="suggestedMaterials.length" class="analysis-suggest">
@@ -3382,15 +3420,29 @@ onUnmounted(() => {
                 </li>
               </ul>
             </div>
+            <!-- 23 号批次五 E1：图表统计（bidfig 模式正文不应再出现 mermaid；降级=数据无效已省略） -->
+            <div v-if="!taskRunning && figStats && (figStats.bidfig || figStats.mermaid || figStats.degraded)" class="card qc-card">
+              <h3>图表统计</h3>
+              <p class="hint" style="margin:0">
+                引擎：{{ figStats.fig_mode === "bidfig" ? "新版渲染（bidfig）" : "标准（mermaid）" }}；
+                bidfig {{ figStats.bidfig }} 块 · mermaid {{ figStats.mermaid }} 块 · 数据无效已省略 {{ figStats.degraded }} 块。
+                <template v-if="figStats.fig_mode === 'bidfig' && figStats.mermaid">
+                  当前为新版渲染，正文不应出现 mermaid 图——建议对相关章节单章重生成。</template>
+              </p>
+            </div>
             <!-- 23 号 O2：得分点覆盖矩阵（无评分台账时 summary 不含该字段，卡片自动隐藏） -->
             <div v-if="!taskRunning && scoreCoverage.length" class="card qc-card">
               <h3>得分点覆盖</h3>
               <p class="hint" style="margin:0 0 8px">
-                {{ scoreCoverage.length }} 个评分项已映射到章节；<template v-if="uncoveredScoreItems.length">尚有 {{ uncoveredScoreItems.length }} 项未覆盖——多为商务/报价类评分项，超出技术标生成范围（商务标请线下编制）；技术类未覆盖项建议在大纲补章。</template><template v-else>全部评分项均有章节响应。</template>
+                {{ scoreCoverage.length }} 个评分项已映射<template v-if="businessScoreItems.length">（含商务/报价类 {{ businessScoreItems.length }} 项，商务人工准备、不计入覆盖）</template>；<template v-if="uncoveredScoreItems.length">技术类尚有 {{ uncoveredScoreItems.length }} 项未覆盖——超出技术标生成范围或需在大纲补章（商务标请线下编制）。</template><template v-else>技术类评分项均有章节响应。</template>
               </p>
               <ul class="qc-list coverage-list">
-                <li v-for="(item, index) in scoreCoverage" :key="index" :class="{ error: !item.covered_by.length }">
-                  <span class="qc-badge">{{ item.covered_by.length ? "已覆盖" : "未覆盖" }}</span>
+                <li
+                  v-for="(item, index) in scoreCoverage"
+                  :key="index"
+                  :class="{ error: !item.is_business && !item.covered_by.length }"
+                >
+                  <span class="qc-badge">{{ item.is_business ? "商务人工准备" : item.covered_by.length ? "已覆盖" : "未覆盖" }}</span>
                   <span class="score-title">{{ item.title }}</span>
                   <span v-if="item.weight" class="score-weight">{{ item.weight }}</span>
                   <span v-if="item.covered_by.length" class="qc-node">{{ item.covered_by.join("、") }}</span>
