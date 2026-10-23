@@ -4,7 +4,11 @@
 wizard 撰写期 draft_checks（23 号 O1/O6）单测：成对重复（2026-10-22 生产工单类型）、
 叶子节篇幅达标、内容缺失、既有五项全稿检查复用。
 """
-from backend.agent.bid_doc_checks import assemble_checks, draft_checks
+from backend.agent.bid_doc_checks import (
+    assemble_checks,
+    draft_checks,
+    strip_leading_title_headings,
+)
 
 
 def test_clean_document_passes():
@@ -154,3 +158,98 @@ def test_draft_checks_reuses_assemble_checks_on_joined_md():
 
 def test_draft_checks_empty_input_returns_empty():
     assert draft_checks([]) == []
+
+
+# ------------------------------------------------------------------ 2026-10-23 预发布实测缺陷回归
+
+
+def _noise_md(sections: int = 25) -> str:
+    """拼接标题行后紧跟正文小节标题的成稿模式：每节制造一条 empty_section 假阳性。"""
+    parts = [
+        f"# 章节{i}\n\n# 小节{i}\n\n正文内容{i}足够长足够长足够长，确保小节正文不触发空章节检查阈值。" for i in range(sections)
+    ]
+    parts.append("# 售后服务\n\n售后服务正文一足够长足够长足够长足够长足够长足够长。")
+    parts.append("# 售后服务\n\n售后服务正文二足够长足够长足够长足够长足够长足够长。")
+    return "\n\n".join(parts)
+
+
+def test_assemble_checks_cap_drops_real_issues_without_skip():
+    """旧缺陷复现：empty_section 噪音占满 20 条封顶配额，duplicate_heading 被整体挤掉。"""
+    md = _noise_md()
+    assert "duplicate_heading" not in [i["type"] for i in assemble_checks(md)]
+
+
+def test_assemble_checks_skip_types_filters_before_cap():
+    md = _noise_md()
+    skipped = assemble_checks(md, skip_types=("empty_section",))
+    types = [i["type"] for i in skipped]
+    assert "duplicate_heading" in types
+    assert "empty_section" not in types
+
+
+def test_draft_checks_reports_duplicate_despite_heading_noise():
+    """2026-10-23 预发布 888724b2 实测：60 节成稿 3 处双标题被噪音挤成 doc_checks=0。"""
+    sections = [
+        {
+            "node_id": str(i + 1),
+            "title": f"章节{i}",
+            "content": f"# 章节{i}\n\n### 一、第{i}章总述\n\n正文内容{i}足够长，保证小节正文越过空章节阈值不被误判。",
+            "word_count": 60,
+            "article_count": 1,
+            "text_count": 100,
+        }
+        for i in range(25)
+    ]
+    sections.append(
+        {
+            "node_id": "26",
+            "title": "总体架构设计",
+            "content": f"# 总体架构设计\n\n## 总体架构设计\n\n### 一、架构思路\n\n{_leaf_body(60)}",
+            "word_count": 300,
+            "article_count": 2,
+            "text_count": 300,
+        }
+    )
+    issues = draft_checks(sections)
+    types = [i["type"] for i in issues]
+    assert "duplicate_heading" in types
+    assert "empty_section" not in types
+    detail = next(i for i in issues if i["type"] == "duplicate_heading")["detail"]
+    assert "总体架构设计" in detail and "2 次" in detail
+
+
+def test_strip_leading_title_headings():
+    title = "总体架构设计"
+    # 同名（Markdown 层级可不同）开头标题被剥掉
+    assert strip_leading_title_headings("## 总体架构设计\n\n### 一、思路\n\n正文", title) == "### 一、思路\n\n正文"
+    # 编号前缀归一后同名也剥
+    assert strip_leading_title_headings("### 2.1 总体架构设计\n\n正文", title) == "正文"
+    # 双重同名连排都剥
+    assert strip_leading_title_headings("## 总体架构设计\n\n## 总体架构设计\n\n正文", title) == "正文"
+    # 加粗行同名也剥
+    assert strip_leading_title_headings("**总体架构设计**\n\n正文", title) == "正文"
+    # 开头标题不同名 / 正文直接开头：原样保留
+    other = "### 一、总体思路\n\n正文"
+    assert strip_leading_title_headings(other, title) == other
+    plain = "正文开头没有标题"
+    assert strip_leading_title_headings(plain, title) == plain
+
+
+def test_draft_checks_flags_overlong_leaf():
+    """O6 补口：叶子节篇幅超规划 2 倍提示（篇幅与费用防护，只提示不阻断）。"""
+    sections = [
+        {
+            "node_id": "1.1",
+            "title": "架构设计",
+            "content": f"## 1.1 架构设计\n\n{_leaf_body(80)}",
+            "word_count": 1500,
+            "article_count": 2,
+            "text_count": 300,
+        }
+    ]
+    issues = draft_checks(sections)
+    over = [i for i in issues if i["type"] == "overlong_section"]
+    assert len(over) == 1 and over[0]["node_id"] == "1.1" and over[0]["severity"] == "warning"
+    # 1.5 倍在允许范围内不报
+    sections[0]["word_count"] = 900
+    assert not [i for i in draft_checks(sections) if i["type"] == "overlong_section"]

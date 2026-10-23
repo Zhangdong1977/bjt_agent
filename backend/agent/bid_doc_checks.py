@@ -22,8 +22,14 @@ _NUM_PREFIX_RE = re.compile(r"^(?:\d+(?:[.．]\d+)*|[一二三四五六七八九
 _MAX_ISSUES = 20
 
 
-def assemble_checks(md: str) -> list[dict[str, str]]:
-    """纯文本全文档机检；返回问题列表（空列表=全部通过）。"""
+def assemble_checks(md: str, skip_types: tuple[str, ...] = ()) -> list[dict[str, str]]:
+    """纯文本全文档机检；返回问题列表（空列表=全部通过）。
+
+    skip_types：在封顶前丢弃的检查类型。wizard draft_checks 用它排除 empty_section——
+    拼接的章节标题行后紧跟正文小节标题会产生大量空章节假阳性，若截断后才过滤，
+    噪音会占满 _MAX_ISSUES 配额、把 duplicate_heading 等真问题整体挤掉
+    （2026-10-23 预发布实测：60 节全稿 3 处双标题被挤成 doc_checks=0）。
+    """
     issues: list[dict[str, str]] = []
     lines = (md or "").split("\n")
 
@@ -68,6 +74,8 @@ def assemble_checks(md: str) -> list[dict[str, str]]:
                 "detail": "「%s」(%d 次) 与「%s」(%d 次) 混用，建议统一口径" % (a, ca, b, cb),
             })
 
+    if skip_types:
+        issues = [issue for issue in issues if issue["type"] not in skip_types]
     return issues[:_MAX_ISSUES]
 
 
@@ -77,6 +85,9 @@ def assemble_checks(md: str) -> list[dict[str, str]]:
 _DRAFT_MAX_ISSUES = 30
 # 叶子节篇幅低于规划值的该比例时告警（SOP check_leaf ≥500 字的产品化：按各章规划值比例而非硬编码）
 _LEAF_WORD_RATIO = 0.5
+# 叶子节篇幅高于规划值的该比例时提示（2026-10-23 预发布实测：表格+长文惯性让全稿到规划的 2 倍，
+# 超稿无判据则篇幅与费用悄悄翻倍——只提示不阻断）
+_LEAF_OVER_WORD_RATIO = 2.0
 
 
 def _normalize_title(text: str) -> str:
@@ -94,15 +105,49 @@ def _direct_children(node_id: str, all_ids: list[str]) -> list[str]:
     ]
 
 
+def strip_leading_title_headings(body: str, title: str) -> str:
+    """剥掉正文开头与章节标题同名（归一比较）的标题行。
+
+    拼装 content 时系统会拼接标题行，而模型时常忽略「不含本节标题」指令、
+    正文又以同名标题开头——成稿连排两个同名标题（2026-10-23 预发布实测 60 节出现 3 处），
+    同时给机检制造 duplicate_heading/empty_section 假信号。只处理正文最前面的连续
+    同名标题段（#/加粗行，编号前缀归一），不触碰正文中间的任何标题；开头标题与
+    章节标题不同名则原样返回。
+    """
+    target = _normalize_title(title)
+    if not target:
+        return body or ""
+    lines = (body or "").split("\n")
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip():
+            index += 1
+            continue
+        heading_text = ""
+        if (match := _HEADING_RE.match(line)):
+            heading_text = match.group(2)
+        elif (match := _BOLD_LINE_RE.match(line)):
+            heading_text = match.group(1)
+        if not heading_text or _normalize_title(heading_text) != target:
+            break
+        index += 1
+    if not index:
+        return body or ""
+    return "\n".join(lines[index:]).lstrip("\n")
+
+
 def draft_checks(sections: list[dict]) -> list[dict[str, str]]:
     """wizard 撰写完成期全稿机检（逐章 md 已含各自标题行）。
 
     sections 每项：{node_id, title, content, word_count?, article_count?, text_count?}
     返回 [{severity, node_id, type, detail}]（node_id 为空串=全稿级），封顶 30 条。
 
-    覆盖：既有五项全稿检查（拼合后复用 assemble_checks）+ 三项逐章检查——
+    覆盖：既有五项全稿检查（拼合后复用 assemble_checks，empty_section 在封顶前跳过——
+    父章导语与「标题行后紧跟小节标题」的拼接模式都会触发空章节假阳性）+ 逐章检查——
     ① 章内成对重复（2026-10-22 生产工单类型：父章正文里出现与直属子节同名的标题行）；
-    ② 叶子节篇幅达标（实际字数 < 规划 article_count×text_count × 0.5）；
+    ② 叶子节篇幅达标（实际字数 < 规划 article_count×text_count × 0.5 告警，
+       > 2.0 提示超稿——篇幅与费用防护）；
     ③ 章节正文缺失/为空（content 空或过短）。
     """
     issues: list[dict[str, str]] = []
@@ -111,12 +156,10 @@ def draft_checks(sections: list[dict]) -> list[dict[str, str]]:
         return issues
 
     joined = "\n\n".join(str(s.get("content") or "") for s in valid)
-    # 空章节检查换成本模块逐节口径：父章与直属子节同批时只写导语（合法地短），
-    # assemble_checks 的 empty_section 对这类导语必误报——此处过滤掉，
-    # 由下方 missing_content（叶子空内容）+ short_section（叶子篇幅）覆盖同等问题。
-    for base in assemble_checks(joined):
-        if base["type"] == "empty_section":
-            continue
+    # 空章节检查换成本模块逐节口径：父章与直属子节同批时只写导语（合法地短）、
+    # 拼接标题后紧跟正文小节标题也合法——empty_section 让 assemble_checks 在封顶前跳过，
+    # 防止 40+ 条噪音占满配额挤掉真问题；同等问题由下方 missing_content + short/overlong 覆盖。
+    for base in assemble_checks(joined, skip_types=("empty_section",)):
         issues.append(
             {"severity": "warning", "node_id": "", "type": base["type"], "detail": base["detail"]}
         )
@@ -170,6 +213,12 @@ def draft_checks(sections: list[dict]) -> list[dict[str, str]]:
                 issues.append(
                     {"severity": "warning", "node_id": node_id, "type": "short_section",
                      "detail": "「%s」约 %d 字，仅为规划篇幅（约 %d 字）的 %d%%" % (
+                         title[:40], actual, planned, int(actual * 100 / planned))}
+                )
+            elif actual > planned * _LEAF_OVER_WORD_RATIO:
+                issues.append(
+                    {"severity": "warning", "node_id": node_id, "type": "overlong_section",
+                     "detail": "「%s」约 %d 字，达规划篇幅（约 %d 字）的 %d%%——确认表格与展开是否必要，超稿同步推高篇幅与费用" % (
                          title[:40], actual, planned, int(actual * 100 / planned))}
                 )
 

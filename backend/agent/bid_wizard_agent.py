@@ -45,7 +45,7 @@ from backend.agent.bid_draft_agent import (
     parse_json_payload,
     strip_code_fence,
 )
-from backend.agent.bid_doc_checks import draft_checks
+from backend.agent.bid_doc_checks import draft_checks, strip_leading_title_headings
 from backend.agent.bidfig import clamp_bidfig_blocks, close_unterminated_bidfig_fence
 
 logger = logging.getLogger(__name__)
@@ -270,7 +270,7 @@ __OUTLINE_TEXT__
 __SCORE_ITEMS_TEXT__
 本章图表计划：
 __CHART_PLAN_TEXT__
-篇幅：约 __ARTICLE_COUNT__ 段，每段约 __TEXT_COUNT__ 字。
+篇幅：约 __ARTICLE_COUNT__ 段，每段约 __TEXT_COUNT__ 字（表格与图注文字一并计入篇幅，超出应精简，不要为凑段数灌水）。
 
 ## 素材摘录（公司真实资料，事实性内容只能出自这里）
 __MATERIAL_CHUNKS__
@@ -1839,6 +1839,9 @@ class BidWizardWriteAgent:
         body = clamp_mermaid_blocks(close_unterminated_mermaid_fence(body))
         if fig_mode == "bidfig" and intro_children is None:
             body = clamp_bidfig_blocks(close_unterminated_bidfig_fence(body))
+        # 拼装时会拼接标题行，剥掉正文开头模型自己重复输出的同名标题（防成稿双标题，
+        # 也避免机检 duplicate_heading/empty_section 假信号——2026-10-23 预发布实测 60 节出现 3 处）
+        body = strip_leading_title_headings(body, str(node.get("title") or ""))
         level = max(1, min(6, int(node.get("level") or 1)))
         content = f"{'#' * level} {node['title']}\n\n{body}"[:SECTION_RESULT_MAX_CHARS]
 
