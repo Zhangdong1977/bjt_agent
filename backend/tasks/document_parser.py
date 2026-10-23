@@ -636,7 +636,20 @@ async def _augment_duplicate_image_evidence(
 
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+# Markdown 素材（2026-10-23，AI编标 material 上传放开）：正文直读，不做格式转换
+_MARKDOWN_SUFFIXES = {".md", ".markdown"}
 _rapidocr_engine = None  # 进程级缓存（celery prefork 各进程独立加载一次）
+
+
+def _read_markdown_text(file_path: Path) -> str:
+    """读 Markdown 素材正文：优先 UTF-8，失败回退 GBK（Windows 用户机常见编码）。
+
+    纯函数（只依赖文件系统），便于单测编码回退。
+    """
+    try:
+        return file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return file_path.read_text(encoding="gbk", errors="replace")
 
 
 def _image_material_markdown(filename: str, ocr_text: str, provider_label: str) -> str:
@@ -756,6 +769,23 @@ async def _parse_document_internal(document: Document, file_path: Path, settings
             f"[PARSE] XLSX done: document_id={document.id}, elapsed={elapsed:.1f}s, "
             f"md_length={len(parsed_data.get('text', ''))}, "
             f"images={len(parsed_data.get('images', []))}"
+        )
+    elif suffix in _MARKDOWN_SUFFIXES:
+        # Markdown 素材（2026-10-23）：正文即解析产物，无图片抽取；直读落盘 <stem>_parsed.md
+        text = await asyncio.to_thread(_read_markdown_text, file_path)
+        if not text.strip():
+            raise RuntimeError("Markdown 文件内容为空，无法建立素材索引")
+        parsed_data = {
+            "text": text,
+            "images": [],
+            "page_count": 1,
+            "parser_name": "markdown",
+            "parser_version": "1",
+        }
+        elapsed = time_module.time() - start_time
+        logger.info(
+            f"[PARSE] MD done: document_id={document.id}, elapsed={elapsed:.1f}s, "
+            f"md_length={len(text)}"
         )
     else:
         # DOCX/DOC parsing with mammoth progress callback

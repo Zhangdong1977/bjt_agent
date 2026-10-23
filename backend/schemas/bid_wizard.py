@@ -6,7 +6,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.agent.bid_draft_agent import OUTLINE_MAX_NODES
-from backend.agent.bid_wizard_agent import GENERATION_WORD_COUNT_MAX, GENERATION_WORD_COUNT_MIN
+from backend.agent.bid_wizard_agent import (
+    GENERATION_WORD_COUNT_MAX,
+    GENERATION_WORD_COUNT_MIN,
+    _bound_suggested_materials,
+)
 
 WizardStage = Literal["material", "requirement", "outline", "writing"]
 GenerationPart = Literal["business", "technical"]
@@ -56,6 +60,15 @@ class WizardResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("analysis")
+    @classmethod
+    def _strip_business_material_suggestions(cls, value: dict[str, Any] | None):
+        """2026-10-23 商务屏蔽：存量解读 JSON 里已落库的商务素材建议在出参时一并过滤——
+        新解读由 prompt + _bound_suggested_materials 双防线收口，这里兜住历史数据。"""
+        if not isinstance(value, dict) or not isinstance(value.get("suggested_materials"), list):
+            return value
+        return {**value, "suggested_materials": _bound_suggested_materials(value["suggested_materials"])}
 
 
 class WizardStageUpdate(BaseModel):

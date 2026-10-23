@@ -104,7 +104,7 @@ def test_estimate_index_points_positive_and_monotonic():
 def test_bound_suggested_materials_shape_and_bounds():
     items = _bound_suggested_materials(
         [
-            {"name": "类似业绩合同", "reason": "资格要求近三年类似业绩不少于 2 项"},
+            {"name": "项目班子人员职称证书清单", "reason": "评分办法要求提供拟投入人员资格证书"},
             {"name": "", "reason": "空名丢弃"},
             "not-a-dict",
             *[
@@ -114,10 +114,27 @@ def test_bound_suggested_materials_shape_and_bounds():
         ]
     )
     assert len(items) == 8
-    assert items[0] == {"name": "类似业绩合同", "reason": "资格要求近三年类似业绩不少于 2 项"}
+    assert items[0] == {"name": "项目班子人员职称证书清单", "reason": "评分办法要求提供拟投入人员资格证书"}
     assert all(len(item["reason"]) <= 200 for item in items)
     assert _bound_suggested_materials(None) == []
     assert _bound_suggested_materials(["x"]) == []
+
+
+def test_bound_suggested_materials_filters_business_entries():
+    """2026-10-23 商务屏蔽：素材建议只面向技术标，商务证明类材料名称硬过滤丢弃。"""
+    items = _bound_suggested_materials(
+        [
+            {"name": "检测报告", "reason": "技术参数要求"},
+            {"name": "类似业绩合同", "reason": "资格要求近三年类似业绩不少于 2 项"},
+            {"name": "营业执照副本", "reason": "资格审验"},
+            {"name": "近三年财务审计报告", "reason": "资格审查"},
+            {"name": "纳税及社保证明", "reason": "资格审查"},
+            {"name": "报价一览表", "reason": "商务评分"},
+            {"name": "商务条款响应/偏离表", "reason": "商务响应"},
+            {"name": "厂家技术授权书", "reason": "技术响应"},  # 技术类，保留
+        ]
+    )
+    assert [item["name"] for item in items] == ["检测报告", "厂家技术授权书"]
 
 
 # ------------------------------------------------------------------ 问卷与需求
@@ -402,6 +419,80 @@ class TestWizardLifecycleApi:
         removed = await client.delete(f"{base}/tender", headers=auth_headers)
         assert removed.status_code == 200
         assert removed.json()["analysis"] is None
+
+    @pytest.fixture(autouse=True)
+    def _stub_billing_gates(self, monkeypatch):
+        """素材上传走计费闸门（authorize_billable_task_start/dispatch_task_outbox）；
+        本类只验证白名单与落库，闸门短路为通过。"""
+        from decimal import Decimal
+
+        from backend.services import sales as sales_svc
+        from backend.services import task_lifecycle as task_lifecycle_svc
+
+        async def _fake_authorize(*args, **kwargs):
+            return None
+
+        async def _fake_dispatch(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(sales_svc, "multiplier_for_task", lambda config, kind: Decimal("1"))
+        monkeypatch.setattr(task_lifecycle_svc, "authorize_billable_task_start", _fake_authorize)
+        monkeypatch.setattr(task_lifecycle_svc, "dispatch_task_outbox", _fake_dispatch)
+
+    async def test_upload_material_accepts_markdown_rejects_txt(self, client, auth_headers):
+        """2026-10-23 需求②：素材上传支持 md（.md/.markdown）；txt 等仍拒；招标文件不放开 md。"""
+        wizard = await self._create_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+
+        md = await client.post(
+            f"{base}/materials",
+            files={"file": ("技术方案要点.md", "# 技术方案\n\n微服务架构。".encode("utf-8"), "text/markdown")},
+            headers=auth_headers,
+        )
+        assert md.status_code == 201, md.text
+        assert md.json()["index_status"] == "pending"
+
+        markdown_long = await client.post(
+            f"{base}/materials",
+            files={"file": ("notes.markdown", b"# notes\n\nbody", "text/markdown")},
+            headers=auth_headers,
+        )
+        assert markdown_long.status_code == 201, markdown_long.text
+
+        txt = await client.post(
+            f"{base}/materials",
+            files={"file": ("notes.txt", b"plain", "text/plain")},
+            headers=auth_headers,
+        )
+        assert txt.status_code == 400
+        assert "MD" in txt.json()["detail"]
+
+        # 招标文件上传不放开 md：仍走 SUPPORTED_EXTENSIONS（pdf/docx/doc/xlsx）
+        tender_md = await client.post(
+            f"{base}/tender",
+            files={"file": ("tender.md", b"# tender", "text/markdown")},
+            headers=auth_headers,
+        )
+        assert tender_md.status_code == 400
+
+    async def test_stored_analysis_business_suggestions_filtered_on_read(self, client, auth_headers):
+        """2026-10-23 商务屏蔽：存量解读里已落库的商务素材建议出参时过滤，技术类保留。"""
+        wizard = await self._create_wizard(client, auth_headers)
+        await self._set_analysis(
+            wizard["id"],
+            {
+                "basic": {"project_name": "回归测试"},
+                "suggested_materials": [
+                    {"name": "检测报告", "reason": "技术参数"},
+                    {"name": "类似业绩合同", "reason": "资格要求"},
+                ],
+            },
+        )
+        detail = (
+            await client.get(f"/api/bid-wizard/wizards/{wizard['id']}", headers=auth_headers)
+        ).json()
+        names = [item["name"] for item in detail["analysis"]["suggested_materials"]]
+        assert names == ["检测报告"]
 
     async def test_archive_then_active_returns_new_wizard(self, client, auth_headers):
         wizard_a = await self._create_wizard(client, auth_headers)
@@ -1466,10 +1557,16 @@ def test_build_generation_constraints_text_variants():
 
 
 def test_build_questionnaire_scope_text_variants():
-    """2026-10-07 需求①：未要求生成商务资料时，检查材料不检查商务材料。"""
+    """2026-10-07 需求①：未要求生成商务资料时，检查材料不检查商务材料。
+
+    2026-10-23 商务屏蔽后收紧：未保存生成选项（options=None）同样按仅技术标检查，
+    否则首轮问卷仍会问商务问题、建议商务素材。
+    """
     from backend.agent.bid_wizard_agent import build_questionnaire_scope_text
 
-    assert "全面检查" in build_questionnaire_scope_text(None)  # 未设置：存量向导不限范围
+    # 未设置：按默认仅技术部分检查（不再"全面检查"）
+    assert "仅技术部分" in build_questionnaire_scope_text(None)
+    assert "严禁提出或追问商务部分相关内容" in build_questionnaire_scope_text(None)
     technical = build_questionnaire_scope_text({"parts": ["technical"], "charts": True})
     assert "仅技术部分" in technical and "严禁提出或追问商务部分相关内容" in technical
     assert "不要建议用户补充该类素材" in technical
@@ -2041,10 +2138,12 @@ class TestGenerationOptionsApi:
         assert "仅技术部分" in seen["prompt"]
         assert "严禁提出或追问商务部分相关内容" in seen["prompt"]
 
-        # 不带载荷且无已保存生成要求：不限范围（存量向导兼容，决策 42）
+        # 不带载荷且无已保存生成要求：同样按仅技术部分检查
+        # （2026-10-23 商务屏蔽后收紧；旧口径"全面检查"已废弃——否则首轮问卷仍会问商务问题）
         plain = await client.post(f"{base}/questionnaire", headers=auth_headers)
         assert plain.status_code == 200
-        assert "全面检查" in seen["prompt"]
+        assert "仅技术部分" in seen["prompt"]
+        assert "严禁提出或追问商务部分相关内容" in seen["prompt"]
 
     async def test_questionnaire_round_scoped_by_saved_generation_options(
         self, client, auth_headers, monkeypatch

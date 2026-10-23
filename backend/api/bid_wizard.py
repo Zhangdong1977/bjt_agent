@@ -215,6 +215,7 @@ async def _store_wizard_document(
     """Store the upload under workspace/<user>/<project>/<doc_type>/（不提交，由调用方统一 commit）."""
     from backend.api.documents import (
         IMAGE_EXTENSIONS,
+        MARKDOWN_EXTENSIONS,
         SUPPORTED_EXTENSIONS,
         _decode_rfc2047_filename,
         _save_upload_file,
@@ -224,11 +225,12 @@ async def _store_wizard_document(
     # 客户端素材经 VSTO 插件（.NET Framework）转发上传，中文名到这里是 RFC 2047 编码串
     file.filename = _decode_rfc2047_filename(file.filename)
     if doc_type == "material":
-        # 素材放开图片（反馈⑩）：组织架构图/证书扫描件等，解析任务对整图走 OCR
+        # 素材放开图片（反馈⑩）与 Markdown（2026-10-23）：
+        # 组织架构图/证书扫描件等整图走 OCR；md 正文直读为 parsed.md
         _validate_upload_file(
             file,
-            SUPPORTED_EXTENSIONS | IMAGE_EXTENSIONS,
-            "PDF、DOCX、DOC、XLSX 或图片（PNG/JPG/JPEG/BMP/WEBP）",
+            SUPPORTED_EXTENSIONS | IMAGE_EXTENSIONS | MARKDOWN_EXTENSIONS,
+            "PDF、DOCX、DOC、XLSX、MD 或图片（PNG/JPG/JPEG/BMP/WEBP）",
         )
     else:
         _validate_upload_file(file)

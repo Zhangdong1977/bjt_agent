@@ -102,7 +102,8 @@ __CHUNK_LIST__
 
 QUESTIONNAIRE_SYSTEM_PROMPT = (
     "你是资深投标文件专家。基于招标要素与公司素材索引，设计一份结构化问卷，"
-    "收集编写投标文件还缺的必要补充知识（如交付周期、报价策略、人员到岗、类似业绩口径等）。"
+    "收集编写技术应标书还缺的必要补充知识（如实施方案约束、交付里程碑与验收口径、"
+    "项目班子人员技术资历、培训与售后安排等）。"
     "只输出一个合法 JSON 对象，不要输出任何其他文字或代码块标记。"
 )
 
@@ -118,7 +119,7 @@ __SCOPE_CONSTRAINTS__
 请输出问卷 JSON：
 
 {"questions": [
-  {"topic": "主题（商务/技术/人员/业绩/交付/其他）",
+  {"topic": "主题（技术/人员/交付/其他）",
    "question": "向投标人提出的问题，一句话",
    "why": "为什么需要这个信息（与招标要求的关联）",
    "suggested_answer": "建议答案：优先采用素材索引中出现的真实事实，并注明来源；素材中没有则按常见做法推断",
@@ -757,10 +758,15 @@ _QUESTIONNAIRE_PART_EXCLUSIONS = {
 
 
 def build_questionnaire_scope_text(options: dict[str, Any] | None) -> str:
-    """问卷首轮/追问轮 prompt 的「检查范围」块：生成内容只勾某部分时，检查只针对该部分。"""
-    if not options:
-        return "无（按招标要素与素材情况全面检查）"
-    parts = [str(part) for part in options.get("parts") or ["technical"]]
+    """问卷首轮/追问轮 prompt 的「检查范围」块：生成内容只勾某部分时，检查只针对该部分。
+
+    2026-10-23 商务屏蔽后 parts 恒为 ["technical"]（normalize_generation_options 收口），
+    未保存生成选项时同样按仅技术标检查——否则首轮问卷仍会问商务问题、建议商务素材。
+    """
+    if options:
+        parts = [str(part) for part in options.get("parts") or ["technical"]]
+    else:
+        parts = ["technical"]
     scope = generation_parts_label(parts)
     if len(parts) == 1 and parts[0] in _QUESTIONNAIRE_PART_EXCLUSIONS:
         excluded = _QUESTIONNAIRE_PART_EXCLUSIONS[parts[0]]
@@ -985,11 +991,37 @@ def parse_chunk_ref_mapping(
 
 # ------------------------------------------------------------------ llm helpers
 
+# 2026-10-23 商务应标已屏蔽（GENERATION_PARTS_ENABLED 只放行 technical）：
+# 素材补充建议同样只面向技术标，禁止把商务证明类材料建议回来。
 WIZARD_ANALYSIS_EXTRA_INSTRUCTION = (
     "\n\n另外，请在输出的 JSON 对象中增加 suggested_materials 字段："
     '[{"name": "建议投标人补充上传的素材名称", "reason": "对应哪条招标要求/评分标准"}]，'
-    "最多 8 项，聚焦招标文件明确要求、但投标公司通常需要另行准备原件的证明材料"
-    "（如类似业绩合同、人员证书、厂家授权函、检测报告等）。"
+    "最多 8 项。编写内容固定为技术应标部分（商务应标已关闭），"
+    "只建议编写技术标真正需要、且投标公司通常需要另行准备的材料"
+    "（如技术方案与实施方案素材、交付与验收计划、项目班子人员的技术职称/证书、"
+    "检测报告、厂家技术资料或技术授权、拟引用的技术标准规范等）；"
+    "严禁建议任何商务标材料——营业执照、资质荣誉证书、财务报表/审计报告、"
+    "纳税与社保证明、业绩合同/业绩证明、报价与商务条款响应/偏离类材料一律不得出现。"
+)
+
+# prompt 之外的第二道防线（2026-09-12 暗标假阳性同款教训：指令约束不能是唯一防线）：
+# 名称命中商务关键词的建议项直接丢弃，防止模型漏看指令把商务材料又建议回来。
+_BUSINESS_MATERIAL_KEYWORDS = (
+    "营业执照",
+    "资质",
+    "财务",
+    "审计",
+    "纳税",
+    "社保",
+    "业绩",
+    "报价",
+    "商务",
+    "开户",
+    "征信",
+    "荣誉",
+    "信用证明",
+    "保函",
+    "保证金",
 )
 
 
@@ -1004,6 +1036,8 @@ def _bound_suggested_materials(raw: Any) -> list[dict[str, str]]:
             continue
         name = str(entry.get("name") or "").strip()[:100]
         if not name:
+            continue
+        if any(keyword in name for keyword in _BUSINESS_MATERIAL_KEYWORDS):
             continue
         items.append({"name": name, "reason": str(entry.get("reason") or "").strip()[:200]})
     return items
@@ -1275,7 +1309,7 @@ __EXISTING_QUESTIONS__
 请输出新一轮问题 JSON（若判断无需追问，输出 {"questions": []}）：
 
 {"questions": [
-  {"topic": "主题（商务/技术/人员/业绩/交付/其他）",
+  {"topic": "主题（技术/人员/交付/其他）",
    "question": "向投标人提出的问题，一句话",
    "why": "为什么需要这个信息（与招标要求的关联）",
    "suggested_answer": "建议答案：优先采用素材索引中的真实事实（特别是新补充的素材），注明来源；素材中没有则留空字符串",

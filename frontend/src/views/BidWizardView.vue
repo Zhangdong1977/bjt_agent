@@ -2741,7 +2741,7 @@ onUnmounted(() => {
             </div>
             <label class="upload-btn" :class="{ disabled: materialUploading || Boolean(busy) }">
               {{ materialUploading ? "上传中…" : "点击上传素材（可多选）" }}
-              <input type="file" multiple accept=".pdf,.docx,.doc,.xlsx,.png,.jpg,.jpeg,.bmp,.webp" hidden :disabled="materialUploading || Boolean(busy)" @change="onUploadMaterials">
+              <input type="file" multiple accept=".pdf,.docx,.doc,.xlsx,.md,.markdown,.png,.jpg,.jpeg,.bmp,.webp" hidden :disabled="materialUploading || Boolean(busy)" @change="onUploadMaterials">
             </label>
             <p class="hint">支持 PDF / Word / Excel / 图片（PNG、JPG 等），图片将自动 OCR 识别文字后建立索引。</p>
           </template>
@@ -2826,7 +2826,7 @@ onUnmounted(() => {
           ref="supplementInput"
           type="file"
           multiple
-          accept=".pdf,.docx,.doc,.xlsx,.png,.jpg,.jpeg,.bmp,.webp"
+          accept=".pdf,.docx,.doc,.xlsx,.md,.markdown,.png,.jpg,.jpeg,.bmp,.webp"
           hidden
           :disabled="Boolean(busy)"
           @change="onSupplementFilesChange"

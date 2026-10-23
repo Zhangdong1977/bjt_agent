@@ -373,8 +373,8 @@ async def get_document_content(
     content_format = "html"
     images = []
 
-    if file_ext in [".docx", ".doc", ".pdf", ".xlsx"]:
-        # Return Markdown content for DOCX/PDF/XLSX files
+    if file_ext in [".docx", ".doc", ".pdf", ".xlsx"] or file_ext in MARKDOWN_FILE_EXTS:
+        # Return Markdown content for DOCX/PDF/XLSX/MD files
         content_format = "markdown"
         workspace_dir = settings.workspace_path
         workspace_rel_path = ""
@@ -547,6 +547,11 @@ async def delete_document(
 SUPPORTED_EXTENSIONS = {"pdf", "docx", "doc", "xlsx"}
 # 图片素材（AI编标 material 上传放开，反馈⑩）：解析任务对整图走 OCR（document_parser._parse_image_with_ocr）
 IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "bmp", "webp"}
+# Markdown 素材（2026-10-23）：仅 AI编标 material 上传放开，正文直读为 parsed.md；
+# 文档检查（tender/bid 等）仍用 SUPPORTED_EXTENSIONS
+MARKDOWN_EXTENSIONS = {"md", "markdown"}
+# 上述 md 后缀的文件名形式（带点），内容预览按 markdown 返回
+MARKDOWN_FILE_EXTS = {f".{ext}" for ext in MARKDOWN_EXTENSIONS}
 
 
 def _validate_upload_file(
@@ -1108,7 +1113,7 @@ async def get_draft_document_content(
     content_format = "html"
     images = []
 
-    if file_ext in [".docx", ".doc", ".pdf", ".xlsx"]:
+    if file_ext in [".docx", ".doc", ".pdf", ".xlsx"] or file_ext in MARKDOWN_FILE_EXTS:
         content_format = "markdown"
         workspace_dir = settings.workspace_path
         workspace_rel_path = ""
