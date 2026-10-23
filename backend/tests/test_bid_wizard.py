@@ -1413,18 +1413,40 @@ def test_normalize_generation_options_bounds_and_defaults():
 
     assert normalize_generation_options(None) is None
     assert normalize_generation_options("x") is None
+    # 2026-10-23 商务屏蔽：parts 一律收敛为 ["technical"]（含存量 business 数据）
     options = normalize_generation_options(
         {"parts": ["technical", "technical", "bogus", "business"], "word_count": "50000", "charts": False}
     )
-    assert options == {"parts": ["technical", "business"], "word_count": 50000, "charts": False}
+    assert options == {
+        "parts": ["technical"],
+        "word_count": 50000,
+        "charts": False,
+        "fig_mode": "mermaid",
+    }
+    assert normalize_generation_options({"parts": ["business"]})["parts"] == ["technical"]
     # 空 parts → 默认仅技术；字数越界 → None（草稿态）；charts 缺省 True
     assert normalize_generation_options({"parts": [], "word_count": 500}) == {
         "parts": ["technical"],
         "word_count": None,
         "charts": True,
+        "fig_mode": "mermaid",
     }
     assert normalize_generation_options({"word_count": 2_000_000})["word_count"] is None
     assert normalize_generation_options({"word_count": True})["word_count"] is None
+    # fig_mode（23 号 O8）：合法值透传，非法值回默认 mermaid
+    assert normalize_generation_options({"fig_mode": "bidfig"})["fig_mode"] == "bidfig"
+    assert normalize_generation_options({"fig_mode": "svg"})["fig_mode"] == "mermaid"
+
+
+def test_generation_options_schema_collapses_business():
+    """商务屏蔽（2026-10-23）：schema 入参校验层即收敛，老客户端传 business 只剩 technical。"""
+    from backend.schemas.bid_wizard import GenerationOptions
+
+    collapsed = GenerationOptions(parts=["business", "technical"], word_count=50_000)
+    assert collapsed.model_dump()["parts"] == ["technical"]
+    assert GenerationOptions(parts=["business"]).model_dump()["parts"] == ["technical"]
+    assert collapsed.model_dump()["fig_mode"] == "mermaid"
+    assert GenerationOptions(fig_mode="bidfig").model_dump()["fig_mode"] == "bidfig"
 
 
 def test_build_generation_constraints_text_variants():
@@ -1832,6 +1854,7 @@ class TestGenerationOptionsApi:
             "parts": ["technical"],
             "word_count": 50000,
             "charts": False,
+            "fig_mode": "mermaid",
         }
         # 不带 generation_options 再保存（老客户端 / 只改作答）→ 沿用已保存值
         again = await client.put(
@@ -2203,3 +2226,87 @@ async def test_generate_section_intro_only_uses_intro_prompt(tmp_path, monkeypat
     assert content.startswith("# 商务报价方案")
     assert "越界小节" not in content and "###" not in content
     assert "本章导语总起段" in content
+
+
+# ------------------------------------------------------------------ 评分台账 / 图表引擎（23 号 O2/O8，2026-10-23）
+
+
+def test_bound_analysis_normalizes_scoring_items():
+    """评分台账（O2）：_bound_analysis 白名单补 scoring_items——title 必填、weight/criteria 缺省空串。"""
+    from backend.agent.bid_draft_agent import _bound_analysis
+
+    analysis = _bound_analysis(
+        {
+            "scoring_items": [
+                {"title": "总体建设方案", "weight": "9分", "criteria": "方案完整性"},
+                {"weight": "3分"},  # 无 title 丢弃
+                "not-a-dict",
+                {"title": "  项目经理答辩  ", "criteria": "讲解与答辩能力"},
+            ]
+        }
+    )
+    assert analysis["scoring_items"] == [
+        {"title": "总体建设方案", "weight": "9分", "criteria": "方案完整性"},
+        {"title": "项目经理答辩", "weight": "", "criteria": "讲解与答辩能力"},
+    ]
+    # 旧向导/无评分办法：空列表（全链路判空跳过）
+    assert _bound_analysis({})["scoring_items"] == []
+    assert _bound_analysis({"scoring_items": "bad"})["scoring_items"] == []
+
+
+def test_scoring_items_of_and_render_text():
+    from backend.agent.bid_wizard_agent import render_score_items_text, scoring_items_of
+
+    assert scoring_items_of(None) == []
+    assert scoring_items_of({"scoring_items": [{"title": "技术方案", "weight": "12分"}]}) == [
+        {"title": "技术方案", "weight": "12分", "criteria": ""}
+    ]
+    text = render_score_items_text([{"title": "技术方案", "weight": "12分", "criteria": "完整可行"}])
+    assert "技术方案" in text and "12分" in text and "完整可行" in text
+    empty = render_score_items_text([])
+    assert "无直接对应" in empty
+
+
+def test_score_items_for_node_matches_via_ancestor_chain():
+    """节点自身/祖先的标题或摘要命中评分项标题即算响应（spec 规则 7 的回查口径）。"""
+    from backend.agent.bid_wizard_agent import score_items_for_node
+
+    spec = [
+        {"node_id": "5", "title": "总体建设方案", "summary": "响应得分点：总体建设方案（9分）"},
+        {"node_id": "5.3", "title": "系统架构", "summary": ""},
+        {"node_id": "6", "title": "售后服务", "summary": "响应得分点：售后服务方案"},
+    ]
+    items = [{"title": "总体建设方案", "weight": "9分", "criteria": ""}]
+    hits = score_items_for_node(spec, spec[1], items)
+    assert [h["title"] for h in hits] == ["总体建设方案"]  # 5.3 经祖先 5 命中
+    assert score_items_for_node(spec, spec[2], items) == []
+
+
+def test_score_coverage_matrix_flags_uncovered_items():
+    from backend.agent.bid_wizard_agent import score_coverage_matrix
+
+    spec = [{"node_id": "5", "title": "总体建设方案", "summary": ""}]
+    items = [
+        {"title": "总体建设方案", "weight": "9分", "criteria": ""},
+        {"title": "项目经理", "weight": "3分", "criteria": ""},
+    ]
+    matrix = score_coverage_matrix(spec, ["5"], items)
+    assert matrix[0]["covered_by"] == ["5"]
+    assert matrix[1]["covered_by"] == []
+    assert score_coverage_matrix(spec, ["5"], []) == []
+
+
+def test_section_system_prompt_switches_fig_mode():
+    from backend.agent.bid_draft_agent import SECTION_SYSTEM_PROMPT_BIDFIG
+    from backend.agent.bid_wizard_agent import (
+        _WIZARD_SECTION_CHART_RULES,
+        _WIZARD_SECTION_SYSTEM_PROMPT_BASE,
+        section_system_prompt,
+    )
+
+    assert section_system_prompt(charts_enabled=True) == (
+        _WIZARD_SECTION_SYSTEM_PROMPT_BASE + _WIZARD_SECTION_CHART_RULES
+    )
+    # bidfig 引擎：切 V1 bidfig 系统 prompt；不配图时以 charts_enabled 为准（无图就无引擎）
+    assert section_system_prompt(charts_enabled=True, fig_mode="bidfig") == SECTION_SYSTEM_PROMPT_BIDFIG
+    assert "不得输出任何 Markdown 表格" in section_system_prompt(charts_enabled=False, fig_mode="bidfig")

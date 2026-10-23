@@ -142,6 +142,9 @@ class GenerationOptions(BaseModel):
     """生成要求（决策 38-41）：编写需求里固定的三项硬约束子结构。
 
     word_count 允许为空以保存草稿；必填校验在进入「编写大纲」时由 stage 端点做（决策 40/42）。
+    fig_mode=图表引擎（23 号 O8，照 V1）：mermaid 默认；bidfig=原语库确定性渲染（仅配图时有意义）。
+    2026-10-23 产品要求：屏蔽商务应标编写——parts 一律收敛为 ["technical"]
+    （老客户端/历史数据传 business 在入参校验层即被过滤，下游全链路只见技术部分）。
     """
 
     parts: list[GenerationPart] = Field(default_factory=lambda: ["technical"], min_length=1)
@@ -149,15 +152,16 @@ class GenerationOptions(BaseModel):
         default=None, ge=GENERATION_WORD_COUNT_MIN, le=GENERATION_WORD_COUNT_MAX
     )
     charts: bool = True
+    fig_mode: Literal["mermaid", "bidfig"] = "mermaid"
 
     @field_validator("parts")
     @classmethod
     def _dedupe_parts(cls, value: list[str]) -> list[str]:
         deduped: list[str] = []
         for item in value:
-            if item not in deduped:
+            if item == "technical" and item not in deduped:
                 deduped.append(item)
-        return deduped
+        return deduped or ["technical"]
 
 
 class RequirementsUpdate(BaseModel):

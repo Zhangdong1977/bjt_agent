@@ -47,10 +47,12 @@ import {
   type GenerationOptions,
   type GenerationPart,
   type Wizard,
+  type WizardDocCheck,
   type WizardListItem,
   type WizardMaterial,
   type WizardQaHistoryItem,
   type WizardQuestion,
+  type WizardScoreCoverage,
   type WizardSection,
   type WizardSpecNode,
   type WizardWritingTask,
@@ -738,6 +740,19 @@ function analysisStrings(field: string): string[] {
 const analysisRequirements = computed(() => analysisStrings("tender_requirements"));
 const analysisScoring = computed(() => analysisStrings("scoring_criteria"));
 const analysisRejection = computed(() => analysisStrings("rejection_items"));
+/** 评分台账（23 号 O2）：结构化得分点 {title, weight, criteria}——旧向导/无评分办法时为空（模板自动隐藏）。 */
+const analysisScoringItems = computed<{ title: string; weight?: string; criteria?: string }[]>(() => {
+  const raw = analysis.value?.scoring_items;
+  if (!Array.isArray(raw)) return [];
+  return (raw as Record<string, unknown>[])
+    .filter((item) => item && typeof item === "object" && typeof item.title === "string" && item.title.trim())
+    .map((item) => ({
+      title: String(item.title).trim(),
+      weight: typeof item.weight === "string" ? item.weight.trim() : "",
+      criteria: typeof item.criteria === "string" ? item.criteria.trim() : "",
+    }))
+    .slice(0, 30);
+});
 const suggestedMaterials = computed<SuggestedMaterial[]>(() => {
   const raw = analysis.value?.suggested_materials;
   if (!Array.isArray(raw)) return [];
@@ -765,12 +780,18 @@ const savedAtText = ref(""); // 本会话最近一次保存作答的时刻（HH:
 const followupSkipNotice = ref("");
 
 // ---- 生成要求（决策 38-42）：编写需求里固定的三项硬约束，随「保存作答」一并保存；字数在进入编写大纲时必填 ----
-const GEN_PART_ORDER: GenerationPart[] = ["business", "technical"];
-const GEN_PART_LABELS: Record<GenerationPart, string> = { business: "商务部分", technical: "技术部分" };
-const genOptions = reactive<{ parts: GenerationPart[]; word_count: number | null; charts: boolean }>({
+// 2026-10-23 产品要求：屏蔽商务应标编写——生成内容固定为技术部分（后端 schema/normalize 双侧同步收敛，此处只做固定展示）
+const GEN_TECHNICAL_ONLY = "技术应标书（当前版本仅提供技术应标部分的编写）";
+const genOptions = reactive<{
+  parts: GenerationPart[];
+  word_count: number | null;
+  charts: boolean;
+  fig_mode: "mermaid" | "bidfig";
+}>({
   parts: ["technical"],
   word_count: null,
   charts: true,
+  fig_mode: "mermaid",
 });
 const genWordInput = ref<number | "">(""); // type=number 输入框原值（"" = 未填）
 const genWordInputEl = ref<HTMLInputElement | null>(null);
@@ -791,28 +812,16 @@ function savedGenerationOptions(): GenerationOptions | null {
   return saved && typeof saved === "object" ? saved : null;
 }
 
-/** 从向导恢复生成要求草稿（进入向导 / 保存后与后端规范化结果对齐）；无已存值回默认：仅技术、未填字数、配图。 */
+/** 从向导恢复生成要求草稿（进入向导 / 保存后与后端规范化结果对齐）；无已存值回默认：仅技术、未填字数、配图。
+ *  parts 固定技术（2026-10-23 商务屏蔽）——存量数据里的 business 由后端收敛，前端不展示。 */
 function loadGenerationOptionsFromWizard() {
   const saved = savedGenerationOptions();
-  genOptions.parts = saved?.parts?.length ? sortParts(saved.parts) : ["technical"];
+  genOptions.parts = ["technical"];
   genOptions.word_count = typeof saved?.word_count === "number" ? saved.word_count : null;
   genOptions.charts = saved ? saved.charts !== false : true;
+  genOptions.fig_mode = saved?.fig_mode === "bidfig" ? "bidfig" : "mermaid";
   genWordInput.value = genOptions.word_count ?? "";
   genOptionsError.value = "";
-}
-
-/** parts 固定顺序（商务、技术），与后端去重保序的结果可逐项比对，避免假"未保存"。 */
-function sortParts(parts: GenerationPart[]): GenerationPart[] {
-  return GEN_PART_ORDER.filter((part) => parts.includes(part));
-}
-
-function togglePart(part: GenerationPart) {
-  if (genOptions.parts.includes(part)) {
-    if (genOptions.parts.length === 1) return; // 至少勾一（决策 39）：最后一项不可取消
-    genOptions.parts = genOptions.parts.filter((item) => item !== part);
-  } else {
-    genOptions.parts = sortParts([...genOptions.parts, part]);
-  }
 }
 
 function onGenWordInput() {
@@ -840,18 +849,20 @@ const genOptionsPayload = computed<GenerationOptions>(() => ({
   parts: [...genOptions.parts],
   word_count: genOptions.word_count,
   charts: genOptions.charts,
+  fig_mode: genOptions.fig_mode,
 }));
 
 const hasUnsavedGenOptions = computed(() => {
   const saved = savedGenerationOptions();
   const draft = genOptionsPayload.value;
   if (!saved) {
-    return draft.parts.join() !== "technical" || draft.word_count != null || draft.charts !== true;
+    return draft.word_count != null || draft.charts !== true || draft.fig_mode !== "mermaid";
   }
+  // parts 固定技术（商务屏蔽），不参与脏比对；存量 business 由保存动作收敛
   return (
-    sortParts(saved.parts || []).join() !== draft.parts.join() ||
     (saved.word_count ?? null) !== draft.word_count ||
-    (saved.charts !== false) !== draft.charts
+    (saved.charts !== false) !== draft.charts ||
+    (saved.fig_mode === "bidfig") !== (draft.fig_mode === "bidfig")
   );
 });
 
@@ -1351,10 +1362,8 @@ const specTotalWords = computed(() =>
 
 // 生成要求在大纲阶段的读法（决策 40/41）：字数目标只做对齐提示不硬拦；不配图时隐藏图表编辑入口
 const specWordTarget = computed(() => savedGenerationOptions()?.word_count ?? null);
-const specScopeLabel = computed(() => {
-  const parts = savedGenerationOptions()?.parts;
-  return parts?.length ? sortParts(parts).map((part) => GEN_PART_LABELS[part]).join("+") : "";
-});
+// 2026-10-23 商务屏蔽：范围固定技术部分（存量 business 已被后端收敛，不展示）
+const specScopeLabel = computed(() => "技术部分");
 const specChartsEnabled = computed(() => savedGenerationOptions()?.charts !== false);
 
 interface SpecTreeItem {
@@ -2236,6 +2245,62 @@ const writtenWords = computed(() =>
     .reduce((sum, item) => sum + (item.word_count || 0), 0),
 );
 
+// ---- 撰写完成态报告（23 号 O1/O2/O9）：全稿质检 / 得分点覆盖 / 复制全稿 ----
+/** summary.doc_checks：机检条目（旧任务无此字段=空数组，卡片整体隐藏——决策 42 口径）。 */
+const docChecks = computed<WizardDocCheck[]>(() => {
+  const raw = task.value?.summary?.doc_checks;
+  if (!Array.isArray(raw)) return [];
+  return (raw as Record<string, unknown>[])
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      severity: String(item.severity || "warning"),
+      node_id: String(item.node_id || ""),
+      type: String(item.type || ""),
+      detail: String(item.detail || ""),
+    }));
+});
+const docCheckErrors = computed(() => docChecks.value.filter((item) => item.severity === "error"));
+const docCheckWarnings = computed(() => docChecks.value.filter((item) => item.severity !== "error"));
+/** summary.score_coverage：得分点覆盖矩阵；空数组（无评分台账/旧任务）隐藏卡片。 */
+const scoreCoverage = computed<WizardScoreCoverage[]>(() => {
+  const raw = task.value?.summary?.score_coverage;
+  if (!Array.isArray(raw)) return [];
+  return (raw as Record<string, unknown>[])
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      title: String(item.title || ""),
+      weight: typeof item.weight === "string" ? item.weight : "",
+      criteria: typeof item.criteria === "string" ? item.criteria : "",
+      covered_by: Array.isArray(item.covered_by) ? (item.covered_by as unknown[]).map(String) : [],
+    }))
+    .filter((item) => item.title);
+});
+const uncoveredScoreItems = computed(() => scoreCoverage.value.filter((item) => !item.covered_by.length));
+const copyDraftBusy = ref(false);
+/** 复制全稿 Markdown（23 号 O9 轻量版）：按大纲序聚合已生成章节内容。 */
+async function copyFullDraft() {
+  if (!taskId.value || copyDraftBusy.value) return;
+  copyDraftBusy.value = true;
+  try {
+    const rows = sortedSections.value.filter((item) => item.status === "generated" || item.status === "written");
+    const parts: string[] = [];
+    for (const row of rows) {
+      const content = await getWritingSectionContent(taskId.value, row.node_id);
+      if (content.content) parts.push(content.content);
+    }
+    if (!parts.length) {
+      window.alert("尚无已生成的章节可复制");
+      return;
+    }
+    await navigator.clipboard.writeText(parts.join("\n\n"));
+    pushLog("ok", `已复制全稿 Markdown（${parts.length} 章）——可粘贴到任意编辑器`);
+  } catch (error) {
+    pageError.value = friendlyError(error, "复制全稿失败");
+  } finally {
+    copyDraftBusy.value = false;
+  }
+}
+
 const TASK_STATUS_TEXT: Record<string, string> = {
   pending: "排队中",
   running: "撰写中",
@@ -2376,6 +2441,7 @@ function resetLocalState() {
   genOptions.parts = ["technical"];
   genOptions.word_count = null;
   genOptions.charts = true;
+  genOptions.fig_mode = "mermaid";
   genWordInput.value = "";
   genOptionsError.value = "";
   qaQuestion.value = "";
@@ -2609,6 +2675,17 @@ onUnmounted(() => {
                 <li v-for="(item, index) in analysisScoring" :key="index">{{ item }}</li>
               </ul>
             </div>
+            <!-- 23 号 O2：评分台账（结构化得分点，含分值）——大纲按此映射章节，完成后出覆盖矩阵 -->
+            <div v-if="analysisScoringItems.length" class="analysis-group">
+              <strong>评分台账（大纲将逐项响应）</strong>
+              <ul class="analysis-reqs score-items">
+                <li v-for="(item, index) in analysisScoringItems" :key="index">
+                  <span class="score-title">{{ item.title }}</span>
+                  <span v-if="item.weight" class="score-weight">{{ item.weight }}</span>
+                  <span v-if="item.criteria" class="score-criteria">{{ item.criteria }}</span>
+                </li>
+              </ul>
+            </div>
             <div v-if="analysisRejection.length" class="analysis-group">
               <strong>废标风险条款</strong>
               <ul class="analysis-reqs">
@@ -2771,19 +2848,8 @@ onUnmounted(() => {
           <div class="gen-row">
             <span class="gen-label">生成内容</span>
             <div class="gen-field gen-inline">
-              <label
-                v-for="part in GEN_PART_ORDER"
-                :key="part"
-                class="radio"
-                :title="genOptions.parts.length === 1 && genOptions.parts.includes(part) ? '至少保留一项' : ''"
-              >
-                <input
-                  type="checkbox"
-                  :checked="genOptions.parts.includes(part)"
-                  :disabled="Boolean(busy) || (genOptions.parts.length === 1 && genOptions.parts.includes(part))"
-                  @change="togglePart(part)"
-                >{{ GEN_PART_LABELS[part] }}
-              </label>
+              <!-- 2026-10-23 商务屏蔽：固定技术应标，不再提供商务勾选 -->
+              <span class="gen-fixed">{{ GEN_TECHNICAL_ONLY }}</span>
             </div>
           </div>
           <div class="gen-row">
@@ -2826,6 +2892,15 @@ onUnmounted(() => {
             <div class="gen-field gen-inline">
               <label class="radio"><input v-model="genOptions.charts" type="radio" name="gen-charts" :value="true" :disabled="Boolean(busy)">是（AI 按需规划表格/图示）</label>
               <label class="radio"><input v-model="genOptions.charts" type="radio" name="gen-charts" :value="false" :disabled="Boolean(busy)">否（全部文字表达）</label>
+            </div>
+          </div>
+          <div v-if="genOptions.charts" class="gen-row">
+            <span class="gen-label">图表引擎</span>
+            <div class="gen-field gen-inline">
+              <label class="radio"><input v-model="genOptions.fig_mode" type="radio" name="gen-figmode" value="mermaid" :disabled="Boolean(busy)">标准（mermaid）</label>
+              <label class="radio" title="架构/流程/甘特/时序类图由新版渲染引擎生成，版式更精美">
+                <input v-model="genOptions.fig_mode" type="radio" name="gen-figmode" value="bidfig" :disabled="Boolean(busy)">新版渲染（架构/流程/甘特/时序更精美）
+              </label>
             </div>
           </div>
           <p v-if="hasUnsavedGenOptions" class="hint" style="margin:6px 0 0;color:#d46b08">
@@ -3216,12 +3291,48 @@ onUnmounted(() => {
                 @click="onRewriteAllSections"
               >重新写入 Word（{{ generatedCount }} 章待写入）</button>
               <button
+                type="button"
+                class="link-btn"
+                :disabled="copyDraftBusy"
+                @click="copyFullDraft"
+              >{{ copyDraftBusy ? "聚合中…" : "复制全稿 Markdown" }}</button>
+              <button
                 v-if="writtenCount > 0"
                 type="button"
                 class="link-btn danger"
                 :disabled="Boolean(busy)"
                 @click="onRemoveAllSections"
               >移除全部 AI 内容</button>
+            </div>
+            <!-- 23 号 O1/O6：全稿质检报告（机检只报告不改写；error=建议重生成对应章） -->
+            <div v-if="!taskRunning && docChecks.length" class="card qc-card">
+              <h3>全稿质检报告</h3>
+              <p class="hint" style="margin:0 0 8px">
+                共 {{ docChecks.length }} 条：{{ docCheckErrors.length }} 条建议处理、{{ docCheckWarnings.length }} 条建议人工确认。
+                机检只做提示，不会改动任何章节内容。
+              </p>
+              <ul class="qc-list">
+                <li v-for="(item, index) in docChecks" :key="index" :class="item.severity">
+                  <span class="qc-badge">{{ item.severity === "error" ? "需处理" : "提示" }}</span>
+                  <span v-if="item.node_id" class="qc-node">{{ item.node_id }}</span>
+                  {{ item.detail }}
+                </li>
+              </ul>
+            </div>
+            <!-- 23 号 O2：得分点覆盖矩阵（无评分台账时 summary 不含该字段，卡片自动隐藏） -->
+            <div v-if="!taskRunning && scoreCoverage.length" class="card qc-card">
+              <h3>得分点覆盖</h3>
+              <p class="hint" style="margin:0 0 8px">
+                {{ scoreCoverage.length }} 个评分项已映射到章节；<template v-if="uncoveredScoreItems.length">尚有 {{ uncoveredScoreItems.length }} 项未覆盖——建议在大纲补章或按商务人工准备。</template><template v-else>全部评分项均有章节响应。</template>
+              </p>
+              <ul class="qc-list coverage-list">
+                <li v-for="(item, index) in scoreCoverage" :key="index" :class="{ error: !item.covered_by.length }">
+                  <span class="qc-badge">{{ item.covered_by.length ? "已覆盖" : "未覆盖" }}</span>
+                  <span class="score-title">{{ item.title }}</span>
+                  <span v-if="item.weight" class="score-weight">{{ item.weight }}</span>
+                  <span v-if="item.covered_by.length" class="qc-node">{{ item.covered_by.join("、") }}</span>
+                </li>
+              </ul>
             </div>
             <div v-if="writeError" class="wiz-error">
               {{ writeError }}
@@ -3377,6 +3488,19 @@ onUnmounted(() => {
 .analysis-group{margin:6px 0 8px;font-size:12px}
 .analysis-group>strong{display:block;margin-bottom:2px;color:#555}
 .analysis-reqs{margin:4px 0 8px;padding-left:18px;color:#666;font-size:12px;line-height:1.8}
+/* 评分台账（23 号 O2）：标题/分值/评审标准同行，分值橙色徽标 */
+.score-items>li{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.score-title{color:#444}
+.score-weight{flex:none;padding:0 6px;border-radius:8px;background:#fff7e6;color:#d46b08;font-size:11px;font-weight:600}
+.score-criteria{color:#999;font-size:11.5px}
+/* 全稿质检报告卡 / 得分点覆盖卡（23 号 O1/O2） */
+.qc-card{border-top:3px solid #e6f7ff}
+.qc-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:5px}
+.qc-list>li{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;padding:5px 8px;border-radius:6px;background:#fafafa;color:#555;font-size:12px;line-height:1.6}
+.qc-list>li.error{background:#fff1f0;color:#a8071a}
+.qc-badge{flex:none;padding:0 7px;border-radius:8px;background:#ededed;color:#666;font-size:10.5px;font-weight:600}
+.qc-list>li.error .qc-badge{background:#ffccc7;color:#a8071a}
+.qc-node{flex:none;padding:0 6px;border-radius:6px;border:1px solid #e8e8e8;color:#888;font-size:10.5px}
 .analysis-suggest{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:4px 0 8px;font-size:12px}
 .suggest-chip{padding:2px 10px;border:1px solid #ffd6d0;border-radius:999px;background:#fff5f4;color:#b80015;cursor:default}
 .material-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
@@ -3404,6 +3528,8 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 /* 生成要求卡（决策 38-42） */
 .gen-row{display:flex;align-items:flex-start;gap:10px;padding:6px 0;border-top:1px dashed #f0f0f0}
 .gen-row:first-of-type{border-top:0}
+/* 2026-10-23 商务屏蔽：生成内容固定技术应标的静态展示 */
+.gen-fixed{padding-top:3px;color:#555;font-size:12.5px;line-height:1.6}
 .gen-label{flex:none;width:64px;padding-top:3px;font-size:12.5px;font-weight:600;color:#444}
 .gen-field{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
 .gen-inline{flex-direction:row;flex-wrap:wrap;gap:14px;padding-top:3px}

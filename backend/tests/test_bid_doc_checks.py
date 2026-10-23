@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
-"""组装期全文档机检（P1）单测：围栏配平/空章节/重复标题/模板残留/术语口径。"""
-from backend.agent.bid_doc_checks import assemble_checks
+"""组装期全文档机检（P1）单测：围栏配平/空章节/重复标题/模板残留/术语口径。
+
+wizard 撰写期 draft_checks（23 号 O1/O6）单测：成对重复（2026-10-22 生产工单类型）、
+叶子节篇幅达标、内容缺失、既有五项全稿检查复用。
+"""
+from backend.agent.bid_doc_checks import assemble_checks, draft_checks
 
 
 def test_clean_document_passes():
@@ -54,3 +58,99 @@ def test_term_consistency_reported():
 def test_issue_list_capped_at_20():
     headings = "\n\n".join("# 重复标题\n\n正文足够长正文足够长正文足够长正文足够长。" for _ in range(30))
     assert len(assemble_checks(headings)) == 20
+
+
+# ------------------------------------------------------------------ draft_checks（23 号 O1/O6）
+
+
+def _leaf_body(times: int = 60) -> str:
+    return "正文内容" * times
+
+
+def test_draft_checks_clean_sections_pass():
+    sections = [
+        {
+            "node_id": "1",
+            "title": "总体方案",
+            "content": "# 总体方案\n\n本章定位与结构预告，导语正文长度超过空章节阈值，确保不会误报。",
+            "word_count": 40,
+        },
+        {
+            "node_id": "1.1",
+            "title": "架构设计",
+            "content": f"## 1.1 架构设计\n\n{_leaf_body(80)}",
+            "word_count": 400,
+            "article_count": 2,
+            "text_count": 300,
+        },
+    ]
+    assert draft_checks(sections) == []
+
+
+def test_draft_checks_detects_paired_duplication():
+    """2026-10-22 生产工单类型：父章正文里出现与直属子节同名的（迷你）标题行。"""
+    sections = [
+        {
+            "node_id": "2",
+            "title": "实施方案",
+            "content": (
+                "# 实施方案\n\n本章导语。\n\n## 2.1 数据迁移方案\n\n"
+                "迷你版小节正文，与 2.1 子节内容成对重复。"
+            ),
+            "word_count": 100,
+        },
+        {
+            "node_id": "2.1",
+            "title": "数据迁移方案",
+            "content": f"## 2.1 数据迁移方案\n\n{_leaf_body(60)}",
+            "word_count": 300,
+            "article_count": 2,
+            "text_count": 200,
+        },
+    ]
+    issues = draft_checks(sections)
+    paired = [i for i in issues if i["type"] == "paired_duplication"]
+    assert len(paired) == 1
+    assert paired[0]["severity"] == "error" and paired[0]["node_id"] == "2"
+    assert "数据迁移方案" in paired[0]["detail"]
+
+
+def test_draft_checks_flags_short_leaf_but_not_parent():
+    """叶子节篇幅不足告警；父章（导语）不按子节规划的篇幅要求。"""
+    sections = [
+        {
+            "node_id": "1",
+            "title": "大章",
+            "content": "# 大章\n\n本章导语，长度足够避免空章节误报，不参与篇幅检查。",
+            "word_count": 30,
+            "article_count": 8,
+            "text_count": 800,
+        },
+        {
+            "node_id": "1.1",
+            "title": "小节",
+            "content": f"## 1.1 小节\n\n{'短' * 40}",
+            "word_count": 40,
+            "article_count": 5,
+            "text_count": 400,
+        },
+    ]
+    issues = draft_checks(sections)
+    short = [i for i in issues if i["type"] == "short_section"]
+    assert len(short) == 1 and short[0]["node_id"] == "1.1" and short[0]["severity"] == "warning"
+
+
+def test_draft_checks_missing_content_is_error():
+    issues = draft_checks([{"node_id": "3", "title": "空章", "content": "   ", "word_count": 0}])
+    assert any(i["type"] == "missing_content" and i["severity"] == "error" for i in issues)
+
+
+def test_draft_checks_reuses_assemble_checks_on_joined_md():
+    sections = [
+        {"node_id": "1", "title": "甲", "content": "# 甲\n\n```mermaid\nflowchart TD\nA-->B", "word_count": 20},
+    ]
+    assert any(i["type"] == "fence_balance" for i in draft_checks(sections))
+
+
+def test_draft_checks_empty_input_returns_empty():
+    assert draft_checks([]) == []

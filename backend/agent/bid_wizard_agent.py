@@ -37,6 +37,7 @@ from backend.agent.bid_draft_agent import (
     OUTLINE_CONTEXT_MAX_CHARS,
     OUTLINE_MAX_NODES,
     SECTION_RESULT_MAX_CHARS,
+    SECTION_SYSTEM_PROMPT_BIDFIG,
     _bound_analysis,
     clamp_mermaid_blocks,
     close_unterminated_mermaid_fence,
@@ -44,6 +45,8 @@ from backend.agent.bid_draft_agent import (
     parse_json_payload,
     strip_code_fence,
 )
+from backend.agent.bid_doc_checks import draft_checks
+from backend.agent.bidfig import clamp_bidfig_blocks, close_unterminated_bidfig_fence
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,10 @@ ESTIMATE_TOKENS_PER_CHAR = 0.7
 # ---- 生成要求（决策 38-41，2026-09-14）：编写需求里固定的三项硬约束子结构 ----
 GENERATION_PARTS: tuple[str, ...] = ("business", "technical")
 GENERATION_PART_LABELS = {"business": "商务部分", "technical": "技术部分"}
+# 2026-10-23 产品要求：屏蔽商务应标编写，只提供技术应标部分——parts 消费侧只放行 technical
+GENERATION_PARTS_ENABLED: tuple[str, ...] = ("technical",)
+# 图表引擎（23 号 O8，照 V1 fig_mode）：mermaid=默认；bidfig=原语库确定性渲染
+GENERATION_FIG_MODES: tuple[str, ...] = ("mermaid", "bidfig")
 # 只勾一个部分时，告诉 Spec 生成器另一部分的典型章节不得出现
 _GENERATION_PART_EXCLUSIONS = {
     "technical": "商务部分的章节（如资质证明、业绩证明、报价、商务条款响应/偏离表）",
@@ -159,7 +166,8 @@ __MATERIAL_INDEX__
 3. summary 写清楚本章要回应什么、用什么素材支撑；
 4. charts 按「生成要求」执行：需要配图时按内容需要规划（每章 0-3 项）——对比/参数/人员/进度用 table，组织架构/流程/横道图/占比用 mermaid；不配图时每章 charts 一律为 []；
 5. 素材里有真实业绩/资质可引用的章节，在 summary 中点明引用方向；严禁虚构；
-6. 「生成要求」给了目标总字数时，所有章节 article_count×text_count 之和必须落在允许区间——通过调整每章篇幅（article_count/text_count）与小节数量来满足，不得为凑字数把大纲压成只有一级章节的平级结构。"""
+6. 「生成要求」给了目标总字数时，所有章节 article_count×text_count 之和必须落在允许区间——通过调整每章篇幅（article_count/text_count）与小节数量来满足，不得为凑字数把大纲压成只有一级章节的平级结构；
+7. 招标要素含 scoring_items（评分台账）时：大纲必须让每个评分项至少有一个章节实质响应；响应某评分项的章节，其 summary 末尾以「响应得分点：<评分项标题>」点名（多项用顿号分隔，标题照抄台账原文不得改写）。"""
 
 # 兜底重试时追加在 SPEC_USER_TEMPLATE 之后：把首轮不合格的事实喂回去，要求按规则 2 重排层级
 SPEC_FLAT_RETRY_ADDENDUM = """
@@ -235,7 +243,11 @@ _WIZARD_SECTION_NO_CHART_RULES = (
 WIZARD_SECTION_SYSTEM_PROMPT = _WIZARD_SECTION_SYSTEM_PROMPT_BASE + _WIZARD_SECTION_CHART_RULES
 
 
-def section_system_prompt(*, charts_enabled: bool = True) -> str:
+def section_system_prompt(*, charts_enabled: bool = True, fig_mode: str = "mermaid") -> str:
+    # fig_mode=bidfig（23 号 O8）：切 V1 bidfig 系统 prompt（LLM 输出结构化 JSON 围栏，
+    # 服务端原语库确定性渲染）；不配图时图表规则以 charts_enabled 为准（图都不要就更无引擎可言）
+    if charts_enabled and fig_mode == "bidfig":
+        return SECTION_SYSTEM_PROMPT_BIDFIG
     rules = _WIZARD_SECTION_CHART_RULES if charts_enabled else _WIZARD_SECTION_NO_CHART_RULES
     return _WIZARD_SECTION_SYSTEM_PROMPT_BASE + rules
 
@@ -251,6 +263,8 @@ __OUTLINE_TEXT__
 ## 本次撰写章节
 标题：__TITLE__
 本章摘要：__SUMMARY__
+本章响应的评分项
+__SCORE_ITEMS_TEXT__
 本章图表计划：
 __CHART_PLAN_TEXT__
 篇幅：约 __ARTICLE_COUNT__ 段，每段约 __TEXT_COUNT__ 字。
@@ -287,6 +301,8 @@ __OUTLINE_TEXT__
 ## 本次撰写：章首导语（本节点为父章节）
 章节标题：__TITLE__
 本章摘要：__SUMMARY__
+本章响应的评分项（导语中说明本章如何回应，不展开正文）
+__SCORE_ITEMS_TEXT__
 本章后续小节（由系统另行单独撰写，导语中只按标题预告，严禁展开其内容）：
 __CHILD_TITLES__
 篇幅：__ARTICLE_COUNT__ 段，每段约 __TEXT_COUNT__ 字。
@@ -546,21 +562,126 @@ def build_requirements_text(requirements: dict[str, Any] | None) -> str:
     return "\n".join(lines)[:SPEC_CONTEXT_MAX_CHARS]
 
 
+# ------------------------------------------------------------------ 评分台账（23 号 O2：S1 提取/S9 覆盖核查）
+
+
+def scoring_items_of(analysis: dict[str, Any] | None) -> list[dict[str, str]]:
+    """从招标要素里取结构化评分台账；旧向导/无评分办法时为空列表（全链路判空跳过，决策 42 口径）。"""
+    if not isinstance(analysis, dict):
+        return []
+    items = analysis.get("scoring_items")
+    if not isinstance(items, list):
+        return []
+    result: list[dict[str, str]] = []
+    for item in items[:30]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        result.append(
+            {
+                "title": title,
+                "weight": str(item.get("weight") or "").strip(),
+                "criteria": str(item.get("criteria") or "").strip(),
+            }
+        )
+    return result
+
+
+def _ancestors_of(spec: list[dict[str, Any]], node_id: str) -> list[dict[str, Any]]:
+    """按 node_id 前缀取自身+全部祖先节点（"5.3.1" → ["5", "5.3", "5.3.1"]）。"""
+    result: list[dict[str, Any]] = []
+    for node in spec:
+        other = str(node.get("node_id") or "")
+        if other and (node_id == other or node_id.startswith(other + ".")):
+            result.append(node)
+    return result
+
+
+def _norm_match_key(text: str) -> str:
+    return re.sub(r"[\s，。、:：;；()（）\-—]+", "", text or "")
+
+
+def score_items_for_node(
+    spec: list[dict[str, Any]], node: dict[str, Any], scoring_items: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    """该节点命中的评分项：评分项标题出现在本节点或任一祖先的标题/摘要里（spec 生成规则 7 的回查）。"""
+    if not scoring_items:
+        return []
+    chain_text = "".join(
+        _norm_match_key(f"{n.get('title') or ''}{n.get('summary') or ''}")
+        for n in _ancestors_of(spec, str(node.get("node_id") or ""))
+    )
+    hits: list[dict[str, str]] = []
+    for item in scoring_items:
+        key = _norm_match_key(item["title"])
+        if key and key in chain_text:
+            hits.append(item)
+    return hits
+
+
+def render_score_items_text(items: list[dict[str, str]]) -> str:
+    if not items:
+        return "（无直接对应的评分项——按大纲摘要与编写需求撰写即可，不要虚构评分要求）"
+    lines = []
+    for item in items:
+        weight = f"（{item['weight']}）" if item["weight"] else ""
+        criteria = f"：{item['criteria']}" if item["criteria"] else ""
+        lines.append(f"- {item['title']}{weight}{criteria}")
+    return (
+        "本章必须实质回应下列评分项的评审标准（评标专家会按这些条目打分）：\n"
+        + "\n".join(lines)
+    )
+
+
+def score_coverage_matrix(
+    spec: list[dict[str, Any]],
+    generated_node_ids: list[str],
+    scoring_items: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    """得分点覆盖矩阵（S9 判定点核查）：每个评分项被哪些已生成章节响应（自身或祖先命中）。"""
+    matrix: list[dict[str, Any]] = []
+    generated = [str(node_id) for node_id in generated_node_ids or []]
+    for item in scoring_items:
+        key = _norm_match_key(item["title"])
+        covered_by: list[str] = []
+        if key:
+            for node_id in generated:
+                chain_text = "".join(
+                    _norm_match_key(f"{n.get('title') or ''}{n.get('summary') or ''}")
+                    for n in _ancestors_of(spec, node_id)
+                )
+                if key in chain_text:
+                    covered_by.append(node_id)
+        matrix.append(
+            {
+                "title": item["title"],
+                "weight": item["weight"],
+                "criteria": item["criteria"],
+                "covered_by": covered_by,
+            }
+        )
+    return matrix
+
+
 # ------------------------------------------------------------------ 生成要求（决策 38-41）
 
 
 def normalize_generation_options(raw: Any) -> dict[str, Any] | None:
-    """生成要求规范化：parts 去重保序且非空（空→仅技术）、word_count 越界回 None、charts 布尔。
+    """生成要求规范化：parts 去重保序且非空（空→仅技术）、word_count 越界回 None、charts 布尔、fig_mode 透传。
 
     返回 None 表示"未设置"（存量向导 / 老客户端载荷），下游一律按无约束处理（决策 42）。
     word_count=None 是允许的草稿态——必填校验在进入编写大纲时做（决策 40）。
+    2026-10-23：产品要求只提供技术应标编写——parts 强制收敛为 ["technical"]
+    （存量数据里已保存的 business 在读取/消费时一律被过滤；schema 侧同步收敛老客户端载荷）。
     """
     if not isinstance(raw, dict):
         return None
     parts: list[str] = []
     for item in raw.get("parts") or []:
         key = str(item or "").strip().lower()
-        if key in GENERATION_PARTS and key not in parts:
+        if key in GENERATION_PARTS and key in GENERATION_PARTS_ENABLED and key not in parts:
             parts.append(key)
     if not parts:
         parts = ["technical"]
@@ -576,10 +697,14 @@ def normalize_generation_options(raw: Any) -> dict[str, Any] | None:
     ):
         word_count = None
     charts = raw.get("charts")
+    fig_mode = str(raw.get("fig_mode") or "").strip().lower()
+    if fig_mode not in GENERATION_FIG_MODES:
+        fig_mode = "mermaid"
     return {
         "parts": parts,
         "word_count": word_count,
         "charts": True if charts is None else bool(charts),
+        "fig_mode": fig_mode,
     }
 
 
@@ -1551,6 +1676,8 @@ class BidWizardWriteAgent:
         prev_sections: list[tuple[str, str, Optional[str]]],
         charts_enabled: bool = True,
         intro_children: Optional[list[str]] = None,
+        fig_mode: str = "mermaid",
+        score_items_text: str = "",
     ) -> dict[str, Any]:
         self._publish("section_started", {"node_id": node["node_id"], "title": node["title"]})
         await self._set_section_status(node["node_id"], status="generating")
@@ -1578,6 +1705,7 @@ class BidWizardWriteAgent:
                 .replace("__OUTLINE_TEXT__", _outline_text(spec))
                 .replace("__TITLE__", node["title"])
                 .replace("__SUMMARY__", str(node.get("summary") or "（无摘要，按标题与大纲撰写）"))
+                .replace("__SCORE_ITEMS_TEXT__", score_items_text or "（无直接对应的评分项）")
                 .replace(
                     "__CHILD_TITLES__",
                     "\n".join(f"- {title}" for title in intro_children) or "（无）",
@@ -1597,6 +1725,7 @@ class BidWizardWriteAgent:
                 .replace("__OUTLINE_TEXT__", _outline_text(spec))
                 .replace("__TITLE__", node["title"])
                 .replace("__SUMMARY__", str(node.get("summary") or "（无摘要，按标题与大纲撰写）"))
+                .replace("__SCORE_ITEMS_TEXT__", score_items_text or "（无直接对应的评分项——按大纲摘要与编写需求撰写）")
                 .replace(
                     "__CHART_PLAN_TEXT__", build_chart_plan_text(node, charts_enabled=charts_enabled)
                 )
@@ -1606,11 +1735,16 @@ class BidWizardWriteAgent:
                 .replace("__TEXT_COUNT__", str(node.get("text_count") or 400))
             )
             body = strip_code_fence(
-                await self.llm.generate(section_system_prompt(charts_enabled=charts_enabled), user_prompt)
+                await self.llm.generate(
+                    section_system_prompt(charts_enabled=charts_enabled, fig_mode=fig_mode),
+                    user_prompt,
+                )
             )
         if not body:
             raise RuntimeError(f"章节「{node['title']}」生成结果为空")
         body = clamp_mermaid_blocks(close_unterminated_mermaid_fence(body))
+        if fig_mode == "bidfig" and intro_children is None:
+            body = clamp_bidfig_blocks(close_unterminated_bidfig_fence(body))
         level = max(1, min(6, int(node.get("level") or 1)))
         content = f"{'#' * level} {node['title']}\n\n{body}"[:SECTION_RESULT_MAX_CHARS]
 
@@ -1629,7 +1763,15 @@ class BidWizardWriteAgent:
             "section_completed",
             {"node_id": node["node_id"], "title": node["title"], "word_count": word_count},
         )
-        return {"node_id": node["node_id"], "title": node["title"], "word_count": word_count}
+        return {
+            "node_id": node["node_id"],
+            "title": node["title"],
+            "word_count": word_count,
+            # 供 run() 末尾全稿机检/覆盖矩阵就地消费（不落库）
+            "content": content,
+            "article_count": int(node.get("article_count") or 2),
+            "text_count": int(node.get("text_count") or 400),
+        }
 
     async def _mark_section_failed(self, node_id: str, message: str) -> None:
         try:
@@ -1659,8 +1801,11 @@ class BidWizardWriteAgent:
         # 生成要求「不配图」（决策 41）贯穿到章节正文：system prompt 与图表计划文本都切无图版
         generation_options = generation_options_of(context["requirements"])
         charts_enabled = bool(generation_options.get("charts", True)) if generation_options else True
+        fig_mode = str(generation_options.get("fig_mode") or "mermaid") if generation_options else "mermaid"
         prev_sections = await self._load_prev_sections(wizard.id, spec)
         intro_plan = chapter_intro_plan(spec_scope)
+        # 评分台账（23 号 O2）：旧向导无 scoring_items 时全链路自然跳过
+        scoring_items = scoring_items_of(context["analysis"])
 
         done: list[dict[str, Any]] = []
         failed: list[str] = []
@@ -1676,6 +1821,10 @@ class BidWizardWriteAgent:
                     prev_sections=prev_sections,
                     charts_enabled=charts_enabled,
                     intro_children=intro_plan.get(node["node_id"]),
+                    fig_mode=fig_mode,
+                    score_items_text=render_score_items_text(
+                        score_items_for_node(spec, node, scoring_items)
+                    ),
                 )
                 done.append(result)
                 prev_sections.append((node["node_id"], node["title"], node.get("summary")))
@@ -1688,12 +1837,24 @@ class BidWizardWriteAgent:
                 self._publish("section_failed", {"node_id": node["node_id"], "error": message})
 
         self._check_cancel()
-        summary = {
+        summary: dict[str, Any] = {
             "section_total": len(spec_scope),
             "section_generated": len(done),
             "section_failed": len(failed),
             "word_count": sum(int(item.get("word_count") or 0) for item in done),
         }
+        # 全稿机检（23 号 O1/O6）：只报告不改写，前端完成态展示质检报告卡
+        try:
+            summary["doc_checks"] = draft_checks(done)
+        except Exception:
+            logger.exception("bid-wizard draft_checks failed: task=%s", self.task_id)
+        # 得分点覆盖矩阵（23 号 O2，S9 判定点核查）：无评分台账时为空列表（前端隐藏卡片）
+        try:
+            summary["score_coverage"] = score_coverage_matrix(
+                spec, [item["node_id"] for item in done], scoring_items
+            )
+        except Exception:
+            logger.exception("bid-wizard score_coverage failed: task=%s", self.task_id)
         return summary
 
 

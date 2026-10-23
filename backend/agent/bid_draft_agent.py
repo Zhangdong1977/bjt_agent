@@ -53,8 +53,12 @@ __TENDER_TEXT__
   "basic": {"project_name": "", "tendering_unit": "", "opening_date": "", "bid_deadline": "", "budget": ""},
   "tender_requirements": ["招标需求/技术要求要点，每条一句话"],
   "scoring_criteria": ["评分标准要点，每条一句话"],
-  "rejection_items": ["废标/否决条款要点，每条一句话"]
-}"""
+  "rejection_items": ["废标/否决条款要点，每条一句话"],
+  "scoring_items": [{"title": "评分项名称（照抄评分办法原文）", "weight": "分值或分值区间，如 9分；提取不到留空字符串", "criteria": "该评分项的评审标准要点，一句话"}]
+}
+
+评分办法（评标办法/评分细则章节）逐项拆出可独立计分的评分项进 scoring_items（含分值与评审标准），
+与 scoring_criteria（要点罗列）并存；评分办法整章缺失时 scoring_items 为空数组。"""
 
 OUTLINE_SYSTEM_PROMPT = (
     "你是资深投标文件编写专家，根据招标要素设计投标文件（标书）章节大纲。"
@@ -335,6 +339,26 @@ def _bound_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
             return []
         return [str(item).strip()[:limit] for item in value[:max_items] if str(item).strip()]
 
+    # 评分台账（23 号 O2）：结构化得分点——title 必填，weight/criteria 缺省空串（提取不到不虚构）
+    def _scoring_items(value: Any) -> list[dict[str, str]]:
+        if not isinstance(value, list):
+            return []
+        items: list[dict[str, str]] = []
+        for raw in value[:30]:
+            if not isinstance(raw, dict):
+                continue
+            title = str(raw.get("title") or "").strip()
+            if not title:
+                continue
+            items.append(
+                {
+                    "title": title[:200],
+                    "weight": str(raw.get("weight") or "").strip()[:50],
+                    "criteria": str(raw.get("criteria") or "").strip()[:500],
+                }
+            )
+        return items
+
     basic_raw = analysis.get("basic") if isinstance(analysis.get("basic"), dict) else {}
     basic = {str(key)[:50]: str(value).strip()[:500] for key, value in list(basic_raw.items())[:30]}
     return {
@@ -342,6 +366,7 @@ def _bound_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
         "tender_requirements": _strings(analysis.get("tender_requirements"), 1_000, 50),
         "scoring_criteria": _strings(analysis.get("scoring_criteria"), 1_000, 50),
         "rejection_items": _strings(analysis.get("rejection_items"), 1_000, 50),
+        "scoring_items": _scoring_items(analysis.get("scoring_items")),
     }
 
 

@@ -21,6 +21,7 @@ from sqlalchemy import select
 
 from backend.api.bid_draft import _node_sort_key
 from backend.api.deps import CurrentUser, DBSession
+from backend.agent.bidfig import render_bidfig_fences
 from backend.config import get_settings
 from backend.models import (
     BidWizard,
@@ -1679,6 +1680,9 @@ async def get_writing_section_content(
             content = _resolve_workspace_path(row.content_path).read_text(
                 encoding="utf-8", errors="replace"
             )[:200_000]
+            # fig_mode=bidfig 时章节 md 里是 ```bidfig JSON 围栏；内容出口统一渲染成 SVG
+            # （23 号 O8，照 V1 api/bid_draft 两出口模式——预览/写入/复制都经此处，单点覆盖）
+            content = render_bidfig_fences(content)
         except Exception:
             content = None
     return WizardSectionContentResponse(

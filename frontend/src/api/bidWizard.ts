@@ -38,11 +38,13 @@ export interface WizardQuestion {
 
 export type GenerationPart = "business" | "technical";
 
-/** 生成要求（决策 38-41）：编写需求里固定的三项硬约束子结构；word_count 为空=草稿，进大纲时必填。 */
+/** 生成要求（决策 38-41）：编写需求里固定的三项硬约束子结构；word_count 为空=草稿，进大纲时必填。
+ * 2026-10-23：parts 固定技术（商务屏蔽）；fig_mode=图表引擎（23 号 O8，默认 mermaid）。 */
 export interface GenerationOptions {
   parts: GenerationPart[];
   word_count: number | null;
   charts: boolean;
+  fig_mode?: "mermaid" | "bidfig";
 }
 
 export const GENERATION_WORD_COUNT_MIN = 1_000;
@@ -112,6 +114,22 @@ export interface WizardWritingTask {
   started_at?: string | null;
   completed_at?: string | null;
   created_at: string;
+}
+
+/** 撰写完成期全稿机检条目（23 号 O1/O6，summary.doc_checks）。 */
+export interface WizardDocCheck {
+  severity: "error" | "warning" | string;
+  node_id: string;
+  type: string;
+  detail: string;
+}
+
+/** 得分点覆盖矩阵行（23 号 O2，summary.score_coverage）。 */
+export interface WizardScoreCoverage {
+  title: string;
+  weight?: string | null;
+  criteria?: string | null;
+  covered_by: string[];
 }
 
 export interface WizardSection {
