@@ -2045,7 +2045,8 @@ watch(
 );
 
 // 进入需求确认阶段时同步口径编辑态（23 号 O3/O4）：本地改动保留在阶段内，重进以已存值为准
-watch(stageIndex, (index) => {
+// （含"重进时已在本阶段"的恢复场景——wizard id 变化同样触发）
+watch([stageIndex, () => wizard.value?.id], ([index]) => {
   if (index === 1) syncCapabilityFromWizard();
 });
 
