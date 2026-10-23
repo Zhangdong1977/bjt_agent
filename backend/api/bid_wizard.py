@@ -36,9 +36,11 @@ from backend.models import (
     Project,
 )
 from backend.schemas.bid_wizard import (
+    CapabilityUpdate,
     QuestionnaireAnswer,
     QuestionnaireGenerateRequest,
     RequirementsUpdate,
+    ReviewEstimateResponse,
     SectionWrittenResponse,
     SectionsResetWrittenResponse,
     SpecRevise,
@@ -1286,10 +1288,15 @@ async def save_requirements(
     merged = merge_questionnaire_answers(
         wizard.questionnaire, [answer.model_dump() for answer in body.answers]
     )
-    # 追问侧栏采纳对（supplementals）跨保存保留：重答问卷不丢补充说明
+    # 追问侧栏采纳对（supplementals）跨保存保留：重答问卷不丢补充说明；
+    # 应答口径/口径卡（23 号 O3/O4）同样跨保存保留——merge 基于问卷重建会整列丢失
     previous = wizard.requirements if isinstance(wizard.requirements, dict) else {}
-    for key in ("supplementals",):
-        if isinstance(previous.get(key), list):
+    for key in ("supplementals", "capability_map", "style_card"):
+        if key == "capability_map" and isinstance(previous.get(key), list):
+            merged[key] = previous[key]
+        elif key == "style_card" and isinstance(previous.get(key), dict):
+            merged[key] = previous[key]
+        elif isinstance(previous.get(key), list):
             merged[key] = previous[key]
     # 生成要求（决策 38）：载荷带则整体覆盖，不带则沿用已保存值（老客户端 / 只改作答不丢）
     if body.generation_options is not None:
@@ -1410,6 +1417,100 @@ async def adopt_sidebar_answer(
     return wizard
 
 
+# ------------------------------------------------------------------ 应答口径（23 号 O3/O4）
+
+
+@router.post("/wizards/{wizard_id}/capability", response_model=WizardResponse)
+async def generate_capability(wizard_id: str, db: DBSession, current_user: CurrentUser) -> BidWizard:
+    """同步微任务（O3）：基于招标要求+素材索引逐项给出三态口径建议，顺带产出口径卡（O4）。
+
+    建议以未确认态（confirmed=False）存入 requirements.capability_map——用户逐条
+    确认/改判后经 PUT 保存才注入下游 prompt（拍板语义，S3）；重新生成会整批覆盖
+    旧建议与口径卡（含未保存的用户改动，前端按钮带确认提示）。
+    """
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    await _require_access(db, current_user)
+    if not isinstance(wizard.analysis, dict) or not wizard.analysis:
+        raise HTTPException(status_code=400, detail="请先完成招标解读（开始检查）后再生成应答口径建议")
+    await _guard_writing_idle(db, wizard)
+
+    wizard_ref = wizard
+
+    async def runner() -> dict[str, Any]:
+        from backend.agent.bid_wizard_agent import (
+            WizardLLM,
+            _load_material_index_rows,
+            build_material_index_text,
+            generate_capability_map,
+        )
+
+        llm = WizardLLM(timeout=_QA_HEAVY_TIMEOUT_SECONDS)
+        material_entries = await _load_material_index_rows(db, wizard_ref.id)
+        return await generate_capability_map(
+            llm,
+            analysis=wizard_ref.analysis,
+            material_index_text=build_material_index_text(material_entries),
+        )
+
+    payload = await _run_qa_task(
+        db,
+        wizard,
+        current_user,
+        action="capability",
+        runner=runner,
+        timeout_seconds=_QA_HEAVY_TIMEOUT_SECONDS,
+    )
+    requirements = dict(wizard.requirements) if isinstance(wizard.requirements, dict) else {}
+    # 建议以未确认态落库（confirmed=False）——save 端点保存时才置 True（拍板语义）
+    from backend.agent.bid_wizard_agent import normalize_capability_map
+
+    requirements["capability_map"] = normalize_capability_map(payload["capability_map"])
+    if payload.get("style_card"):
+        requirements["style_card"] = payload["style_card"]
+    wizard.requirements = requirements
+    await db.commit()
+    await db.refresh(wizard)
+    return wizard
+
+
+@router.put("/wizards/{wizard_id}/capability", response_model=WizardResponse)
+async def save_capability(
+    wizard_id: str, body: CapabilityUpdate, db: DBSession, current_user: CurrentUser
+) -> BidWizard:
+    """保存应答口径（无 LLM 不计费）：逐条确认/改判 + 口径卡 → confirmed=True 注入下游。"""
+    wizard = await _owned_wizard(wizard_id, current_user, db)
+    await _guard_writing_idle(db, wizard)
+    from backend.agent.bid_wizard_agent import normalize_capability_map, normalize_style_card
+
+    requirements = dict(wizard.requirements) if isinstance(wizard.requirements, dict) else {}
+    items = [
+        {
+            "title": item.title,
+            "requirement": item.requirement,
+            "stance": item.stance,
+            "evidence": item.evidence,
+            "note": item.note,
+            "confirmed": True,
+        }
+        for item in body.items
+    ]
+    normalized = normalize_capability_map(items)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="口径条目不能为空")
+    requirements["capability_map"] = normalized
+    if body.style_card is not None:
+        style_card = normalize_style_card(body.style_card.model_dump())
+        if style_card is not None:
+            requirements["style_card"] = style_card
+    wizard.requirements = requirements
+    # 口径变了 → 基于旧口径的 Spec 过期（决策 19 同口径）
+    if wizard.spec:
+        wizard.spec_stale = True
+    await db.commit()
+    await db.refresh(wizard)
+    return wizard
+
+
 @router.post("/wizards/{wizard_id}/spec", response_model=WizardResponse)
 async def generate_spec(wizard_id: str, db: DBSession, current_user: CurrentUser) -> BidWizard:
     """同步微任务：编写需求 + 招标要素 + 素材索引 → Spec（目录/摘要/图表规划）。"""
@@ -1427,6 +1528,7 @@ async def generate_spec(wizard_id: str, db: DBSession, current_user: CurrentUser
             _load_material_index_rows,
             build_material_index_text,
             build_requirements_text,
+            build_toc_reference_block,
             generate_spec as gen_spec,
             generation_options_of,
         )
@@ -1440,6 +1542,8 @@ async def generate_spec(wizard_id: str, db: DBSession, current_user: CurrentUser
             material_index_text=build_material_index_text(material_entries),
             generation_options=generation_options_of(wizard_ref.requirements),
             time_budget_seconds=_QA_HEAVY_TIMEOUT_SECONDS,
+            # 历史模板素材（23 号 O7）：索引里带目录结构小节时注入大纲生成参照
+            toc_reference_text=build_toc_reference_block(material_entries),
         )
 
     spec = await _run_qa_task(
@@ -1763,6 +1867,117 @@ async def regenerate_writing_section(
         billing_status="pending",
     )
     return await _dispatch_writing_task(db, new_task)
+
+
+# ------------------------------------------------------------------ 审读-修订轮（23 号 O5）
+
+
+async def _reviewable_wizard_of_task(task: BidWritingTask, current_user, db: DBSession) -> BidWizard:
+    wizard = (
+        await db.execute(select(BidWizard).where(BidWizard.id == task.wizard_id))
+    ).scalar_one_or_none()
+    if wizard is None or wizard.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="向导不存在或无权访问")
+    return wizard
+
+
+async def _latest_writable_chapters(db: DBSession, wizard: BidWizard) -> dict[str, int]:
+    """每个 node 的最新已生成章节字数（O5 审读对象；与「重新写入 Word」权威清单同口径）。"""
+    rows = (
+        await db.execute(
+            select(BidWizardSection.node_id, BidWizardSection.word_count, BidWritingTask.created_at)
+            .join(BidWritingTask, BidWritingTask.id == BidWizardSection.task_id)
+            .where(
+                BidWritingTask.wizard_id == wizard.id,
+                BidWizardSection.status.in_(("generated", "written")),
+            )
+            .order_by(BidWritingTask.created_at.desc())
+        )
+    ).all()
+    latest: dict[str, int] = {}
+    for node_id, word_count, _created in rows:  # 最新任务先到先得
+        latest.setdefault(str(node_id), int(word_count or 0))
+    return latest
+
+
+@router.get("/writing-tasks/{task_id}/review-estimate", response_model=ReviewEstimateResponse)
+async def estimate_review_cost(
+    task_id: str, db: DBSession, current_user: CurrentUser
+) -> ReviewEstimateResponse:
+    """O5 审读轮发起前预估：章数/字数/token 量级/约点数（确认弹窗展示，实际按用量结算）。"""
+    task = await _owned_writing_task(task_id, current_user, db)
+    wizard = await _reviewable_wizard_of_task(task, current_user, db)
+    chapters = await _latest_writable_chapters(db, wizard)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="没有可审读的已生成章节")
+    total_words = sum(chapters.values())
+    from backend.agent.bid_wizard_agent import estimate_review_points, estimate_review_usage
+
+    prompt_tokens, completion_tokens = estimate_review_usage(total_words)
+    from backend.services.sales import get_sales_config, multiplier_for_task
+
+    sales_config = await get_sales_config(db)
+    multiplier = multiplier_for_task(sales_config, "bid_wizard_write")
+    return ReviewEstimateResponse(
+        chapters=len(chapters),
+        total_words=total_words,
+        estimated_tokens=prompt_tokens + completion_tokens,
+        estimated_points=estimate_review_points(total_words, multiplier),
+    )
+
+
+@router.post(
+    "/writing-tasks/{task_id}/review",
+    response_model=WritingTaskResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_review_task(
+    task_id: str, db: DBSession, current_user: CurrentUser
+) -> BidWritingTask:
+    """发起一轮 AI 审读（O5，可选）：Reader 全稿找问题 → 仅 high/medium 章节自动修订。
+
+    复用 write 队列与计费 kind（零 operate-two 发版）；审读任务行 summary={"action":"review"}，
+    一轮封顶（审读任务不能再发起审读）；修订章节走「替换 Word 中本章」交互。
+    """
+    task = await _owned_writing_task(task_id, current_user, db)
+    # 一轮封顶先于终态检查：进行中的审读任务同样点不出更明确的 400（而非笼统的 409）
+    if isinstance(task.summary, dict) and task.summary.get("action") == "review":
+        raise HTTPException(status_code=400, detail="审读任务不能再发起审读（一轮封顶）")
+    if task.status not in _TERMINAL_STATUSES:
+        raise HTTPException(status_code=409, detail="任务尚未结束，不能发起审读")
+    wizard = await _reviewable_wizard_of_task(task, current_user, db)
+    if wizard.status != "active":
+        raise HTTPException(status_code=400, detail="向导已结束，不能发起审读")
+    await _guard_writing_idle(db, wizard)
+    chapters = await _latest_writable_chapters(db, wizard)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="没有可审读的已生成章节")
+    spec = wizard.spec if isinstance(wizard.spec, list) else []
+    ordered = [
+        str(node.get("node_id"))
+        for node in spec
+        if isinstance(node, dict) and str(node.get("node_id")) in chapters
+    ]
+    node_ids = ordered or sorted(chapters)
+
+    from backend.services.sales import multiplier_for_task
+    from backend.services.task_lifecycle import authorize_billable_task_start
+
+    sales_config = await authorize_billable_task_start(
+        db, user_id=current_user.id, operation_name="AI 标书审读"
+    )
+    review_task = BidWritingTask(
+        wizard_id=wizard.id,
+        project_id=task.project_id,
+        user_id=current_user.id,
+        selected_nodes=node_ids,
+        continue_of=task.id,
+        summary={"action": "review", "review_of": task.id},
+        status="pending",
+        billing_multiplier=multiplier_for_task(sales_config, "bid_wizard_write"),
+        billing_status="pending",
+    )
+    return await _dispatch_writing_task(db, review_task)
 
 
 @router.post(

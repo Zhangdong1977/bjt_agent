@@ -158,6 +158,7 @@ __GENERATION_CONSTRAINTS__
 
 ## 公司素材索引（每行一段：编号｜标题｜摘要｜关键词）
 __MATERIAL_INDEX__
+__TOC_REFERENCE__
 
 请输出 Spec JSON 数组（不超过 __MAX_NODES__ 个节点；按目录顺序平铺，用 level 标注层级，1-4 级），每项格式：
 
@@ -349,24 +350,22 @@ def current_llm_for_pricing() -> tuple[str, Optional[str]]:
     return provider, model
 
 
-def estimate_index_points(estimated_tokens: int, multiplier: Decimal | float) -> Optional[int]:
-    """token→点数线性预估（上传前确认弹窗显示「约 X 点」，§4.2/story 7）。
+def estimate_points_for_usage(
+    prompt_tokens: int, completion_tokens: int, multiplier: Decimal | float
+) -> Optional[int]:
+    """(prompt, completion)→点数线性预估（与结算同公式 cost×10×倍率，向上取整）。
 
-    口径：索引=1 次 LLM 调用/素材——prompt≈全文 tokens，completion≈元数据输出，
-    按 prompt 的 8%、下限 200 tokens 粗估；点数 = cost×10×倍率（与结算同公式），
-    **向上取整**（预估略保守，小素材也至少显示 1 点）。
-    价目缺失（provider 无费率）返回 None，前端退回 token 量级提示。
+    O5 审读轮预估与素材索引预估共用的底层口径；价目缺失返回 None（前端退回 token 提示）。
     """
     from backend.services.billing import sales_points_for
     from backend.services.cost_calculator import estimate_cost
 
     provider, model = current_llm_for_pricing()
-    completion = max(200, int((estimated_tokens or 0) * 0.08))
     cost = estimate_cost(
         provider=provider,
         model=model,
-        prompt_tokens=max(1, int(estimated_tokens or 0)),
-        completion_tokens=completion,
+        prompt_tokens=max(1, int(prompt_tokens or 0)),
+        completion_tokens=max(0, int(completion_tokens or 0)),
         status="success",
     )
     if cost is None:
@@ -375,6 +374,35 @@ def estimate_index_points(estimated_tokens: int, multiplier: Decimal | float) ->
     if points <= 0:
         return None
     return int(points.to_integral_value(rounding=ROUND_CEILING))
+
+
+def estimate_index_points(estimated_tokens: int, multiplier: Decimal | float) -> Optional[int]:
+    """token→点数线性预估（上传前确认弹窗显示「约 X 点」，§4.2/story 7）。
+
+    口径：索引=1 次 LLM 调用/素材——prompt≈全文 tokens，completion≈元数据输出，
+    按 prompt 的 8%、下限 200 tokens 粗估（底层换算见 estimate_points_for_usage）。
+    """
+    completion = max(200, int((estimated_tokens or 0) * 0.08))
+    return estimate_points_for_usage(estimated_tokens, completion, multiplier)
+
+
+def estimate_review_usage(total_words: int) -> tuple[int, int]:
+    """O5 审读轮用量预估口径：(prompt_tokens, completion_tokens)。
+
+    审读读全稿（字数×0.7×1.2 含上下文开销、completion≈3%）；修订按 30% 章节重写假设
+    （prompt=30% 正文+上下文、completion≈同量正文）。量级提示，实际按真实用量结算。
+    """
+    words = max(0, int(total_words or 0))
+    read_tokens = int(words * ESTIMATE_TOKENS_PER_CHAR * 1.2)
+    prompt = read_tokens + int(read_tokens * 0.3 * 1.2)
+    completion = max(200, int(read_tokens * 0.03) + int(read_tokens * 0.3))
+    return prompt, completion
+
+
+def estimate_review_points(total_words: int, multiplier: Decimal | float) -> Optional[int]:
+    """O5 审读轮点数预估（发起前确认弹窗）；口径见 estimate_review_usage。"""
+    prompt, completion = estimate_review_usage(total_words)
+    return estimate_points_for_usage(prompt, completion, multiplier)
 
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
@@ -469,6 +497,82 @@ def render_index_markdown(chunks: list[dict[str, Any]], metas: dict[int, dict[st
     return "\n".join(lines)
 
 
+# ------------------------------------------------------------------ 历史标书目录参照（23 号 O7）
+
+# 历史模板类素材的识别口径：本地上传传分类 id（HistoryDoc），客户端上传传分类名
+# （素材-历史模板）——两种形态都可能是历史标书，按包含匹配
+HISTORY_TEMPLATE_CATEGORY_MARKERS = ("历史模板", "HistoryDoc")
+# 索引文件顶部的目录结构小节标题（generate_spec 侧按此识别并提取参照）
+TOC_REFERENCE_HEADING = "## 历史标书目录结构（仅作层级参照）"
+_TOC_MAX_HEADINGS = 200
+_TOC_MAX_CHARS = 6_000
+# spec prompt 注入的历史目录总量上限（多份素材合并后仍要给正题留上下文）
+TOC_REFERENCE_MAX_CHARS = 8_000
+TOC_REFERENCE_MAX_DOCS = 5
+
+
+def is_history_template_category(category: str | None) -> bool:
+    """素材分类是否属「历史模板」（S7 目录参照的触发条件）。"""
+    text = str(category or "").strip()
+    return bool(text) and any(marker in text for marker in HISTORY_TEMPLATE_CATEGORY_MARKERS)
+
+
+def extract_toc_tree(markdown: str, *, max_headings: int = _TOC_MAX_HEADINGS) -> str:
+    """从素材解析产物提取标题树（纯代码、零 LLM）：# 层级缩进列表，供大纲生成参照。
+
+    只取 1-4 级标题（投标文件目录深度），剥编号前缀保持与 Spec 标题可比对；
+    空标题/超限截断以「…（共 N 级标题，已截断）」收口。
+    """
+    lines: list[str] = []
+    total = 0
+    for raw_line in (markdown or "").splitlines():
+        match = _HEADING_RE.match(raw_line.strip())
+        if not match:
+            continue
+        level = len(match.group(1))
+        if level > 4:
+            continue
+        total += 1
+        if len(lines) >= max_headings:
+            continue
+        lines.append("%s- %s" % ("  " * (level - 1), match.group(2).strip()[:120]))
+    if not lines:
+        return ""
+    body = "\n".join(lines)[:_TOC_MAX_CHARS]
+    if total > max_headings:
+        body += "\n…（共 %d 个标题，超出部分已截断）" % total
+    return body
+
+
+def build_toc_reference_block(entries: list[tuple[str, str, str]]) -> str:
+    """汇总素材索引里的「历史标书目录结构」小节 → spec prompt 注入块（O7）。
+
+    entries = load_material_index_texts 的产物 (document_id, filename, index_md)；
+    只认 TOC_REFERENCE_HEADING 起、到下一个二级标题止的小节；无历史模板素材返回空串
+    （SPEC_USER_TEMPLATE 的 __TOC_REFERENCE__ 占位替换为空，模板行为与存量一致）。
+    """
+    blocks: list[str] = []
+    for doc_id, name, index_md in entries:
+        if len(blocks) >= TOC_REFERENCE_MAX_DOCS:
+            break
+        text = index_md or ""
+        start = text.find(TOC_REFERENCE_HEADING)
+        if start < 0:
+            continue
+        rest = text[start + len(TOC_REFERENCE_HEADING):]
+        end = rest.find("\n## ")
+        section = (rest if end < 0 else rest[:end]).strip()
+        if section:
+            blocks.append("### %s\n%s" % (name or doc_id, section))
+    if not blocks:
+        return ""
+    joined = "\n\n".join(blocks)[:TOC_REFERENCE_MAX_CHARS]
+    return (
+        "\n## 历史标书目录参照（仅作层级与覆盖面参照，理解同类标书通常包含哪些板块；"
+        "严禁照抄其中任何章节名与内容，大纲必须基于本次招标要求与素材规划）\n" + joined + "\n"
+    )
+
+
 def normalize_questionnaire(payload: Any) -> dict[str, Any]:
     """Bound and id-stamp the questionnaire JSON produced by the LLM."""
     raw_questions = []
@@ -547,6 +651,12 @@ def build_requirements_text(requirements: dict[str, Any] | None) -> str:
             f"目标总字数：{f'{word_count:,} 字' if word_count else '未设置'}；"
             f"配图：{'是' if options.get('charts', True) else '否'}"
         )
+    # 口径卡（23 号 O4）：统一称谓/公司名/项目名/禁词——注入问卷追问轮/Spec/章节全部下游 prompt
+    style_line = build_style_card_text((requirements or {}).get("style_card"))
+    if style_line:
+        lines.append(style_line)
+    # 应答口径（23 号 O3）：已确认的三态口径按措辞模板注入；未确认（AI 建议草稿）不注入
+    lines.extend(build_capability_lines((requirements or {}).get("capability_map")))
     for question in (requirements or {}).get("questions") or []:
         if not isinstance(question, dict):
             continue
@@ -575,6 +685,246 @@ def build_requirements_text(requirements: dict[str, Any] | None) -> str:
     if not lines:
         return "无"
     return "\n".join(lines)[:SPEC_CONTEXT_MAX_CHARS]
+
+
+# ------------------------------------------------------------------ 应答口径（23 号 O3）+ 口径卡（O4）
+
+# 三态口径：existing=现有已实现（须有素材依据）/ build=本项目建设内容 / confirm=待用户确认
+CAPABILITY_STANCES = ("existing", "build", "confirm")
+CAPABILITY_MAX_ITEMS = 30
+# 口径卡统一称谓候选（与 bid_doc_checks._SELF_REFERENCE_VARIANTS 对齐）
+SELF_REFERENCE_CHOICES = ("我司", "我公司", "我方", "本公司")
+_STYLE_CARD_FORBIDDEN_MAX = 12
+
+
+def normalize_style_card(raw: Any) -> dict[str, Any] | None:
+    """口径卡归一（O4）：{company_name, project_short_name, self_reference, forbidden_words, notes}。
+
+    非 dict/全空返回 None（存量无口径卡语义）；self_reference 不在候选池时回退「我司」；
+    forbidden_words 去重限长（脱敏词表只放短词，防把整句塞进机检 count）。
+    """
+    if not isinstance(raw, dict):
+        return None
+    self_reference = str(raw.get("self_reference") or "").strip()
+    if self_reference not in SELF_REFERENCE_CHOICES:
+        self_reference = "我司"
+    words: list[str] = []
+    for item in raw.get("forbidden_words") or []:
+        word = str(item or "").strip()[:50]
+        if word and word not in words and len(words) < _STYLE_CARD_FORBIDDEN_MAX:
+            words.append(word)
+    card = {
+        "company_name": str(raw.get("company_name") or "").strip()[:200],
+        "project_short_name": str(raw.get("project_short_name") or "").strip()[:200],
+        "self_reference": self_reference,
+        "forbidden_words": words,
+        "notes": str(raw.get("notes") or "").strip()[:500],
+    }
+    if not any((card["company_name"], card["project_short_name"], card["notes"], words)):
+        # 只有默认称谓也算有效口径卡（统一称谓是 O4 机检的驱动项）
+        return card if raw.get("self_reference") else None
+    return card
+
+
+def build_style_card_text(style_card: Any) -> str:
+    """口径卡 → 注入 prompt 的单行文本（O4：问卷追问轮/Spec/章节 prompt 共用）。"""
+    card = normalize_style_card(style_card)
+    if card is None:
+        return ""
+    parts = [f"我方称谓全稿统一用「{card['self_reference']}」，不得混用其他自称"]
+    if card["company_name"]:
+        parts.append(f"公司名统一为「{card['company_name']}」")
+    if card["project_short_name"]:
+        parts.append(f"项目名统一用「{card['project_short_name']}」")
+    if card["forbidden_words"]:
+        parts.append("禁用词（出现即扣分，一律改写）：" + "、".join(card["forbidden_words"]))
+    if card["notes"]:
+        parts.append(card["notes"])
+    return "- [口径卡] " + "；".join(parts)
+
+
+def build_capability_lines(capability_map: Any) -> list[str]:
+    """已确认口径 → 章节措辞规则行（O3 措辞模板注入；未确认条目不注入）。
+
+    existing→「本系统已实现」+引用素材依据；build→「本项目建设内容」+实施交付安排；
+    confirm→不得写具体能力参数，用（请补充）占位（不虚构）。
+    """
+    if not isinstance(capability_map, list):
+        return []
+    lines: list[str] = []
+    for raw in capability_map[:CAPABILITY_MAX_ITEMS]:
+        if not isinstance(raw, dict) or raw.get("confirmed") is not True:
+            continue
+        stance = str(raw.get("stance") or "")
+        if stance not in CAPABILITY_STANCES:
+            continue
+        title = str(raw.get("title") or "").strip()
+        if not title:
+            continue
+        requirement = str(raw.get("requirement") or "").strip()
+        label = "%s（%s）" % (title[:120], requirement[:120]) if requirement else title[:120]
+        if stance == "existing":
+            evidence = str(raw.get("evidence") or "").strip()
+            basis = f"，依据素材「{evidence[:100]}」中的能力事实" if evidence else "，须引用素材池中的真实能力事实"
+            lines.append(f"- [口径-现有已实现] {label}：表述为「本系统已实现」{basis}")
+        elif stance == "build":
+            lines.append(f"- [口径-本项目建设] {label}：表述为「本项目建设内容」，并给出实施与交付阶段安排")
+        else:
+            lines.append(f"- [口径-待确认] {label}：未确认前不得写具体能力参数与指标，用（请补充）占位，严禁虚构")
+    return lines[:12]
+
+
+def normalize_capability_map(raw: Any) -> list[dict[str, Any]]:
+    """能力口径映射归一（O3）：[{title, requirement, stance, evidence, note, confirmed}]。
+
+    stance 非法回退 confirm（宁待确认不虚构）；商务/报价类条目直接丢弃（产品口径仅技术标，
+    复用评分项商务判定词表）；confirmed 保持入参值（生成建议=False，保存确认=True）。
+    """
+    if not isinstance(raw, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for entry in raw[:CAPABILITY_MAX_ITEMS]:
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "").strip()
+        if not title:
+            continue
+        requirement = str(entry.get("requirement") or "").strip()
+        if is_business_scoring_item(title, requirement):
+            continue
+        stance = str(entry.get("stance") or "").strip()
+        if stance not in CAPABILITY_STANCES:
+            stance = "confirm"
+        items.append(
+            {
+                "title": title[:200],
+                "requirement": requirement[:500],
+                "stance": stance,
+                "evidence": str(entry.get("evidence") or "").strip()[:200],
+                "note": str(entry.get("note") or "").strip()[:500],
+                "confirmed": bool(entry.get("confirmed")),
+            }
+        )
+    return items
+
+
+CAPABILITY_SYSTEM_PROMPT = (
+    "你是资深投标文件专家。基于招标要求与公司素材索引，逐项给出「应答口径」建议——"
+    "对每条技术类招标要求判断我方应答姿态：existing（我方现有系统已实现，须给出素材依据）、"
+    "build（作为本项目建设内容交付）或 confirm（素材不足、需投标人确认后再定）。"
+    "同时顺带产出「口径卡」：我方统一称谓/公司名/项目名/禁用词。"
+    "只输出一个合法 JSON 对象，不要输出任何其他文字或代码块标记。"
+)
+
+CAPABILITY_USER_TEMPLATE = """## 招标要求（逐项）
+__REQUIREMENT_LIST__
+
+## 技术类评分项（如有）
+__SCORING_ITEMS__
+
+## 公司素材索引（每行一段：编号｜标题｜摘要｜关键词）
+__MATERIAL_INDEX__
+
+请输出 JSON：
+
+{"capability_map": [
+  {"title": "招标要求短语", "requirement": "该要求的具体内容，一句话",
+   "stance": "existing|build|confirm",
+   "evidence": "素材依据（如 '素材名#3'，existing 必填且必须是素材索引里真实存在的条目；其余留空）",
+   "note": "口径说明（一句话，如按 existing 写时的能力事实概要）"}
+],
+ "style_card": {
+  "self_reference": "我司|我公司|我方|本公司（全稿统一称谓，从素材/需求里出现的自称里选最常用的）",
+  "company_name": "公司名（素材/招标文件可查则填，查不到留空）",
+  "project_short_name": "项目简称（招标文件可查则填，查不到留空）",
+  "forbidden_words": ["禁用词（如招标文件明令或评标忌讳的表述，最多几个；没有给空数组）"],
+  "notes": "其他统一口径说明，没有留空"}}
+
+规则：
+1. capability_map 只覆盖技术类要求（技术方案/实施/人员/培训/售后/检测/标准规范等）——资质、业绩、财务、报价、商务条款类一律不出（商务标不在生成范围）；
+2. stance 判定必须诚实：素材索引里有能对应上的能力事实才给 existing 并如实填 evidence，否则给 build 或 confirm——严禁把没有素材依据的能力标成 existing；
+3. 素材覆盖不了的给 confirm，note 里写清缺什么信息；
+4. 最多 __MAX_ITEMS__ 项，按招标要求重要度排序；严禁虚构素材里不存在的内容。"""
+
+
+async def generate_capability_map(
+    llm: WizardLLM,
+    *,
+    analysis: dict[str, Any],
+    material_index_text: str,
+) -> dict[str, Any]:
+    """能力口径建议 + 口径卡（O3/O4 同一次 LLM 调用顺带产出，零额外成本）。"""
+    requirements = [
+        str(item or "").strip() for item in (analysis or {}).get("tender_requirements") or [] if str(item or "").strip()
+    ]
+    scoring_items = [
+        item for item in scoring_items_of(analysis) if not item.get("is_business")
+    ]
+    scoring_text = (
+        "\n".join(f"- {item['title']}（{item['weight']}）：{item['criteria']}" for item in scoring_items)
+        or "（无）"
+    )
+    user_prompt = (
+        CAPABILITY_USER_TEMPLATE.replace(
+            "__REQUIREMENT_LIST__",
+            "\n".join(f"- {text[:300]}" for text in requirements[:30]) or "（无）",
+        )
+        .replace("__SCORING_ITEMS__", scoring_text)
+        .replace("__MATERIAL_INDEX__", material_index_text or "（无素材）")
+        .replace("__MAX_ITEMS__", str(CAPABILITY_MAX_ITEMS))
+    )
+    payload = await llm.generate_json(CAPABILITY_SYSTEM_PROMPT, user_prompt)
+    if not isinstance(payload, dict):
+        raise RuntimeError("口径建议生成结果不是 JSON 对象，请重试")
+    result = normalize_capability_map(payload.get("capability_map"))
+    if not result:
+        raise RuntimeError("口径建议生成结果为空，请重试")
+    return {"capability_map": result, "style_card": normalize_style_card(payload.get("style_card"))}
+
+
+def capability_stance_issues(
+    spec: list[dict[str, Any]],
+    done: list[dict[str, Any]],
+    capability_map: Any,
+) -> list[dict[str, str]]:
+    """口径红线联动（O3 机检扩展）：口径为 existing 但无素材依据的章节 → warning。
+
+    只查已确认（confirmed）条目——AI 建议草稿尚未拍板，不进机检；
+    命中章节（标题匹配口径条目标题，口径含祖先链）逐章报，无命中章节时报全稿级一条。
+    """
+    if not isinstance(capability_map, list):
+        return []
+    issues: list[dict[str, str]] = []
+    for entry in capability_map:
+        if not isinstance(entry, dict) or entry.get("stance") != "existing":
+            continue
+        if entry.get("confirmed") is not True:
+            continue
+        if str(entry.get("evidence") or "").strip():
+            continue
+        title = str(entry.get("title") or "").strip()
+        key = _norm_match_key(title)
+        if not key:
+            continue
+        matched: list[str] = []
+        for item in done:
+            chain_text = "".join(
+                _norm_match_key(f"{node.get('title') or ''}{node.get('summary') or ''}")
+                for node in _ancestors_of(spec, str(item.get("node_id") or ""))
+            )
+            if key in chain_text:
+                matched.append(str(item.get("node_id") or ""))
+        detail = (
+            "「%s」口径为「现有已实现」但未给出素材依据——existing 口径必须有素材支撑，"
+            "请补充素材证据或把口径改判为「本项目建设」/「待确认」" % title[:60]
+        )
+        for node_id in matched[:5]:
+            issues.append({"severity": "warning", "node_id": node_id, "type": "capability_no_evidence", "detail": detail})
+        if not matched:
+            issues.append({"severity": "warning", "node_id": "", "type": "capability_no_evidence", "detail": detail})
+        if len(issues) >= 10:
+            break
+    return issues
 
 
 # ------------------------------------------------------------------ 评分台账（23 号 O2：S1 提取/S9 覆盖核查）
@@ -1548,10 +1898,13 @@ async def generate_spec(
     material_index_text: str,
     generation_options: dict[str, Any] | None = None,
     time_budget_seconds: float | None = None,
+    toc_reference_text: str = "",
 ) -> list[dict[str, Any]]:
     """Spec 生成；首轮平级劣化（见 is_flat_degraded_spec）且时间预算够时带纠正指令重试一次。
 
     重试结果只有真正多级时才替换首轮；重试仍平级或抛错都保留首轮可用结果（用户可手工/AI 修订）。
+    toc_reference_text（23 号 O7）：历史标书目录参照块（build_toc_reference_block 产物），
+    为空时占位替换为空串、模板行为与存量一致；注入后 is_flat_degraded_spec 劣化判据照常生效。
     """
     user_prompt = (
         SPEC_USER_TEMPLATE.replace(
@@ -1560,6 +1913,7 @@ async def generate_spec(
         .replace("__REQUIREMENTS_TEXT__", (requirements_text or "无")[:SPEC_CONTEXT_MAX_CHARS])
         .replace("__GENERATION_CONSTRAINTS__", build_generation_constraints_text(generation_options))
         .replace("__MATERIAL_INDEX__", material_index_text or "（无素材）")
+        .replace("__TOC_REFERENCE__", toc_reference_text or "")
         .replace("__MAX_NODES__", str(OUTLINE_MAX_NODES))
     )
     started = time.monotonic()
@@ -1648,15 +2002,24 @@ def material_dir(workspace_path: Path, wizard_id: str, document_id: str) -> Path
 
 
 def write_material_index(
-    workspace_path: Path, wizard_id: str, document_id: str, chunks: list[dict[str, Any]], metas: dict[int, dict[str, Any]]
+    workspace_path: Path,
+    wizard_id: str,
+    document_id: str,
+    chunks: list[dict[str, Any]],
+    metas: dict[int, dict[str, Any]],
+    toc_text: str = "",
 ) -> None:
+    """索引落盘；toc_text 非空（历史模板素材，O7）时在 index.md 顶部写「目录结构」小节。"""
     base = material_dir(workspace_path, wizard_id, document_id)
     chunk_dir = base / "chunks"
     chunk_dir.mkdir(parents=True, exist_ok=True)
     for chunk in chunks:
         path = chunk_dir / f"{int(chunk['no']):03d}.md"
         path.write_text(render_chunk_file(chunk, metas.get(int(chunk["no"]), {})), encoding="utf-8")
-    (base / "index.md").write_text(render_index_markdown(chunks, metas), encoding="utf-8")
+    index_md = render_index_markdown(chunks, metas)
+    if toc_text.strip():
+        index_md = f"{TOC_REFERENCE_HEADING}\n{toc_text.strip()}\n\n{index_md}"
+    (base / "index.md").write_text(index_md, encoding="utf-8")
 
 
 async def _load_material_index_rows(db, wizard_id: str) -> list[tuple[str, str, str]]:
@@ -2061,9 +2424,18 @@ class BidWizardWriteAgent:
             "section_failed": len(failed),
             "word_count": sum(int(item.get("word_count") or 0) for item in done),
         }
-        # 全稿机检（23 号 O1/O6）：只报告不改写，前端完成态展示质检报告卡
+        # 全稿机检（23 号 O1/O6）：只报告不改写，前端完成态展示质检报告卡；
+        # O4——口径卡驱动的统一称谓/禁词检查；O3——existing 口径无素材依据红线联动
         try:
-            summary["doc_checks"] = draft_checks(done)
+            style_card = (context["requirements"] or {}).get("style_card")
+            checks = draft_checks(done, style_card=style_card)
+            try:
+                checks.extend(
+                    capability_stance_issues(spec, done, (context["requirements"] or {}).get("capability_map"))
+                )
+            except Exception:
+                logger.exception("bid-wizard capability stance checks failed: task=%s", self.task_id)
+            summary["doc_checks"] = checks
         except Exception:
             logger.exception("bid-wizard draft_checks failed: task=%s", self.task_id)
         # 得分点覆盖矩阵（23 号 O2，S9 判定点核查）：无评分台账时为空列表（前端隐藏卡片）
@@ -2083,3 +2455,485 @@ class BidWizardWriteAgent:
 
 def _safe_filename(value: str) -> str:
     return re.sub(r"[^0-9A-Za-z_.\-]", "_", value) or "section"
+
+
+# ------------------------------------------------------------------ 审读-修订轮（23 号 O5：S5 Reader→Revise 一轮封顶）
+
+# 审读按章分批（控制单次 prompt 体量）；修订只处理 high/medium，low 只进报告
+REVIEW_BATCH_CHAPTERS = 4
+REVIEW_BATCH_MAX_CHARS = 14_000
+REVIEW_CHAPTER_MAX_CHARS = 6_000
+REVIEW_REVISE_INPUT_MAX_CHARS = 12_000
+REVIEW_MAX_REVISIONS = 20
+REVIEW_FINDINGS_MAX = 60
+
+REVIEW_FINDINGS_SYSTEM_PROMPT = (
+    "你是资深投标文件审读专家（Reader）。逐章审读投标文件章节，找出影响得分的实质问题。"
+    "只输出一个合法 JSON 对象，不要输出任何其他文字或代码块标记。"
+)
+
+REVIEW_FINDINGS_USER_TEMPLATE = """## 投标文件大纲（整体结构）
+__OUTLINE_TEXT__
+
+## 编写需求（含应答口径与口径卡）
+__REQUIREMENTS_TEXT__
+
+## 本次审读章节
+__CHAPTERS__
+
+请逐章审读，输出问题清单 JSON（没有实质问题就给空数组；不凑数、不提泛泛的润色建议）：
+
+{"findings": [
+  {"node_id": "章节号（必须是本次审读章节之一）", "severity": "high|medium|low",
+   "where": "问题位置（如「第 2 段」「表格 X」「图 X」）",
+   "issue": "问题描述与对得分的影响，一两句话"}
+]}
+
+审读口径：
+1. high=评标专家会直接扣分甚至废标的硬伤：与招标要求/口径矛盾、承诺冲突、疑似虚构、关键要求漏响应；
+2. medium=明显质量问题：与前后章脱节或重复、图表与正文不符、统一称谓混用、（请补充）该确认却未确认；
+3. low=可改可不改的建议；
+4. 只报章节内能确认的问题，严禁虚构章节里不存在的内容；每章最多 3 条，抓大放小。"""
+
+REVIEW_REVISE_SYSTEM_PROMPT = (
+    "你是资深投标文件编写专家（Revise）。按审读意见修订指定章节：保留既有正确内容与结构，"
+    "只修审读意见指出的问题处，不做无关扩写；输出修订后的完整章节正文（Markdown，"
+    "不含本节标题，系统会自动添加；不要输出解释或前言）。"
+    "公司资质、业绩、项目、人员与数据必须与原文/素材一致，不得新增素材之外的事实；"
+    "素材与需求都未覆盖的事实性内容用“（请补充）”占位。"
+)
+
+REVIEW_REVISE_USER_TEMPLATE = """## 投标文件大纲（整体结构）
+__OUTLINE_TEXT__
+
+## 编写需求（含应答口径与口径卡）
+__REQUIREMENTS_TEXT__
+
+## 本章响应的评分项
+__SCORE_ITEMS_TEXT__
+
+## 待修订章节（当前正文）
+__CURRENT_CONTENT__
+
+## 审读意见（按此修订，改完的问题不要再出现）
+__FINDINGS_TEXT__
+
+请输出修订后的完整章节正文（Markdown，不含本节标题）。"""
+
+
+def batch_review_chapters(
+    chapters: list[dict[str, Any]],
+    *,
+    max_chapters: int = REVIEW_BATCH_CHAPTERS,
+    max_chars: int = REVIEW_BATCH_MAX_CHARS,
+) -> list[list[dict[str, Any]]]:
+    """审读分批（纯函数）：按大纲序每批 ≤max_chapters 章且正文合计 ≤max_chars。
+
+    单章超限也独立成批（章节内截断由调用方做），保证每章都被审到。
+    """
+    batches: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    size = 0
+    for chapter in chapters or []:
+        length = len(str(chapter.get("content") or ""))
+        if current and (len(current) >= max_chapters or size + length > max_chars):
+            batches.append(current)
+            current = []
+            size = 0
+        current.append(chapter)
+        size += length
+    if current:
+        batches.append(current)
+    return batches
+
+
+def normalize_review_findings(payload: Any, valid_node_ids: set[str]) -> list[dict[str, str]]:
+    """审读结果归一：node_id 必须在本次章节集内（模型跑偏的丢弃），severity 回退 low。"""
+    raw = payload.get("findings") if isinstance(payload, dict) else payload
+    if not isinstance(raw, list):
+        return []
+    findings: list[dict[str, str]] = []
+    for item in raw[:REVIEW_FINDINGS_MAX]:
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get("node_id") or "").strip()
+        if node_id not in valid_node_ids:
+            continue
+        issue = str(item.get("issue") or "").strip()
+        if not issue:
+            continue
+        severity = str(item.get("severity") or "").strip().lower()
+        if severity not in ("high", "medium", "low"):
+            severity = "low"
+        findings.append(
+            {
+                "node_id": node_id,
+                "severity": severity,
+                "where": str(item.get("where") or "").strip()[:120],
+                "issue": issue[:500],
+            }
+        )
+    return findings[:REVIEW_FINDINGS_MAX]
+
+
+class BidWizardReviewAgent:
+    """O5 审读-修订轮：撰写完成后的一轮 Reader→Revise（可选、一轮封顶、复用 write 计费）。
+
+    与 BidWizardWriteAgent 同构（celery 包装/取消/SSE/结算零改动）：审读按章分批产出
+    findings；仅 high/medium 触发逐章修订（落新 section 版本、SSE 推 revision_completed，
+    Word 侧沿用「替换本章」交互）；low 只进报告。修订后全稿机检/覆盖矩阵按最终内容复算。
+    """
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        workspace_dir: Path,
+        session_factory,
+        event_callback: Optional[Callable[[str, dict[str, Any]], None]] = None,
+        cancel_event: Optional["asyncio.Event"] = None,
+        llm_timeout: float = 180.0,
+    ) -> None:
+        self.task_id = task_id
+        self.workspace_dir = Path(workspace_dir)
+        self.session_factory = session_factory
+        self.event_callback = event_callback
+        self.cancel_event = cancel_event
+        self.llm = WizardLLM(timeout=llm_timeout)
+        self._wizard_id = ""
+
+    def _publish(self, event_type: str, data: dict[str, Any]) -> None:
+        if self.event_callback is not None:
+            try:
+                self.event_callback(event_type, data or {})
+            except Exception:
+                logger.exception("bid-wizard review event publish failed: task=%s", self.task_id)
+
+    def _check_cancel(self) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise BidWizardCancelled("用户取消了审读任务")
+
+    async def _load_context(self) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            task = (
+                await db.execute(select(BidWritingTask).where(BidWritingTask.id == self.task_id))
+            ).scalar_one()
+            from backend.models import BidWizard
+
+            wizard = (
+                await db.execute(select(BidWizard).where(BidWizard.id == task.wizard_id))
+            ).scalar_one()
+        return {
+            "task": task,
+            "wizard": wizard,
+            "selected": set(task.selected_nodes or []),
+            "spec": wizard.spec if isinstance(wizard.spec, list) else [],
+            "analysis": wizard.analysis if isinstance(wizard.analysis, dict) else {},
+            "requirements": wizard.requirements if isinstance(wizard.requirements, dict) else None,
+        }
+
+    async def _load_latest_chapters(
+        self, wizard_id: str, spec: list[dict[str, Any]], selected: set[str]
+    ) -> list[dict[str, Any]]:
+        """跨任务取每个 node 的最新已生成章节（与「重新写入 Word」权威清单同口径）。"""
+        spec_nodes = [node for node in spec if not selected or node.get("node_id") in selected]
+        node_ids = [str(node.get("node_id") or "") for node in spec_nodes]
+        if not node_ids:
+            return []
+        async with self.session_factory() as db:
+            rows = (
+                await db.execute(
+                    select(BidWizardSection, BidWritingTask.created_at)
+                    .join(BidWritingTask, BidWritingTask.id == BidWizardSection.task_id)
+                    .where(
+                        BidWritingTask.wizard_id == wizard_id,
+                        BidWizardSection.node_id.in_(node_ids),
+                        BidWizardSection.status.in_(("generated", "written")),
+                    )
+                    .order_by(BidWritingTask.created_at.desc())
+                )
+            ).all()
+        latest_by_node: dict[str, BidWizardSection] = {}
+        for section, _created in rows:  # 最新任务先到先得
+            latest_by_node.setdefault(str(section.node_id), section)
+        from backend.config import get_settings
+
+        workspace = Path(get_settings().workspace_path)
+        chapters: list[dict[str, Any]] = []
+        for node in spec_nodes:
+            section = latest_by_node.get(str(node.get("node_id")))
+            if section is None:
+                continue
+            content = ""
+            if section.content_path:
+                path = Path(section.content_path)
+                if not path.is_absolute():
+                    path = workspace / path
+                try:
+                    content = path.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    logger.exception(
+                        "bid-wizard review chapter read failed: task=%s node=%s",
+                        self.task_id,
+                        section.node_id,
+                    )
+                    continue
+            if not content.strip():
+                continue
+            chapters.append(
+                {
+                    "node_id": str(section.node_id),
+                    "title": str(section.title or node.get("title") or section.node_id),
+                    "content": content,
+                    "word_count": int(section.word_count or 0) or len(re.sub(r"\s", "", content)),
+                }
+            )
+        return chapters
+
+    async def _ensure_section_row(self, node: dict[str, Any]) -> None:
+        async with self.session_factory() as db:
+            existing = (
+                await db.execute(
+                    select(BidWizardSection.id).where(
+                        BidWizardSection.task_id == self.task_id,
+                        BidWizardSection.node_id == node["node_id"],
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                db.add(
+                    BidWizardSection(
+                        task_id=self.task_id,
+                        node_id=node["node_id"][:200],
+                        title=node["title"][:500],
+                        summary=str(node.get("summary") or "")[:2_000] or None,
+                        chart_plan=node.get("charts"),
+                        status="pending",
+                    )
+                )
+                await db.commit()
+
+    async def _set_section_status(self, node_id: str, **fields: Any) -> None:
+        async with self.session_factory() as db:
+            row = (
+                await db.execute(
+                    select(BidWizardSection).where(
+                        BidWizardSection.task_id == self.task_id,
+                        BidWizardSection.node_id == node_id,
+                    )
+                )
+            ).scalar_one()
+            for key, value in fields.items():
+                setattr(row, key, value)
+            await db.commit()
+
+    async def _mark_section_failed(self, node_id: str, message: str) -> None:
+        try:
+            await self._set_section_status(node_id, status="failed", error_message=message[:2_000])
+        except Exception:
+            logger.exception(
+                "bid-wizard review revision failure mark failed: task=%s node=%s", self.task_id, node_id
+            )
+
+    async def _revise_section(
+        self,
+        node: dict[str, Any],
+        *,
+        current_content: str,
+        node_findings: list[dict[str, str]],
+        requirements_text: str,
+        spec: list[dict[str, Any]],
+        score_items_text: str,
+        fig_mode: str,
+    ) -> dict[str, Any]:
+        self._publish("section_started", {"node_id": node["node_id"], "title": node["title"]})
+        await self._ensure_section_row(node)
+        await self._set_section_status(node["node_id"], status="generating")
+        findings_text = "\n".join(
+            "- [%s] %s：%s" % (item["severity"], item["where"] or "本章", item["issue"])
+            for item in node_findings
+        )
+        user_prompt = (
+            REVIEW_REVISE_USER_TEMPLATE.replace("__OUTLINE_TEXT__", _outline_text(spec))
+            .replace("__REQUIREMENTS_TEXT__", requirements_text or "无")
+            .replace("__SCORE_ITEMS_TEXT__", score_items_text or "（无直接对应的评分项）")
+            .replace(
+                "__CURRENT_CONTENT__", (current_content or "")[:REVIEW_REVISE_INPUT_MAX_CHARS]
+            )
+            .replace("__FINDINGS_TEXT__", findings_text or "（无）")
+        )
+        body = strip_code_fence(await self.llm.generate(REVIEW_REVISE_SYSTEM_PROMPT, user_prompt))
+        if not body:
+            raise RuntimeError(f"章节「{node['title']}」修订结果为空")
+        body = clamp_mermaid_blocks(close_unterminated_mermaid_fence(body))
+        if fig_mode == "bidfig":
+            body = clamp_bidfig_blocks(close_unterminated_bidfig_fence(body))
+            body, fig_repair = await tighten_bidfig_fences(self.llm, body)
+            if fig_repair["repaired"] or fig_repair["degraded"]:
+                logger.info(
+                    "bidfig tighten (review): task=%s node=%s repaired=%d degraded=%d",
+                    self.task_id,
+                    node["node_id"],
+                    fig_repair["repaired"],
+                    fig_repair["degraded"],
+                )
+        body = strip_leading_title_headings(body, str(node.get("title") or ""))
+        level = max(1, min(6, int(node.get("level") or 1)))
+        content = f"{'#' * level} {node['title']}\n\n{body}"[:SECTION_RESULT_MAX_CHARS]
+
+        section_path = self.workspace_dir / "sections" / f"{_safe_filename(node['node_id'])}.md"
+        section_path.parent.mkdir(parents=True, exist_ok=True)
+        section_path.write_text(content, encoding="utf-8")
+        word_count = len(re.sub(r"\s", "", content))
+        await self._set_section_status(
+            node["node_id"],
+            status="generated",
+            content_path=str(section_path),
+            word_count=word_count,
+            error_message=None,
+        )
+        # 修订不自动写入 Word：章节此前多已写入，沿用「替换 Word 中本章」交互（防重复插入）
+        self._publish(
+            "revision_completed",
+            {"node_id": node["node_id"], "title": node["title"], "word_count": word_count},
+        )
+        return {
+            "node_id": node["node_id"],
+            "title": node["title"],
+            "word_count": word_count,
+            "content": content,
+            "article_count": int(node.get("article_count") or 2),
+            "text_count": int(node.get("text_count") or 400),
+        }
+
+    async def run(self) -> dict[str, Any]:
+        context = await self._load_context()
+        task = context["task"]
+        wizard = context["wizard"]
+        self._wizard_id = wizard.id
+        spec = context["spec"]
+        requirements = context["requirements"] or {}
+        chapters = await self._load_latest_chapters(wizard.id, spec, context["selected"])
+        if not chapters:
+            raise RuntimeError("没有可审读的已生成章节")
+
+        requirements_text = build_requirements_text(requirements)
+        style_card = requirements.get("style_card")
+        generation_options = generation_options_of(requirements)
+        fig_mode = str(generation_options.get("fig_mode") or "mermaid") if generation_options else "mermaid"
+        scoring_items = scoring_items_of(context["analysis"])
+        spec_by_id = {str(node.get("node_id")): node for node in spec}
+
+        # ① 审读（Reader）：按章分批；单批失败不终止整轮（审读是增值非必需环节）
+        self._publish("phase", {"phase": "reviewing", "section_total": len(chapters)})
+        findings: list[dict[str, str]] = []
+        valid_nodes = {chapter["node_id"] for chapter in chapters}
+        for batch in batch_review_chapters(chapters):
+            self._check_cancel()
+            chapters_text = "\n\n".join(
+                "### 章节 %s %s\n%s" % (chapter["node_id"], chapter["title"], chapter["content"][:REVIEW_CHAPTER_MAX_CHARS])
+                for chapter in batch
+            )
+            try:
+                payload = await self.llm.generate_json(
+                    REVIEW_FINDINGS_SYSTEM_PROMPT,
+                    REVIEW_FINDINGS_USER_TEMPLATE.replace("__OUTLINE_TEXT__", _outline_text(spec))
+                    .replace("__REQUIREMENTS_TEXT__", (requirements_text or "无")[:SPEC_CONTEXT_MAX_CHARS])
+                    .replace("__CHAPTERS__", chapters_text),
+                )
+                findings.extend(normalize_review_findings(payload, valid_nodes))
+                self._publish("review_findings", {"total": len(findings)})
+            except BidWizardCancelled:
+                raise
+            except Exception:
+                logger.exception("bid-wizard review findings batch failed: task=%s", self.task_id)
+        findings = findings[:REVIEW_FINDINGS_MAX]
+
+        # ② 修订（Revise）：仅 high/medium 触发、按大纲序、一轮封顶；low 只进报告
+        actionable = [
+            chapter["node_id"]
+            for chapter in chapters
+            if any(
+                item["node_id"] == chapter["node_id"] and item["severity"] in ("high", "medium")
+                for item in findings
+            )
+        ][:REVIEW_MAX_REVISIONS]
+        self._publish("phase", {"phase": "revising", "section_total": len(actionable)})
+        revised_map: dict[str, dict[str, Any]] = {}
+        for node_id in actionable:
+            self._check_cancel()
+            node = spec_by_id.get(node_id)
+            if node is None:
+                continue
+            chapter = next(item for item in chapters if item["node_id"] == node_id)
+            node_findings = [
+                item
+                for item in findings
+                if item["node_id"] == node_id and item["severity"] in ("high", "medium")
+            ]
+            try:
+                revised_map[node_id] = await self._revise_section(
+                    node,
+                    current_content=chapter["content"],
+                    node_findings=node_findings,
+                    requirements_text=requirements_text,
+                    spec=spec,
+                    score_items_text=render_score_items_text(
+                        score_items_for_node(spec, node, scoring_items)
+                    ),
+                    fig_mode=fig_mode,
+                )
+            except BidWizardCancelled:
+                raise
+            except Exception as exc:
+                message = str(exc)[:500]
+                await self._mark_section_failed(node_id, message)
+                self._publish("section_failed", {"node_id": node_id, "error": message})
+
+        self._check_cancel()
+        # 修订后全稿状态复算（final = 修订版优先，未修订章用原内容）
+        final_sections: list[dict[str, Any]] = []
+        for chapter in chapters:
+            result = revised_map.get(chapter["node_id"])
+            if result is not None:
+                final_sections.append(result)
+                continue
+            node = spec_by_id.get(chapter["node_id"], {})
+            final_sections.append(
+                {
+                    "node_id": chapter["node_id"],
+                    "title": chapter["title"],
+                    "content": chapter["content"],
+                    "word_count": chapter["word_count"],
+                    "article_count": int(node.get("article_count") or 2),
+                    "text_count": int(node.get("text_count") or 400),
+                }
+            )
+        review_of = ""
+        if isinstance(task.summary, dict):
+            review_of = str(task.summary.get("review_of") or "")
+        summary: dict[str, Any] = {
+            "action": "review",
+            "review_of": review_of,
+            "chapters_total": len(chapters),
+            "findings": findings,
+            "findings_total": len(findings),
+            "revised_nodes": list(revised_map),
+            "revised_total": len(revised_map),
+            "word_count": sum(int(item.get("word_count") or 0) for item in final_sections),
+        }
+        try:
+            summary["doc_checks"] = draft_checks(final_sections, style_card=style_card)
+        except Exception:
+            logger.exception("bid-wizard review draft_checks failed: task=%s", self.task_id)
+        try:
+            summary["score_coverage"] = score_coverage_matrix(
+                spec, [chapter["node_id"] for chapter in chapters], scoring_items
+            )
+        except Exception:
+            logger.exception("bid-wizard review score_coverage failed: task=%s", self.task_id)
+        try:
+            summary["fig_stats"] = fig_stats_of(final_sections, fig_mode)
+        except Exception:
+            logger.exception("bid-wizard review fig_stats failed: task=%s", self.task_id)
+        return summary

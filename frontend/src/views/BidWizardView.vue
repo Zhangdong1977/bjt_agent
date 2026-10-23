@@ -10,6 +10,9 @@ import {
   createWizard,
   deleteWizard,
   estimateIndexCost,
+  estimateReviewTask,
+  createReviewTask,
+  generateCapabilityMap as apiGenerateCapability,
   generateQuestionnaire,
   generateQuestionnaireRound,
   generateSpec,
@@ -34,6 +37,7 @@ import {
   rollbackSpec as apiRollbackSpec,
   reindexMaterial as apiReindexMaterial,
   reviseSpec as apiReviseSpec,
+  saveCapability as apiSaveCapability,
   saveRequirements as apiSaveRequirements,
   saveSpec as apiSaveSpec,
   updateWizardStage,
@@ -46,7 +50,10 @@ import {
   GENERATION_WORD_COUNT_PRESETS,
   type GenerationOptions,
   type GenerationPart,
+  type CapabilityStance,
   type Wizard,
+  type WizardCapabilityItem,
+  type WizardStyleCard,
   type WizardDocCheck,
   type WizardFigStats,
   type WizardListItem,
@@ -1120,6 +1127,91 @@ function onEnterOutline() {
   });
 }
 
+// ---- 应答口径（23 号 O3）+ 口径卡（O4）：AI 建议三态口径，逐条确认后注入大纲/撰写 ----
+
+const capabilityItems = ref<WizardCapabilityItem[]>([]);
+const styleCardDraft = ref<WizardStyleCard>({
+  company_name: "",
+  project_short_name: "",
+  self_reference: "我司",
+  forbidden_words: [],
+  notes: "",
+});
+/** 禁用词编辑框（逗号/顿号分隔）与数组互转。 */
+const forbiddenWordsText = computed({
+  get: () => (styleCardDraft.value.forbidden_words || []).join("、"),
+  set: (value: string) => {
+    styleCardDraft.value.forbidden_words = value
+      .split(/[,，、;；\s]+/)
+      .map((word) => word.trim())
+      .filter(Boolean)
+      .slice(0, 12);
+  },
+});
+const STANCE_LABELS: Record<CapabilityStance, string> = {
+  existing: "现有已实现",
+  build: "本项目建设",
+  confirm: "待确认",
+};
+
+/** 把已存 requirements 里的口径数据同步进本地编辑态（进入阶段/生成后调用）。 */
+function syncCapabilityFromWizard() {
+  const requirements = wizard.value?.requirements || null;
+  const stored = requirements?.capability_map;
+  capabilityItems.value = Array.isArray(stored)
+    ? stored.map((item) => ({ ...item, stance: item.stance || "confirm" }))
+    : [];
+  const card = requirements?.style_card;
+  styleCardDraft.value = card
+    ? { ...card, forbidden_words: [...(card.forbidden_words || [])] }
+    : { company_name: "", project_short_name: "", self_reference: "我司", forbidden_words: [], notes: "" };
+}
+
+/** 已保存并注入下游（confirmed 条目存在）——展示「已保存」提示的依据。 */
+const capabilitySaved = computed(() => {
+  const stored = wizard.value?.requirements?.capability_map;
+  return Array.isArray(stored) && stored.some((item) => item.confirmed);
+});
+
+function onGenerateCapability() {
+  if (!wizard.value || busy.value) return;
+  const run = () =>
+    void withBusy("capability", async () => {
+      await apiGenerateCapability(wizard.value!.id);
+      syncCapabilityFromWizard();
+      pushLog("ok", "AI 口径建议已生成——逐条确认后点「保存口径」");
+    });
+  if (capabilityItems.value.length) {
+    Modal.confirm({
+      title: "重新生成口径建议？",
+      content: "会覆盖当前列表里未保存的改动（已保存的口径在重新生成并保存前不受影响）。",
+      okText: "重新生成",
+      cancelText: "取消",
+      onOk: run,
+    });
+    return;
+  }
+  run();
+}
+
+function onSaveCapability() {
+  if (!wizard.value || busy.value || !capabilityItems.value.length) return;
+  void withBusy("capabilitySave", async () => {
+    await apiSaveCapability(wizard.value!.id, {
+      items: capabilityItems.value.map((item) => ({
+        title: item.title,
+        requirement: item.requirement || "",
+        stance: item.stance,
+        evidence: item.evidence || "",
+        note: item.note || "",
+      })),
+      style_card: styleCardDraft.value,
+    });
+    syncCapabilityFromWizard();
+    pushLog("ok", "应答口径已保存——将注入大纲与章节撰写；已生成的大纲会标记为基于旧需求");
+  });
+}
+
 // ---- 补充素材 + 再次检查（反馈⑭）：就地上传；触发的问题关闭，其余问答保留 ----
 
 const supplementInput = ref<HTMLInputElement | null>(null);
@@ -1952,6 +2044,23 @@ watch(
   { immediate: true },
 );
 
+// 进入需求确认阶段时同步口径编辑态（23 号 O3/O4）：本地改动保留在阶段内，重进以已存值为准
+watch(stageIndex, (index) => {
+  if (index === 1) syncCapabilityFromWizard();
+});
+
+/** 历史模板素材数（23 号 O7）：大纲生成将参照其目录结构（仅层级/覆盖面，不照抄章节名）。 */
+function isHistoryTemplateCategory(category?: string | null): boolean {
+  const text = (category || "").trim();
+  return Boolean(text) && (text.includes("历史模板") || text === "HistoryDoc");
+}
+const historyTemplateCount = computed(
+  () =>
+    materials.value.filter(
+      (item) => item.index_status === "indexed" && isHistoryTemplateCategory(item.category),
+    ).length,
+);
+
 function onStartWriting() {
   if (!wizard.value) return;
   // 提交清单按 spec 顺序（Set 的插入顺序受级联操作影响，不可直接用）
@@ -2005,7 +2114,15 @@ function trackTask(next: WizardWritingTask) {
   anchorLost.value = false;
   writingNode.value = "";
   eventLog.value = [];
-  pushLog("info", next.continue_of ? "单章重生成任务已提交" : "撰写任务已提交");
+  const isReview = (next.summary as Record<string, unknown> | null)?.action === "review";
+  pushLog(
+    "info",
+    isReview
+      ? "AI 审读任务已提交——先逐章找问题，再自动修订重点章节"
+      : next.continue_of
+        ? "单章重生成任务已提交"
+        : "撰写任务已提交",
+  );
   void primeTaskSectionsThenListen(next.id);
   startTaskPoll();
 }
@@ -2094,7 +2211,26 @@ function handleTaskEvent(event: Record<string, unknown>) {
     const status = String(event.status || "");
     if (status === "completed" || status === "failed" || status === "cancelled") void refreshTask();
   } else if (type === "phase") {
-    pushLog("info", `开始逐章撰写（共 ${event.section_total || "?"} 章）`);
+    const phase = String(event.phase || "");
+    if (phase === "reviewing") {
+      pushLog("info", `开始 AI 审读（共 ${event.section_total || "?"} 章）…`);
+    } else if (phase === "revising") {
+      pushLog("info", `审读完成，开始修订 ${event.section_total || 0} 个重点章节…`);
+    } else {
+      pushLog("info", `开始逐章撰写（共 ${event.section_total || "?"} 章）`);
+    }
+  } else if (type === "review_findings") {
+    pushLog("info", `AI 审读已发现 ${event.total || 0} 个问题…`);
+  } else if (type === "revision_completed") {
+    const nodeId = String(event.node_id || "");
+    // 修订不自动写入 Word：章节此前多已写入，自动插入会成稿重复——统一走「替换 Word 中本章」
+    upsertSection({
+      node_id: nodeId,
+      title: String(event.title || ""),
+      status: "generated",
+      word_count: Number(event.word_count || 0),
+    });
+    pushLog("ok", `修订完成 ${nodeId} ${displayTitle(nodeId, String(event.title || ""))}——用「替换 Word 中本章」更新`);
   } else if (type === "section_started") {
     const nodeId = String(event.node_id || "");
     // SSE 重放幂等：written 是终态，不被旧的 started 事件降级（否则紧随的 completed 防护会失效）
@@ -2366,6 +2502,73 @@ const figStats = computed<WizardFigStats | null>(() => {
     degraded: Number(record.degraded) || 0,
   };
 });
+
+// ---- 审读-修订轮（23 号 O5）：发起确认（计费透明预估）+ 审读报告 ----
+
+/** summary.findings（审读轮）：Reader 逐章问题清单；low 只进报告、high/medium 已自动修订。 */
+interface ReviewFinding {
+  node_id: string;
+  severity: "high" | "medium" | "low";
+  where: string;
+  issue: string;
+}
+const reviewFindings = computed<ReviewFinding[]>(() => {
+  const raw = task.value?.summary?.findings;
+  if (!isReviewTask.value || !Array.isArray(raw)) return [];
+  return (raw as Record<string, unknown>[])
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      node_id: String(item.node_id || ""),
+      severity: (["high", "medium", "low"].includes(String(item.severity))
+        ? String(item.severity)
+        : "low") as ReviewFinding["severity"],
+      where: String(item.where || ""),
+      issue: String(item.issue || ""),
+    }))
+    .filter((item) => item.issue);
+});
+const reviewRevisedCount = computed(() => {
+  const raw = task.value?.summary?.revised_total;
+  return Number(raw) || 0;
+});
+const REVIEW_SEVERITY_TEXT: Record<ReviewFinding["severity"], string> = {
+  high: "严重",
+  medium: "中等",
+  low: "轻微",
+};
+/** 可发起审读：撰写任务已完成、非审读轮（一轮封顶）、无进行中任务。 */
+const canStartReview = computed(
+  () =>
+    Boolean(taskId.value) &&
+    task.value?.status === "completed" &&
+    !isReviewTask.value &&
+    !taskRunning.value,
+);
+function onStartReview() {
+  if (!taskId.value || busy.value || !canStartReview.value) return;
+  void withBusy("review", async () => {
+    // 计费透明预估（照素材索引确认弹窗模式）：量级提示，实际按用量结算
+    const estimate = await estimateReviewTask(taskId.value!).catch(() => null);
+    let costText = "按实际用量计费";
+    if (estimate) {
+      costText = `${estimate.chapters} 章约 ${(estimate.total_words / 10000).toFixed(1)} 万字，预计约 ${(estimate.estimated_tokens / 1000).toFixed(1)} 千 token`;
+      if (estimate.estimated_points != null) costText += `（约 ${estimate.estimated_points} 点）`;
+    }
+    const confirmed = await new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title: "发起一轮 AI 审读？",
+        content: `AI 将逐章审读全稿找出影响得分的问题（严重/中等问题章节会自动修订，完成后逐章替换进 Word）。${costText}。`,
+        okText: "开始审读",
+        cancelText: "取消",
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+    if (!confirmed) return;
+    const created = await createReviewTask(taskId.value!);
+    trackTask(created);
+  });
+}
 const copyDraftBusy = ref(false);
 /** 复制全稿 Markdown（23 号 O9 轻量版）：按大纲序聚合已生成章节内容。 */
 async function copyFullDraft() {
@@ -2398,7 +2601,19 @@ const TASK_STATUS_TEXT: Record<string, string> = {
   failed: "失败",
   cancelled: "已取消",
 };
-const taskStatusText = computed(() => TASK_STATUS_TEXT[task.value?.status || ""] || "撰写任务");
+/** 当前任务是否审读轮（23 号 O5）：summary.action=review（Writer/Reader 编排在同一任务行）。 */
+const isReviewTask = computed(
+  () => (task.value?.summary as Record<string, unknown> | null)?.action === "review",
+);
+const taskStatusText = computed(() => {
+  const status = task.value?.status || "";
+  if (isReviewTask.value) {
+    if (status === "running") return "AI 审读中";
+    if (status === "pending") return "排队审读";
+    if (status === "completed") return "审读完成";
+  }
+  return TASK_STATUS_TEXT[status] || "撰写任务";
+});
 const taskTone = computed<"running" | "waiting" | "done" | "error" | "idle">(() => {
   const status = task.value?.status;
   if (status === "completed") return "done";
@@ -3146,6 +3361,71 @@ onUnmounted(() => {
             </div>
           </template>
         </div>
+        <!-- 23 号 O3/O4：应答口径卡——AI 对照招标要求与素材逐项建议三态口径，确认后注入大纲/撰写 -->
+        <div v-if="questionnaire.length" class="card">
+          <h3>应答口径</h3>
+          <template v-if="!capabilityItems.length">
+            <p class="hint">AI 对照招标要求与素材索引，逐条建议应答口径：「现有已实现」（须有素材依据）、「本项目建设」（交付内容）或「待确认」。确认保存后口径将注入大纲与章节撰写，杜绝虚构能力。</p>
+            <button type="button" class="primary" :disabled="Boolean(busy) || !analysis" @click="onGenerateCapability">AI 生成口径建议</button>
+            <div v-if="busy === 'capability'" class="status-row">
+              <StatusDot tone="running">正在对照招标要求与素材逐项判断应答口径…</StatusDot>
+              <span class="hint" style="margin:0">处理期间请保持页面打开</span>
+            </div>
+          </template>
+          <template v-else>
+            <div class="req-toolbar">
+              <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="onGenerateCapability">重新生成建议</button>
+              <span class="hint" style="margin:0">逐条确认或改判口径后点「保存口径」；「现有已实现」须有素材依据，否则机检会提示。</span>
+            </div>
+            <div v-for="(item, index) in capabilityItems" :key="index" class="cap-item">
+              <div class="cap-head">
+                <strong>{{ item.title }}</strong>
+              </div>
+              <p v-if="item.requirement" class="cap-req">{{ item.requirement }}</p>
+              <div class="q-actions cap-actions">
+                <label v-for="(label, stanceValue) in STANCE_LABELS" :key="stanceValue" class="radio">
+                  <input v-model="item.stance" type="radio" :name="`cap-${index}`" :value="stanceValue">{{ label }}
+                </label>
+              </div>
+              <p v-if="item.evidence" class="cap-evidence">素材依据：{{ item.evidence }}</p>
+              <p v-else-if="item.stance === 'existing'" class="cap-evidence warn">该口径为「现有已实现」但没有素材依据——建议补充素材或改判，保存后机检会持续提示</p>
+              <p v-if="item.note" class="hint" style="margin:2px 0 0">{{ item.note }}</p>
+            </div>
+            <h4>口径卡（全稿统一措辞）</h4>
+            <div class="gen-row">
+              <span class="gen-label">统一称谓</span>
+              <div class="gen-field gen-inline">
+                <label v-for="option in ['我司', '我公司', '我方', '本公司']" :key="option" class="radio">
+                  <input v-model="styleCardDraft.self_reference" type="radio" name="cap-self" :value="option" :disabled="Boolean(busy)">{{ option }}
+                </label>
+              </div>
+            </div>
+            <div class="gen-row">
+              <span class="gen-label">公司名</span>
+              <div class="gen-field gen-inline">
+                <input v-model="styleCardDraft.company_name" type="text" class="cap-input" placeholder="全稿统一公司名（可留空）" :disabled="Boolean(busy)">
+              </div>
+            </div>
+            <div class="gen-row">
+              <span class="gen-label">项目简称</span>
+              <div class="gen-field gen-inline">
+                <input v-model="styleCardDraft.project_short_name" type="text" class="cap-input" placeholder="全稿统一项目名（可留空）" :disabled="Boolean(busy)">
+              </div>
+            </div>
+            <div class="gen-row">
+              <span class="gen-label">禁用词</span>
+              <div class="gen-field gen-inline">
+                <input v-model="forbiddenWordsText" type="text" class="cap-input" placeholder="逗号/顿号分隔，如：现有支持、行业领先（可留空）" :disabled="Boolean(busy)">
+              </div>
+            </div>
+            <div class="req-save-bar">
+              <button type="button" class="ghost" :disabled="Boolean(busy)" @click="onSaveCapability">
+                {{ busy === "capabilitySave" ? "保存中…" : "保存口径" }}
+              </button>
+              <span v-if="capabilitySaved" class="hint" style="margin:0;color:#389e0d">口径已保存并注入大纲/撰写；修改口径后已生成的大纲会标记为基于旧需求。</span>
+            </div>
+          </template>
+        </div>
         <!-- 追问侧栏（决策 32a / 43）：聊天式——历史按时间正序从上往下，输入框固定在卡片底部 -->
         <div class="card qa-card">
           <h3>额外的需求</h3>
@@ -3200,6 +3480,10 @@ onUnmounted(() => {
           需求/素材已变化，当前大纲基于旧输入。
           <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="onGenerateSpec">重新生成大纲</button>
         </div>
+        <!-- 23 号 O7：历史模板素材的目录结构将作为层级/覆盖面参照注入大纲生成 -->
+        <p v-if="historyTemplateCount" class="hint" style="margin:0;color:#389e0d">
+          已识别 {{ historyTemplateCount }} 份「历史模板」素材——生成大纲时将参照其目录结构（仅作层级与覆盖面参照，不照抄章节名）。
+        </p>
         <div class="card">
           <template v-if="!specNodes.length">
             <p class="hint">AI 将根据编写需求、招标要素与素材索引生成大纲：目录结构＋每章摘要＋图表规划。</p>
@@ -3397,6 +3681,14 @@ onUnmounted(() => {
                 :disabled="copyDraftBusy"
                 @click="copyFullDraft"
               >{{ copyDraftBusy ? "聚合中…" : "复制全稿 Markdown" }}</button>
+              <!-- 23 号 O5：撰写完成后可发起一轮 AI 审读（找问题+自动修订重点章，计费预估确认） -->
+              <button
+                v-if="canStartReview"
+                type="button"
+                class="link-btn"
+                :disabled="Boolean(busy)"
+                @click="onStartReview"
+              >{{ busy === "review" ? "提交审读中…" : "AI 审读一轮" }}</button>
               <button
                 v-if="writtenCount > 0"
                 type="button"
@@ -3404,6 +3696,25 @@ onUnmounted(() => {
                 :disabled="Boolean(busy)"
                 @click="onRemoveAllSections"
               >移除全部 AI 内容</button>
+            </div>
+            <!-- 23 号 O5：审读报告（Reader 问题清单 + 自动修订统计；修订章用「替换 Word 中本章」更新） -->
+            <div v-if="!taskRunning && isReviewTask && reviewFindings.length" class="card qc-card">
+              <h3>审读报告</h3>
+              <p class="hint" style="margin:0 0 8px">
+                共发现 {{ reviewFindings.length }} 个问题，已自动修订 {{ reviewRevisedCount }} 章（严重/中等）；
+                轻微问题仅供人工参考。修订后的章节用下方「替换 Word 中本章」更新。
+              </p>
+              <ul class="qc-list">
+                <li
+                  v-for="(item, index) in reviewFindings"
+                  :key="index"
+                  :class="{ error: item.severity === 'high', warn: item.severity === 'medium' }"
+                >
+                  <span class="qc-badge" :class="`rev-${item.severity}`">{{ REVIEW_SEVERITY_TEXT[item.severity] }}</span>
+                  <span v-if="item.node_id" class="qc-node">{{ item.node_id }}</span>
+                  <template v-if="item.where">{{ item.where }}：</template>{{ item.issue }}
+                </li>
+              </ul>
             </div>
             <!-- 23 号 O1/O6：全稿质检报告（机检只报告不改写；error=建议重生成对应章） -->
             <div v-if="!taskRunning && docChecks.length" class="card qc-card">
@@ -3477,7 +3788,7 @@ onUnmounted(() => {
                   @click="onRegenerateSection(section.node_id)"
                 >重生成</button>
                 <button
-                  v-if="!taskRunning && section.status === 'generated' && writtenCount > 0"
+                  v-if="!taskRunning && section.status === 'generated' && (writtenCount > 0 || isReviewTask)"
                   type="button"
                   class="link-btn"
                   @click="replaceSectionInWord(section.node_id)"
@@ -3619,6 +3930,20 @@ onUnmounted(() => {
 .qc-badge{flex:none;padding:0 7px;border-radius:8px;background:#ededed;color:#666;font-size:10.5px;font-weight:600}
 .qc-list>li.error .qc-badge{background:#ffccc7;color:#a8071a}
 .qc-node{flex:none;padding:0 6px;border-radius:6px;border:1px solid #e8e8e8;color:#888;font-size:10.5px}
+/* 审读报告（23 号 O5）：严重红/中等橙/轻微灰徽标，中等行浅橙底 */
+.qc-badge.rev-high{background:#ffccc7;color:#a8071a}
+.qc-badge.rev-medium{background:#ffe7ba;color:#ad4e00}
+.qc-badge.rev-low{background:#ededed;color:#888}
+.qc-list>li.warn{background:#fffbe6;color:#7a5200}
+/* 应答口径卡（23 号 O3/O4）：条目卡 + 素材依据行 + 口径卡输入 */
+.cap-item{padding:9px 10px;border:1px solid #f0f0f0;border-radius:8px;margin-bottom:7px}
+.cap-head strong{font-size:12.5px}
+.cap-req{margin:3px 0 0;color:#888;font-size:12px;line-height:1.6}
+.cap-actions{margin-top:6px;margin-bottom:0}
+.cap-evidence{margin:5px 0 0;color:#389e0d;font-size:11.5px}
+.cap-evidence.warn{color:#d46b08}
+.cap-input{flex:1;min-width:200px;border:1px solid #e5e5e5;border-radius:6px;padding:5px 8px;font-size:12px}
+.cap-input:focus{outline:none;border-color:#d7041a}
 .analysis-suggest{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:4px 0 8px;font-size:12px}
 .suggest-chip{padding:2px 10px;border:1px solid #ffd6d0;border-radius:999px;background:#fff5f4;color:#b80015;cursor:default}
 .material-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}

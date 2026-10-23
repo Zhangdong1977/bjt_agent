@@ -15,6 +15,42 @@ _PLACEHOLDER_PATTERNS = ("XXX", "TODO", "TBD", "{{", "【待补充】", "[待补
 # 术语口径：同义自称/称谓在同一份标书内混用是评标观感问题（只提示不强制）
 _SYNONYM_PAIRS = (("我司", "我公司"),)
 
+# 口径卡（23 号 O4）驱动：统一称谓候选池——style_card.self_reference 指定其一后，
+# 其余变体与统一称谓（或变体彼此）在同一份标书内并现即告警
+_SELF_REFERENCE_VARIANTS = ("我司", "我公司", "我方", "本公司")
+
+
+def _style_card_consistency_issues(joined: str, style_card: dict | None) -> list[dict[str, str]]:
+    """口径卡驱动的术语/禁词检查（23 号 O4）：统一称谓混用 + 禁用词出现。
+
+    style_card 结构见 bid_wizard_agent.normalize_style_card；None/非 dict 时无口径卡
+    行为（assemble_checks 回退到硬编码 _SYNONYM_PAIRS）。只报告不改写。
+    """
+    if not isinstance(style_card, dict):
+        return []
+    issues: list[dict[str, str]] = []
+    chosen = str(style_card.get("self_reference") or "").strip()
+    if chosen in _SELF_REFERENCE_VARIANTS:
+        used = [(term, joined.count(term)) for term in _SELF_REFERENCE_VARIANTS if joined.count(term)]
+        mixed_others = [(term, count) for term, count in used if term != chosen]
+        if len(used) >= 2 and mixed_others:
+            detail_terms = "、".join(f"「{term}」×{count}" for term, count in mixed_others)
+            issues.append({
+                "type": "term_consistency",
+                "detail": f"统一称谓为「{chosen}」，但存在 {detail_terms} 混用，建议全稿统一口径",
+            })
+    for raw in style_card.get("forbidden_words") or []:
+        word = str(raw or "").strip()
+        if not word:
+            continue
+        count = joined.count(word)
+        if count:
+            issues.append({
+                "type": "forbidden_word",
+                "detail": "口径卡禁用词「%s」出现 %d 次——按措辞红线应改写（如改为方案交付表述）" % (word[:40], count),
+            })
+    return issues
+
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _BOLD_LINE_RE = re.compile(r"^\*\*(.+?)\*\*\s*$")
 # 标题归一：剥编号前缀（"5.3.1 "、"三、"）与空白/加粗标记，用于标题比对
@@ -22,13 +58,17 @@ _NUM_PREFIX_RE = re.compile(r"^(?:\d+(?:[.．]\d+)*|[一二三四五六七八九
 _MAX_ISSUES = 20
 
 
-def assemble_checks(md: str, skip_types: tuple[str, ...] = ()) -> list[dict[str, str]]:
+def assemble_checks(
+    md: str, skip_types: tuple[str, ...] = (), style_card: dict | None = None
+) -> list[dict[str, str]]:
     """纯文本全文档机检；返回问题列表（空列表=全部通过）。
 
     skip_types：在封顶前丢弃的检查类型。wizard draft_checks 用它排除 empty_section——
     拼接的章节标题行后紧跟正文小节标题会产生大量空章节假阳性，若截断后才过滤，
     噪音会占满 _MAX_ISSUES 配额、把 duplicate_heading 等真问题整体挤掉
     （2026-10-23 预发布实测：60 节全稿 3 处双标题被挤成 doc_checks=0）。
+    style_card（23 号 O4）：口径卡驱动术语/禁词检查替代硬编码同义对；不传时保持
+    既有行为（V1 assemble_checks 无口径卡，默认参数不变）。
     """
     issues: list[dict[str, str]] = []
     lines = (md or "").split("\n")
@@ -65,14 +105,17 @@ def assemble_checks(md: str, skip_types: tuple[str, ...] = ()) -> list[dict[str,
         if cnt:
             issues.append({"type": "placeholder_leftover", "detail": "发现模板残留 %r × %d" % (pat, cnt)})
 
-    # 5) 术语口径混用
-    for a, b in _SYNONYM_PAIRS:
-        ca, cb = joined.count(a), joined.count(b)
-        if ca and cb:
-            issues.append({
-                "type": "term_consistency",
-                "detail": "「%s」(%d 次) 与「%s」(%d 次) 混用，建议统一口径" % (a, ca, b, cb),
-            })
+    # 5) 术语口径混用：有口径卡（O4）走口径卡驱动检查；否则维持硬编码同义对
+    if isinstance(style_card, dict):
+        issues.extend(_style_card_consistency_issues(joined, style_card))
+    else:
+        for a, b in _SYNONYM_PAIRS:
+            ca, cb = joined.count(a), joined.count(b)
+            if ca and cb:
+                issues.append({
+                    "type": "term_consistency",
+                    "detail": "「%s」(%d 次) 与「%s」(%d 次) 混用，建议统一口径" % (a, ca, b, cb),
+                })
 
     if skip_types:
         issues = [issue for issue in issues if issue["type"] not in skip_types]
@@ -137,11 +180,13 @@ def strip_leading_title_headings(body: str, title: str) -> str:
     return "\n".join(lines[index:]).lstrip("\n")
 
 
-def draft_checks(sections: list[dict]) -> list[dict[str, str]]:
+def draft_checks(sections: list[dict], style_card: dict | None = None) -> list[dict[str, str]]:
     """wizard 撰写完成期全稿机检（逐章 md 已含各自标题行）。
 
     sections 每项：{node_id, title, content, word_count?, article_count?, text_count?}
     返回 [{severity, node_id, type, detail}]（node_id 为空串=全稿级），封顶 30 条。
+
+    style_card（23 号 O4）：口径卡驱动的统一称谓/禁用词检查（不传=硬编码同义对，兼容存量）。
 
     覆盖：既有五项全稿检查（拼合后复用 assemble_checks，empty_section 在封顶前跳过——
     父章导语与「标题行后紧跟小节标题」的拼接模式都会触发空章节假阳性）+ 逐章检查——
@@ -159,7 +204,7 @@ def draft_checks(sections: list[dict]) -> list[dict[str, str]]:
     # 空章节检查换成本模块逐节口径：父章与直属子节同批时只写导语（合法地短）、
     # 拼接标题后紧跟正文小节标题也合法——empty_section 让 assemble_checks 在封顶前跳过，
     # 防止 40+ 条噪音占满配额挤掉真问题；同等问题由下方 missing_content + short/overlong 覆盖。
-    for base in assemble_checks(joined, skip_types=("empty_section",)):
+    for base in assemble_checks(joined, skip_types=("empty_section",), style_card=style_card):
         issues.append(
             {"severity": "warning", "node_id": "", "type": base["type"], "detail": base["detail"]}
         )

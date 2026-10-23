@@ -253,3 +253,58 @@ def test_draft_checks_flags_overlong_leaf():
     # 1.5 倍在允许范围内不报
     sections[0]["word_count"] = 900
     assert not [i for i in draft_checks(sections) if i["type"] == "overlong_section"]
+
+
+# ------------------------------------------------------------------ O4 口径卡驱动机检（2026-10-23）
+
+
+def test_assemble_checks_style_card_self_reference_and_forbidden_words():
+    """O4：口径卡指定统一称谓后，其余自称变体并现即提示；禁用词出现即提示。"""
+    md = "我司提供方案。我方团队实施。本公司负责售后。"  # 三种自称并现（无「我公司」）
+    issues = assemble_checks(md, style_card={"self_reference": "我司"})
+    term = [i for i in issues if i["type"] == "term_consistency"]
+    assert len(term) == 1
+    assert "统一称谓为「我司」" in term[0]["detail"]
+    assert "我方" in term[0]["detail"] and "本公司" in term[0]["detail"]
+
+    # 全稿只用统一称谓：无提示
+    assert not [i for i in assemble_checks("我司实施。我司售后。", style_card={"self_reference": "我司"}) if i["type"] == "term_consistency"]
+    # 未用统一称谓但两种变体并现：仍提示（混用本身就是问题）
+    mixed = assemble_checks("我方实施。本公司售后。", style_card={"self_reference": "我司"})
+    assert any(i["type"] == "term_consistency" for i in mixed)
+    # 称谓不在候选池：不触发口径卡检查（归一层已挡，机检容错）
+    assert not [i for i in assemble_checks(md, style_card={"self_reference": "咱家"}) if i["type"] == "term_consistency"]
+
+    forbidden = assemble_checks("本系统现有支持 OCR 能力。", style_card={"self_reference": "我司", "forbidden_words": ["现有支持"]})
+    hit = [i for i in forbidden if i["type"] == "forbidden_word"]
+    assert len(hit) == 1 and "现有支持" in hit[0]["detail"]
+    # 禁词未出现不提示；空禁词忽略
+    assert not [i for i in assemble_checks("本系统支持 OCR。", style_card={"forbidden_words": ["现有支持", ""]}) if i["type"] == "forbidden_word"]
+
+
+def test_assemble_checks_without_style_card_keeps_legacy_pairs():
+    """不传口径卡=V1 既有行为：硬编码「我司/我公司」同义对，新增变体不触发。"""
+    legacy = assemble_checks("我司实施，我公司售后。")
+    assert any(i["type"] == "term_consistency" for i in legacy)
+    # 「我方/本公司」不在硬编码对里：默认参数下不报（V1 assemble_checks 零变化）
+    assert not [i for i in assemble_checks("我方实施，本公司售后。") if i["type"] == "term_consistency"]
+
+
+def test_draft_checks_passes_style_card_through():
+    """draft_checks 透传口径卡（wizard 全稿机检的 O4 接线）。"""
+    sections = [
+        {
+            "node_id": "1",
+            "title": "方案",
+            "content": "## 1 方案\n\n我司建设，我方运维。系统现有支持全部要求。",
+            "word_count": 30,
+            "article_count": 1,
+            "text_count": 100,
+        }
+    ]
+    issues = draft_checks(sections, style_card={"self_reference": "我司", "forbidden_words": ["现有支持"]})
+    types = {i["type"] for i in issues}
+    assert "term_consistency" in types and "forbidden_word" in types
+    # 不传口径卡：禁词检查不生效、称谓回到硬编码对
+    legacy_types = {i["type"] for i in draft_checks(sections)}
+    assert "forbidden_word" not in legacy_types

@@ -209,6 +209,47 @@ class QuestionnaireGenerateRequest(BaseModel):
     generation_options: GenerationOptions | None = None
 
 
+# ------------------------------------------------------------------ 应答口径（23 号 O3）+ 口径卡（O4）
+
+CapabilityStance = Literal["existing", "build", "confirm"]
+
+
+class StyleCard(BaseModel):
+    """口径卡（O4）：统一称谓/公司名/项目名/禁词——注入全部下游 prompt、驱动机检。"""
+
+    company_name: str = Field(default="", max_length=200)
+    project_short_name: str = Field(default="", max_length=200)
+    self_reference: Literal["我司", "我公司", "我方", "本公司"] = "我司"
+    forbidden_words: list[str] = Field(default_factory=list, max_length=12)
+    notes: str = Field(default="", max_length=500)
+
+
+class CapabilityItem(BaseModel):
+    """能力口径条目（O3）：三态 stance + 素材依据；保存时整批置 confirmed=True。"""
+
+    title: str = Field(min_length=1, max_length=200)
+    requirement: str = Field(default="", max_length=500)
+    stance: CapabilityStance
+    evidence: str = Field(default="", max_length=200)
+    note: str = Field(default="", max_length=500)
+
+
+class CapabilityUpdate(BaseModel):
+    """保存口径（无 LLM 不计费）：逐条确认/改判后的口径映射 + 口径卡。"""
+
+    items: list[CapabilityItem] = Field(min_length=1, max_length=30)
+    style_card: StyleCard | None = None
+
+
+class ReviewEstimateResponse(BaseModel):
+    """O5 审读轮发起前预估：章数/字数/token 量级/约点数（null=价目缺失退 token 提示）。"""
+
+    chapters: int
+    total_words: int
+    estimated_tokens: int
+    estimated_points: int | None = None
+
+
 class WizardQaAsk(BaseModel):
     """追问侧栏提问（决策 32a）。"""
 

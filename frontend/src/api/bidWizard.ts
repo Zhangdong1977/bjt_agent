@@ -62,6 +62,27 @@ export interface WizardQaHistoryItem {
   adopted?: boolean;
 }
 
+/** 应答口径三态（23 号 O3）：existing=现有已实现/build=本项目建设/confirm=待确认。 */
+export type CapabilityStance = "existing" | "build" | "confirm";
+
+export interface WizardCapabilityItem {
+  title: string;
+  requirement?: string;
+  stance: CapabilityStance;
+  evidence?: string;
+  note?: string;
+  confirmed?: boolean;
+}
+
+/** 口径卡（23 号 O4）：统一称谓/公司名/项目名/禁词——注入全部下游 prompt、驱动机检。 */
+export interface WizardStyleCard {
+  company_name?: string;
+  project_short_name?: string;
+  self_reference: "我司" | "我公司" | "我方" | "本公司";
+  forbidden_words?: string[];
+  notes?: string;
+}
+
 export interface Wizard {
   id: string;
   project_id: string;
@@ -75,6 +96,8 @@ export interface Wizard {
   requirements?: {
     questions?: WizardQuestion[];
     generation_options?: GenerationOptions | null;
+    capability_map?: WizardCapabilityItem[] | null;
+    style_card?: WizardStyleCard | null;
   } | null;
   spec?: WizardSpecNode[] | null;
   spec_previous?: WizardSpecNode[] | null;
@@ -541,6 +564,50 @@ export async function adoptSidebarAnswer(wizardId: string, question: string, ans
     "post",
     `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/qa/adopt`,
     { question, answer },
+  );
+}
+
+// ---- 应答口径（23 号 O3/O4）：AI 建议三态口径 + 口径卡，逐条确认后注入下游 ----
+
+/** 生成口径建议（计费微任务）：tender_requirements+评分项对照素材索引逐项给三态建议，顺带口径卡。 */
+export async function generateCapabilityMap(wizardId: string) {
+  return request<Wizard>("post", `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/capability`);
+}
+
+/** 保存口径（不计费）：逐条确认/改判 + 口径卡，confirmed 注入下游 prompt。 */
+export async function saveCapability(
+  wizardId: string,
+  payload: { items: WizardCapabilityItem[]; style_card?: WizardStyleCard | null },
+) {
+  return request<Wizard>(
+    "put",
+    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/capability`,
+    payload,
+  );
+}
+
+// ---- 审读-修订轮（23 号 O5）：一轮封顶，Reader 找问题、high/medium 章自动修订 ----
+
+export interface ReviewEstimate {
+  chapters: number;
+  total_words: number;
+  estimated_tokens: number;
+  estimated_points: number | null;
+}
+
+/** 审读轮发起前预估（确认弹窗展示；实际按用量结算）。 */
+export async function estimateReviewTask(taskId: string) {
+  return request<ReviewEstimate>(
+    "get",
+    `/bid-wizard/writing-tasks/${encodeURIComponent(taskId)}/review-estimate`,
+  );
+}
+
+/** 发起一轮 AI 审读：新建 action=review 的撰写任务（复用 write 队列与计费 kind）。 */
+export async function createReviewTask(taskId: string) {
+  return request<WizardWritingTask>(
+    "post",
+    `/bid-wizard/writing-tasks/${encodeURIComponent(taskId)}/review`,
   );
 }
 

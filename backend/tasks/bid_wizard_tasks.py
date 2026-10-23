@@ -15,9 +15,12 @@ from sqlalchemy import select
 
 from backend.agent.bid_wizard_agent import (
     BidWizardCancelled,
+    BidWizardReviewAgent,
     BidWizardWriteAgent,
     WizardLLM,
     analyze_tender,
+    extract_toc_tree,
+    is_history_template_category,
     split_material_chunks,
     write_material_index,
 )
@@ -236,7 +239,15 @@ async def _run_index(index_task_id: str) -> dict[str, Any]:
                     if isinstance(item, dict)
                 }
             write_material_index(
-                get_settings().workspace_path, task.wizard_id, material.document_id, chunks, metas
+                get_settings().workspace_path,
+                task.wizard_id,
+                material.document_id,
+                chunks,
+                metas,
+                # 历史模板素材（23 号 O7）：解析产物标题树进 index.md 顶部，供大纲生成目录参照
+                toc_text=extract_toc_tree(markdown)
+                if is_history_template_category(material.category)
+                else "",
             )
             await _mark_material(
                 index_status="indexed",
@@ -413,6 +424,8 @@ async def _run_write(task_id: str) -> dict[str, Any]:
                 return {"status": "ignored", "message": "任务不存在、已结束或已由其他 worker 认领"}
             wizard_id = task.wizard_id
             user_id = task.user_id
+            # O5 审读轮：同一 write 队列/计费 kind，任务行 summary.action 区分编排
+            is_review = isinstance(task.summary, dict) and task.summary.get("action") == "review"
             user = (
                 await db.execute(select(User).where(User.id == task.user_id))
             ).scalar_one_or_none()
@@ -426,7 +439,8 @@ async def _run_write(task_id: str) -> dict[str, Any]:
             }
             _publish(task_id, event_type, bounded)
 
-        agent = BidWizardWriteAgent(
+        agent_cls = BidWizardReviewAgent if is_review else BidWizardWriteAgent
+        agent = agent_cls(
             task_id=task_id,
             workspace_dir=Path(get_settings().workspace_path) / "bid-wizard" / wizard_id / "writing" / task_id,
             session_factory=session_factory,
