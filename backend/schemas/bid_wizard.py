@@ -10,6 +10,7 @@ from backend.agent.bid_wizard_agent import (
     GENERATION_WORD_COUNT_MAX,
     GENERATION_WORD_COUNT_MIN,
     _bound_suggested_materials,
+    filter_business_questions,
 )
 
 WizardStage = Literal["material", "requirement", "outline", "writing"]
@@ -69,6 +70,14 @@ class WizardResponse(BaseModel):
         if not isinstance(value, dict) or not isinstance(value.get("suggested_materials"), list):
             return value
         return {**value, "suggested_materials": _bound_suggested_materials(value["suggested_materials"])}
+
+    @field_validator("questionnaire")
+    @classmethod
+    def _strip_business_questions(cls, value: dict[str, Any] | None):
+        """2026-10-23 商务屏蔽：存量问卷里已落库的商务问题在出参时一并过滤——
+        新问卷由 prompt + normalize_questionnaire 硬过滤收口，这里兜住历史数据；
+        作答态（requirements）里已答的商务问答由 build_requirements_text 渲染时跳过。"""
+        return filter_business_questions(value)
 
 
 class WizardStageUpdate(BaseModel):

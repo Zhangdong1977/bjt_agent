@@ -137,6 +137,41 @@ def test_bound_suggested_materials_filters_business_entries():
     assert [item["name"] for item in items] == ["检测报告", "厂家技术授权书"]
 
 
+def test_wizard_response_strips_stored_business_questions():
+    """2026-10-23 商务屏蔽：存量问卷里已落库的商务问题在出参时一并过滤（历史数据兜底）。"""
+    from datetime import datetime
+
+    from backend.schemas.bid_wizard import WizardResponse
+
+    now = datetime(2026, 10, 23, 12, 0, 0)
+    payload = dict(
+        id="w1",
+        project_id="p1",
+        stage="requirement",
+        status="idle",
+        analysis=None,
+        questionnaire={
+            "questions": [
+                {"id": "q1", "topic": "商务", "question": "报价策略？"},
+                {"id": "q2", "topic": "业绩", "question": "近年类似项目业绩清单？"},
+                {"id": "q3", "topic": "交付", "question": "交付周期多长？"},
+                {"id": "q4", "topic": "资质", "question": "ISO9001 证书编号与有效期？"},
+            ]
+        },
+        requirements=None,
+        spec=None,
+        spec_previous=None,
+        spec_confirmed_at=None,
+        requirements_stale=False,
+        spec_stale=False,
+        error_message=None,
+        created_at=now,
+        updated_at=now,
+    )
+    body = WizardResponse(**payload)
+    assert [q["id"] for q in body.questionnaire["questions"]] == ["q3", "q4"]
+
+
 # ------------------------------------------------------------------ 问卷与需求
 
 
@@ -156,11 +191,34 @@ def test_normalize_questionnaire_ids_and_bounds():
     assert normalize_questionnaire({"questions": []}) == {"questions": []}
 
 
+def test_normalize_questionnaire_filters_business_questions():
+    # 2026-10-23 商务屏蔽：prompt 之外的第二道防线——商务问题在 normalize 即被丢弃，
+    # 带「技术/人员/体系」语境的资质/业绩提问（技术标信息）不误杀。
+    questionnaire = normalize_questionnaire(
+        {"questions": [
+            {"question": "请提供营业执照与财务审计报告", "topic": "资质"},
+            {"question": "近年类似项目业绩清单？", "topic": "业绩"},
+            {"question": "报价与商务条款响应怎么写？", "topic": "商务"},
+            {"question": "公司资质证书等级？", "topic": "资质"},
+            {"question": "项目班子人员的技术职称与业绩？", "topic": "人员"},
+            {"question": "技术偏离表如何响应？", "topic": "技术"},
+            {"question": "ISO9001 证书编号与有效期？", "topic": "资质"},
+            {"question": "交付周期多长？", "topic": "交付"},
+        ]}
+    )
+    assert [q["question"] for q in questionnaire["questions"]] == [
+        "项目班子人员的技术职称与业绩？",
+        "技术偏离表如何响应？",
+        "ISO9001 证书编号与有效期？",
+        "交付周期多长？",
+    ]
+
+
 def test_merge_questionnaire_answers_actions():
     questionnaire = normalize_questionnaire(
         {"questions": [
             {"question": "交付周期？", "suggested_answer": "45 天", "inferred": False},
-            {"question": "报价策略？", "suggested_answer": "按成本加成 8%", "inferred": True},
+            {"question": "培训计划？", "suggested_answer": "上线后集中培训两天", "inferred": True},
             {"question": "项目经理？", "suggested_answer": "张三", "inferred": True},
         ]}
     )
@@ -175,7 +233,7 @@ def test_merge_questionnaire_answers_actions():
     )
     questions = merged["questions"]
     assert questions[0]["effective_answer"] == "50 天"
-    assert questions[1]["effective_answer"] == "按成本加成 8%"
+    assert questions[1]["effective_answer"] == "上线后集中培训两天"
     assert questions[2]["effective_answer"] is None
 
 
@@ -183,6 +241,8 @@ def test_build_requirements_text_skips_unanswered_and_flags_inferred():
     requirements = {
         "questions": [
             {"topic": "交付", "question": "交付周期？", "effective_answer": "50 天", "inferred": False, "action": "answered"},
+            {"topic": "培训", "question": "培训计划？", "effective_answer": "上线后集中培训两天", "inferred": True, "action": "adopted"},
+            # 2026-10-23 商务屏蔽：存量 requirements 里已答的商务问答不再进入下游 prompt
             {"topic": "商务", "question": "报价策略？", "effective_answer": "按成本加成 8%", "inferred": True, "action": "adopted"},
             {"topic": "人员", "question": "项目经理？", "effective_answer": None, "action": "skipped"},
         ]
@@ -190,6 +250,7 @@ def test_build_requirements_text_skips_unanswered_and_flags_inferred():
     text = build_requirements_text(requirements)
     assert "50 天" in text
     assert "AI 推断，请确认" in text  # adopted + inferred 标记
+    assert "按成本加成" not in text  # 商务问答被过滤
     assert "项目经理" not in text  # skipped 不进下游
     assert build_requirements_text(None) == "无"
 
@@ -771,12 +832,20 @@ def test_build_requirements_text_includes_supplementals():
         {
             "questions": [
                 {
-                    "topic": "公司",
-                    "question": "公司资质？",
+                    "topic": "质量",
+                    "question": "质量保障体系？",
                     "effective_answer": "ISO9001",
                     "action": "adopted",
                     "inferred": False,
-                }
+                },
+                # 2026-10-23 商务屏蔽：商务问答不进下游 prompt（素材名口径的硬关键词）
+                {
+                    "topic": "资质",
+                    "question": "公司资质？",
+                    "effective_answer": "建筑工程施工总承包一级",
+                    "action": "adopted",
+                    "inferred": False,
+                },
             ],
             "supplementals": [
                 {"question": "业绩怎么突出", "answer": "引用两个千万级合同"},
@@ -785,6 +854,7 @@ def test_build_requirements_text_includes_supplementals():
         }
     )
     assert "ISO9001" in text
+    assert "总承包一级" not in text  # 商务问答被过滤
     assert "[补充说明] 业绩怎么突出：引用两个千万级合同" in text
     assert "无效条目" not in text
 

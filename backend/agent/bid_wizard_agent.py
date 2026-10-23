@@ -104,6 +104,8 @@ QUESTIONNAIRE_SYSTEM_PROMPT = (
     "你是资深投标文件专家。基于招标要素与公司素材索引，设计一份结构化问卷，"
     "收集编写技术应标书还缺的必要补充知识（如实施方案约束、交付里程碑与验收口径、"
     "项目班子人员技术资历、培训与售后安排等）。"
+    "本次投标编写仅面向技术应标部分（商务应标已关闭）：严禁围绕资质证书、业绩证明、"
+    "财务报表、纳税社保证明、报价与商务条款等商务内容提问，也不要建议补充商务类材料。"
     "只输出一个合法 JSON 对象，不要输出任何其他文字或代码块标记。"
 )
 
@@ -489,6 +491,8 @@ def normalize_questionnaire(payload: Any) -> dict[str, Any]:
                 "effective_answer": None,
             }
         )
+    # 2026-10-23 商务屏蔽第二道防线：模型漏看指令问出商务问题（资质/业绩/报价/商务条款等）直接丢弃
+    questions = [item for item in questions if not is_business_question(item)]
     return {"questions": questions}
 
 
@@ -538,6 +542,9 @@ def build_requirements_text(requirements: dict[str, Any] | None) -> str:
         )
     for question in (requirements or {}).get("questions") or []:
         if not isinstance(question, dict):
+            continue
+        # 2026-10-23 商务屏蔽：存量 requirements 里已答的商务问答不再进入下游 prompt
+        if is_business_question(question):
             continue
         label = str(question.get("question") or "")[:200]
         if question.get("action") == "supplemented":
@@ -1043,6 +1050,53 @@ def _bound_suggested_materials(raw: Any) -> list[dict[str, str]]:
     return items
 
 
+# 问卷侧的商务问题硬过滤（2026-10-23 需求问答仍问出商务问题：prompt 排除不是唯一防线，
+# 与素材建议侧同款教训）。只看 question/why 正文，不看 topic——topic 是粗标签，
+# 「资质」话题下的 ISO9001 质量体系证书属技术标内容，误杀面太大。
+# 宽泛词（资质/业绩/偏离/荣誉）带技术语境豁免：「项目班子人员的技术资质/业绩」属技术标信息；
+# 素材侧无此豁免（素材名即商务材料名）。
+_BUSINESS_QUESTION_HARD_KEYWORDS = (
+    "营业执照",
+    "财务",
+    "审计",
+    "纳税",
+    "社保",
+    "报价",
+    "价格",
+    "商务",
+    "开户",
+    "征信",
+    "保函",
+    "保证金",
+    "信用证明",
+)
+_BUSINESS_QUESTION_BROAD_KEYWORDS = ("资质", "业绩", "偏离", "荣誉")
+_TECHNICAL_CONTEXT_RE = re.compile(
+    "技术|人员|班子|项目经理|实施|方案|售后|培训|检测|授权|标准|规范|工期|验收|职称|体系|认证"
+)
+
+
+def is_business_question(question: dict[str, Any]) -> bool:
+    """问卷问题是否属商务标范畴：question/why 正文命中即判商务（topic 粗标签不参与）。"""
+    for field in ("question", "why"):
+        text = str(question.get(field) or "")
+        if any(keyword in text for keyword in _BUSINESS_QUESTION_HARD_KEYWORDS):
+            return True
+        if any(keyword in text for keyword in _BUSINESS_QUESTION_BROAD_KEYWORDS) and not _TECHNICAL_CONTEXT_RE.search(
+            text
+        ):
+            return True
+    return False
+
+
+def filter_business_questions(questionnaire: dict[str, Any] | None) -> dict[str, Any] | None:
+    """剔除问卷里的商务问题（纯函数）：新问卷在 normalize 收口，存量问卷在出参/下游渲染处兜底。"""
+    if not isinstance(questionnaire, dict) or not isinstance(questionnaire.get("questions"), list):
+        return questionnaire
+    kept = [q for q in questionnaire["questions"] if not (isinstance(q, dict) and is_business_question(q))]
+    return {**questionnaire, "questions": kept}
+
+
 # ---- JSON 交互容错（2026-09-15 首轮问卷「模型输出不是合法 JSON」事故） ----
 
 # 与 Spec 平级重试同口径：首次耗时 × 系数 ≥ 超时预算即跳过重试，防同步微任务超时把首轮一起丢掉
@@ -1288,7 +1342,10 @@ ROUND_SYSTEM_PROMPT = (
     "你是资深投标文件专家，正在主持一场针对投标编写需求的多轮追问（grill-me 式）："
     "用户刚补充了新素材或完成了作答。由你判断是否需要新一轮提问："
     "只问当前仍缺失或会实质影响标书质量、必须确认的信息；若已确认的需求加上素材足以支撑编写，"
-    "就返回空列表表示追问可以结束。只输出一个合法 JSON 对象，不要输出任何其他文字或代码块标记。"
+    "就返回空列表表示追问可以结束。"
+    "本次投标编写仅面向技术应标部分（商务应标已关闭）：严禁追问资质证书、业绩证明、"
+    "财务报表、纳税社保证明、报价与商务条款等商务内容。"
+    "只输出一个合法 JSON 对象，不要输出任何其他文字或代码块标记。"
 )
 
 ROUND_USER_TEMPLATE = """## 招标要素
@@ -1455,7 +1512,10 @@ async def answer_sidebar_question(
     system_prompt = (
         "你是资深投标编写顾问。请基于给定的招标要素、已确认的编写需求与公司素材索引，"
         "回答用户关于本次投标的提问。优先引用素材索引中的真实内容（可注明出处素材名），"
-        "素材与需求未覆盖的部分如实说明并给出建议写法。回答用中文，500 字以内，不要编造事实。"
+        "素材与需求未覆盖的部分如实说明并给出建议写法。"
+        "本工具仅编写技术应标部分（商务应标已关闭）：涉及商务标内容（资质证书、业绩证明、"
+        "财务报表、报价、商务条款等）的提问，如实说明该部分不在工具生成范围内、建议用户线下编制，"
+        "不要代为展开商务内容。回答用中文，500 字以内，不要编造事实。"
     )
     user_prompt = (
         f"招标要素：\n{json.dumps(analysis or {}, ensure_ascii=False)[:ANALYSIS_JSON_MAX_CHARS]}\n\n"

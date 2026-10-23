@@ -2558,7 +2558,7 @@ onUnmounted(() => {
         >项目列表</button>
       </div>
       <h1>标书生成</h1>
-      <p>基于招标文件与企业素材，AI 依次完成需求确认、大纲编写与逐章撰写，并按章写入当前 Word 文档；每章可单独重写或整体移除。</p>
+      <p>基于招标文件与企业素材，AI 依次完成需求确认、大纲编写与逐章撰写，并按章写入当前 Word 文档；每章可单独重写或整体移除。本工具当前仅编写技术标书，商务标内容不在生成范围内。</p>
       <div class="document-state" :class="`state-${bridgeState}`">
         <span class="dot" />
         <span>{{ bridgeStateText }}</span>
@@ -2600,7 +2600,7 @@ onUnmounted(() => {
               {{ busy === "create" ? "创建中…" : "新建项目" }}
             </button>
           </div>
-          <p class="hint">AI 将引导你完成：上传招标文件与公司素材 → 确认编写需求 → 制定编写大纲 → 逐章撰写并写入 Word。</p>
+          <p class="hint">AI 将引导你完成：上传招标文件与公司素材 → 确认编写需求 → 制定编写大纲 → 逐章撰写并写入 Word。仅编写技术标书，商务标内容请线下编制。</p>
         </div>
 
         <div class="card">
@@ -2684,6 +2684,12 @@ onUnmounted(() => {
 
       <!-- ==================================================== 阶段 1：素材准备 -->
       <section v-if="stageIndex === 0" class="stage-panel">
+        <!-- 2026-10-23 商务屏蔽：第一步就向用户注明本工具仅生成技术标书 -->
+        <div class="tech-only-notice" role="note">
+          <strong>本工具当前仅编写「技术标书」。</strong>
+          商务标内容（企业资质证书、业绩证明、财务报表、纳税社保证明、报价与商务条款等）不在 AI 生成范围内，
+          请线下自行编制；素材准备阶段也无需上传此类商务材料。
+        </div>
         <div class="card">
           <h3>① 招标文件（必传一份，可多份）</h3>
           <div v-for="doc in tenderDocs" :key="doc.id" class="doc-line">
@@ -3380,7 +3386,7 @@ onUnmounted(() => {
             <div v-if="!taskRunning && scoreCoverage.length" class="card qc-card">
               <h3>得分点覆盖</h3>
               <p class="hint" style="margin:0 0 8px">
-                {{ scoreCoverage.length }} 个评分项已映射到章节；<template v-if="uncoveredScoreItems.length">尚有 {{ uncoveredScoreItems.length }} 项未覆盖——建议在大纲补章或按商务人工准备。</template><template v-else>全部评分项均有章节响应。</template>
+                {{ scoreCoverage.length }} 个评分项已映射到章节；<template v-if="uncoveredScoreItems.length">尚有 {{ uncoveredScoreItems.length }} 项未覆盖——多为商务/报价类评分项，超出技术标生成范围（商务标请线下编制）；技术类未覆盖项建议在大纲补章。</template><template v-else>全部评分项均有章节响应。</template>
               </p>
               <ul class="qc-list coverage-list">
                 <li v-for="(item, index) in scoreCoverage" :key="index" :class="{ error: !item.covered_by.length }">
@@ -3520,6 +3526,9 @@ onUnmounted(() => {
 .card h3{margin:0 0 10px;font-size:14px}
 .card h4{margin:14px 0 8px;font-size:13px;color:#555}
 .hint{color:#999;font-size:12px;line-height:1.7;margin:8px 0 0}
+/* 2026-10-23 商务屏蔽：第一步「仅生成技术标书」醒目提示 */
+.tech-only-notice{padding:10px 12px;border:1px solid #bcd3f5;border-left:4px solid #2f6fdd;border-radius:7px;background:#f4f9ff;color:#31465f;font-size:13px;line-height:1.8}
+.tech-only-notice strong{color:#1d4fa5}
 .doc-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .doc-name{font-weight:500;word-break:break-all}
 .upload-btn{display:block;padding:18px;border:1.5px dashed #d9d9d9;border-radius:9px;text-align:center;color:#666;cursor:pointer;margin:4px 0}
