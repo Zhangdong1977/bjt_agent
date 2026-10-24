@@ -576,3 +576,32 @@ class TestReviewApi:
         await self._set_task_status(task_id, "running")
         rejected = await client.post(f"/api/bid-wizard/writing-tasks/{task_id}/review", headers=auth_headers)
         assert rejected.status_code == 409
+
+
+# ---------------------------------------------------------------- 措辞铁律（2026-10-24 去 AI 味）
+
+def test_wording_rules_injected_into_all_generation_prompts():
+    """措辞铁律（22 号 SOP §六）必须注入章节正文（两种图表模式）、审读修订 system prompt。"""
+    from backend.agent.bid_wizard_agent import (
+        REVIEW_REVISE_SYSTEM_PROMPT,
+        _WIZARD_CHAPTER_INTRO_SYSTEM_PROMPT,
+        _WIZARD_WORDING_RULES,
+        section_system_prompt,
+    )
+
+    for prompt in (
+        section_system_prompt(charts_enabled=True),
+        section_system_prompt(charts_enabled=False),
+        section_system_prompt(charts_enabled=True, fig_mode="bidfig"),
+        REVIEW_REVISE_SYSTEM_PROMPT,
+    ):
+        assert "措辞铁律" in prompt
+        assert "首先" in prompt and "综上所述" in prompt
+    assert _WIZARD_WORDING_RULES in REVIEW_REVISE_SYSTEM_PROMPT
+    assert "套话" in _WIZARD_CHAPTER_INTRO_SYSTEM_PROMPT
+
+
+def test_review_findings_criteria_mention_ai_flavor():
+    from backend.agent.bid_wizard_agent import REVIEW_FINDINGS_USER_TEMPLATE
+
+    assert "AI 味" in REVIEW_FINDINGS_USER_TEMPLATE

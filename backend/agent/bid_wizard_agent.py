@@ -238,6 +238,18 @@ _WIZARD_SECTION_SYSTEM_PROMPT_BASE = (
     "公司资质、业绩、项目、人员与数据必须来自「素材摘录」，不得虚构；"
     "素材与需求都未覆盖的事实性内容用“（请补充）”占位，由投标人自行补齐。"
 )
+# 措辞铁律（22 号 SOP §六反向移植；2026-10-24 用户反馈成稿"AI 味浓厚"）：
+# 去 AI 味的关键在生成侧——起草与修订共用同一份规则（模式 A：不让分节代理各说各话）
+_WIZARD_WORDING_RULES = (
+    "措辞铁律（投标正式文体，硬约束）："
+    "①用具体做法、指标、依据、时间安排说话，每个自然段都要有信息量；"
+    "严禁无事实支撑的自夸句与形容词堆砌"
+    "（如「全方位、多维度、一站式、赋能、助力、打造、强大的、优秀的、完善的」）；"
+    "②不写模板腔过渡与套话：段首不用「首先/其次/最后」串联成文，"
+    "结尾不写「综上所述/总而言之」式升华，不用口号式排比与空泛展望收尾，段落直接点题；"
+    "③语气客观正式，不出现「众所周知、毋庸置疑、我们相信」等口语化或煽情表达；"
+    "④对招标要求的直接响应优先于泛泛的公司能力介绍。"
+)
 _WIZARD_SECTION_CHART_RULES = (
     "图表要求："
     "①结构化内容（对比、参数、人员配置、职责分工、进度安排）优先用 Markdown 表格；"
@@ -257,10 +269,11 @@ WIZARD_SECTION_SYSTEM_PROMPT = _WIZARD_SECTION_SYSTEM_PROMPT_BASE + _WIZARD_SECT
 def section_system_prompt(*, charts_enabled: bool = True, fig_mode: str = "mermaid") -> str:
     # fig_mode=bidfig（23 号 O8）：切 V1 bidfig 系统 prompt（LLM 输出结构化 JSON 围栏，
     # 服务端原语库确定性渲染）；不配图时图表规则以 charts_enabled 为准（图都不要就更无引擎可言）
+    # 措辞铁律（2026-10-24）两种模式都注入——bidfig 版复自旧 draft prompt，本身没有措辞约束
     if charts_enabled and fig_mode == "bidfig":
-        return SECTION_SYSTEM_PROMPT_BIDFIG
+        return SECTION_SYSTEM_PROMPT_BIDFIG + _WIZARD_WORDING_RULES
     rules = _WIZARD_SECTION_CHART_RULES if charts_enabled else _WIZARD_SECTION_NO_CHART_RULES
-    return _WIZARD_SECTION_SYSTEM_PROMPT_BASE + rules
+    return _WIZARD_SECTION_SYSTEM_PROMPT_BASE + _WIZARD_WORDING_RULES + rules
 
 WIZARD_SECTION_USER_TEMPLATE = """## 项目招标要素（摘要）
 __ANALYSIS_JSON__
@@ -298,6 +311,7 @@ _WIZARD_CHAPTER_INTRO_SYSTEM_PROMPT = (
     "严禁展开任何小节的正文内容；严禁输出任何标题（含编号小节标题）、表格、mermaid 图或代码块围栏；"
     "只输出 1-2 个自然段的导语正文。不要输出本章标题（系统会自动添加），不要输出解释或前言。"
     "导语只作结构性概述，不引用具体证书、业绩、人员与金额，不虚构任何事实。"
+    "导语用实在话概括定位与安排，严禁口号式套话与形容词堆砌（措辞铁律同章节正文）。"
 )
 
 WIZARD_CHAPTER_INTRO_USER_TEMPLATE = """## 项目招标要素（摘要）
@@ -2491,7 +2505,8 @@ __CHAPTERS__
 
 审读口径：
 1. high=评标专家会直接扣分甚至废标的硬伤：与招标要求/口径矛盾、承诺冲突、疑似虚构、关键要求漏响应；
-2. medium=明显质量问题：与前后章脱节或重复、图表与正文不符、统一称谓混用、（请补充）该确认却未确认；
+2. medium=明显质量问题：与前后章脱节或重复、图表与正文不符、统一称谓混用、（请补充）该确认却未确认、
+   套话/模板腔成片（「AI 味」浓、整段无实质信息量——修订时按措辞铁律重写该类段落）；
 3. low=可改可不改的建议；
 4. 只报章节内能确认的问题，严禁虚构章节里不存在的内容；每章最多 3 条，抓大放小。"""
 
@@ -2501,6 +2516,7 @@ REVIEW_REVISE_SYSTEM_PROMPT = (
     "不含本节标题，系统会自动添加；不要输出解释或前言）。"
     "公司资质、业绩、项目、人员与数据必须与原文/素材一致，不得新增素材之外的事实；"
     "素材与需求都未覆盖的事实性内容用“（请补充）”占位。"
+    + _WIZARD_WORDING_RULES
 )
 
 REVIEW_REVISE_USER_TEMPLATE = """## 投标文件大纲（整体结构）

@@ -1684,14 +1684,24 @@ def test_build_requirements_text_leads_with_generation_options():
 
 
 def test_section_prompts_switch_to_no_chart_mode():
-    from backend.agent.bid_wizard_agent import WIZARD_SECTION_SYSTEM_PROMPT, section_system_prompt
+    from backend.agent.bid_wizard_agent import (
+        _WIZARD_SECTION_CHART_RULES,
+        _WIZARD_SECTION_SYSTEM_PROMPT_BASE,
+        _WIZARD_WORDING_RULES,
+        section_system_prompt,
+    )
 
     node = {"charts": [{"type": "mermaid", "title": "流程图", "points": "步骤"}]}
     assert "mermaid 图" in build_chart_plan_text(node)
     assert "不配图" in build_chart_plan_text(node, charts_enabled=False)
-    assert section_system_prompt(charts_enabled=True) == WIZARD_SECTION_SYSTEM_PROMPT
+    # 措辞铁律（2026-10-24）在两种图表模式上都注入
+    assert (
+        section_system_prompt(charts_enabled=True)
+        == _WIZARD_SECTION_SYSTEM_PROMPT_BASE + _WIZARD_WORDING_RULES + _WIZARD_SECTION_CHART_RULES
+    )
     no_chart = section_system_prompt(charts_enabled=False)
     assert "不得输出任何 Markdown 表格" in no_chart and "优先用 Markdown 表格" not in no_chart
+    assert "措辞铁律" in no_chart
 
 
 def test_spec_prompts_demand_multilevel_outline():
@@ -2470,14 +2480,18 @@ def test_section_system_prompt_switches_fig_mode():
     from backend.agent.bid_wizard_agent import (
         _WIZARD_SECTION_CHART_RULES,
         _WIZARD_SECTION_SYSTEM_PROMPT_BASE,
+        _WIZARD_WORDING_RULES,
         section_system_prompt,
     )
 
     assert section_system_prompt(charts_enabled=True) == (
-        _WIZARD_SECTION_SYSTEM_PROMPT_BASE + _WIZARD_SECTION_CHART_RULES
+        _WIZARD_SECTION_SYSTEM_PROMPT_BASE + _WIZARD_WORDING_RULES + _WIZARD_SECTION_CHART_RULES
     )
     # bidfig 引擎：切 V1 bidfig 系统 prompt；不配图时以 charts_enabled 为准（无图就无引擎）
-    assert section_system_prompt(charts_enabled=True, fig_mode="bidfig") == SECTION_SYSTEM_PROMPT_BIDFIG
+    # 措辞铁律（2026-10-24）bidfig 版同样注入（其复自旧 draft prompt，自身无措辞约束）
+    assert section_system_prompt(charts_enabled=True, fig_mode="bidfig") == (
+        SECTION_SYSTEM_PROMPT_BIDFIG + _WIZARD_WORDING_RULES
+    )
     assert "不得输出任何 Markdown 表格" in section_system_prompt(charts_enabled=False, fig_mode="bidfig")
 
 

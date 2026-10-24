@@ -1177,7 +1177,9 @@ function onGenerateCapability() {
   if (!wizard.value || busy.value) return;
   const run = () =>
     void withBusy("capability", async () => {
-      await apiGenerateCapability(wizard.value!.id);
+      // 同步接口：返回的 wizard 已带最新建议——必须回填，否则本地还是旧 requirements、
+      // 选项列表不显示（2026-10-24 用户反馈：要点进后续阶段再跳回才看到）
+      wizard.value = await apiGenerateCapability(wizard.value!.id);
       syncCapabilityFromWizard();
       pushLog("ok", "AI 口径建议已生成——逐条确认后点「保存口径」");
     });
@@ -1197,7 +1199,8 @@ function onGenerateCapability() {
 function onSaveCapability() {
   if (!wizard.value || busy.value || !capabilityItems.value.length) return;
   void withBusy("capabilitySave", async () => {
-    await apiSaveCapability(wizard.value!.id, {
+    // 回填保存后的 wizard（含 spec_stale 等最新状态）
+    wizard.value = await apiSaveCapability(wizard.value!.id, {
       items: capabilityItems.value.map((item) => ({
         title: item.title,
         requirement: item.requirement || "",
@@ -1837,7 +1840,9 @@ async function onSaveSpecInner() {
 
 // =============================================================== 阶段 4：逐章撰写
 
-const writeMode = ref<"auto" | "confirm">("auto");
+// 2026-10-24 用户反馈质量差后默认切「审读后统一写入」：全文生成 → AI 审读优化 → 统一写入 Word，
+// 避免未审读的成稿边写边进文档；两种即时写入模式保留给习惯流式出稿的用户
+const writeMode = ref<"review" | "auto" | "confirm">("review");
 const selectedNodes = ref<Set<string>>(new Set());
 const taskId = ref("");
 const task = ref<WizardWritingTask | null>(null);
@@ -2122,7 +2127,9 @@ function trackTask(next: WizardWritingTask) {
       ? "AI 审读任务已提交——先逐章找问题，再自动修订重点章节"
       : next.continue_of
         ? "单章重生成任务已提交"
-        : "撰写任务已提交",
+        : writeMode.value === "review"
+          ? "撰写任务已提交——全文生成后统一写入 Word（建议先「AI 审读一轮」再写入）"
+          : "撰写任务已提交",
   );
   void primeTaskSectionsThenListen(next.id);
   startTaskPoll();
@@ -3655,7 +3662,8 @@ onUnmounted(() => {
               </div>
             </div>
             <div class="mode-row">
-              <label class="radio"><input v-model="writeMode" type="radio" value="auto">自动连写（每章生成完自动写入 Word）</label>
+              <label class="radio"><input v-model="writeMode" type="radio" value="review">审读后统一写入（推荐：全文生成 → AI 审读优化 → 再写入 Word）</label>
+              <label class="radio"><input v-model="writeMode" type="radio" value="auto">边写边出（每章生成完自动写入 Word）</label>
               <label class="radio"><input v-model="writeMode" type="radio" value="confirm">逐章确认（每章预览后手动写入）</label>
             </div>
             <button type="button" class="primary" :disabled="Boolean(busy)" @click="onStartWriting">开始撰写</button>
@@ -3665,9 +3673,16 @@ onUnmounted(() => {
             <div class="writing-head">
               <StatusDot :tone="taskTone">{{ taskStatusText }}</StatusDot>
               <span>已写入 {{ writtenCount }} / {{ sections.length }} 章<template v-if="writtenWords"> · {{ writtenWords.toLocaleString() }} 字</template></span>
-              <span v-if="taskRunning" class="hint" style="margin:0">撰写与写入在后台进行，可离开此页；重新进入会自动恢复进度</span>
+              <span v-if="taskRunning" class="hint" style="margin:0">{{ writeMode === "review" ? "全文生成中，完成后统一写入 Word；可离开此页，重新进入会自动恢复进度" : "撰写与写入在后台进行，可离开此页；重新进入会自动恢复进度" }}</span>
               <button v-if="taskRunning" type="button" class="ghost" :disabled="Boolean(busy)" @click="onCancelTask">取消撰写</button>
             </div>
+            <!-- 审读后统一写入（2026-10-24 默认）：完成后先引导 AI 审读，再统一写入；
+                 一轮封顶后（isReviewTask）改提示直接写入修订版 -->
+            <p
+              v-if="!taskRunning && writeMode === 'review' && generatedCount > 0 && writtenCount === 0 && !isReviewTask"
+              class="hint"
+              style="margin:0 0 6px"
+            >全文已生成。推荐先「AI 审读一轮」找出问题并自动修订重点章节，再点「写入 Word」统一输出；着急成稿也可直接写入。</p>
             <div v-if="!taskRunning && (generatedCount > 0 || writtenCount > 0)" class="writing-tools">
               <button
                 v-if="generatedCount > 0"
@@ -3675,7 +3690,7 @@ onUnmounted(() => {
                 class="link-btn"
                 :disabled="Boolean(busy)"
                 @click="onRewriteAllSections"
-              >重新写入 Word（{{ generatedCount }} 章待写入）</button>
+              >{{ writtenCount > 0 ? "重新写入 Word" : "写入 Word" }}（{{ generatedCount }} 章待写入）</button>
               <button
                 type="button"
                 class="link-btn"
