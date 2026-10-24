@@ -357,3 +357,36 @@ def test_ai_flavor_assemble_global_for_v1_path():
     assert "ai_flavor" in types
     details = " ".join(i["detail"] for i in assemble_checks(md) if i["type"] == "ai_flavor")
     assert "综上所述" in details and "作为AI" in details
+
+
+# ---- 跨章口径组合 stance_conflict（2026-10-24 质量轮）+ 否定式豁免（终审回归）----
+
+def test_stance_conflict_detected_across_sections():
+    from backend.agent.bid_doc_checks import stance_conflict_targets
+
+    sections = [
+        {"node_id": "1", "content": "本地算力不足时先以在线算力承接峰值请求，保障可用性。"},
+        {"node_id": "2", "content": "在线模型通道默认关闭，业务数据不出内网，启用须书面授权。"},
+    ]
+    targets = stance_conflict_targets(sections)
+    assert len(targets) == 1
+    assert targets[0]["open_nodes"] == {"1"}
+    assert targets[0]["restricted_nodes"] == {"2"}
+    assert targets[0]["ruling"]
+
+
+def test_stance_conflict_negated_phrase_not_open_hit():
+    """终审回归：『不自动降级至在线服务』是被否定的受限派表述，不得判成开放派。"""
+    from backend.agent.bid_doc_checks import stance_conflict_targets
+
+    sections = [
+        {
+            "node_id": "2.5",
+            "content": (
+                "在线模型通道默认关闭，不随本地资源排队情况自动启用、不自动降级至在线服务；"
+                "本地算力不足时，经采购人授权后可启用在线通道补充。"
+            ),
+        },
+        {"node_id": "1.3", "content": "数据不出内网，模型通道默认关闭，启用须采购人书面授权。"},
+    ]
+    assert stance_conflict_targets(sections) == []

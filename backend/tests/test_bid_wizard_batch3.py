@@ -625,3 +625,18 @@ def test_wording_rules_ban_thinking_and_dialogue():
         assert "本章将介绍" in prompt and "好的，" in prompt
     assert "对话" in _WIZARD_CHAPTER_INTRO_SYSTEM_PROMPT
     assert "对话语气" in REVIEW_FINDINGS_USER_TEMPLATE
+
+
+def test_wording_rules_cover_internal_leak_and_style_consistency():
+    """⑦内部实现泄漏禁令 + ⑧体例统一（2026-10-24 终审残留项）；表格内禁（请补充）随 BASE 注入。"""
+    from backend.agent.bid_wizard_agent import _WIZARD_WORDING_RULES, section_system_prompt
+
+    assert "⑦" in _WIZARD_WORDING_RULES and "错误码" in _WIZARD_WORDING_RULES
+    assert "⑧" in _WIZARD_WORDING_RULES and "表X-Y" in _WIZARD_WORDING_RULES
+    for prompt in (
+        section_system_prompt(charts_enabled=True),
+        section_system_prompt(charts_enabled=False),
+        section_system_prompt(charts_enabled=True, fig_mode="bidfig"),
+    ):
+        assert "⑦" in prompt and "⑧" in prompt
+        assert "表格单元格" in prompt  # （请补充）占位不出现在表格/图注

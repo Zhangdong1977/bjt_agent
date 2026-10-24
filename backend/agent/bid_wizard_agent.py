@@ -46,7 +46,12 @@ from backend.agent.bid_draft_agent import (
     parse_json_payload,
     strip_code_fence,
 )
-from backend.agent.bid_doc_checks import draft_checks, strip_leading_title_headings
+from backend.agent.bid_doc_checks import (
+    chart_placeholder_issues,
+    draft_checks,
+    stance_conflict_targets,
+    strip_leading_title_headings,
+)
 from backend.agent.bidfig import (
     INVALID_PLACEHOLDER,
     bidfig_fence_payloads,
@@ -252,7 +257,21 @@ _WIZARD_WORDING_RULES = (
     "⑤正文只是投标文件本体，不是写作说明：严禁输出思考/推理过程，"
     "严禁解释「为什么这样写」的写作说明（如「本章将介绍」「下面从几个方面展开」「为了让评标专家了解」），"
     "严禁与读者对话（「好的，」「以下是」「接下来我们」「希望」等表述）与任何 AI 身份表述"
-    "（「作为AI」）；方案自身的依据与优势用陈述句直接给出，不属于此列。"
+    "（「作为AI」）；严禁把标书编制过程的内部机制写进正文"
+    "（如「需求台账」「判定点清单」「内部核查留档」「母本/模板口径」等编制方法论表述），"
+    "正文只描述交付给采购人的系统、方案与承诺本身；方案自身的依据与优势用陈述句直接给出，不属于此列。"
+    "⑥业绩与产能事实只能出自素材摘录：严禁引用无素材出处的内部案例/产能数据"
+    "（如「N 个工作日内形成 N 页正文、N 张表格、N 万字成稿」类自证数字——无法举证又易被质疑夸大），"
+    "素材未覆盖的产能事实一律不写。"
+    "⑦素材或内部资料里我方的实现细节不得原样写入正文：配置项/参数名、系统错误码、"
+    "内部测试环境的运行数据与调优过程、计费与运营机制等，对外只转化为采购人可感知的"
+    "能力、指标与承诺表述（需量化时给可兑现的建议值）；正文出现代码风格标识符即视为缺陷。"
+    "⑧全稿体例统一：图表按章编号（表X-Y／图X-Y，X=一级章号）且编号与图题一致；"
+    "交付时间锚点全稿统一用「合同签订（T0）后 X 日内」表述，引用招标文件的绝对日期节点时"
+    "须同时写明与相对周期不一致时以对采购人更严格者为准；同一技术机制跨章涉及时一处主述、"
+    "他处简述并以章节号引用主述处，不得各写一套。"
+    "⑨「（请补充）」占位只写在正文段落句内：表格单元格、列名、图注与图内节点标签一律不写占位，"
+    "该处的待定信息改为在邻近正文段落说明「于需求确认阶段与采购人商定」或直接给出可兑现的建议值。"
 )
 _WIZARD_SECTION_CHART_RULES = (
     "图表要求："
@@ -1035,6 +1054,37 @@ def render_score_items_text(items: list[dict[str, str]]) -> str:
         "本章必须实质回应下列评分项的评审标准（评标专家会按这些条目打分）：\n"
         + "\n".join(lines)
     )
+
+
+def rejection_items_text(analysis: dict[str, Any] | None) -> str:
+    """★废标/否决条款清单 → 注入审读/修订 prompt（★响应表条款编号列的映射来源，
+    第 2 轮质量轮：条款编号裸（请补充）导致评委无法逐条对照）。旧向导无该字段时为空。
+    """
+    items = analysis.get("rejection_items") if isinstance(analysis, dict) else None
+    if not isinstance(items, list):
+        return ""
+    lines: list[str] = []
+    for raw in items[:30]:
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title") or "").strip()
+        requirement = str(raw.get("requirement") or "").strip()
+        if not title and not requirement:
+            continue
+        lines.append(f"- {title[:120]}：{requirement[:160]}" if requirement else f"- {title[:120]}")
+    return "\n".join(lines)[:2_000]
+
+
+def tender_requirements_text(analysis: dict[str, Any] | None) -> str:
+    """招标要求原文 → 注入审读/修订 prompt（第 3 轮质量轮：审读意见凭臆断「招标文件只明确
+    2026-12-10 一个锚点」把招标明文工期 150 天降格为我方建议工期——Reader/Revise 必须能
+    对照招标原文核验数值类意见，审读事实断言须可核验）。旧向导无该字段时为空。
+    """
+    items = analysis.get("tender_requirements") if isinstance(analysis, dict) else None
+    if not isinstance(items, list):
+        return ""
+    lines = [f"- {str(raw or '').strip()[:200]}" for raw in items[:20] if str(raw or '').strip()]
+    return "\n".join(lines)[:3_000]
 
 
 def score_coverage_matrix(
@@ -2447,7 +2497,11 @@ class BidWizardWriteAgent:
         # O4——口径卡驱动的统一称谓/禁词检查；O3——existing 口径无素材依据红线联动
         try:
             style_card = (context["requirements"] or {}).get("style_card")
-            checks = draft_checks(done, style_card=style_card)
+            checks = draft_checks(
+                done,
+                style_card=style_card,
+                outline_ids={str(item.get("node_id") or "") for item in spec},
+            )
             try:
                 checks.extend(
                     capability_stance_issues(spec, done, (context["requirements"] or {}).get("capability_map"))
@@ -2497,6 +2551,12 @@ __OUTLINE_TEXT__
 ## 编写需求（含应答口径与口径卡）
 __REQUIREMENTS_TEXT__
 
+## 招标要求原文（工期/数值/承诺类口径以此为准；对承诺数值提意见前先与此比对）
+__TENDER_REQ_TEXT__
+
+## 招标★（废标/否决）条款清单（条款号与要点，★响应表/风险响应引用其编号）
+__REJECTION_ITEMS_TEXT__
+
 ## 本次审读章节
 __CHAPTERS__
 
@@ -2510,11 +2570,33 @@ __CHAPTERS__
 
 审读口径：
 1. high=评标专家会直接扣分甚至废标的硬伤：与招标要求/口径矛盾、承诺冲突、疑似虚构、关键要求漏响应；
-2. medium=明显质量问题：与前后章脱节或重复、图表与正文不符、统一称谓混用、（请补充）该确认却未确认、
+   编写需求中的能力三态（口径-现有已实现/本项目建设/待确认）是硬口径——正文与三态矛盾（如 build 态
+   写成「均已具备、可现场演示」）按 high 报，修订意见也严禁要求向相反方向改；
+2. medium=明显质量问题：与前后章脱节或重复、图表与正文不符、流程图/示意图的节点与流向须与正文机制
+   描述一致（如逐阶段进度推送不得画成末端单一环节）、统一称谓混用、（请补充）该确认却未确认
+   （含图表内占位：mermaid 节点标签/表格单元格里的「请补充」应改为建议值或移出图表——同主题他章已给
+   出的建议值可直接复用）、★响应表/需求对照表的编号与口径列素材无实际条款号时用条款功能名标注
+   （如「★（招标文件上传能力）」）替代裸（请补充）、confirm 态条目写「本项目建设内容（具体规则需求
+   确认阶段固化）」并保留交付时限锚点、把新数据对象/功能划归其他模块的扩写与编写需求和大纲的模块
+   边界不一致、自曝内部实现短板或运维细节的表述（如「该节点内存偏紧」「任务路由漏配会滞留」「某工具
+   不可靠不作为唯一依赖」「计费口径/计费状态」「插件发版」等内部运营/研发用语——私有化交付场景无对外
+   计费与发版概念，应改为面向交付的能力与保障表述）、同一技术机制在不同章的主次口径不一致
+   （如同一解析链路两章各认不同主引擎）、
    套话/模板腔成片（「AI 味」浓、整段无实质信息量）或残留思考过程/写作说明/对话语气
    （「好的，」「以下是」「接下来我们」「本章将介绍」类表述）——修订时按措辞铁律重写该类段落；
 3. low=可改可不改的建议；
-4. 只报章节内能确认的问题，严禁虚构章节里不存在的内容；每章最多 3 条，抓大放小。"""
+4. 只报章节内能确认的问题，严禁虚构章节里不存在的内容；每章最多 3 条，抓大放小；
+5. 父章（其下有直属小节的章节）正文按全稿约定只是章首导语：导语作结构性概述不是内容空洞，
+   不要以「本章单薄/应展开」为由给父章提扩写意见；父章若被展开成与小节重复的全章正文，
+   反而应报 high（与子节成对重复）；
+6. 口径/指标类发现须全局归并：同一主题（同一组验收指标数值、同一部署/算力/数据边界口径、
+   同一交付承诺）在多章表述不一致或互相矛盾时，归并为一条 high，node_id 填最先出现该主题的章节，
+   issue 中写明全稿应统一成的口径结论与依据；严禁对同一主题在不同章各提一条方向相反的意见
+   （如一处要求补承诺、另一处要求删数值）——修订代理将按归并结论跨章对齐。
+   对工期/交付/验收等承诺数值提意见前，先比对上方「招标要求原文」——招标文件明文取值是硬要求，
+   严禁建议降格为「我方建议工期/以双方确认为准」类弱化表述；意见中「招标文件只明确/未明确某值」
+   类事实断言必须能在招标要求原文或编写需求中找到出处（写明出处），找不到出处就不要下该断言；
+   归并意见要求多章同步时，在 issue 中点名关联章节号（如「并见 1.1、1.3」），系统会同步下发。"""
 
 REVIEW_REVISE_SYSTEM_PROMPT = (
     "你是资深投标文件编写专家（Revise）。按审读意见修订指定章节：保留既有正确内容与结构，"
@@ -2522,6 +2604,12 @@ REVIEW_REVISE_SYSTEM_PROMPT = (
     "不含本节标题，系统会自动添加；不要输出解释或前言）。"
     "公司资质、业绩、项目、人员与数据必须与原文/素材一致，不得新增素材之外的事实；"
     "素材与需求都未覆盖的事实性内容用“（请补充）”占位。"
+    "涉及验收指标数值、部署/算力/数据边界、交付承诺等全稿性口径时，"
+    "须与「全稿口径基准」保持一致，不得本章另立一套说法；基准互相矛盾时以编写需求/招标要求为准并采用一致表述。"
+    "编写需求中的能力三态是硬口径：build/confirm 态能力严禁改写为「已具备/已实现/可现场演示」等现有能力表述，"
+    "删除（请补充）占位说明时必须保留对应三态口径措辞（本项目建设内容/需求确认阶段固化），宁可留占位不可虚构已实现。"
+    "审读意见与招标要求原文或编写需求冲突时，以后者为准：不得执行把招标明文工期/承诺数值"
+    "降格为「我方建议值/以双方确认为准」的意见，该类意见按招标原文取值改回正面承诺。"
     + _WIZARD_WORDING_RULES
 )
 
@@ -2530,6 +2618,15 @@ __OUTLINE_TEXT__
 
 ## 编写需求（含应答口径与口径卡）
 __REQUIREMENTS_TEXT__
+
+## 招标要求原文（工期/数值/承诺类口径以此为准，不得凭印象改写）
+__TENDER_REQ_TEXT__
+
+## 招标★（废标/否决）条款清单（条款号与要点，★响应表/风险响应引用其编号）
+__REJECTION_ITEMS_TEXT__
+
+## 全稿口径基准（各章审读结论中涉及指标/口径/承诺的 high 发现，本章涉及同一主题时须与之一致、不得冲突）
+__GLOBAL_FINDINGS_TEXT__
 
 ## 本章响应的评分项
 __SCORE_ITEMS_TEXT__
@@ -2767,6 +2864,9 @@ class BidWizardReviewAgent:
         spec: list[dict[str, Any]],
         score_items_text: str,
         fig_mode: str,
+        global_findings_text: str = "",
+        rejection_items_text: str = "",
+        tender_text: str = "",
     ) -> dict[str, Any]:
         self._publish("section_started", {"node_id": node["node_id"], "title": node["title"]})
         await self._ensure_section_row(node)
@@ -2775,15 +2875,28 @@ class BidWizardReviewAgent:
             "- [%s] %s：%s" % (item["severity"], item["where"] or "本章", item["issue"])
             for item in node_findings
         )
+        # 父章与子节同批时正文按全稿约定只是章首导语（与 write 路径 chapter_intro_plan 同口径）：
+        # 修订同样禁止把父章扩写成全章正文——那会与独立生成的子节成对/三重重复（2026-10-24 质量轮回归）
+        intro_children = chapter_intro_plan(spec).get(str(node["node_id"]))
         user_prompt = (
             REVIEW_REVISE_USER_TEMPLATE.replace("__OUTLINE_TEXT__", _outline_text(spec))
             .replace("__REQUIREMENTS_TEXT__", requirements_text or "无")
+            .replace("__TENDER_REQ_TEXT__", tender_text or "（无）")
+            .replace("__REJECTION_ITEMS_TEXT__", rejection_items_text or "（无）")
+            .replace("__GLOBAL_FINDINGS_TEXT__", global_findings_text or "（无）")
             .replace("__SCORE_ITEMS_TEXT__", score_items_text or "（无直接对应的评分项）")
             .replace(
                 "__CURRENT_CONTENT__", (current_content or "")[:REVIEW_REVISE_INPUT_MAX_CHARS]
             )
             .replace("__FINDINGS_TEXT__", findings_text or "（无）")
         )
+        if intro_children:
+            user_prompt += (
+                "\n\n注意：本节点是父章节，其正文按全稿约定只是章首导语"
+                "（其下小节由系统另行成文，不包含在本正文内）。修订后仍须保持导语形态——"
+                "1-2 个自然段、只概述本章定位与各小节安排，严禁展开任何小节正文、"
+                "输出小节标题、表格或图示；导语过短不是问题，与子节重复才是问题。"
+            )
         body = strip_code_fence(await self.llm.generate(REVIEW_REVISE_SYSTEM_PROMPT, user_prompt))
         if not body:
             raise RuntimeError(f"章节「{node['title']}」修订结果为空")
@@ -2799,6 +2912,9 @@ class BidWizardReviewAgent:
                     fig_repair["repaired"],
                     fig_repair["degraded"],
                 )
+        if intro_children:
+            # 父章导语机械兜底（与 write 路径同款）：修订越界输出小节标题时截断到首个标题行之前
+            body = sanitize_chapter_intro(body)
         body = strip_leading_title_headings(body, str(node.get("title") or ""))
         level = max(1, min(6, int(node.get("level") or 1)))
         content = f"{'#' * level} {node['title']}\n\n{body}"[:SECTION_RESULT_MAX_CHARS]
@@ -2844,6 +2960,8 @@ class BidWizardReviewAgent:
         generation_options = generation_options_of(requirements)
         fig_mode = str(generation_options.get("fig_mode") or "mermaid") if generation_options else "mermaid"
         scoring_items = scoring_items_of(context["analysis"])
+        rejections_text = rejection_items_text(context["analysis"])
+        tender_text = tender_requirements_text(context["analysis"])
         spec_by_id = {str(node.get("node_id")): node for node in spec}
 
         # ① 审读（Reader）：按章分批；单批失败不终止整轮（审读是增值非必需环节）
@@ -2861,6 +2979,8 @@ class BidWizardReviewAgent:
                     REVIEW_FINDINGS_SYSTEM_PROMPT,
                     REVIEW_FINDINGS_USER_TEMPLATE.replace("__OUTLINE_TEXT__", _outline_text(spec))
                     .replace("__REQUIREMENTS_TEXT__", (requirements_text or "无")[:SPEC_CONTEXT_MAX_CHARS])
+                    .replace("__TENDER_REQ_TEXT__", tender_text or "（无）")
+                    .replace("__REJECTION_ITEMS_TEXT__", rejections_text or "（无）")
                     .replace("__CHAPTERS__", chapters_text),
                 )
                 findings.extend(normalize_review_findings(payload, valid_nodes))
@@ -2870,6 +2990,84 @@ class BidWizardReviewAgent:
             except Exception:
                 logger.exception("bid-wizard review findings batch failed: task=%s", self.task_id)
         findings = findings[:REVIEW_FINDINGS_MAX]
+
+        # ①.5 口径冲突定向收敛（2026-10-24 第 2 轮质量轮）：机检检出跨章口径冲突后，
+        # 涉事章若无 Reader finding 就不会进修订集（上轮统一方案只落实到有意见的 2.4/2.5
+        # 的机制根因）——给每个涉事章补一条带裁决口径的 high finding，驱动各章按同一口径改写
+        try:
+            for target in stance_conflict_targets(chapters):
+                ruling = str(target.get("ruling") or "")
+                if not ruling:
+                    continue
+                affected_nodes = sorted(
+                    (target.get("open_nodes") or set()) | (target.get("restricted_nodes") or set())
+                )
+                for affected in affected_nodes:
+                    if affected not in valid_nodes:
+                        continue
+                    findings.append(
+                        {
+                            "node_id": affected,
+                            "severity": "high",
+                            "where": "全稿口径（%s）" % target["topic"],
+                            "issue": (
+                                "（机检自动检出）全稿对「%s」并存多种口径，统一裁决为：%s。"
+                                "请把本章与该裁决冲突的表述改写为裁决口径"
+                                "（自动降级/无条件启用在线等表述删除或改为「经授权后可启用」），"
+                                "本章内前后矛盾的同类表述一并对齐。" % (target["topic"], ruling)
+                            )[:500],
+                        }
+                    )
+            self._publish("review_findings", {"total": len(findings)})
+        except Exception:
+            logger.exception("bid-wizard stance convergence findings failed: task=%s", self.task_id)
+
+        # ①.6 图表占位定向清理（2026-10-24 第 3 轮质量轮）：chart_placeholder 机检上轮只报警，
+        # 修订触发仍靠 Reader 配额（覆盖随机漏检、暗标主题 3 个 error 卡 gate）——转为 per-node
+        # medium finding 驱动修订，同主题他章建议值可复用
+        try:
+            for issue in chart_placeholder_issues(chapters):
+                if issue.get("node_id") in valid_nodes:
+                    findings.append(
+                        {
+                            "node_id": str(issue["node_id"]),
+                            "severity": "medium",
+                            "where": "图表",
+                            "issue": "（机检自动检出）%s" % str(issue.get("detail") or "")[:450],
+                        }
+                    )
+            self._publish("review_findings", {"total": len(findings)})
+        except Exception:
+            logger.exception("bid-wizard chart placeholder findings failed: task=%s", self.task_id)
+
+        # ①.7 同源跨章意见传播（第 3 轮质量轮）：Reader 的归并意见常在 issue 里点名关联章节
+        # （「并见 1.1 末段、1.3 表第 8 行…三处同步统一」），但修订只按 node_id 触发主章——
+        # 把 issue 文本点名的其他章节号复制为 per-node finding，同步意见才能真正落到各章
+        try:
+            propagated: list[dict[str, str]] = []
+            for item in findings:
+                if item["severity"] not in ("high", "medium"):
+                    continue
+                issue_text = item["issue"]
+                mentioned = [
+                    other
+                    for other in sorted(valid_nodes, key=len, reverse=True)
+                    if other != item["node_id"]
+                    and re.search(r"(?<![\d.])%s(?![\d.])" % re.escape(other), issue_text)
+                ]
+                for other in mentioned[:3]:
+                    propagated.append(
+                        {
+                            "node_id": other,
+                            "severity": item["severity"],
+                            "where": item["where"] or "本章",
+                            "issue": "（同源跨章意见，主章 %s）%s"
+                            % (item["node_id"], issue_text)[:500],
+                        }
+                    )
+            findings.extend(propagated)
+        except Exception:
+            logger.exception("bid-wizard finding propagation failed: task=%s", self.task_id)
 
         # ② 修订（Revise）：仅 high/medium 触发、按大纲序、一轮封顶；low 只进报告
         actionable = [
@@ -2881,6 +3079,20 @@ class BidWizardReviewAgent:
             )
         ][:REVIEW_MAX_REVISIONS]
         self._publish("phase", {"phase": "revising", "section_total": len(actionable)})
+        # 全稿口径基准：跨章 high 发现注入每个修订调用——口径/指标/承诺类问题跨章可见，
+        # 修订代理才能按同一结论对齐（2026-10-24 质量轮：验收指标四章分裂、在线算力三套说法）；
+        # 固定首行=口径呈现基准（第 3 轮质量轮：1.4 口径声明与 1.2 口径定义分裂为裸（请补充））
+        global_findings_text = (
+            "全稿口径呈现基准：confirm 态条目一律写「本项目建设内容（具体规则需求确认阶段固化）」"
+            "并保留交付时限锚点；口径声明/对照表内不以裸「（请补充）」作为口径值，"
+            "素材无实际编号时用功能名标注。\n"
+            + "\n".join(
+                "- [%s] %s %s：%s"
+                % (item["severity"], item["node_id"], item["where"] or "", item["issue"])
+                for item in findings
+                if item["severity"] == "high"
+            )
+        )[:4_200] or "（无）"
         revised_map: dict[str, dict[str, Any]] = {}
         for node_id in actionable:
             self._check_cancel()
@@ -2904,6 +3116,9 @@ class BidWizardReviewAgent:
                         score_items_for_node(spec, node, scoring_items)
                     ),
                     fig_mode=fig_mode,
+                    global_findings_text=global_findings_text,
+                    rejection_items_text=rejections_text,
+                    tender_text=tender_text,
                 )
             except BidWizardCancelled:
                 raise
@@ -2945,7 +3160,11 @@ class BidWizardReviewAgent:
             "word_count": sum(int(item.get("word_count") or 0) for item in final_sections),
         }
         try:
-            summary["doc_checks"] = draft_checks(final_sections, style_card=style_card)
+            summary["doc_checks"] = draft_checks(
+                final_sections,
+                style_card=style_card,
+                outline_ids={str(item.get("node_id") or "") for item in spec},
+            )
         except Exception:
             logger.exception("bid-wizard review draft_checks failed: task=%s", self.task_id)
         try:

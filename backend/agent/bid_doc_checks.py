@@ -202,7 +202,225 @@ def strip_leading_title_headings(body: str, title: str) -> str:
     return "\n".join(lines[index:]).lstrip("\n")
 
 
-def draft_checks(sections: list[dict], style_card: dict | None = None) -> list[dict[str, str]]:
+# 跨章口径组合告警（2026-10-24 质量轮：在线算力/数据出内网在成稿里三套说法并存，
+# 直触★保密义务与验收承诺）：同一主题的「开放类」与「受限类」表述分别落在不同章节时
+# 报全稿级 error。开放类词必须自带「在线/算力」语境（第 2 轮质量轮教训：裸「自动降级」
+# 把进度推送通道降级误归因在线算力口径）；ruling=检出冲突后下发给涉事章节的裁决口径
+# （保守方向可兑现：默认关闭+书面授权，降级只作为授权后的应对手段描述）。
+_STANCE_TOPIC_PATTERNS = (
+    {
+        "topic": "在线模型通道与数据出内网",
+        "open": (
+            "降级至在线", "降级到在线", "降级调用在线", "先以在线算力", "在线算力承接",
+            "以在线算力补充", "在线算力为补充",
+        ),
+        "restricted": ("默认关闭", "不将业务数据外发", "不外发", "不出内网", "书面授权"),
+        "ruling": (
+            "在线模型通道默认关闭，不自动降级启用；确需启用须先取得采购人书面授权、"
+            "经数据脱敏与出口白名单，启用与降级动作在管理端留痕可查；未经授权业务数据不出采购人内网。"
+            "本地算力不足时的应对写为「经授权后可启用在线通道补充」，不写自动降级。"
+        ),
+    },
+)
+
+
+# 开放类命中的否定式豁免（2026-10-24 终审：2.5「不自动降级至在线服务」被「降级至在线」
+# 子串命中，把受限派标准表述误判成开放派）——命中点前 8 字符内出现否定词即不算开放口径。
+# 「不足/不但/不仅…」是否定词的常见假朋友（"本地算力不足时降级"恰是开放口径），
+# 用负向先行排除。宁漏勿误：漏检的真开放表述由审读轮兜底，误报会卡死全稿门禁。
+_STANCE_NEGATION_PREFIX_RE = re.compile(
+    r"(?:避免|防止|绝不|不得|不(?!足|但|仅|过|断|乏|论|管)|非|未|无|禁|勿|莫)[^。；;,\n]{0,8}$"
+)
+
+
+def _has_open_stance_hit(content: str, patterns: tuple[str, ...]) -> bool:
+    for pattern in patterns:
+        idx = content.find(pattern)
+        while idx != -1:
+            prefix = content[max(0, idx - 8):idx]
+            if not _STANCE_NEGATION_PREFIX_RE.search(prefix):
+                return True
+            idx = content.find(pattern, idx + 1)
+    return False
+
+
+def stance_conflict_targets(sections: list[dict]) -> list[dict]:
+    """检出冲突的主题组：[{topic, ruling, open_nodes, restricted_nodes}]。
+
+    开放类/受限类分别命中不同章节才算冲突（同一章内两类并存多为「默认关闭＋授权后
+    可启用」的自洽限定）；供审读-修订链路把裁决口径定向下发给涉事章节。
+    """
+    targets: list[dict] = []
+    for group in _STANCE_TOPIC_PATTERNS:
+        open_nodes: set[str] = set()
+        restricted_nodes: set[str] = set()
+        for section in sections:
+            content = str(section.get("content") or "")
+            if not content.strip():
+                continue
+            if _has_open_stance_hit(content, group["open"]):
+                open_nodes.add(str(section.get("node_id") or ""))
+            if any(pattern in content for pattern in group["restricted"]):
+                restricted_nodes.add(str(section.get("node_id") or ""))
+        if (
+            open_nodes
+            and restricted_nodes
+            and (open_nodes - restricted_nodes or restricted_nodes - open_nodes)
+        ):
+            targets.append(
+                {
+                    "topic": group["topic"],
+                    "ruling": str(group.get("ruling") or ""),
+                    "open_nodes": open_nodes,
+                    "restricted_nodes": restricted_nodes,
+                }
+            )
+    return targets
+
+
+def _stance_conflict_issues(sections: list[dict]) -> list[dict[str, str]]:
+    """跨章口径组合：开放类/受限类分别命中不同章节 → 一条全稿级 error。"""
+    issues: list[dict[str, str]] = []
+    for target in stance_conflict_targets(sections):
+        issues.append({
+            "severity": "error", "node_id": "", "type": "stance_conflict",
+            "detail": "「%s」口径跨章并存两种说法（自动/降级使用在线算力：%s｜默认关闭/须授权不外发：%s）"
+                      "——直触保密义务与验收承诺，须全稿统一为一种口径" % (
+                target["topic"],
+                "、".join(sorted(target["open_nodes"]))[:80],
+                "、".join(sorted(target["restricted_nodes"]))[:80],
+            ),
+        })
+    return issues
+
+
+# 章节引用形态（精度优先、宁漏勿误）：显式「第X.Y…节」「详见/参见/见X.Y…」「章节X.Y…」，
+# 以及「对应章节」表格列内的编号（★条款响应总表类表格的引用列）。「见X.Y」后紧跟「条」
+# 的是招标条款号（如「见 1.2.3 条」）不是大纲引用，排除；(?![\d.]) 防编号被回溯截短
+# （「见 1.2.3 条」排除整段失败时引擎会退而匹配「1.2」，第 2 轮质量轮实测）。
+_OUTLINE_REF_PATTERNS = (
+    re.compile(r"第\s*(\d{1,2}(?:\.\d{1,2})+)\s*节"),
+    re.compile(r"(?:详见|参见|见)\s*(\d{1,2}(?:\.\d{1,2})+)(?![\d.])(?!\s*条)"),
+    re.compile(r"章节\s*(\d{1,2}(?:\.\d{1,2})+)"),
+)
+_OUTLINE_REF_TOKEN_RE = re.compile(r"\d{1,2}(?:\.\d{1,2})+")
+_TABLE_ROW_RE = re.compile(r"^\s*\|")
+
+
+def _table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _outline_ref_issues(sections: list[dict], outline_ids: set[str]) -> list[dict[str, str]]:
+    """显式引用的大纲编号必须命中大纲集合（或存在以其为编号前缀的节点）。
+
+    「对应章节」表格只收该列单元格内的编号——同表其他列（如「条款编号」列的 ★1.2.3
+    招标条款号）不是大纲引用，全行收集会误报（第 2 轮质量轮：1.2.3/1.2.4/1.2.7/4.3.1）。
+    """
+    issues: list[dict[str, str]] = []
+    for section in sections:
+        content = str(section.get("content") or "")
+        if not content.strip():
+            continue
+        refs: list[str] = []
+        in_ref_table = False
+        ref_col = -1
+        for line in content.split("\n"):
+            if "对应章节" in line and _TABLE_ROW_RE.match(line):
+                in_ref_table = True
+                cells = _table_cells(line)
+                ref_col = next(
+                    (idx for idx, cell in enumerate(cells) if "对应章节" in cell), -1
+                )
+                continue  # 表头行本身不收编号
+            if in_ref_table:
+                if _TABLE_ROW_RE.match(line):
+                    cells = _table_cells(line)
+                    if 0 <= ref_col < len(cells):
+                        refs.extend(_OUTLINE_REF_TOKEN_RE.findall(cells[ref_col]))
+                else:
+                    in_ref_table = False
+            refs.extend(
+                match.group(1) for pattern in _OUTLINE_REF_PATTERNS for match in pattern.finditer(line)
+            )
+        invalid = sorted({
+            ref
+            for ref in refs
+            if ref not in outline_ids and not any(node_id.startswith(ref + ".") for node_id in outline_ids)
+        })
+        if invalid:
+            issues.append({
+                "severity": "error", "node_id": str(section.get("node_id") or ""),
+                "type": "invalid_outline_ref",
+                "detail": "正文引用了大纲中不存在的大纲编号 %s——核对指向实际存在的章节（编号须与大纲一致）"
+                          % "、".join(invalid)[:60],
+            })
+    return issues
+
+
+# 图表内占位（第 2 轮质量轮：2.2.3 架构图节点标签与部署表 7 处「请补充」审读点名未修）：
+# mermaid 图节点/表格单元格内的占位直接以"未完成方案"观感交付给评标专家，error 级驱动修订
+# ——能确定建议值的写建议值（如 GPU 显存/型号参考），确属待投标人补充的移出图表放正文占位。
+_CHART_PLACEHOLDER_TOKEN = "请补充"
+
+
+def chart_placeholder_issues(sections: list[dict]) -> list[dict[str, str]]:
+    """图表内占位（公开供审读-修订链路把 error 转为定向修订 finding，第 3 轮质量轮）。"""
+    issues: list[dict[str, str]] = []
+    for section in sections:
+        content = str(section.get("content") or "")
+        if _CHART_PLACEHOLDER_TOKEN not in content:
+            continue
+        hits = 0
+        in_fence = False
+        for line in content.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if (in_fence or _TABLE_ROW_RE.match(line)) and _CHART_PLACEHOLDER_TOKEN in line:
+                hits += line.count(_CHART_PLACEHOLDER_TOKEN)
+        if hits:
+            issues.append({
+                "severity": "error", "node_id": str(section.get("node_id") or ""),
+                "type": "chart_placeholder",
+                "detail": "图表（mermaid 节点标签/表格单元格）内出现「请补充」×%d——图表占位交付"
+                          "观感为方案未完成：能确定建议值的写建议值（可注明按采购人环境调整），"
+                          "确属待投标人补充的移出图表、在正文占位" % hits,
+            })
+    return issues
+
+
+# 无出处产能数据（第 3 轮质量轮：1.1「4 个工作日内形成 301 页正文、215 个标题、232 张表格、
+# 40 幅插图、14 万字以上」三轮审读结论摇摆后回归——沉淀为永久机检；warning 级人工确认，
+# 素材里真实存在的业绩数字由人分辨，机检只兜「N 个工作日 + N 页/表/字」自证句式）。
+_UNSOURCED_METRICS_RE = re.compile(
+    r"[^\n。；！？]{0,40}\d+\s*个?工作日[^\n。；！？]{0,60}\d{2,6}\s*(?:页|万字|字以上|张表格|张表|幅插图|个标题)"
+)
+
+
+def _unsourced_metrics_issues(sections: list[dict]) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    for section in sections:
+        content = str(section.get("content") or "")
+        if not content:
+            continue
+        hits = _UNSOURCED_METRICS_RE.findall(content)
+        if hits:
+            issues.append({
+                "severity": "warning", "node_id": str(section.get("node_id") or ""),
+                "type": "unsourced_metrics",
+                "detail": "发现「N 个工作日产出 N 页/表/字」式产能数据 %d 处——无素材出处的自证数字"
+                          "无法举证又易被质疑夸大，确认素材可佐证或删除（措辞铁律⑥）" % len(hits),
+            })
+    return issues
+
+
+def draft_checks(
+    sections: list[dict],
+    style_card: dict | None = None,
+    outline_ids: set[str] | None = None,
+) -> list[dict[str, str]]:
     """wizard 撰写完成期全稿机检（逐章 md 已含各自标题行）。
 
     sections 每项：{node_id, title, content, word_count?, article_count?, text_count?}
@@ -217,7 +435,16 @@ def draft_checks(sections: list[dict], style_card: dict | None = None) -> list[d
     ② 叶子节篇幅达标（实际字数 < 规划 article_count×text_count × 0.5 告警，
        > 2.0 提示超稿——篇幅与费用防护）；
     ③ 章节正文缺失/为空（content 空或过短）；
-    ④ AI 输出痕迹（思考/解释写法/对话语气，2026-10-24 用户反馈——高置信短语、warning 级）。
+    ④ AI 输出痕迹（思考/解释写法/对话语气，2026-10-24 用户反馈——高置信短语、warning 级）
+    + 全稿级检查（2026-10-24 质量轮）——
+    ⑤ 跨章口径组合（在线模型通道/数据出内网等主题的开放类与受限类表述分布在不同章，
+       error——直触保密与验收承诺）；
+    ⑥ 大纲引用有效性（outline_ids 传入时启用：显式「第X.Y节/详见X.Y」及「对应章节」表格列
+       中的编号须命中大纲 node_id 集合，未命中 error——评标核查入口不能指向不存在的章节）；
+    ⑦ 图表内占位（mermaid 节点标签/表格单元格内的「请补充」，error——图表占位交付观感
+       为方案未完成）；
+    ⑧ 无出处产能数据（「N 个工作日产出 N 页/表/字」式自证句式，warning 人工确认——
+       第 3 轮质量轮：同类问题三轮审读结论摇摆后回归，沉淀为永久规则）。
     """
     issues: list[dict[str, str]] = []
     valid = [s for s in sections if isinstance(s, dict) and str(s.get("node_id") or "")]
@@ -300,5 +527,16 @@ def draft_checks(sections: list[dict], style_card: dict | None = None) -> list[d
                      "detail": "「%s」约 %d 字，达规划篇幅（约 %d 字）的 %d%%——确认表格与展开是否必要，超稿同步推高篇幅与费用" % (
                          title[:40], actual, planned, int(actual * 100 / planned))}
                 )
+
+    # ⑤ 跨章口径组合（全稿级）；⑥ 大纲引用有效性（传 outline_ids 才启用，引用未生成
+    # 章节的合法引用靠调用方传全量 spec node_id 区分）；⑦ 图表内占位（第 2 轮质量轮）；
+    # ⑧ 无出处产能数据（第 3 轮质量轮）
+    issues.extend(_stance_conflict_issues(valid))
+    if outline_ids is not None:
+        ids = {str(item) for item in outline_ids if str(item)}
+        if ids:
+            issues.extend(_outline_ref_issues(valid, ids))
+    issues.extend(chart_placeholder_issues(valid))
+    issues.extend(_unsourced_metrics_issues(valid))
 
     return issues[:_DRAFT_MAX_ISSUES]
