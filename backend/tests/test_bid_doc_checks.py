@@ -308,3 +308,52 @@ def test_draft_checks_passes_style_card_through():
     # 不传口径卡：禁词检查不生效、称谓回到硬编码对
     legacy_types = {i["type"] for i in draft_checks(sections)}
     assert "forbidden_word" not in legacy_types
+
+
+# ---------------------------------------------------------------- AI 输出痕迹（2026-10-24）
+
+def test_ai_flavor_markers_flagged_per_section():
+    from backend.agent.bid_doc_checks import draft_checks
+
+    sections = [
+        {
+            "node_id": "1",
+            "title": "总体方案",
+            "word_count": 800,
+            "content": (
+                "好的，以下是本项目总体方案的介绍。首先，我们来看系统架构。\n\n"
+                "本系统采用微服务架构，服务可用性不低于 99.9%，具体部署安排见下表。"
+            ),
+        }
+    ]
+    issues = draft_checks(sections)
+    flavors = [i for i in issues if i["type"] == "ai_flavor"]
+    markers = {i["detail"].split("「")[1].split("」")[0] for i in flavors}
+    # 对话开头/写作说明均命中；每个短语一条、按章定位
+    assert {"好的，", "以下是"} <= markers
+    assert all(i["severity"] == "warning" and i["node_id"] == "1" for i in flavors)
+    # 全稿级（node_id 空）不应重复报 ai_flavor（draft 逐章定位，拼合层跳过）
+    assert not [i for i in flavors if not i["node_id"]]
+
+
+def test_ai_flavor_clean_bid_text_zero_hits():
+    from backend.agent.bid_doc_checks import assemble_checks, draft_checks
+
+    clean = (
+        "## 1 总体方案\n\n"
+        "本系统采用微服务架构部署，服务可用性不低于 99.9%。我司承诺中标后 30 日内完成部署。\n\n"
+        "具体设备配置参数如下表所示：\n\n| 组件 | 规格 | 数量 |\n| --- | --- | --- |\n| 应用服务器 | 32C128G | 2 |\n"
+    )
+    assert assemble_checks(clean) == []
+    sections = [{"node_id": "1", "title": "总体方案", "word_count": 800, "content": clean}]
+    assert [i for i in draft_checks(sections) if i["type"] == "ai_flavor"] == []
+
+
+def test_ai_flavor_assemble_global_for_v1_path():
+    from backend.agent.bid_doc_checks import assemble_checks
+
+    md = "## 1 方案\n\n综上所述，本方案能够满足招标要求。作为AI，我无法提供真实业绩。"
+    types = [i["type"] for i in assemble_checks(md)]
+    assert "ai_flavor" in types
+    details = " ".join(i["detail"] for i in assemble_checks(md) if i["type"] == "ai_flavor")
+    assert "综上所述" in details and "作为AI" in details

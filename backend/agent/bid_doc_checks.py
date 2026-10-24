@@ -19,6 +19,21 @@ _SYNONYM_PAIRS = (("我司", "我公司"),)
 # 其余变体与统一称谓（或变体彼此）在同一份标书内并现即告警
 _SELF_REFERENCE_VARIANTS = ("我司", "我公司", "我方", "本公司")
 
+# AI 输出痕迹（2026-10-24 用户反馈：思考过程/解释写法/对话语气不应出现在正文）——
+# 高置信短语层报警，宁漏勿误：只收几乎必为 AI 痕迹的表述，"我们"等单词级不查
+# （素材引用会误伤）；"综上所述/总而言之"等模板腔与措辞铁律双保险。warning 级只提示。
+_AI_FLAVOR_MARKERS = (
+    "作为AI", "作为人工智能", "作为语言模型", "AI助手",
+    "好的，", "以下是", "接下来我们", "让我们", "我来为您", "我们将为您",
+    "希望以上", "对您有所帮助", "本章将介绍", "本节将介绍", "下面我们从",
+    "综上所述", "总而言之", "众所周知", "毋庸置疑", "我们相信",
+)
+
+
+def _ai_flavor_marker_hits(text: str) -> list[tuple[str, int]]:
+    """命中的 AI 痕迹短语与次数（每个短语一条，避免同类刷屏）。"""
+    return [(marker, text.count(marker)) for marker in _AI_FLAVOR_MARKERS if marker in text]
+
 
 def _style_card_consistency_issues(joined: str, style_card: dict | None) -> list[dict[str, str]]:
     """口径卡驱动的术语/禁词检查（23 号 O4）：统一称谓混用 + 禁用词出现。
@@ -117,6 +132,13 @@ def assemble_checks(
                     "detail": "「%s」(%d 次) 与「%s」(%d 次) 混用，建议统一口径" % (a, ca, b, cb),
                 })
 
+    # 6) AI 输出痕迹：思考/解释写法/对话语气（wizard draft_checks 会逐章定位并跳过此处，避免重复）
+    for marker, cnt in _ai_flavor_marker_hits(joined):
+        issues.append({
+            "type": "ai_flavor",
+            "detail": "发现 AI 输出痕迹「%s」× %d——思考/解释写法/对话语气不应出现在投标正文" % (marker, cnt),
+        })
+
     if skip_types:
         issues = [issue for issue in issues if issue["type"] not in skip_types]
     return issues[:_MAX_ISSUES]
@@ -188,12 +210,14 @@ def draft_checks(sections: list[dict], style_card: dict | None = None) -> list[d
 
     style_card（23 号 O4）：口径卡驱动的统一称谓/禁用词检查（不传=硬编码同义对，兼容存量）。
 
-    覆盖：既有五项全稿检查（拼合后复用 assemble_checks，empty_section 在封顶前跳过——
-    父章导语与「标题行后紧跟小节标题」的拼接模式都会触发空章节假阳性）+ 逐章检查——
+    覆盖：既有五项全稿检查（拼合后复用 assemble_checks，empty_section 与 ai_flavor 在封顶前
+    跳过——前者父章导语/「标题行后紧跟小节标题」的拼接模式会假阳性，后者逐章定位更可操作）
+    + 逐章检查——
     ① 章内成对重复（2026-10-22 生产工单类型：父章正文里出现与直属子节同名的标题行）；
     ② 叶子节篇幅达标（实际字数 < 规划 article_count×text_count × 0.5 告警，
        > 2.0 提示超稿——篇幅与费用防护）；
-    ③ 章节正文缺失/为空（content 空或过短）。
+    ③ 章节正文缺失/为空（content 空或过短）；
+    ④ AI 输出痕迹（思考/解释写法/对话语气，2026-10-24 用户反馈——高置信短语、warning 级）。
     """
     issues: list[dict[str, str]] = []
     valid = [s for s in sections if isinstance(s, dict) and str(s.get("node_id") or "")]
@@ -204,7 +228,10 @@ def draft_checks(sections: list[dict], style_card: dict | None = None) -> list[d
     # 空章节检查换成本模块逐节口径：父章与直属子节同批时只写导语（合法地短）、
     # 拼接标题后紧跟正文小节标题也合法——empty_section 让 assemble_checks 在封顶前跳过，
     # 防止 40+ 条噪音占满配额挤掉真问题；同等问题由下方 missing_content + short/overlong 覆盖。
-    for base in assemble_checks(joined, skip_types=("empty_section",), style_card=style_card):
+    # ai_flavor 同理跳过拼合层（下方逐章定位更可操作，避免同一条痕既报全稿又报章节）
+    for base in assemble_checks(
+        joined, skip_types=("empty_section", "ai_flavor"), style_card=style_card
+    ):
         issues.append(
             {"severity": "warning", "node_id": "", "type": base["type"], "detail": base["detail"]}
         )
@@ -244,6 +271,13 @@ def draft_checks(sections: list[dict], style_card: dict | None = None) -> list[d
                         {"severity": "error", "node_id": node_id, "type": "paired_duplication",
                          "detail": "父章正文出现与直属子节同名的标题行「%s」——同主题疑似写了两遍，建议重生成本章" % heading_text[:40]}
                     )
+
+        # ④ AI 输出痕迹逐章定位（思考/解释写法/对话语气）——warning 只提示，按短语去重不刷屏
+        for marker, cnt in _ai_flavor_marker_hits(content):
+            issues.append(
+                {"severity": "warning", "node_id": node_id, "type": "ai_flavor",
+                 "detail": "「%s」出现 %d 次——思考/解释写法/对话式 AI 痕迹，建议删除或改为陈述句" % (marker, cnt)}
+            )
 
         # ② 叶子节篇幅达标
         is_leaf = not any(

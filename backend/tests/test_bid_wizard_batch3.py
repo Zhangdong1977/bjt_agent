@@ -605,3 +605,23 @@ def test_review_findings_criteria_mention_ai_flavor():
     from backend.agent.bid_wizard_agent import REVIEW_FINDINGS_USER_TEMPLATE
 
     assert "AI 味" in REVIEW_FINDINGS_USER_TEMPLATE
+
+
+def test_wording_rules_ban_thinking_and_dialogue():
+    """铁律⑤（2026-10-24 追加）：思考过程/写作说明/对话语气/AI 身份四类痕迹明确点名。"""
+    from backend.agent.bid_wizard_agent import (
+        REVIEW_FINDINGS_USER_TEMPLATE,
+        _WIZARD_CHAPTER_INTRO_SYSTEM_PROMPT,
+        _WIZARD_WORDING_RULES,
+        section_system_prompt,
+    )
+
+    for prompt in (
+        _WIZARD_WORDING_RULES,
+        section_system_prompt(charts_enabled=True),
+        section_system_prompt(charts_enabled=True, fig_mode="bidfig"),
+    ):
+        assert "思考" in prompt and "对话" in prompt and "作为AI" in prompt
+        assert "本章将介绍" in prompt and "好的，" in prompt
+    assert "对话" in _WIZARD_CHAPTER_INTRO_SYSTEM_PROMPT
+    assert "对话语气" in REVIEW_FINDINGS_USER_TEMPLATE
