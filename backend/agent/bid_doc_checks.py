@@ -611,6 +611,94 @@ def renumber_captions(sections: list[dict]) -> tuple[list[dict], dict[str, Any]]
     return ordered, stats
 
 
+# ---- 图题唯一权威（2026-10-25 复盘：成稿图题「图 2-1-1 图2-1 …」双编号）----
+# bidfig JSON 的 title 由 LLM 填写、常自带「图X-Y」编号；前端写入 Word 时按节号再拼
+# 系统编号，两者叠加成双编号。编号唯一权威在系统侧：title 一律剥号，按章内出现顺序
+# 补「图X-Y 题文」占位号（最终号随 renumber_captions 与表格、正文引用一并确定性重排）；
+# 围栏邻位的冗余手写题注行删除（成稿题注=图内 <title> 渲染，保留会双出）。
+_BIDFIG_FENCE_BLOCK_RE = re.compile(r"(```bidfig[ \t]*\n)(.*?)(\n```)", re.S)
+_BIDFIG_TITLE_FIELD_RE = re.compile(r'("title"\s*:\s*")([^"]*)(")')
+_FIGURE_NUM_PREFIX_RE = re.compile(
+    r"^\s*[图表]\s?\d{1,2}(?:\s*[－—–.\uff0e-]\s*\d{1,3}){1,2}\s*[\u3000 ]*"
+)
+_STRAY_FIGURE_CAPTION_RE = re.compile(
+    r"^\s*图\s?\d{1,2}(?:\s*[－—–.\uff0e-]\s*\d{1,3}){1,2}(?!\d)\s*\S"
+)
+
+
+def _strip_figure_number(title: str) -> tuple[str, bool]:
+    m = _FIGURE_NUM_PREFIX_RE.match(title)
+    if not m:
+        return title, False
+    return title[m.end():].lstrip("\u3000 "), True
+
+
+def normalize_figure_captions(sections: list[dict]) -> tuple[list[dict], dict[str, Any]]:
+    """bidfig 图题归一：剥 title 自带编号 → 按章内出现顺序补占位号 → 删围栏邻位
+    冗余图题注行。占位号交给随后的 renumber_captions 终排（图/表/题注/引用同一次
+    遍历收口）。返回 (新 sections, stats)。"""
+    stats: dict[str, Any] = {"titles": 0, "stripped": 0, "removed_lines": 0, "changed_nodes": []}
+    out: list[dict] = []
+    counters: dict[str, int] = {}
+    for section in sections:
+        node_id = str(section.get("node_id") or "")
+        content = str(section.get("content") or "")
+        chapter = node_id.split(".")[0] or "1"
+        changed = False
+
+        def _retitle(match: re.Match) -> str:
+            counters[chapter] = counters.get(chapter, 0) + 1
+            stats["titles"] += 1
+
+            def _fix_title(inner: re.Match) -> str:
+                title, stripped = _strip_figure_number(inner.group(2))
+                if stripped:
+                    stats["stripped"] += 1
+                return "%s图%s-%d %s%s" % (
+                    inner.group(1), chapter, counters[chapter], title.strip(), inner.group(3)
+                )
+
+            return match.group(1) + _BIDFIG_TITLE_FIELD_RE.sub(_fix_title, match.group(2)) + match.group(3)
+
+        new_content = _BIDFIG_FENCE_BLOCK_RE.sub(_retitle, content)
+        if new_content != content:
+            changed = True
+        # 围栏开栏前 2 行/闭栏后 2 行内手写的「图X-Y …」题注行＝冗余（成稿题注由图内
+        # title 渲染）——真实成稿 10.2 即此形态，双题注其一必须删除
+        lines = new_content.split("\n")
+        fence_ranges: list[tuple[int, int]] = []
+        i = 0
+        while i < len(lines):
+            if lines[i].strip().lower().startswith("```bidfig"):
+                j = i + 1
+                while j < len(lines) and not lines[j].strip().startswith("```"):
+                    j += 1
+                fence_ranges.append((i, min(j, len(lines) - 1)))
+                i = j + 1
+            else:
+                i += 1
+        drop: set[int] = set()
+        for open_i, close_i in fence_ranges:
+            for k in list(range(max(0, open_i - 2), open_i)) + list(
+                range(close_i + 1, min(len(lines), close_i + 3))
+            ):
+                if _STRAY_FIGURE_CAPTION_RE.match(lines[k]):
+                    drop.add(k)
+        if drop:
+            stats["removed_lines"] += len(drop)
+            changed = True
+            lines = [ln for k, ln in enumerate(lines) if k not in drop]
+            new_content = "\n".join(lines)
+        if changed:
+            stats["changed_nodes"].append(node_id)
+            item = dict(section)
+            item["content"] = new_content
+            out.append(item)
+        else:
+            out.append(section)
+    return out, stats
+
+
 # 无出处产能数据（第 3 轮质量轮：1.1「4 个工作日内形成 301 页正文、215 个标题、232 张表格、
 # 40 幅插图、14 万字以上」三轮审读结论摇摆后回归——沉淀为永久机检；warning 级人工确认，
 # 素材里真实存在的业绩数字由人分辨，机检只兜「N 个工作日 + N 页/表/字」自证句式）。

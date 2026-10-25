@@ -118,6 +118,39 @@ async def test_auto_fix_stance_conflict_sends_ruling_to_all_affected(agent_facto
         assert call["global"]  # 裁决同步注入全稿口径基准
 
 
+async def test_auto_fix_final_renumber_after_llm_revision(agent_factory):
+    """2026-10-25 复盘：LLM 修订随手重排题注（修订章表1-2 变表1-5）——收尾终态重排
+    必须归一并按原路径回写落盘，保证「机检通过的=写入 Word 的」。"""
+    defective = (
+        "# 1.2 部署方案\n\n表1-2 部署清单\n\n| GPU 型号 | （请补充） |\n| --- | --- |\n| 卡 | A10 |"
+    )
+
+    def revise(node_id, current, findings):
+        # 修掉占位符的同时把题注编号改乱（真实复盘形态：压缩修订随手重排编号）
+        return defective.replace("（请补充）", "A10").replace("表1-2", "表1-5")
+
+    agent, calls = agent_factory(revise)
+    sections = [
+        _section("1", "总体方案", "# 总体方案\n\n导语。"),
+        _section("1.1", "架构设计", "# 1.1 架构设计\n\n表1-1 架构清单\n\n|a|\n|-|\n|1|"),
+        _section("1.2", "部署方案", defective),
+    ]
+
+    final, checks, info = await agent.auto_fix_machine_errors(
+        spec=_spec(), requirements=None, analysis=None, sections=sections
+    )
+
+    assert [c["node_id"] for c in calls] == ["1.2"]
+    assert info["remaining_errors"] == 0
+    by_id = {s["node_id"]: s["content"] for s in final}
+    assert "表1-2 部署清单" in by_id["1.2"]  # 终态重排把表1-5 归一回章内顺序 1-2
+    assert "表1-5" not in by_id["1.2"]
+    assert info["renumbered_captions"] >= 1
+    # 落盘=机检态：文件按章节原路径回写（测试桩无 DB，session 异常不阻断文件写入）
+    persisted = agent.workspace_dir.joinpath("sections", "1.2.md").read_text(encoding="utf-8")
+    assert "表1-2 部署清单" in persisted and "表1-5" not in persisted
+
+
 async def test_auto_fix_stops_at_round_cap(agent_factory):
     """修订不收敛时按轮次上限停止，如实报告残留（前端给重生成指引）。"""
     defective = "# 1.1 架构设计\n\n| GPU 型号 | （请补充） |\n| --- | --- |"

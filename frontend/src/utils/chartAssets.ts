@@ -322,6 +322,9 @@ async function composeGanttHeader(chartDataUrl: string, title: string): Promise<
   return canvas.toDataURL("image/png");
 }
 
+/** 后端终态重排写入 <title> 的规范编号（图2-1 / 图 10-2-1，容忍空格/全角连字符）。 */
+const NUMBERED_TITLE_RE = /^\s*[图表]\s?\d{1,2}(?:\s*[-－—–.．]\s*\d{1,3}){1,2}\s/;
+
 /**
  * 写入 Word 前的图表预处理：渲染全部 mermaid 块并替换为图片引用。
  * 渲染失败的块保持 ```mermaid 原样（插件按代码块文本降级插入），不阻断写入。
@@ -369,7 +372,14 @@ export async function prepareChartAssets(
     figureNo += 1;
     const key = `bjt-chart://${figureNo}`;
     images[key] = dataUrl;
-    const caption = title ? `图 ${captionNo(figureNo)} ${title}` : `图 ${captionNo(figureNo)}`;
+    // 题注编号唯一权威在后端（图X-Y 已随终态重排写进 SVG <title>）：title 带规范编号时
+    // 直接使用，避免与节号前缀叠加成「图 2-1-1 图2-1 …」双编号（2026-10-25 复盘）；
+    // 存量内容 title 无编号时沿用节号前缀兜底
+    const caption = title
+      ? NUMBERED_TITLE_RE.test(title)
+        ? title.trim()
+        : `图 ${captionNo(figureNo)} ${title}`
+      : `图 ${captionNo(figureNo)}`;
     parts.push(`![${caption}](${key})`);
   }
   return { content: parts.join("\n"), images, figureCount: figureNo, failedCount: failed };

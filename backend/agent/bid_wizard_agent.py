@@ -50,6 +50,7 @@ from backend.agent.bid_draft_agent import (
 from backend.agent.bid_doc_checks import (
     chart_placeholder_issues,
     draft_checks,
+    normalize_figure_captions,
     renumber_captions,
     stance_conflict_targets,
     strip_leading_title_headings,
@@ -2797,6 +2798,10 @@ REVIEW_REVISE_SYSTEM_PROMPT = (
     "删除（请补充）占位说明时必须保留对应三态口径措辞（本项目建设内容/需求确认阶段固化），宁可留占位不可虚构已实现。"
     "审读意见与招标要求原文或编写需求冲突时，以后者为准：不得执行把招标明文工期/承诺数值"
     "降格为「我方建议值/以双方确认为准」的意见，该类意见按招标原文取值改回正面承诺。"
+    # 2026-10-25 复盘：修订（含超稿压缩）会随手重排题注编号——修订章表1-5 与未修订章
+    # 表3-3 撞号、表1-2..1-4 凭空消失；编号唯一权威在系统侧确定性重排
+    "图表题注编号（图X-Y/表X-Y）与正文「见图/见表」引用保持原样对应：不得自行改排、"
+    "重新起号或增删编号（编号由系统统一编排）；压缩篇幅优先删文字，严禁删除图表、题注或其正文引用。"
     + _WIZARD_WORDING_RULES
 )
 
@@ -2992,6 +2997,10 @@ class BidWizardReviewAgent:
                     "title": str(section.title or node.get("title") or section.node_id),
                     "content": content,
                     "word_count": int(section.word_count or 0) or len(re.sub(r"\s", "", content)),
+                    # 原位信息（2026-10-25 复盘）：终态编号重排须按章节原任务/原路径回写，
+                    # 否则审读任务的合并视角改不到撰写任务文件，机检态≠写入态
+                    "content_path": str(section.content_path or ""),
+                    "task_id": str(section.task_id or ""),
                 }
             )
         return chapters
@@ -3129,7 +3138,109 @@ class BidWizardReviewAgent:
             "content": content,
             "article_count": int(node.get("article_count") or 2),
             "text_count": int(node.get("text_count") or 400),
+            # 原位信息：终态编号重排按此回写（见 _persist_section_content）
+            "content_path": str(section_path),
+            "task_id": self.task_id,
         }
+
+    async def _persist_section_content(self, item: dict[str, Any], content: str) -> None:
+        """按章节原位置回写：跨任务章写回其原任务文件与行（读取口径「最新任务先到
+        先得」不变）；无原路径时落本任务 sections/ 并确保行存在。只刷新 word_count——
+        written 是页面写入 Word 的回报状态，编号重排不得打回 generated。"""
+        node_id = str(item.get("node_id") or "")
+        if not node_id:
+            return
+        word_count = len(re.sub(r"\s", "", content))
+        target: Path | None = None
+        src = str(item.get("content_path") or "")
+        if src:
+            candidate = Path(src)
+            if not candidate.is_absolute():
+                from backend.config import get_settings
+
+                candidate = Path(get_settings().workspace_path) / candidate
+            if candidate.parent.exists():
+                target = candidate
+        if target is None:
+            target = self.workspace_dir / "sections" / f"{_safe_filename(node_id)}.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        owners = [str(item.get("task_id") or ""), self.task_id]
+        async with self.session_factory() as db:
+            row = None
+            for task_id in dict.fromkeys(owner for owner in owners if owner):
+                row = (
+                    await db.execute(
+                        select(BidWizardSection).where(
+                            BidWizardSection.task_id == task_id,
+                            BidWizardSection.node_id == node_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if row is not None:
+                    break
+            if row is None:
+                db.add(
+                    BidWizardSection(
+                        task_id=self.task_id,
+                        node_id=node_id[:200],
+                        title=str(item.get("title") or node_id)[:500],
+                        status="generated",
+                        content_path=str(target),
+                        word_count=word_count,
+                    )
+                )
+            else:
+                row.word_count = word_count
+                if not row.content_path:
+                    row.content_path = str(target)
+            await db.commit()
+
+    async def _renumber_and_persist(
+        self, items: list[dict[str, Any]], *, info: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """终态编号唯一权威：图题归一（剥 LLM 自带号+删围栏邻位冗余题注行+补占位号）
+        → 全稿确定性重排（每章每类 X-1..N，题注与正文引用同步）→ 改动章按原路径回写。
+        LLM 修订会随手重排编号（2026-10-25 复盘：修订章表1-5 与未修订章表3-3 撞号、
+        机检 0 error 却与成稿不符）——本步骤在修订循环前后各跑一次，机检与落盘都在
+        同一态上，保证「质检通过的=写入 Word 的」。"""
+        items, fig_stats = normalize_figure_captions(items)
+        items, renum_stats = renumber_captions(items)
+        changed = set(fig_stats.get("changed_nodes") or []) | set(renum_stats.get("changed_nodes") or [])
+        for item in items:
+            node_id = str(item.get("node_id") or "")
+            if node_id not in changed:
+                continue
+            try:
+                await self._persist_section_content(item, str(item.get("content") or ""))
+            except Exception:
+                logger.exception(
+                    "bid-wizard caption renumber persist failed: task=%s node=%s",
+                    self.task_id, node_id,
+                )
+        if changed:
+            info["renumbered_captions"] = int(info.get("renumbered_captions") or 0) + int(
+                renum_stats.get("remapped") or 0
+            )
+            merged_nodes = list(info.get("renumbered_nodes") or [])
+            for node_id in list(renum_stats.get("changed_nodes") or []) + list(
+                fig_stats.get("changed_nodes") or []
+            ):
+                if node_id not in merged_nodes:
+                    merged_nodes.append(node_id)
+            info["renumbered_nodes"] = merged_nodes
+            info["figure_titles_normalized"] = {
+                "titles": fig_stats.get("titles", 0),
+                "stripped": fig_stats.get("stripped", 0),
+                "removed_lines": fig_stats.get("removed_lines", 0),
+            }
+            logger.info(
+                "bid-wizard caption normalize+renumber: task=%s titles=%d stripped=%d "
+                "removed_lines=%d remapped=%d nodes=%d",
+                self.task_id, fig_stats.get("titles"), fig_stats.get("stripped"),
+                fig_stats.get("removed_lines"), renum_stats.get("remapped"), len(changed),
+            )
+        return items
 
     async def auto_fix_machine_errors(
         self,
@@ -3297,42 +3408,12 @@ class BidWizardReviewAgent:
             return current, checks, info
 
         # 确定性图表编号重排（零 LLM，2026-10-25 复盘：图5-1×2/表7-1×3 各节独立起号）：
-        # 每章每类按题注出现顺序编为 X-1..N，题注与引用同步替换；改动章节回写落盘
-        renumbered, renum_stats = renumber_captions(current)
-        if renum_stats.get("changed_nodes"):
-            for item in renumbered:
-                node_id = str(item.get("node_id") or "")
-                if node_id not in renum_stats["changed_nodes"]:
-                    continue
-                content = str(item.get("content") or "")
-                try:
-                    section_path = self.workspace_dir / "sections" / f"{_safe_filename(node_id)}.md"
-                    section_path.parent.mkdir(parents=True, exist_ok=True)
-                    section_path.write_text(content, encoding="utf-8")
-                    await self._set_section_status(
-                        node_id,
-                        status="generated",
-                        content_path=str(section_path),
-                        word_count=len(re.sub(r"\s", "", content)),
-                        error_message=None,
-                    )
-                except Exception:
-                    logger.exception(
-                        "bid-wizard auto-fix caption renumber persist failed: task=%s node=%s",
-                        self.task_id, node_id,
-                    )
-            current = renumbered
-            info["renumbered_captions"] = int(renum_stats.get("remapped") or 0)
-            info["renumbered_nodes"] = list(renum_stats["changed_nodes"])
-            logger.info(
-                "bid-wizard caption renumber: task=%s captions=%d remapped=%d nodes=%d ambiguous=%d",
-                self.task_id, renum_stats.get("captions"), renum_stats.get("remapped"),
-                len(renum_stats["changed_nodes"]), renum_stats.get("ambiguous"),
-            )
-            checks = _all_checks(current)
-            errors = [item for item in checks if str(item.get("severity")) == "error"]
-            overlong = _overlong_findings(current)
-            info["overlong_initial"] = len(overlong)
+        # 每章每类按题注出现顺序编为 X-1..N，题注与正文引用同步替换；改动章节按原路径回写
+        current = await self._renumber_and_persist(current, info=info)
+        checks = _all_checks(current)
+        errors = [item for item in checks if str(item.get("severity")) == "error"]
+        overlong = _overlong_findings(current)
+        info["overlong_initial"] = len(overlong)
 
         if not errors and not overlong:
             return current, checks, info
@@ -3418,6 +3499,11 @@ class BidWizardReviewAgent:
             errors = [item for item in checks if str(item.get("severity")) == "error"]
             if not errors and not _overlong_findings(current):
                 break
+        # 终态重排（2026-10-25 复盘）：循环内 LLM 修订会随手改编号/重排题注，
+        # 收尾必须再归一一次，机检以归一后的态为准——保证「质检通过的=写入 Word 的」
+        current = await self._renumber_and_persist(current, info=info)
+        checks = _all_checks(current)
+        errors = [item for item in checks if str(item.get("severity")) == "error"]
         info["remaining_errors"] = len(errors)
         info["fixed_total"] = max(0, int(info["initial_errors"]) - len(errors))
         return current, checks, info
@@ -3621,6 +3707,9 @@ class BidWizardReviewAgent:
                     "word_count": chapter["word_count"],
                     "article_count": int(node.get("article_count") or 2),
                     "text_count": int(node.get("text_count") or 400),
+                    # 未修订章来自更早任务：终态重排须写回其原任务文件（读取口径「最新任务先到先得」不变）
+                    "content_path": chapter.get("content_path") or "",
+                    "task_id": chapter.get("task_id") or "",
                 }
             )
         review_of = ""

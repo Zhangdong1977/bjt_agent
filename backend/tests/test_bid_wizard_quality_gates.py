@@ -89,6 +89,42 @@ def test_renumber_noop_when_clean_sequential():
     assert new_sections[0]["content"] == sections[0]["content"]
 
 
+def test_normalize_figure_captions_strips_renumbers_and_removes_stray():
+    """图题唯一权威（2026-10-25 复盘）：title 剥自带号+按章内顺序补号，围栏邻位冗余题注行删除。"""
+    from backend.agent.bid_doc_checks import normalize_figure_captions
+
+    sections = [
+        _section("2.1", '```bidfig\n{"kind":"flow","title":"图2-1 投标业务流程","phases":[]}\n```\n\n正文见图2-1。'),
+        _section("2.2", '```bidfig\n{"kind":"arch","title":"系统总体架构","layers":[]}\n```\n图2-9 冗余题注\n正文。'),
+    ]
+    out, stats = normalize_figure_captions(sections)
+    assert '"title":"图2-1 投标业务流程"' in out[0]["content"]  # 剥旧号后按章内顺序补回同号（净不变）
+    assert '"title":"图2-2 系统总体架构"' in out[1]["content"]  # 无号 title 补占位号
+    assert "图2-9 冗余题注" not in out[1]["content"]  # 围栏邻位冗余题注行删除
+    assert "正文见图2-1。" in out[0]["content"]  # 正文引用不动（交 renumber 收口）
+    assert stats["stripped"] == 1
+    assert stats["removed_lines"] == 1
+    assert stats["changed_nodes"] == ["2.2"]
+
+
+def test_normalize_then_renumber_restores_chapter_sequence():
+    """真实复盘形态：修订章表号改乱（表1-5）+ 图题自带跨章旧号（图9-9）——
+    归一+重排后全稿恢复章内顺序、零重号。"""
+    from backend.agent.bid_doc_checks import normalize_figure_captions
+
+    sections = [
+        _section("1.1", "表1-1 甲\n\n|a|\n|-|\n|1|"),
+        _section("1.2", '表1-5 乙\n\n|b|\n|-|\n|2|\n\n```bidfig\n{"kind":"pie","title":"图9-9 人员构成","items":[]}\n```'),
+    ]
+    out, _ = normalize_figure_captions(sections)
+    out, stats = renumber_captions(out)
+    joined = "\n".join(s["content"] for s in out)
+    assert "表1-2 乙" in joined
+    assert "图1-1 人员构成" in joined
+    assert caption_duplication_issues(out) == []
+    assert stats["remapped"] >= 1
+
+
 # ---------------------------------------------------------------- ② 规划图兑现
 
 
@@ -257,10 +293,11 @@ def agent_factory(monkeypatch, tmp_path):
 async def test_auto_fix_renumbers_and_persists(agent_factory, monkeypatch):
     persist = []
     agent = agent_factory()
-    monkeypatch.setattr(
-        agent, "_set_section_status",
-        lambda node_id, **kw: persist.append(node_id) or _noop_coro(),
-    )
+
+    async def fake_persist(item, content):
+        persist.append(str(item.get("node_id")))
+
+    monkeypatch.setattr(agent, "_persist_section_content", fake_persist)
     spec = [
         {"node_id": "5.1", "title": "接口", "level": 2, "summary": "", "article_count": 2, "text_count": 200},
         {"node_id": "5.2", "title": "单点", "level": 2, "summary": "", "article_count": 2, "text_count": 200},

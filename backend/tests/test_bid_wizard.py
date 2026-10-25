@@ -1664,6 +1664,14 @@ def test_spec_update_schema_accepts_bidfig_chart_types():
         SpecChartPlan(type="topo", title="网络拓扑")
 
 
+def test_review_revise_prompt_preserves_caption_numbers():
+    """2026-10-25 复盘：修订随手重排题注编号导致跨章撞号/跳号——prompt 层先封口。"""
+    from backend.agent.bid_wizard_agent import REVIEW_REVISE_SYSTEM_PROMPT
+
+    assert "不得自行改排" in REVIEW_REVISE_SYSTEM_PROMPT
+    assert "编号由系统统一编排" in REVIEW_REVISE_SYSTEM_PROMPT
+
+
 def test_build_generation_constraints_text_variants():
     from backend.agent.bid_wizard_agent import build_generation_constraints_text
 

@@ -207,6 +207,15 @@ def test_agent_prompt_fig_mode_default_off():
     assert '"kind":"seq"' in agent.SECTION_SYSTEM_PROMPT_BIDFIG
 
 
+def test_chart_rules_forbid_numbered_title_and_mixed_units():
+    """2026-10-25 复盘：title 自带编号叠成双编号、bar 被塞进混量纲指标——prompt 层封口。"""
+    from backend.agent import bid_draft_agent as agent
+
+    assert "严禁自带「图/表X-Y」编号" in agent._CHART_RULES_BIDFIG
+    assert "必须同量纲" in agent._CHART_RULES_BIDFIG
+    assert agent._CHART_RULES_BIDFIG in agent.SECTION_SYSTEM_PROMPT_BIDFIG
+
+
 def test_chart_quality_stats_summary_slice():
     from backend.agent.bid_draft_agent import chart_quality_stats
     md = (
