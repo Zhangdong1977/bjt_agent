@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any, Optional
 
 # 模板/占位残留（"（请补充）"事实缺口已由 chart_quality_stats.fact_gaps 统计）
 _PLACEHOLDER_PATTERNS = ("XXX", "TODO", "TBD", "{{", "【待补充】", "[待补充]")
@@ -22,11 +23,21 @@ _SELF_REFERENCE_VARIANTS = ("我司", "我公司", "我方", "本公司")
 # AI 输出痕迹（2026-10-24 用户反馈：思考过程/解释写法/对话语气不应出现在正文）——
 # 高置信短语层报警，宁漏勿误：只收几乎必为 AI 痕迹的表述，"我们"等单词级不查
 # （素材引用会误伤）；"综上所述/总而言之"等模板腔与措辞铁律双保险。warning 级只提示。
+# 2026-10-25 复核扩充（真实 49 章成稿 0 命中、扩充候选亦 0 误报后加入）：
+# 解释性插入语与营销腔一并纳入。
 _AI_FLAVOR_MARKERS = (
     "作为AI", "作为人工智能", "作为语言模型", "AI助手",
     "好的，", "以下是", "接下来我们", "让我们", "我来为您", "我们将为您",
     "希望以上", "对您有所帮助", "本章将介绍", "本节将介绍", "下面我们从",
     "综上所述", "总而言之", "众所周知", "毋庸置疑", "我们相信",
+    "值得注意的是", "需要指出的是", "总的来说", "综合来看", "可以看出", "不难看出",
+    "保驾护航",
+)
+
+# 措辞铁律①自夸形容词的机检面（prompt 已禁、机检兜底；warning 人工确认——
+# 素材/招标原文引用可能合法包含，不升级 error）。2026-10-25 真实成稿 0 命中。
+_SELF_PRAISE_MARKERS = (
+    "全方位", "多维度", "一站式", "赋能", "助力", "打造", "强大的", "优秀的", "完善的",
 )
 
 
@@ -35,11 +46,35 @@ def _ai_flavor_marker_hits(text: str) -> list[tuple[str, int]]:
     return [(marker, text.count(marker)) for marker in _AI_FLAVOR_MARKERS if marker in text]
 
 
+# 禁用词技术用语豁免（2026-10-25 真实成稿复盘：唯一×17 里多数是「唯一键/唯一标识/
+# 归属唯一项目」等数据模型表述、「绝对时间节点」是工期对照术语——裸计数把技术用语
+# 也按措辞红线报警，噪音淹没真问题）。豁免仅减计不改判：剩余出现仍按红线计。
+# 措辞红线本意是禁自我评价性排他承诺（"国内唯一/业界第一"），不是禁技术术语。
+_FORBIDDEN_TECH_EXEMPT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "唯一": re.compile(r"唯一(?:键|标识|索引|编号|匹配|ID|id|性|对应|确定|约束)|归属唯一"),
+    "绝对": re.compile(r"绝对时间"),
+    "第一": re.compile(r"第一(?:章|节|部分|阶段|步|批|层|级|优先|时间|道防线|环节|类|次|方|产业|责任人)"),
+}
+
+
+def _forbidden_residual_count(joined: str, word: str) -> tuple[int, int]:
+    """(剩余次数, 豁免次数)：总出现减去技术用语复合词出现。"""
+    total = joined.count(word)
+    if not total:
+        return 0, 0
+    exempt = 0
+    pattern = _FORBIDDEN_TECH_EXEMPT_PATTERNS.get(word)
+    if pattern is not None:
+        exempt = len(pattern.findall(joined))
+    return max(0, total - exempt), exempt
+
+
 def _style_card_consistency_issues(joined: str, style_card: dict | None) -> list[dict[str, str]]:
     """口径卡驱动的术语/禁词检查（23 号 O4）：统一称谓混用 + 禁用词出现。
 
     style_card 结构见 bid_wizard_agent.normalize_style_card；None/非 dict 时无口径卡
     行为（assemble_checks 回退到硬编码 _SYNONYM_PAIRS）。只报告不改写。
+    禁用词 2026-10-25 起带技术用语豁免（_forbidden_residual_count）。
     """
     if not isinstance(style_card, dict):
         return []
@@ -58,11 +93,13 @@ def _style_card_consistency_issues(joined: str, style_card: dict | None) -> list
         word = str(raw or "").strip()
         if not word:
             continue
-        count = joined.count(word)
-        if count:
+        residual, exempt = _forbidden_residual_count(joined, word)
+        if residual:
+            extra = f"（另有 {exempt} 次技术用语已豁免）" if exempt else ""
             issues.append({
                 "type": "forbidden_word",
-                "detail": "口径卡禁用词「%s」出现 %d 次——按措辞红线应改写（如改为方案交付表述）" % (word[:40], count),
+                "detail": "口径卡禁用词「%s」出现 %d 次%s——按措辞红线应改写（如改为方案交付表述；技术术语除外）"
+                          % (word[:40], residual, extra),
             })
     return issues
 
@@ -391,6 +428,189 @@ def chart_placeholder_issues(sections: list[dict]) -> list[dict[str, str]]:
     return issues
 
 
+# 图表编号体例（2026-10-25 真实成稿复盘：图5-1×2、表5-1×3、表7-1×3——各节独立生成
+# 时各自从 X-1 起号，措辞铁律⑧"按章编号"没有全局执行者，成稿出现同号异图）。编号
+# token 兼容全角/破折号变体；"题注"判定＝行首的编号行（表X-Y 标题 / 图X-Y 标题）或
+# bidfig JSON title 字段内的编号，行内引用（见表X-Y）不算题注。
+_CAPTION_TOKEN_RE = re.compile(r"([图表])\s?(\d{1,2})\s*[-－—–.．]\s*(\d{1,3})")
+_JSON_TITLE_LINE_RE = re.compile(r'"title"')
+
+
+def _caption_occurrences(content: str) -> list[dict[str, Any]]:
+    """全稿编号 token 出现清单：[{kind, chapter, num, start, end, is_caption}]。
+
+    is_caption＝行首编号（题注行）或所在行含 "title"（bidfig JSON 图题）。start/end
+    为 token 在 content 中的字符区间（重编号替换用）。
+    """
+    out: list[dict[str, Any]] = []
+    for match in _CAPTION_TOKEN_RE.finditer(content):
+        line_start = content.rfind("\n", 0, match.start()) + 1
+        line = content[line_start: content.find("\n", match.end()) if content.find("\n", match.end()) != -1 else len(content)]
+        at_line_head = content[line_start:match.start()].strip() == ""
+        is_caption = at_line_head or bool(_JSON_TITLE_LINE_RE.search(line))
+        kind, chapter, num = match.group(1), match.group(2), match.group(3)
+        out.append({
+            "key": (kind, chapter, num), "kind": kind, "chapter": chapter, "num": num,
+            "start": match.start(), "end": match.end(), "is_caption": is_caption,
+        })
+    return out
+
+
+def caption_duplication_issues(sections: list[dict]) -> list[dict[str, str]]:
+    """图表编号全稿唯一性（error）：同一（类别,章,序号）被多章用作题注 → 在后出现章节报错。
+
+    auto_fix 先跑确定性重编号（renumber_captions），常态下此项零残留；机检保留为
+    兜底——重编号改不动的结构（如引用无法消歧）仍要可见。
+    """
+    issues: list[dict[str, str]] = []
+    seen: dict[tuple[str, str, str], str] = {}
+    for section in sections:
+        node_id = str(section.get("node_id") or "")
+        content = str(section.get("content") or "")
+        duplicates: dict[tuple[str, str, str], int] = {}
+        for hit in _caption_occurrences(content):
+            if not hit["is_caption"]:
+                continue
+            key = hit["key"]
+            if key in seen and seen[key] != node_id:
+                duplicates[key] = duplicates.get(key, 0) + 1
+            elif key not in seen:
+                seen[key] = node_id
+        for key, count in sorted(duplicates.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
+            issues.append({
+                "severity": "error", "node_id": node_id, "type": "caption_duplication",
+                "detail": "图表编号「%s%s-%s」已在本稿「%s」章用作题注、本章再次使用（%d 处）——"
+                          "全稿图表编号必须唯一：本章该图表及其正文引用改用本章未占用的编号"
+                          % (key[0], key[1], key[2], seen[key], count),
+            })
+    return issues[:8]
+
+
+# 图表围栏语言 → 计数（规划图缺失核对实际成稿图数；mermaid/bidfig 两种引擎）
+_FENCE_LANG_RE = re.compile(r"^```([\w-]+)", re.M)
+
+
+def _figure_block_count(content: str) -> int:
+    return sum(1 for lang in _FENCE_LANG_RE.findall(content) if lang in ("mermaid", "bidfig"))
+
+
+def planned_chart_issues(
+    sections: list[dict], planned_figures: dict[str, list[dict[str, Any]]] | None
+) -> list[dict[str, str]]:
+    """大纲图表规划 vs 成稿兑现（2026-10-25 复盘：规划 21 图兑现 17，缺的正是章级
+    规划图与两张模块流程图，此前无检查项覆盖该差距）。
+
+    - 叶子节：规划图数 > 成稿图数 → error（auto_fix 按本章图表计划补图）；
+    - 章级节（正文按约定只是导语、不承载图表）：规划了图 → warning 提示把图挪到小节规划。
+    planned_figures：{node_id: [{type, title, ...}]}（type != table 视为图）。
+    """
+    if not planned_figures:
+        return []
+    issues: list[dict[str, str]] = []
+    all_ids = [str(s.get("node_id") or "") for s in sections if isinstance(s, dict)]
+    for section in sections:
+        node_id = str(section.get("node_id") or "")
+        plans = planned_figures.get(node_id) or []
+        fig_plans = [p for p in plans if str(p.get("type") or "").lower() != "table"]
+        if not fig_plans:
+            continue
+        content = str(section.get("content") or "")
+        actual = _figure_block_count(content)
+        titles = "、".join(str(p.get("title") or "")[:30] for p in fig_plans[:3])
+        has_children = any(other.startswith(node_id + ".") for other in all_ids if other != node_id)
+        if has_children:
+            issues.append({
+                "severity": "warning", "node_id": node_id, "type": "planned_chart_on_chapter",
+                "detail": "本章（父章节正文只是导语、不承载图表）的图表规划含 %d 张图（%s）——"
+                          "建议在大纲中把这些图改规划到所属小节，否则成稿不兑现" % (len(fig_plans), titles),
+            })
+        elif actual < len(fig_plans):
+            issues.append({
+                "severity": "error", "node_id": node_id, "type": "planned_chart_missing",
+                "detail": "本章图表规划 %d 张图，成稿仅 %d 张（计划：%s）——按图表计划补齐缺图，"
+                          "图表数据与本章正文一致，不得删除既有内容" % (len(fig_plans), actual, titles),
+            })
+    return issues[:12]
+
+
+def renumber_captions(sections: list[dict]) -> tuple[list[dict], dict[str, Any]]:
+    """全稿图表编号确定性重排（零 LLM 成本）：每章每类按题注出现顺序编为 X-1..X-N，
+    题注与正文引用同步替换，输出统一半角连字符。
+
+    sections 顺序即文档顺序（调用方按 spec 顺序排好）。策略与边界：
+    - 无重号且章内已连续 → 原样返回（零改动）；
+    - 题注按出现位置逐个定新号（同旧号多处题注＝重号，各得其位：第 1/2/3 处分别
+      编为新序号）；正文引用只认旧号、无法消歧，统一替换为该旧号**首处题注**的新编号
+      （成稿本已歧义，任一一致选择都不劣于现状）；
+    - 只重排确有题注的（类别,章,旧号）；引用了不存在题注的编号不动。
+    返回 (新 sections, stats)；stats＝{captions, remapped, changed_nodes, ambiguous}。
+    """
+    stats = {"captions": 0, "remapped": 0, "changed_nodes": [], "ambiguous": 0}
+    ordered = [dict(s) for s in sections]
+    per_section_hits = [
+        [hit for hit in _caption_occurrences(str(section.get("content") or "")) if hit["is_caption"]]
+        for section in ordered
+    ]
+    stats["captions"] = sum(len(hits) for hits in per_section_hits)
+    if not stats["captions"]:
+        return ordered, stats
+
+    # 第一遍：按文档顺序给每个题注定新号；旧号首处题注的新号兼作引用替换映射
+    counters: dict[tuple[str, str], int] = {}
+    caption_new_num: list[list[Optional[int]]] = [[] for _ in ordered]
+    ref_mapping: dict[tuple[str, str, str], str] = {}
+    ambiguous_keys: set[tuple[str, str, str]] = set()
+    for index, hits in enumerate(per_section_hits):
+        for position, hit in enumerate(hits):
+            group = (hit["kind"], hit["chapter"])
+            counters[group] = counters.get(group, 0) + 1
+            caption_new_num[index].append(counters[group])
+            new_suffix = "%s-%d" % (hit["chapter"], counters[group])
+            old_suffix = "%s-%s" % (hit["chapter"], hit["num"])
+            if hit["key"] in ref_mapping:
+                ambiguous_keys.add(hit["key"])
+            else:
+                ref_mapping[hit["key"]] = new_suffix if old_suffix != new_suffix else None
+    stats["ambiguous"] = len(ambiguous_keys)
+    # 只有当存在"题注新旧号不同"或"重号"时才需要改写
+    needs_change = any(
+        "%s-%s" % (hit["chapter"], hit["num"]) != "%s-%d" % (hit["chapter"], new_num)
+        for hits, nums in zip(per_section_hits, caption_new_num)
+        for hit, new_num in zip(hits, nums)
+    ) or ambiguous_keys
+    if not needs_change:
+        return ordered, stats
+
+    remapped_captions = 0
+    for index, section in enumerate(ordered):
+        content = str(section.get("content") or "")
+        caption_spans = {(hit["start"], hit["end"]): num for hit, num in zip(per_section_hits[index], caption_new_num[index])}
+        replacements: list[tuple[int, int, str]] = []
+        for hit in _caption_occurrences(content):
+            span = (hit["start"], hit["end"])
+            if span in caption_spans:
+                token = "%s%s-%d" % (hit["kind"], hit["chapter"], caption_spans[span])
+                replacements.append((hit["start"], hit["end"], token))
+                if content[hit["start"]:hit["end"]] != token:
+                    remapped_captions += 1
+            else:
+                suffix = ref_mapping.get(hit["key"])
+                if suffix:
+                    replacements.append((hit["start"], hit["end"], "%s%s" % (hit["kind"], suffix)))
+        if not replacements:
+            continue
+        # 倒序区间替换（互不重叠，token 级匹配保证）
+        new_content = content
+        for start, end, token in sorted(replacements, key=lambda item: item[0], reverse=True):
+            if new_content[start:end] != token:
+                new_content = new_content[:start] + token + new_content[end:]
+        if new_content != content:
+            ordered[index]["content"] = new_content
+            stats["changed_nodes"].append(str(section.get("node_id") or ""))
+    stats["remapped"] = remapped_captions
+    return ordered, stats
+
+
 # 无出处产能数据（第 3 轮质量轮：1.1「4 个工作日内形成 301 页正文、215 个标题、232 张表格、
 # 40 幅插图、14 万字以上」三轮审读结论摇摆后回归——沉淀为永久机检；warning 级人工确认，
 # 素材里真实存在的业绩数字由人分辨，机检只兜「N 个工作日 + N 页/表/字」自证句式）。
@@ -420,6 +640,7 @@ def draft_checks(
     sections: list[dict],
     style_card: dict | None = None,
     outline_ids: set[str] | None = None,
+    planned_figures: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, str]]:
     """wizard 撰写完成期全稿机检（逐章 md 已含各自标题行）。
 
@@ -427,6 +648,7 @@ def draft_checks(
     返回 [{severity, node_id, type, detail}]（node_id 为空串=全稿级），封顶 30 条。
 
     style_card（23 号 O4）：口径卡驱动的统一称谓/禁用词检查（不传=硬编码同义对，兼容存量）。
+    planned_figures（2026-10-25）：{node_id: 大纲图表规划项列表}，启用规划图兑现核对。
 
     覆盖：既有五项全稿检查（拼合后复用 assemble_checks，empty_section 与 ai_flavor 在封顶前
     跳过——前者父章导语/「标题行后紧跟小节标题」的拼接模式会假阳性，后者逐章定位更可操作）
@@ -436,7 +658,7 @@ def draft_checks(
        > 2.0 提示超稿——篇幅与费用防护）；
     ③ 章节正文缺失/为空（content 空或过短）；
     ④ AI 输出痕迹（思考/解释写法/对话语气，2026-10-24 用户反馈——高置信短语、warning 级）
-    + 全稿级检查（2026-10-24 质量轮）——
+    + 全稿级检查（2026-10-24 质量轮 / 2026-10-25 复盘轮）——
     ⑤ 跨章口径组合（在线模型通道/数据出内网等主题的开放类与受限类表述分布在不同章，
        error——直触保密与验收承诺）；
     ⑥ 大纲引用有效性（outline_ids 传入时启用：显式「第X.Y节/详见X.Y」及「对应章节」表格列
@@ -444,7 +666,13 @@ def draft_checks(
     ⑦ 图表内占位（mermaid 节点标签/表格单元格内的「请补充」，error——图表占位交付观感
        为方案未完成）；
     ⑧ 无出处产能数据（「N 个工作日产出 N 页/表/字」式自证句式，warning 人工确认——
-       第 3 轮质量轮：同类问题三轮审读结论摇摆后回归，沉淀为永久规则）。
+       第 3 轮质量轮：同类问题三轮审读结论摇摆后回归，沉淀为永久规则）；
+    ⑨ 图表编号唯一性（caption_duplication，error——2026-10-25 复盘：真实成稿图5-1×2、
+       表7-1×3，各节独立起号没有全局唯一性保障）；
+    ⑩ 规划图兑现（planned_chart_missing 叶子 error / planned_chart_on_chapter 父章 warning
+       ——2026-10-25 复盘：规划 21 图兑现 17 无任何检查覆盖）；
+    ⑪ 口径卡禁用词（技术用语豁免后仍有残留 → error 驱动 auto_fix 改写——用户设置的
+       措辞红线必须闭环，不再是只读警告）。
     """
     issues: list[dict[str, str]] = []
     valid = [s for s in sections if isinstance(s, dict) and str(s.get("node_id") or "")]
@@ -459,8 +687,10 @@ def draft_checks(
     for base in assemble_checks(
         joined, skip_types=("empty_section", "ai_flavor"), style_card=style_card
     ):
+        # 口径卡禁用词（残留）升级 error（⑪）：其余 assemble 层问题维持 warning
+        severity = "error" if base["type"] == "forbidden_word" else "warning"
         issues.append(
-            {"severity": "warning", "node_id": "", "type": base["type"], "detail": base["detail"]}
+            {"severity": severity, "node_id": "", "type": base["type"], "detail": base["detail"]}
         )
 
     all_ids = [str(s.get("node_id")) for s in valid]
@@ -505,6 +735,13 @@ def draft_checks(
                 {"severity": "warning", "node_id": node_id, "type": "ai_flavor",
                  "detail": "「%s」出现 %d 次——思考/解释写法/对话式 AI 痕迹，建议删除或改为陈述句" % (marker, cnt)}
             )
+        # ④b 自夸形容词（措辞铁律①机检面，2026-10-25）：warning 人工确认（素材/招标原文
+        # 引用可能合法包含），按短语去重
+        for marker, cnt in ((m, content.count(m)) for m in _SELF_PRAISE_MARKERS if m in content):
+            issues.append(
+                {"severity": "warning", "node_id": node_id, "type": "self_praise",
+                 "detail": "「%s」出现 %d 次——措辞铁律①自夸形容词：改为具体做法/指标/依据表述" % (marker, cnt)}
+            )
 
         # ② 叶子节篇幅达标
         is_leaf = not any(
@@ -530,7 +767,7 @@ def draft_checks(
 
     # ⑤ 跨章口径组合（全稿级）；⑥ 大纲引用有效性（传 outline_ids 才启用，引用未生成
     # 章节的合法引用靠调用方传全量 spec node_id 区分）；⑦ 图表内占位（第 2 轮质量轮）；
-    # ⑧ 无出处产能数据（第 3 轮质量轮）
+    # ⑧ 无出处产能数据（第 3 轮质量轮）；⑨ 图表编号唯一性 + ⑩ 规划图兑现（2026-10-25 复盘）
     issues.extend(_stance_conflict_issues(valid))
     if outline_ids is not None:
         ids = {str(item) for item in outline_ids if str(item)}
@@ -538,5 +775,14 @@ def draft_checks(
             issues.extend(_outline_ref_issues(valid, ids))
     issues.extend(chart_placeholder_issues(valid))
     issues.extend(_unsourced_metrics_issues(valid))
+    issues.extend(caption_duplication_issues(valid))
+    issues.extend(planned_chart_issues(valid, planned_figures))
 
-    return issues[:_DRAFT_MAX_ISSUES]
+    # error 优先保留（2026-10-25 复盘：24 条 overlong warning 曾把 7 条规划图缺失
+    # error 挤出 30 条封顶——auto_fix 与前端"是否合格"都消费 error，不能被噪音淹没）；
+    # overlong 是逐节同质噪音，限 10 条防占满警告位
+    errors_first = [item for item in issues if str(item.get("severity")) == "error"]
+    others = [item for item in issues if str(item.get("severity")) != "error"]
+    overlong = [item for item in others if item.get("type") == "overlong_section"][:10]
+    others = [item for item in others if item.get("type") != "overlong_section"] + overlong
+    return (errors_first + others)[:_DRAFT_MAX_ISSUES]

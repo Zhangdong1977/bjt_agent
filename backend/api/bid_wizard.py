@@ -1654,6 +1654,27 @@ async def confirm_spec(wizard_id: str, db: DBSession, current_user: CurrentUser)
             status_code=409,
             detail="大纲基于旧的需求/素材，请先重新生成或确认接受当前版本",
         )
+    # 评分覆盖硬门禁（2026-10-25 真实成稿复盘：技术类最高分项 12 分零章节响应、
+    # 系统自知却放行到成稿）：未覆盖的技术类评分项（证书/资质类除外）阻断确认，
+    # 写作前拦截＝费用止损；用户可通过「AI 修改」或手工补章节后重试。
+    from backend.agent.bid_wizard_agent import gate_blocking_scoring_items
+
+    blocking = gate_blocking_scoring_items(
+        wizard.spec, wizard.analysis if isinstance(wizard.analysis, dict) else {}
+    )
+    if blocking:
+        names = "、".join(
+            "「%s」%s" % (item.get("title") or "?", item.get("weight") or "")
+            for item in blocking[:5]
+        )
+        more = " 等 %d 项" % len(blocking) if len(blocking) > 5 else ""
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "大纲还没有任何章节响应技术类评分项 %s%s——请点「AI 修改」下达指令"
+                "（如：为技术规范书逐条应答增设专门章节），或手动添加对应章节后再确认" % (names, more)
+            ),
+        )
     wizard.spec_confirmed_at = utc_now()
     await db.commit()
     await db.refresh(wizard)

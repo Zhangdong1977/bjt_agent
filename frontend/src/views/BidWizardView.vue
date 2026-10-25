@@ -2501,7 +2501,8 @@ const docChecks = computed<WizardDocCheck[]>(() => {
 });
 const docCheckErrors = computed(() => docChecks.value.filter((item) => item.severity === "error"));
 const docCheckWarnings = computed(() => docChecks.value.filter((item) => item.severity !== "error"));
-/** summary.auto_fix（2026-10-25 质检自动修复闭环）：系统自动修复轮次/修复数/残留 error 数。 */
+/** summary.auto_fix（2026-10-25 质检自动修复闭环）：系统自动修复轮次/修复数/残留 error 数；
+ * 复盘轮补充：图表编号重排与超稿压缩计数（旧任务无字段=0，徽标自动隐藏）。 */
 const autoFixInfo = computed(() => {
   const raw = task.value?.summary?.auto_fix;
   if (!raw || typeof raw !== "object") return null;
@@ -2511,6 +2512,8 @@ const autoFixInfo = computed(() => {
     rounds: Number(record.rounds) || 0,
     fixedTotal: Number(record.fixed_total) || 0,
     remainingErrors: Number(record.remaining_errors) || 0,
+    renumberedCaptions: Number(record.renumbered_captions) || 0,
+    compressedNodes: Array.isArray(record.compressed_nodes) ? record.compressed_nodes.length : 0,
   };
 });
 /** summary.score_coverage：得分点覆盖矩阵；空数组（无评分台账/旧任务）隐藏卡片。 */
@@ -3783,6 +3786,8 @@ onUnmounted(() => {
               <h3>全稿质检报告</h3>
               <p class="hint" style="margin:0 0 8px">
                 <template v-if="autoFixInfo && autoFixInfo.fixedTotal">系统已自动修复 {{ autoFixInfo.fixedTotal }} 处不合格项（经 {{ autoFixInfo.rounds }} 轮修复复检）。</template>
+                <template v-if="autoFixInfo && autoFixInfo.renumberedCaptions">已重排图表编号 {{ autoFixInfo.renumberedCaptions }} 处（消除跨章重号）。</template>
+                <template v-if="autoFixInfo && autoFixInfo.compressedNodes">已压缩超稿章节 {{ autoFixInfo.compressedNodes }} 章向规划篇幅收敛。</template>
                 <template v-if="docCheckErrors.length">仍有 {{ docCheckErrors.length }} 处经自动修复未完全消除——建议对相应章节单章重生成。</template>
                 <template v-else>全稿机检通过。</template>
                 <template v-if="docCheckWarnings.length">另有 {{ docCheckWarnings.length }} 条提示供人工确认。</template>

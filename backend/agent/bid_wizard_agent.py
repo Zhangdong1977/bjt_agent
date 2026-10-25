@@ -50,6 +50,7 @@ from backend.agent.bid_draft_agent import (
 from backend.agent.bid_doc_checks import (
     chart_placeholder_issues,
     draft_checks,
+    renumber_captions,
     stance_conflict_targets,
     strip_leading_title_headings,
 )
@@ -181,10 +182,10 @@ __TOC_REFERENCE__
 1. 大纲完整覆盖招标需求与评分标准对应的响应内容，与评分办法呼应；只覆盖「生成要求」指定的生成内容范围；
 2. 必须是多级目录：一级大章（level=1）一般 6-12 个，每个大章下按内容拆分二级小节（level=2），内容复杂的小节再拆三级（level=3）；level 必须如实标注所属层级，严禁把全部章节都标成 level=1 平铺——只有目标总字数不足 5,000 字时才允许仅有一级章节；
 3. summary 写清楚本章要回应什么、用什么素材支撑；
-4. charts 按「生成要求」执行：需要配图时按内容需要规划（每章 0-3 项）——对比/参数/人员/进度用 table，组织架构/流程/横道图/占比用 mermaid；不配图时每章 charts 一律为 []；
+4. charts 按「生成要求」执行：需要配图时按内容需要规划（每章 0-3 项）——对比/参数/人员/进度用 table，组织架构/流程/横道图/占比用 mermaid；图（mermaid 类）只规划在叶子小节上，一级大章与含子节的父章节正文只是章首导语、不承载图（表格不限）；不配图时每章 charts 一律为 []；
 5. 素材里有真实业绩/资质可引用的章节，在 summary 中点明引用方向；严禁虚构；
 6. 「生成要求」给了目标总字数时，所有章节 article_count×text_count 之和必须落在允许区间——通过调整每章篇幅（article_count/text_count）与小节数量来满足，不得为凑字数把大纲压成只有一级章节的平级结构；
-7. 招标要素含 scoring_items（评分台账）时：大纲必须让每个评分项至少有一个章节实质响应；响应某评分项的章节，其 summary 末尾以「响应得分点：<评分项标题>」点名（多项用顿号分隔，标题照抄台账原文不得改写）。"""
+7. 招标要素含 scoring_items（评分台账）时：大纲必须让每个评分项至少有一个章节实质响应；响应某评分项的章节，其 summary 末尾以「响应得分点：<评分项标题>」点名（多项用顿号分隔，标题照抄台账原文不得改写）。技术类评分项一项都不能漏——确无现成章节可安放的（如逐条应答类评分项）必须增设专门章节承接，不得静默丢弃。"""
 
 # 兜底重试时追加在 SPEC_USER_TEMPLATE 之后：把首轮不合格的事实喂回去，要求按规则 2 重排层级
 SPEC_FLAT_RETRY_ADDENDUM = """
@@ -193,6 +194,16 @@ SPEC_FLAT_RETRY_ADDENDUM = """
 上一次生成的大纲把全部 __FLAT_COUNT__ 个章节都标成了 level=1，没有任何二级/三级小节，违反规则 2。
 请重新规划：归并为 6-12 个一级大章（level=1），其余章节作为所属大章下的二级小节（level=2，复杂处可设 level=3），
 数组顺序保持「大章 → 其下小节」的目录顺序；总字数区间与其他规则不变。"""
+
+# 评分覆盖重试（2026-10-25 复盘轮）：首轮大纲漏响应技术类评分项时，点名漏项要求补齐
+_SPEC_COVERAGE_RETRY_ADDENDUM = """
+
+## 上一次输出不合格，必须修正后重新输出
+上一次生成的大纲没有任何章节响应下列技术类评分项（规则 7 要求每个评分项至少一个章节实质响应，
+并在 summary 末尾以「响应得分点：<标题>」点名；确无现成章节安放的必须增设专门章节承接）：
+__UNCOVERED_ITEMS__
+请重新输出完整大纲：为上述每个评分项安排或指定响应章节，其余结构与内容尽量保持不变；
+总字数区间、多级目录与其他规则不变。"""
 
 REVISE_SYSTEM_PROMPT = (
     "你是资深投标文件编写专家。按用户的修改指令调整编写大纲（Spec），保持未涉及的部分不变。"
@@ -315,7 +326,7 @@ __OUTLINE_TEXT__
 __SCORE_ITEMS_TEXT__
 本章图表计划：
 __CHART_PLAN_TEXT__
-篇幅：约 __ARTICLE_COUNT__ 段，每段约 __TEXT_COUNT__ 字（表格与图注文字一并计入篇幅，超出应精简，不要为凑段数灌水）。
+篇幅（硬约束）：全章正文约 __ARTICLE_COUNT__ 段、每段约 __TEXT_COUNT__ 字，总字数目标约 __WORD_BUDGET__ 字（表格与图注文字一并计入）。写完自查：超出目标 130% 必须精简——删重复展开与空泛修饰、合并同类表格，优先保留评分项响应、关键指标与承诺；不足目标 70% 才补充展开；严禁为凑篇幅灌水。
 
 ## 素材摘录（公司真实资料，事实性内容只能出自这里）
 __MATERIAL_CHUNKS__
@@ -1120,6 +1131,53 @@ def score_coverage_matrix(
             }
         )
     return matrix
+
+
+# 评分覆盖硬门禁（2026-10-25 真实成稿复盘：技术类最高分项「技术规范书应答 12分」
+# covered_by 为空，系统自己知道却无任何拦截——12 分裸奔）。两层防线：
+# ① generate_spec 覆盖重试（见 _SPEC_COVERAGE_RETRY_ADDENDUM）；② spec confirm 接口
+# 对未覆盖的技术类评分项 422 阻断（用户在正确阶段补章节，写作前拦截=费用止损）。
+# 证书/资质/业绩类评分项即使被误判为技术类也不阻断（正文给不了扫描件，阻断只会卡死流程）。
+_CERTIFICATE_LIKE_SCORING_RE = re.compile(r"证书|资质|业绩|扫描件|发票|合同|审计|财务|营业执照")
+
+
+def uncovered_scoring_items(
+    spec: list[dict[str, Any]], scoring_items: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    """技术类（非商务）评分项中没有任何章节响应的清单（覆盖判定与覆盖矩阵同口径）。"""
+    uncovered: list[dict[str, str]] = []
+    for item in scoring_items or []:
+        if item.get("is_business"):
+            continue
+        key = _norm_match_key(item["title"])
+        if not key:
+            continue
+        covered = any(
+            key
+            in "".join(
+                _norm_match_key(f"{n.get('title') or ''}{n.get('summary') or ''}")
+                for n in _ancestors_of(spec, str(node.get("node_id") or ""))
+            )
+            for node in spec
+            if str(node.get("node_id") or "")
+        )
+        if not covered:
+            uncovered.append(item)
+    return uncovered
+
+
+def gate_blocking_scoring_items(
+    spec: list[dict[str, Any]] | None, analysis: dict[str, Any] | None
+) -> list[dict[str, str]]:
+    """confirm 硬门禁的阻断清单＝未覆盖 且 非证书/资质类的技术评分项。"""
+    if not isinstance(spec, list) or not spec:
+        return []
+    uncovered = uncovered_scoring_items(spec, scoring_items_of(analysis))
+    return [
+        item
+        for item in uncovered
+        if not _CERTIFICATE_LIKE_SCORING_RE.search("%s %s" % (item.get("title") or "", item.get("criteria") or ""))
+    ]
 
 
 # ------------------------------------------------------------------ 图表加固（23 号批次五 E1/E2）
@@ -2010,6 +2068,41 @@ async def generate_spec(
                 spec = retried
             elif retried:
                 logger.warning("bid-wizard spec flat-retry still flat (%d nodes); keeping first pass", len(retried))
+    # 评分覆盖重试（2026-10-25 复盘轮）：技术类评分项零响应时点名漏项重试一次
+    # （confirm 侧还有硬门禁兜底；此处先自动补救，多数情况用户无感）。重试更优才替换。
+    scoring_items = scoring_items_of(analysis)
+    if scoring_items:
+        uncovered = gate_blocking_scoring_items(spec, analysis)
+        if uncovered:
+            elapsed = time.monotonic() - started
+            if time_budget_seconds is not None and elapsed * _SPEC_RETRY_BUDGET_FACTOR >= time_budget_seconds:
+                logger.warning(
+                    "bid-wizard spec uncovered scoring items (%s) but first pass used %.0fs of %.0fs budget; skip retry",
+                    "、".join(item["title"] for item in uncovered)[:120], elapsed, time_budget_seconds,
+                )
+            else:
+                logger.warning(
+                    "bid-wizard spec misses scoring coverage (%s); retrying once",
+                    "、".join(item["title"] for item in uncovered)[:120],
+                )
+                items_text = "\n".join(
+                    "- %s（%s）：%s" % (item["title"], item.get("weight") or "?", (item.get("criteria") or "")[:120])
+                    for item in uncovered[:10]
+                )
+                try:
+                    retried = await _generate_spec_once(
+                        llm, user_prompt + _SPEC_COVERAGE_RETRY_ADDENDUM.replace("__UNCOVERED_ITEMS__", items_text)
+                    )
+                except Exception as exc:
+                    logger.warning("bid-wizard spec coverage-retry failed, keeping first pass: %s", exc)
+                    retried = []
+                if retried and len(gate_blocking_scoring_items(retried, analysis)) < len(uncovered):
+                    spec = retried
+                elif retried:
+                    logger.warning(
+                        "bid-wizard spec coverage-retry not better (%d -> %d uncovered); keeping first pass",
+                        len(uncovered), len(gate_blocking_scoring_items(retried, analysis)),
+                    )
     return apply_generation_options_to_spec(spec, generation_options)
 
 
@@ -2371,6 +2464,10 @@ class BidWizardWriteAgent:
                 .replace("__PREV_SECTIONS__", prev_text)
                 .replace("__ARTICLE_COUNT__", str(node.get("article_count") or 2))
                 .replace("__TEXT_COUNT__", str(node.get("text_count") or 400))
+                .replace(
+                    "__WORD_BUDGET__",
+                    str((int(node.get("article_count") or 2)) * (int(node.get("text_count") or 400))),
+                )
             )
             body = strip_code_fence(
                 await self.llm.generate(
@@ -2381,10 +2478,12 @@ class BidWizardWriteAgent:
         if not body:
             raise RuntimeError(f"章节「{node['title']}」生成结果为空")
         body = clamp_mermaid_blocks(close_unterminated_mermaid_fence(body))
+        fig_repaired = 0
         if fig_mode == "bidfig" and intro_children is None:
             body = clamp_bidfig_blocks(close_unterminated_bidfig_fence(body))
             # 生成期收紧重渲（E2）：落盘前试渲染，失败块带具体报错回炉一次 LLM 修正，仍败降级占位
             body, fig_repair = await tighten_bidfig_fences(self.llm, body)
+            fig_repaired = int(fig_repair["repaired"])
             if fig_repair["repaired"] or fig_repair["degraded"]:
                 logger.info(
                     "bidfig tighten: task=%s node=%s repaired=%d degraded=%d",
@@ -2422,6 +2521,8 @@ class BidWizardWriteAgent:
             "content": content,
             "article_count": int(node.get("article_count") or 2),
             "text_count": int(node.get("text_count") or 400),
+            # 图表质量机制观测面（2026-10-25）：本节回炉修正块数，run() 汇总进 fig_stats.repaired
+            "fig_repaired": fig_repaired,
         }
 
     async def _mark_section_failed(self, node_id: str, message: str) -> None:
@@ -2526,9 +2627,14 @@ class BidWizardWriteAgent:
             )
         except Exception:
             logger.exception("bid-wizard score_coverage failed: task=%s", self.task_id)
-        # 全稿图表统计（23 号批次五 E1 观察）：mermaid 混出占比/降级块数供前端与 E2E 复算
+        # 全稿图表统计（23 号批次五 E1 观察）：mermaid 混出占比/降级块数供前端与 E2E 复算；
+        # repaired＝生成期回炉修正块数（2026-10-25 补记——此前只记日志，summary 无法区分
+        # 「全部一次通过」与「回炉后通过」，图片质量机制缺观测面）
         try:
             summary["fig_stats"] = fig_stats_of(done, fig_mode)
+            summary["fig_stats"]["repaired"] = sum(
+                int(item.get("fig_repaired") or 0) for item in done
+            )
         except Exception:
             logger.exception("bid-wizard fig_stats failed: task=%s", self.task_id)
         return summary
@@ -2552,8 +2658,14 @@ REVIEW_FINDINGS_MAX = 60
 # 撰写/审读完成后的机检 error 不再只报告——复用修订机制自动改写涉事章并复检，直至 error
 # 清零或轮次用尽；summary.doc_checks 只呈现最终（合格）状态，auto_fix 字段记录修复过程。
 # 应急开关 BID_WIZARD_AUTO_FIX_ENABLED=0 回到「只报告」旧行为。
+# 2026-10-25 复盘轮扩展：①图表编号重号 → 先跑确定性重编号（零 LLM）再复检；
+# ②规划图缺失/禁用词残留升级 error 后一并自动修复；③超稿压缩（软预算收敛）。
 AUTO_FIX_MAX_ROUNDS = 3
 AUTO_FIX_MAX_NODES_PER_ROUND = 12
+# 超稿自动压缩阈值：叶子节实际字数 > 规划×该比例 且 超 600 字才压缩（写作 prompt 已
+# 硬化预算，这里只兜最差节）。BID_WIZARD_AUTO_FIX_OVERLONG_RATIO=0 关闭压缩。
+AUTO_FIX_OVERLONG_RATIO = 1.6
+AUTO_FIX_OVERLONG_MIN_EXCESS = 600
 # error 类型 → 修订指令补充（detail 已描述问题，hint 告诉修订代理怎么改）
 AUTO_FIX_TYPE_HINTS = {
     "missing_content": "本章正文为空——依据本章摘要、大纲与素材摘录完整撰写本章正文",
@@ -2566,6 +2678,18 @@ AUTO_FIX_TYPE_HINTS = {
         "删除图表（表格单元格/图内节点标签）中的「（请补充）」占位：能确定建议值的写建议值"
         "（可注明按采购人环境调整），确属待投标人补充的移出图表、在邻近正文段落说明"
     ),
+    "caption_duplication": (
+        "全稿图表编号必须唯一且按章顺序：把本章与他章冲突的图表题注改为本章未被占用的编号"
+        "（章内按出现顺序 X-1、X-2…），并同步更新本章正文对该图表的引用"
+    ),
+    "planned_chart_missing": (
+        "按本章图表计划补出缺失的图（类型与标题按计划执行，图表数据与本章正文一致、"
+        "严禁虚构），补图不得删除既有内容"
+    ),
+    "forbidden_word": (
+        "把口径卡禁用词改写为方案交付表述（如「唯一」按语境改「专属/独立承担」，"
+        "「绝对」改「刚性/硬性」）；技术术语（唯一键/唯一标识/绝对时间等）不需要改"
+    ),
 }
 
 
@@ -2576,6 +2700,17 @@ def _auto_fix_enabled() -> bool:
         "no",
         "off",
     )
+
+
+def _auto_fix_overlong_ratio() -> float:
+    raw = os.environ.get("BID_WIZARD_AUTO_FIX_OVERLONG_RATIO", "").strip()
+    if not raw:
+        return AUTO_FIX_OVERLONG_RATIO
+    try:
+        value = float(raw)
+    except ValueError:
+        return AUTO_FIX_OVERLONG_RATIO
+    return value if value > 0 else 0.0
 
 REVIEW_FINDINGS_SYSTEM_PROMPT = (
     "你是资深投标文件审读专家（Reader）。逐章审读投标文件章节，找出影响得分的实质问题。"
@@ -3001,13 +3136,23 @@ class BidWizardReviewAgent:
         analysis = analysis or {}
         spec_by_id = {str(node.get("node_id")): node for node in spec}
         outline_ids = {str(node.get("node_id") or "") for node in spec}
-        current = [dict(section) for section in sections]
+        # 文档顺序＝spec 顺序（重编号/压缩挑选都依赖全稿顺序）
+        order_index = {str(node.get("node_id") or ""): index for index, node in enumerate(spec)}
+        current = sorted(
+            (dict(section) for section in sections),
+            key=lambda item: order_index.get(str(item.get("node_id") or ""), len(order_index)),
+        )
+        # 大纲图表规划 → 机检规划图兑现核对（⑩）
+        planned_figures = {
+            str(node.get("node_id") or ""): (node.get("charts") or []) for node in spec
+        }
 
         def _all_checks(items: list[dict[str, Any]]) -> list[dict[str, str]]:
             checks = draft_checks(
                 items,
                 style_card=requirements.get("style_card"),
                 outline_ids=outline_ids,
+                planned_figures=planned_figures,
             )
             try:
                 checks.extend(
@@ -3018,6 +3163,40 @@ class BidWizardReviewAgent:
                     "bid-wizard auto-fix capability checks failed: task=%s", self.task_id
                 )
             return checks
+
+        def _overlong_findings(items: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+            """超稿压缩 finding（软预算收敛，2026-10-25 复盘：真实成稿为目标 180%、
+            仅告警无收敛，篇幅与费用双超）：叶子节实际 > 规划×ratio 且超 600 字。"""
+            ratio = _auto_fix_overlong_ratio()
+            if ratio <= 0:
+                return {}
+            all_ids = [str(item.get("node_id") or "") for item in items]
+            findings: dict[str, dict[str, str]] = {}
+            for item in items:
+                node_id = str(item.get("node_id") or "")
+                if not node_id or node_id not in spec_by_id:
+                    continue
+                if any(other.startswith(node_id + ".") for other in all_ids if other != node_id):
+                    continue  # 父章导语按约定精短，不参与压缩
+                content = str(item.get("content") or "")
+                actual = int(item.get("word_count") or 0) or len(re.sub(r"\s", "", content))
+                planned = max(
+                    (int(item.get("article_count") or 2)) * (int(item.get("text_count") or 400)), 1
+                )
+                if actual > planned * ratio and actual - planned > AUTO_FIX_OVERLONG_MIN_EXCESS:
+                    findings[node_id] = {
+                        "node_id": node_id,
+                        "severity": "medium",
+                        "where": "篇幅（超稿压缩）",
+                        "issue": (
+                            "本章约 %d 字，达规划篇幅（约 %d 字）的 %d%%——请把本章压缩到约 %d 字"
+                            "（允许 ±20%%）：删除重复展开与空泛修饰、合并同类表格与图示，"
+                            "保留全部评分项响应、关键指标/承诺与图表编号" % (
+                                actual, planned, int(actual * 100 / planned), planned,
+                            )
+                        )[:500],
+                    }
+            return findings
 
         def _error_findings(items: list[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
             findings: dict[str, list[dict[str, str]]] = {}
@@ -3035,6 +3214,24 @@ class BidWizardReviewAgent:
                 issue_type = str(issue.get("type") or "")
                 detail = str(issue.get("detail") or "")
                 if not node_id:
+                    if issue_type == "forbidden_word":
+                        # 全稿级禁用词分派到实际含残留词的章节（其余全稿级 error 由
+                        # stance targets 按裁决口径下发）
+                        from backend.agent.bid_doc_checks import _forbidden_residual_count
+
+                        for item in items:
+                            candidate = str(item.get("node_id") or "")
+                            content = str(item.get("content") or "")
+                            for raw in (requirements.get("style_card") or {}).get("forbidden_words") or []:
+                                word = str(raw or "").strip()
+                                if word and _forbidden_residual_count(content, word)[0]:
+                                    hint = AUTO_FIX_TYPE_HINTS.get("forbidden_word", "")
+                                    _add(
+                                        candidate,
+                                        "机检（forbidden_word）",
+                                        ("口径卡禁用词「%s」在本章出现（技术术语除外）——%s" % (word, hint))[:500],
+                                    )
+                        continue
                     continue  # 全稿级（stance_conflict）由下方 targets 按裁决口径下发
                 hint = AUTO_FIX_TYPE_HINTS.get(issue_type)
                 _add(
@@ -3068,6 +3265,7 @@ class BidWizardReviewAgent:
 
         checks = _all_checks(current)
         errors = [item for item in checks if str(item.get("severity")) == "error"]
+        overlong = _overlong_findings(current)
         info: dict[str, Any] = {
             "enabled": _auto_fix_enabled(),
             "rounds": 0,
@@ -3075,8 +3273,53 @@ class BidWizardReviewAgent:
             "fixed_total": 0,
             "remaining_errors": len(errors),
             "revised_nodes": [],
+            "renumbered_captions": 0,
+            "renumbered_nodes": [],
+            "overlong_initial": len(overlong),
+            "compressed_nodes": [],
         }
-        if not errors or not info["enabled"]:
+        if not info["enabled"]:
+            return current, checks, info
+
+        # 确定性图表编号重排（零 LLM，2026-10-25 复盘：图5-1×2/表7-1×3 各节独立起号）：
+        # 每章每类按题注出现顺序编为 X-1..N，题注与引用同步替换；改动章节回写落盘
+        renumbered, renum_stats = renumber_captions(current)
+        if renum_stats.get("changed_nodes"):
+            for item in renumbered:
+                node_id = str(item.get("node_id") or "")
+                if node_id not in renum_stats["changed_nodes"]:
+                    continue
+                content = str(item.get("content") or "")
+                try:
+                    section_path = self.workspace_dir / "sections" / f"{_safe_filename(node_id)}.md"
+                    section_path.parent.mkdir(parents=True, exist_ok=True)
+                    section_path.write_text(content, encoding="utf-8")
+                    await self._set_section_status(
+                        node_id,
+                        status="generated",
+                        content_path=str(section_path),
+                        word_count=len(re.sub(r"\s", "", content)),
+                        error_message=None,
+                    )
+                except Exception:
+                    logger.exception(
+                        "bid-wizard auto-fix caption renumber persist failed: task=%s node=%s",
+                        self.task_id, node_id,
+                    )
+            current = renumbered
+            info["renumbered_captions"] = int(renum_stats.get("remapped") or 0)
+            info["renumbered_nodes"] = list(renum_stats["changed_nodes"])
+            logger.info(
+                "bid-wizard caption renumber: task=%s captions=%d remapped=%d nodes=%d ambiguous=%d",
+                self.task_id, renum_stats.get("captions"), renum_stats.get("remapped"),
+                len(renum_stats["changed_nodes"]), renum_stats.get("ambiguous"),
+            )
+            checks = _all_checks(current)
+            errors = [item for item in checks if str(item.get("severity")) == "error"]
+            overlong = _overlong_findings(current)
+            info["overlong_initial"] = len(overlong)
+
+        if not errors and not overlong:
             return current, checks, info
 
         requirements_text = build_requirements_text(requirements)
@@ -3090,7 +3333,14 @@ class BidWizardReviewAgent:
 
         for round_no in range(1, AUTO_FIX_MAX_ROUNDS + 1):
             self._check_cancel()
-            findings = _error_findings(current)
+            error_findings = _error_findings(current)
+            overlong_findings = _overlong_findings(current)
+            findings: dict[str, list[dict[str, str]]] = {}
+            for node_id in set(error_findings) | set(overlong_findings):
+                merged = list(error_findings.get(node_id, []))
+                if node_id in overlong_findings:
+                    merged.append(overlong_findings[node_id])
+                findings[node_id] = merged
             affected = [
                 str(node.get("node_id"))
                 for node in spec
@@ -3108,7 +3358,7 @@ class BidWizardReviewAgent:
                 "\n".join(
                     "- %s" % finding["issue"]
                     for node_id in affected
-                    for finding in findings[node_id]
+                    for finding in error_findings.get(node_id, [])
                     if str(finding.get("where") or "").startswith("全稿口径")
                 )[:4_200]
                 or "（无）"
@@ -3120,6 +3370,8 @@ class BidWizardReviewAgent:
                 )
                 if section is None:
                     continue
+                if node_id in overlong_findings and node_id not in info["compressed_nodes"]:
+                    info["compressed_nodes"].append(node_id)
                 try:
                     revised = await self._revise_section(
                         spec_by_id[node_id],
@@ -3149,7 +3401,7 @@ class BidWizardReviewAgent:
                     info["revised_nodes"].append(node_id)
             checks = _all_checks(current)
             errors = [item for item in checks if str(item.get("severity")) == "error"]
-            if not errors:
+            if not errors and not _overlong_findings(current):
                 break
         info["remaining_errors"] = len(errors)
         info["fixed_total"] = max(0, int(info["initial_errors"]) - len(errors))
