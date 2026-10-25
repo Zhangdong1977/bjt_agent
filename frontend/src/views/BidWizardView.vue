@@ -143,12 +143,33 @@ function sectionBookmarks(nodeId: string): { start: string; end: string } {
   return { start: `AIWIZ_${safe}_S`, end: `AIWIZ_${safe}_E` };
 }
 
-const STAGES: { key: WizardStage; title: string; hint: string }[] = [
-  { key: "material", title: "素材准备", hint: "上传招标文件与公司素材，AI 自动分段索引" },
-  { key: "requirement", title: "需求确认", hint: "AI 提问挖掘编写需求，可采纳素材建议答案" },
-  { key: "outline", title: "编写大纲", hint: "目录＋每章摘要＋图表规划，可手工或 AI 修改" },
-  { key: "writing", title: "逐章撰写", hint: "逐章生成并写入 Word，每章可单独撤销/重生成" },
+const STAGES: { key: WizardStage; title: string; hint: string; guide: string }[] = [
+  {
+    key: "material",
+    title: "素材准备",
+    hint: "上传招标文件与公司素材，AI 自动分段索引",
+    guide: "推荐顺序：① 上传招标文件（必传）→ ② AI 解读招标要素 → ③ 按建议补齐公司素材。素材越全，后续写得越准。",
+  },
+  {
+    key: "requirement",
+    title: "需求确认",
+    hint: "AI 提问挖掘编写需求，可采纳素材建议答案",
+    guide: "从上到下依次确认：① 生成要求（字数必填*）→ ② 需求问答 → ③ 应答口径 → ④ 额外需求，然后点「下一步：编写大纲」。",
+  },
+  {
+    key: "outline",
+    title: "编写大纲",
+    hint: "目录＋每章摘要＋图表规划，可手工或 AI 修改",
+    guide: "先生成大纲，再按需调整（拖拽排序 / 编辑摘要 / AI 一句话修改）。确认后进入撰写——确认前可反复调整，撰写中修改大纲需重新生成对应章。",
+  },
+  {
+    key: "writing",
+    title: "逐章撰写",
+    hint: "逐章生成并写入 Word，每章可单独撤销/重生成",
+    guide: "选择章节与写入方式 → AI 逐章撰写并自动质检修复 → 按章写入 Word；全文完成后还可 AI 审读优化一轮。",
+  },
 ];
+const STEP_WORDS = ["一", "二", "三", "四"];
 const stageIndexOf: Record<string, number> = { material: 0, requirement: 1, outline: 2, writing: 3 };
 const STAGE_TITLES: Record<string, string> = Object.fromEntries(
   STAGES.map((stage) => [stage.key, stage.title]),
@@ -2828,7 +2849,7 @@ onUnmounted(() => {
         >项目列表</button>
       </div>
       <h1>标书生成</h1>
-      <p>基于招标文件与企业素材，AI 依次完成需求确认、大纲编写与逐章撰写，并按章写入当前 Word 文档；每章可单独重写或整体移除。本工具当前仅编写技术标书，商务标内容不在生成范围内。</p>
+      <p>基于招标文件与企业素材分四步成稿：步骤一 素材准备 → 步骤二 需求确认 → 步骤三 编写大纲 → 步骤四 逐章撰写，并按章写入当前 Word 文档；每章可单独重写或整体移除。本工具当前仅编写技术标书，商务标内容不在生成范围内。</p>
       <div class="document-state" :class="`state-${bridgeState}`">
         <span class="dot" />
         <span>{{ bridgeStateText }}</span>
@@ -2870,7 +2891,7 @@ onUnmounted(() => {
               {{ busy === "create" ? "创建中…" : "新建项目" }}
             </button>
           </div>
-          <p class="hint">AI 将引导你完成：上传招标文件与公司素材 → 确认编写需求 → 制定编写大纲 → 逐章撰写并写入 Word。仅编写技术标书，商务标内容请线下编制。</p>
+          <p class="hint">AI 将分四步引导你完成：步骤一 素材准备（上传招标文件与公司素材）→ 步骤二 需求确认 → 步骤三 编写大纲 → 步骤四 逐章撰写并写入 Word。仅编写技术标书，商务标内容请线下编制。</p>
         </div>
 
         <div class="card">
@@ -2951,6 +2972,16 @@ onUnmounted(() => {
           <StatusDot v-if="index === stageIndex && stageLive" tone="running" class="stage-live-dot" />
         </button>
       </nav>
+
+      <!-- 2026-10-25 步骤指引：当前阶段标题头（步骤一~四 + 推荐操作顺序 + 进度），随 stage-bar 同步 -->
+      <header class="stage-head">
+        <h2>
+          <span class="step-tag">步骤{{ STEP_WORDS[stageIndex] }}</span>
+          {{ STAGES[stageIndex].title }}
+          <span class="step-progress">第 {{ stageIndex + 1 }} / {{ STAGES.length }} 步</span>
+        </h2>
+        <p class="stage-guide">{{ STAGES[stageIndex].guide }}</p>
+      </header>
 
       <!-- ==================================================== 阶段 1：素材准备 -->
       <section v-if="stageIndex === 0" class="stage-panel">
@@ -3181,7 +3212,7 @@ onUnmounted(() => {
 
         <!-- 生成要求（决策 38-42）：编写需求里固定的三项硬约束，随「保存作答」一并保存；字数在进入编写大纲时必填 -->
         <div class="card gen-card">
-          <h3>生成要求</h3>
+          <h3>① 生成要求（字数必填<em class="req-mark" title="进入编写大纲前必填">*</em>）</h3>
           <p class="hint" style="margin:0 0 10px">决定大纲的内容范围、总篇幅与是否配图。随「保存作答」一并保存；修改后已生成的大纲会标记为基于旧需求，需重新生成。</p>
           <div class="gen-row">
             <span class="gen-label">生成内容</span>
@@ -3248,7 +3279,7 @@ onUnmounted(() => {
         </div>
 
         <div class="card">
-          <h3>素材检查和需求确认</h3>
+          <h3>② 素材检查和需求确认</h3>
           <template v-if="!questionnaire.length">
             <p class="hint">AI 将检查您上传的素材，如有问题，AI 将向您提问并请您补充更多信息和素材（每个问题尽量附带素材依据的建议答案）。</p>
             <button type="button" class="primary" :disabled="Boolean(busy) || !tenderReady" @click="onGenerateQuestionnaire">开始检查</button>
@@ -3385,7 +3416,7 @@ onUnmounted(() => {
         </div>
         <!-- 23 号 O3/O4：应答口径卡——AI 对照招标要求与素材逐项建议三态口径，确认后注入大纲/撰写 -->
         <div v-if="questionnaire.length" class="card">
-          <h3>应答口径</h3>
+          <h3>③ 应答口径</h3>
           <template v-if="!capabilityItems.length">
             <p class="hint">AI 对照招标要求与素材索引，逐条建议应答口径：「现有已实现」（须有素材依据）、「本项目建设」（交付内容）或「待确认」。确认保存后口径将注入大纲与章节撰写，杜绝虚构能力。</p>
             <button type="button" class="primary" :disabled="Boolean(busy) || !analysis" @click="onGenerateCapability">AI 生成口径建议</button>
@@ -3450,7 +3481,7 @@ onUnmounted(() => {
         </div>
         <!-- 追问侧栏（决策 32a / 43）：聊天式——历史按时间正序从上往下，输入框固定在卡片底部 -->
         <div class="card qa-card">
-          <h3>额外的需求</h3>
+          <h3>④ 额外的需求</h3>
           <p class="hint" style="margin:0 0 8px">每条问答点「采纳并入需求」即时生效，无需统一保存。如果您有额外的需求，请告诉 AI；AI 将基于招标要素与已索引素材回答，采纳的问答会并入编写需求（{{ supplementalCount }} 条补充说明），供大纲与撰写参考。每次提问按问答微任务计费。</p>
           <div ref="qaThreadEl" class="qa-thread">
             <p v-if="!qaHistory.length && busy !== 'qaAsk'" class="hint qa-empty">还没有提问。在下方输入框告诉 AI 您的额外需求，问答会按时间顺序显示在这里。</p>
@@ -3488,7 +3519,7 @@ onUnmounted(() => {
               class="primary"
               :disabled="Boolean(busy)"
               @click="onEnterOutline"
-            >{{ busy === "requirements" && saveWillChangeAnswers ? "保存并进入…" : "进入编写大纲" }}</button>
+            >{{ busy === "requirements" && saveWillChangeAnswers ? "保存并进入下一步…" : "下一步：编写大纲" }}</button>
           </div>
         </div>
         <div v-else class="stage-actions">
@@ -3632,7 +3663,7 @@ onUnmounted(() => {
         <div v-if="specNodes.length" class="stage-actions">
           <button type="button" class="ghost" :disabled="Boolean(busy)" @click="gotoStage(1)">上一步</button>
           <button type="button" class="primary" :disabled="Boolean(busy) || !canConfirmSpec" @click="onConfirmSpec">
-            {{ wizard.spec_confirmed_at ? "已确认（再次进入撰写）" : "确认大纲，进入逐章撰写" }}
+            {{ wizard.spec_confirmed_at ? "已确认（再次进入撰写）" : "下一步：逐章撰写（确认大纲）" }}
           </button>
         </div>
         <div v-else class="stage-actions">
@@ -3918,6 +3949,12 @@ onUnmounted(() => {
 .stage-item:disabled{opacity:.45;cursor:not-allowed}
 .stage-no{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid currentColor;border-radius:50%;font-size:11px}
 .stage-panel{padding:0 0 24px;display:flex;flex-direction:column;gap:12px}
+/* 2026-10-25 步骤指引：当前阶段标题头（步骤一~四徽标+推荐顺序+第 X/4 步） */
+.stage-head{display:flex;flex-direction:column;gap:4px;padding:10px 14px;background:#fff;border:1px solid #ebebeb;border-radius:10px}
+.stage-head h2{margin:0;font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.step-tag{display:inline-flex;align-items:center;padding:1px 10px;border-radius:999px;background:#fdeaea;color:#d7041a;font-size:12px;font-weight:600;white-space:nowrap}
+.step-progress{margin-left:auto;color:#bbb;font-size:12px;font-weight:400;white-space:nowrap}
+.stage-guide{margin:0;color:#888;font-size:12px;line-height:1.7}
 .card{background:#fff;border:1px solid #ebebeb;border-radius:10px;padding:14px}
 .card h3{margin:0 0 10px;font-size:14px}
 .card h4{margin:14px 0 8px;font-size:13px;color:#555}
