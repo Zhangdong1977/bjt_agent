@@ -3693,7 +3693,13 @@ onUnmounted(() => {
                       <div v-for="(chart, chartIndex) in row.node.charts" :key="chartIndex" class="chart-row">
                         <select v-model="chart.type" @change="markSpecDirty">
                           <option value="table">表格</option>
-                          <option value="mermaid">图示</option>
+                          <option value="pie">占比图</option>
+                          <option value="bar">柱状对比图</option>
+                          <option value="arch">架构图</option>
+                          <option value="flow">流程图</option>
+                          <option value="seq">时序图</option>
+                          <option value="gantt">横道图</option>
+                          <option value="mermaid">图示（存量）</option>
                         </select>
                         <input v-model="chart.title" placeholder="图表标题" @input="markSpecDirty">
                         <input v-model="chart.points" placeholder="要点" @input="markSpecDirty">

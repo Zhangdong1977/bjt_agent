@@ -1649,6 +1649,21 @@ def test_generation_options_schema_collapses_business():
     assert GenerationOptions(fig_mode="mermaid").model_dump()["fig_mode"] == "bidfig"
 
 
+def test_spec_update_schema_accepts_bidfig_chart_types():
+    """2026-10-24 422 事故：规划词汇扩类后保存大纲 422——保存接口 schema 必须放行全部 bidfig 类型。"""
+    from pydantic import ValidationError
+
+    from backend.schemas.bid_wizard import SpecChartPlan, SpecUpdate
+
+    for chart_type in ("table", "mermaid", "pie", "bar", "arch", "flow", "seq", "gantt"):
+        SpecUpdate(spec=[{
+            "title": "项目实施方案", "level": 1,
+            "charts": [{"type": chart_type, "title": "人员结构"}],
+        }])
+    with pytest.raises(ValidationError):
+        SpecChartPlan(type="topo", title="网络拓扑")
+
+
 def test_build_generation_constraints_text_variants():
     from backend.agent.bid_wizard_agent import build_generation_constraints_text
 

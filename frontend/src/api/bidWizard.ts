@@ -7,7 +7,8 @@ const API_BASE = (import.meta.env.VITE_API_BASE || "/api").replace(/\/$/, "");
 export type WizardStage = "material" | "requirement" | "outline" | "writing";
 
 export interface WizardSpecChart {
-  type: "table" | "mermaid";
+  // 与后端 SpecChartPlan.type / bidfig 原语全集一致（mermaid 仅存量展示）
+  type: "table" | "mermaid" | "pie" | "bar" | "arch" | "flow" | "seq" | "gantt";
   title: string;
   points?: string | null;
 }

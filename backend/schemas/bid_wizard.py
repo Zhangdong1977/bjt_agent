@@ -277,7 +277,9 @@ class WizardQaAdopt(BaseModel):
 
 
 class SpecChartPlan(BaseModel):
-    type: Literal["table", "mermaid"] = "table"
+    # type 全集必须与 bid_wizard_agent._bound_charts/_CHART_PLAN_LABELS 保持一致
+    # （2026-10-24 422 事故：规划词汇扩类后此 Literal 未同步，保存大纲被整体拒掉）
+    type: Literal["table", "mermaid", "pie", "bar", "arch", "flow", "seq", "gantt"] = "table"
     title: str = Field(min_length=1, max_length=200)
     points: str | None = Field(default=None, max_length=1_000)
 
