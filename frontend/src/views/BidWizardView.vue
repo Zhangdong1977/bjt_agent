@@ -184,6 +184,8 @@ const busy = ref(""); // 当前阻塞交互的操作名（按钮态）
 // =============================================================== 项目列表（§4.0 入口）
 
 const view = ref<"list" | "wizard">("list");
+/** 完整操作指引面板开关（2026-10-25：用户要完整操作指引——hero 常驻入口，随时可看）。 */
+const showGuide = ref(false);
 const projectList = ref<{ active: WizardListItem[]; archived: WizardListItem[] } | null>(null);
 const newListName = ref("");
 const archivedExpanded = ref(false);
@@ -2149,7 +2151,7 @@ function trackTask(next: WizardWritingTask) {
       : next.continue_of
         ? "单章重生成任务已提交"
         : writeMode.value === "review"
-          ? "撰写任务已提交——全文生成后统一写入 Word（建议先「AI 审读一轮」再写入）"
+          ? "撰写任务已提交——全文生成后统一写入 Word（建议先「AI 审读优化全稿」再写入）"
           : "撰写任务已提交",
   );
   void primeTaskSectionsThenListen(next.id);
@@ -2632,7 +2634,7 @@ async function copyFullDraft() {
       return;
     }
     await navigator.clipboard.writeText(parts.join("\n\n"));
-    pushLog("ok", `已复制全稿 Markdown（${parts.length} 章）——可粘贴到任意编辑器`);
+    pushLog("ok", `已复制全稿文本（Markdown 源，${parts.length} 章）——可粘贴到任意编辑器`);
   } catch (error) {
     pageError.value = friendlyError(error, "复制全稿失败");
   } finally {
@@ -2842,14 +2844,22 @@ onUnmounted(() => {
     <section class="blind-card hero-card">
       <div class="hero-head">
         <div class="section-kicker">WORD · 四阶段智能撰写</div>
-        <button
-          v-if="view === 'wizard' && wizard"
-          type="button"
-          class="hero-action"
-          :disabled="Boolean(busy)"
-          title="返回项目列表（进行中的撰写任务继续在云端执行，重进自动恢复）"
-          @click="onBackToList"
-        >项目列表</button>
+        <div class="hero-head-actions">
+          <button
+            type="button"
+            class="hero-action"
+            :class="{ active: showGuide }"
+            @click="showGuide = !showGuide"
+          >{{ showGuide ? "收起操作指引" : "完整操作指引" }}</button>
+          <button
+            v-if="view === 'wizard' && wizard"
+            type="button"
+            class="hero-action"
+            :disabled="Boolean(busy)"
+            title="返回项目列表（进行中的撰写任务继续在云端执行，重进自动恢复）"
+            @click="onBackToList"
+          >项目列表</button>
+        </div>
       </div>
       <h1>标书生成</h1>
       <p>基于招标文件与企业素材分四步成稿：步骤一 素材准备 → 步骤二 需求确认 → 步骤三 编写大纲 → 步骤四 逐章撰写，并按章写入当前 Word 文档；每章可单独重写或整体移除。本工具当前仅编写技术标书，商务标内容不在生成范围内。</p>
@@ -2865,6 +2875,20 @@ onUnmounted(() => {
         >重新连接文档</button>
       </div>
       <div v-if="pageError" class="hero-error" role="alert">{{ pageError }}</div>
+    </section>
+
+    <!-- 完整操作指引（2026-10-25 用户需求）：hero 常驻入口随时展开，四步主流程 + 成稿后推荐顺序 + 常见问题 -->
+    <section v-if="showGuide" class="card full-guide-card">
+      <h3>标书生成 · 完整操作指引</h3>
+      <p class="hint" style="margin:0 0 8px">前提：已安装标捷通插件并登录，在 Word 中打开「标书生成」进入本页；点数余额见右上角，AI 生成/审读按用量消耗点数。</p>
+      <ol class="guide-steps">
+        <li><b>步骤一 · 素材准备</b>：上传招标文件（必填，可多份）与公司素材（资质业绩、方案资料、历史标书模板等）。系统自动解析并建立素材索引，索引完成后进入下一步；历史标书会被识别为「历史模板」，生成大纲时参照其目录结构。</li>
+        <li><b>步骤二 · 需求确认</b>：①先填「生成要求」——字数必填、选择是否配图；②点「开始检查」，AI 对照招标要求检查素材并向你提问，逐条作答（可直接采纳建议答案，也可改为实际情况）；③逐条确认「应答口径」；④其他要求写入「额外的需求」（可选）。需求变化后可点「再次检查」让 AI 复查。</li>
+        <li><b>步骤三 · 编写大纲</b>：AI 生成目录、每章摘要与图表规划；可拖拽调整章节顺序、编辑内容，或用一句话让「AI 修改」调整。点「下一步：逐章撰写（确认大纲）」时系统会核对技术类评分项是否都有章节响应——有漏项会提示补章（可用 AI 修改或手动添加），补齐后才能确认。</li>
+        <li><b>步骤四 · 逐章撰写</b>：选择写入模式——推荐「审读后统一写入」；点「开始撰写」前先在 Word 中点好要开始插入的位置（锚点）。撰写在云端进行，可离开页面，重新进入自动恢复进度。</li>
+      </ol>
+      <p class="guide-sub"><b>成稿后推荐顺序</b>：①「AI 审读优化全稿」——AI 通读全文找出影响得分的问题并自动修订重点章节（消耗点数，提交前先出预估）；②机检不合格项（图表编号、占位、失效引用、措辞红线等）系统已自动修复并复检，质检报告只呈现合格状态；③「写入 Word」统一输出，写入后每章可单独重写、替换或移除；④「复制全稿文本」可粘贴到任意编辑器继续加工。</p>
+      <p class="guide-sub"><b>常见问题</b>：页面与 Word 断开→点「重新连接文档」；想把已写入内容挪到别的位置→「移除全部 AI 内容」（一次 Ctrl+Z 可整体恢复），再到目标位置「重新写入 Word」；某章不满意→在该章节上点「重生成」，完成后用「替换 Word 中本章」更新旧章。</p>
     </section>
 
     <div v-if="loading" class="wiz-loading">正在进入标书生成…</div>
@@ -3730,34 +3754,51 @@ onUnmounted(() => {
               v-if="!taskRunning && writeMode === 'review' && generatedCount > 0 && writtenCount === 0 && !isReviewTask"
               class="hint"
               style="margin:0 0 6px"
-            >全文已生成。推荐先「AI 审读一轮」找出问题并自动修订重点章节，再点「写入 Word」统一输出；着急成稿也可直接写入。</p>
+            >全文已生成。推荐先「AI 审读优化全稿」找出问题并自动修订重点章节，再点「写入 Word」统一输出；着急成稿也可直接写入。</p>
+            <!-- 2026-10-25 按键优化：主流程动作（审读/写入）升为主按钮并按推荐顺序排列；
+                 复制全稿文本（原名「复制全稿 Markdown」）带用途说明；移除类破坏性操作右置隔开 -->
             <div v-if="!taskRunning && (generatedCount > 0 || writtenCount > 0)" class="writing-tools">
-              <button
-                v-if="generatedCount > 0"
-                type="button"
-                class="link-btn"
-                :disabled="Boolean(busy)"
-                @click="onRewriteAllSections"
-              >{{ writtenCount > 0 ? "重新写入 Word" : "写入 Word" }}（{{ generatedCount }} 章待写入）</button>
+              <div class="flow-actions">
+                <button
+                  v-if="canStartReview && writtenCount === 0"
+                  type="button"
+                  class="primary"
+                  :disabled="Boolean(busy)"
+                  title="AI 通读全稿找出影响得分的问题并自动修订重点章节（消耗点数，提交前先出预估确认）"
+                  @click="onStartReview"
+                >{{ busy === "review" ? "AI 审读优化中…" : "AI 审读优化全稿（推荐先做）" }}</button>
+                <button
+                  v-if="generatedCount > 0"
+                  type="button"
+                  :class="canStartReview && writtenCount === 0 ? 'ghost' : 'primary'"
+                  :disabled="Boolean(busy)"
+                  title="把已生成的全部章节统一写入当前 Word 文档（不调用 AI、不计费）"
+                  @click="onRewriteAllSections"
+                >{{ writtenCount > 0 ? "重新写入 Word" : "写入 Word" }}（{{ generatedCount }} 章待写入）</button>
+              </div>
               <button
                 type="button"
                 class="link-btn"
                 :disabled="copyDraftBusy"
+                title="复制全部已生成章节的 Markdown 源文本（含表格与图示源码），可粘贴到任意编辑器继续加工"
                 @click="copyFullDraft"
-              >{{ copyDraftBusy ? "聚合中…" : "复制全稿 Markdown" }}</button>
-              <!-- 23 号 O5：撰写完成后可发起一轮 AI 审读（找问题+自动修订重点章，计费预估确认） -->
+              >{{ copyDraftBusy ? "聚合中…" : "复制全稿文本" }}</button>
+              <!-- 23 号 O5：撰写完成后可发起一轮 AI 审读（找问题+自动修订重点章，计费预估确认）；
+                   已写入后审读降为次要入口（主按钮只在未写入时占据推荐位） -->
               <button
-                v-if="canStartReview"
+                v-if="canStartReview && writtenCount > 0"
                 type="button"
                 class="link-btn"
                 :disabled="Boolean(busy)"
+                title="AI 通读全稿找出影响得分的问题并自动修订重点章节（消耗点数，提交前先出预估确认）"
                 @click="onStartReview"
-              >{{ busy === "review" ? "提交审读中…" : "AI 审读一轮" }}</button>
+              >{{ busy === "review" ? "AI 审读优化中…" : "AI 审读优化全稿" }}</button>
               <button
                 v-if="writtenCount > 0"
                 type="button"
-                class="link-btn danger"
+                class="link-btn danger remove-all-btn"
                 :disabled="Boolean(busy)"
+                title="从当前 Word 文档删除全部 AI 撰写章节及你在其中的手工修改（一次 Ctrl+Z 可整体恢复）；移除后可在目标位置重新写入"
                 @click="onRemoveAllSections"
               >移除全部 AI 内容</button>
             </div>
@@ -3915,6 +3956,8 @@ onUnmounted(() => {
 .hero-card{position:relative;overflow:hidden;border-top:3px solid var(--brand)}
 .hero-card::after{content:"";position:absolute;right:-34px;top:-52px;width:116px;height:116px;border-radius:50%;background:linear-gradient(135deg,rgba(215,4,26,.12),rgba(215,4,26,0));pointer-events:none}
 .hero-head{position:relative;z-index:1;display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.hero-head-actions{display:flex;flex:0 0 auto;align-items:center;gap:6px}
+.hero-action.active{border-color:var(--brand);color:var(--brand)}
 .section-kicker{margin-bottom:5px;color:var(--brand);font-size:10px;font-weight:700;letter-spacing:.12em}
 .hero-card h1{position:relative;margin:0;color:#171717;font-size:22px;line-height:1.35}
 .hero-card>p{position:relative;margin:8px 0 13px;color:#777;font-size:12px;line-height:1.65}
@@ -4024,6 +4067,16 @@ onUnmounted(() => {
 .material-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
 .material-row,.section-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 8px;border:1px solid #f0f0f0;border-radius:7px}
 .link-btn{border:0;background:transparent;color:#1677ff;cursor:pointer;padding:0 2px;font-size:12px}
+/* 2026-10-25 按键优化：成稿动作行——主流程按钮组 + 次要链接 + 破坏性操作右置隔开 */
+.writing-tools{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;margin:2px 0 8px}
+.flow-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.remove-all-btn{margin-left:auto}
+/* 完整操作指引面板（hero 常驻入口展开；类名避开既有 .guide-card=无权限提示卡） */
+.full-guide-card{margin-top:10px}
+.guide-steps{margin:0 0 10px;padding-left:20px;display:flex;flex-direction:column;gap:6px;font-size:12px;line-height:1.8}
+.guide-steps b{color:#333}
+.guide-sub{margin:0 0 8px;font-size:12px;line-height:1.8;color:#555}
+.guide-sub b{color:#333}
 .link-btn.danger{color:#cf1322}
 .danger{color:#cf1322}
 .stale-tip{padding:8px 12px;border:1px solid #ffe58f;border-radius:7px;background:#fffbe6;color:#8c6d1f;font-size:12px}
