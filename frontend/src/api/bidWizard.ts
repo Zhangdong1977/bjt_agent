@@ -39,7 +39,8 @@ export interface WizardQuestion {
 export type GenerationPart = "business" | "technical";
 
 /** 生成要求（决策 38-41）：编写需求里固定的三项硬约束子结构；word_count 为空=草稿，进大纲时必填。
- * 2026-10-23：parts 固定技术（商务屏蔽）；fig_mode=图表引擎（23 号 O8，默认 mermaid）。 */
+ * 2026-10-23：parts 固定技术（商务屏蔽）；2026-10-24：fig_mode 固定 bidfig（废弃 mermaid，
+ * 类型保留 "mermaid" 仅为承接存量向导数据展示）。 */
 export interface GenerationOptions {
   parts: GenerationPart[];
   word_count: number | null;

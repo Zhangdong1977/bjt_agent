@@ -166,7 +166,7 @@ const STAGES: { key: WizardStage; title: string; hint: string; guide: string }[]
     key: "writing",
     title: "逐章撰写",
     hint: "逐章生成并写入 Word，每章可单独撤销/重生成",
-    guide: "选择章节与写入方式 → AI 逐章撰写并自动质检修复 → 按章写入 Word；全文完成后还可 AI 审读优化一轮。",
+    guide: "点「开始撰写」全文云端生成（先在 Word 中点好插入位置）→ 推荐先 AI 审读优化 → 统一写入 Word；机检不合格项自动修复。",
   },
 ];
 const STEP_WORDS = ["一", "二", "三", "四"];
@@ -364,6 +364,8 @@ const bridgeStateText = computed(() => {
 async function gotoStage(index: number) {
   if (!wizard.value || busy.value) return;
   if (index === stageIndex.value) return;
+  // 素材未解析完不允许前进到需求确认（2026-10-24 用户反馈）：进途任务只等不拦
+  if (stageIndex.value === 0 && index > 0 && requirementGateText.value) return;
   if (index > stageIndex.value && index >= 3 && !wizard.value.spec_confirmed_at) return;
   await withBusy("stage", async () => {
     wizard.value = await updateWizardStage(wizard.value!.id, STAGES[index].key);
@@ -786,6 +788,18 @@ const stageLive = computed(() => {
   return Boolean(busy.value);
 });
 
+/** 进入需求确认的门槛（2026-10-24 用户反馈）：招标文件解析完 + 素材池无解析/索引进途。
+ *  失败不阻断（进步骤二仍可重试索引）；返回空串=放行，非空=按钮禁用文案。 */
+const requirementGateText = computed(() => {
+  if (!tenderReady.value) return "等待招标文件解析…";
+  const parsing = materials.value.filter(
+    (item) => item.doc_status === "pending" || item.doc_status === "parsing",
+  ).length;
+  if (parsing) return `素材解析中（${parsing} 份）…`;
+  if (indexSummary.value.indexing > 0) return `素材索引中（${indexSummary.value.indexing} 份）…`;
+  return "";
+});
+
 /** AI 招标解读（§4.2：解读后驱动用户补素材）。 */
 interface SuggestedMaterial {
   name: string;
@@ -879,16 +893,17 @@ const followupSkipNotice = ref("");
 // ---- 生成要求（决策 38-42）：编写需求里固定的三项硬约束，随「保存作答」一并保存；字数在进入编写大纲时必填 ----
 // 2026-10-23 产品要求：屏蔽商务应标编写——生成内容固定为技术部分（后端 schema/normalize 双侧同步收敛，此处只做固定展示）
 const GEN_TECHNICAL_ONLY = "技术应标书（当前版本仅提供技术应标部分的编写）";
+// 2026-10-24 用户反馈：废弃纯 mermaid 制图——图表引擎固定 bidfig（后端 schema/normalize 同步收敛存量 mermaid）
 const genOptions = reactive<{
   parts: GenerationPart[];
   word_count: number | null;
   charts: boolean;
-  fig_mode: "mermaid" | "bidfig";
+  fig_mode: "bidfig";
 }>({
   parts: ["technical"],
   word_count: null,
   charts: true,
-  fig_mode: "mermaid",
+  fig_mode: "bidfig",
 });
 const genWordInput = ref<number | "">(""); // type=number 输入框原值（"" = 未填）
 const genWordInputEl = ref<HTMLInputElement | null>(null);
@@ -910,13 +925,14 @@ function savedGenerationOptions(): GenerationOptions | null {
 }
 
 /** 从向导恢复生成要求草稿（进入向导 / 保存后与后端规范化结果对齐）；无已存值回默认：仅技术、未填字数、配图。
- *  parts 固定技术（2026-10-23 商务屏蔽）——存量数据里的 business 由后端收敛，前端不展示。 */
+ *  parts 固定技术（2026-10-23 商务屏蔽）；fig_mode 固定 bidfig（2026-10-24 废弃 mermaid）——
+ *  均由后端收敛存量数据，前端不展示、不参与脏比对。 */
 function loadGenerationOptionsFromWizard() {
   const saved = savedGenerationOptions();
   genOptions.parts = ["technical"];
   genOptions.word_count = typeof saved?.word_count === "number" ? saved.word_count : null;
   genOptions.charts = saved ? saved.charts !== false : true;
-  genOptions.fig_mode = saved?.fig_mode === "bidfig" ? "bidfig" : "mermaid";
+  genOptions.fig_mode = "bidfig";
   genWordInput.value = genOptions.word_count ?? "";
   genOptionsError.value = "";
 }
@@ -953,13 +969,12 @@ const hasUnsavedGenOptions = computed(() => {
   const saved = savedGenerationOptions();
   const draft = genOptionsPayload.value;
   if (!saved) {
-    return draft.word_count != null || draft.charts !== true || draft.fig_mode !== "mermaid";
+    return draft.word_count != null || draft.charts !== true;
   }
-  // parts 固定技术（商务屏蔽），不参与脏比对；存量 business 由保存动作收敛
+  // parts/fig_mode 已固定（商务屏蔽、mermaid 废弃），不参与脏比对；存量由保存动作收敛
   return (
     (saved.word_count ?? null) !== draft.word_count ||
-    (saved.charts !== false) !== draft.charts ||
-    (saved.fig_mode === "bidfig") !== (draft.fig_mode === "bidfig")
+    (saved.charts !== false) !== draft.charts
   );
 });
 
@@ -1863,8 +1878,8 @@ async function onSaveSpecInner() {
 
 // =============================================================== 阶段 4：逐章撰写
 
-// 2026-10-24 用户反馈质量差后默认切「审读后统一写入」：全文生成 → AI 审读优化 → 统一写入 Word，
-// 避免未审读的成稿边写边进文档；两种即时写入模式保留给习惯流式出稿的用户
+// 2026-10-24 用户反馈（第二次）：步骤四固定「审读后统一写入」——全文生成 → AI 审读优化 → 统一写入 Word，
+// 不再提供写入模式选择（writeMode 仅作内部态保留恒为 review，兼容既有分支引用）
 const writeMode = ref<"review" | "auto" | "confirm">("review");
 const selectedNodes = ref<Set<string>>(new Set());
 const taskId = ref("");
@@ -2794,7 +2809,7 @@ function resetLocalState() {
   genOptions.parts = ["technical"];
   genOptions.word_count = null;
   genOptions.charts = true;
-  genOptions.fig_mode = "mermaid";
+  genOptions.fig_mode = "bidfig";
   genWordInput.value = "";
   genOptionsError.value = "";
   qaQuestion.value = "";
@@ -2882,10 +2897,10 @@ onUnmounted(() => {
       <h3>标书生成 · 完整操作指引</h3>
       <p class="hint" style="margin:0 0 8px">前提：已安装标捷通插件并登录，在 Word 中打开「标书生成」进入本页；点数余额见右上角，AI 生成/审读按用量消耗点数。</p>
       <ol class="guide-steps">
-        <li><b>步骤一 · 素材准备</b>：上传招标文件（必填，可多份）与公司素材（资质业绩、方案资料、历史标书模板等）。系统自动解析并建立素材索引，索引完成后进入下一步；历史标书会被识别为「历史模板」，生成大纲时参照其目录结构。</li>
+        <li><b>步骤一 · 素材准备</b>：上传招标文件（必填，可多份）与公司素材（资质业绩、方案资料、历史标书模板等）。系统自动解析并建立素材索引，解析与索引完成前「下一步」不可点；历史标书会被识别为「历史模板」，生成大纲时参照其目录结构。</li>
         <li><b>步骤二 · 需求确认</b>：①先填「生成要求」——字数必填、选择是否配图；②点「开始检查」，AI 对照招标要求检查素材并向你提问，逐条作答（可直接采纳建议答案，也可改为实际情况）；③逐条确认「应答口径」；④其他要求写入「额外的需求」（可选）。需求变化后可点「再次检查」让 AI 复查。</li>
         <li><b>步骤三 · 编写大纲</b>：AI 生成目录、每章摘要与图表规划；可拖拽调整章节顺序、编辑内容，或用一句话让「AI 修改」调整。点「下一步：逐章撰写（确认大纲）」时系统会核对技术类评分项是否都有章节响应——有漏项会提示补章（可用 AI 修改或手动添加），补齐后才能确认。</li>
-        <li><b>步骤四 · 逐章撰写</b>：选择写入模式——推荐「审读后统一写入」；点「开始撰写」前先在 Word 中点好要开始插入的位置（锚点）。撰写在云端进行，可离开页面，重新进入自动恢复进度。</li>
+        <li><b>步骤四 · 逐章撰写</b>：点「开始撰写」前先在 Word 中点好要开始插入的位置（锚点）；流程固定为全文生成 → 推荐先「AI 审读优化全稿」→ 再统一写入 Word。撰写在云端进行，可离开页面，重新进入自动恢复进度。</li>
       </ol>
       <p class="guide-sub"><b>成稿后推荐顺序</b>：①「AI 审读优化全稿」——AI 通读全文找出影响得分的问题并自动修订重点章节（消耗点数，提交前先出预估）；②机检不合格项（图表编号、占位、失效引用、措辞红线等）系统已自动修复并复检，质检报告只呈现合格状态；③「写入 Word」统一输出，写入后每章可单独重写、替换或移除；④「复制全稿文本」可粘贴到任意编辑器继续加工。</p>
       <p class="guide-sub"><b>常见问题</b>：页面与 Word 断开→点「重新连接文档」；想把已写入内容挪到别的位置→「移除全部 AI 内容」（一次 Ctrl+Z 可整体恢复），再到目标位置「重新写入 Word」；某章不满意→在该章节上点「重生成」，完成后用「替换 Word 中本章」更新旧章。</p>
@@ -3210,8 +3225,14 @@ onUnmounted(() => {
         </div>
 
         <div class="stage-actions">
-          <button type="button" class="primary" :disabled="!tenderReady || Boolean(busy)" @click="gotoStage(1)">
-            {{ tenderReady ? "下一步：需求确认" : "等待招标文件解析…" }}
+          <button
+            type="button"
+            class="primary"
+            :disabled="Boolean(requirementGateText) || Boolean(busy)"
+            :title="requirementGateText || '进入需求确认'"
+            @click="gotoStage(1)"
+          >
+            {{ requirementGateText || "下一步：需求确认" }}
           </button>
         </div>
       </section>
@@ -3293,10 +3314,8 @@ onUnmounted(() => {
           <div v-if="genOptions.charts" class="gen-row">
             <span class="gen-label">图表引擎</span>
             <div class="gen-field gen-inline">
-              <label class="radio"><input v-model="genOptions.fig_mode" type="radio" name="gen-figmode" value="mermaid" :disabled="Boolean(busy)">标准（mermaid）</label>
-              <label class="radio" title="架构/流程/甘特/时序类图由新版渲染引擎生成，版式更精美">
-                <input v-model="genOptions.fig_mode" type="radio" name="gen-figmode" value="bidfig" :disabled="Boolean(busy)">新版渲染（架构/流程/甘特/时序更精美）
-              </label>
+              <!-- 2026-10-24 用户反馈：废弃标准（mermaid）制图，固定新版渲染 -->
+              <span class="gen-fixed">新版渲染（架构/流程/甘特/时序，版式更精美）</span>
             </div>
           </div>
           <p v-if="hasUnsavedGenOptions" class="hint" style="margin:6px 0 0;color:#d46b08">
@@ -3441,12 +3460,14 @@ onUnmounted(() => {
             </div>
           </template>
         </div>
-        <!-- 23 号 O3/O4：应答口径卡——AI 对照招标要求与素材逐项建议三态口径，确认后注入大纲/撰写 -->
-        <div v-if="questionnaire.length" class="card">
+        <!-- 23 号 O3/O4：应答口径卡——AI 对照招标要求与素材逐项建议三态口径，确认后注入大纲/撰写。
+             2026-10-24 用户反馈：卡片常驻（未生成问卷时也占位），避免①②④跳号 -->
+        <div class="card">
           <h3>③ 应答口径</h3>
           <template v-if="!capabilityItems.length">
             <p class="hint">AI 对照招标要求与素材索引，逐条建议应答口径：「现有已实现」（须有素材依据）、「本项目建设」（交付内容）或「待确认」。确认保存后口径将注入大纲与章节撰写，杜绝虚构能力。</p>
-            <button type="button" class="primary" :disabled="Boolean(busy) || !analysis" @click="onGenerateCapability">AI 生成口径建议</button>
+            <p v-if="!questionnaire.length" class="hint">先完成上方「② 素材检查和需求确认」，AI 检查完成后即可在这里生成口径建议。</p>
+            <button type="button" class="primary" :disabled="Boolean(busy) || !analysis || !questionnaire.length" @click="onGenerateCapability">AI 生成口径建议</button>
             <div v-if="busy === 'capability'" class="status-row">
               <StatusDot tone="running">正在对照招标要求与素材逐项判断应答口径…</StatusDot>
               <span class="hint" style="margin:0">处理期间请保持页面打开</span>
@@ -3733,11 +3754,8 @@ onUnmounted(() => {
                 </label>
               </div>
             </div>
-            <div class="mode-row">
-              <label class="radio"><input v-model="writeMode" type="radio" value="review">审读后统一写入（推荐：全文生成 → AI 审读优化 → 再写入 Word）</label>
-              <label class="radio"><input v-model="writeMode" type="radio" value="auto">边写边出（每章生成完自动写入 Word）</label>
-              <label class="radio"><input v-model="writeMode" type="radio" value="confirm">逐章确认（每章预览后手动写入）</label>
-            </div>
+            <!-- 2026-10-24 用户反馈：固定「审读后统一写入」，不再让用户选写入模式 -->
+            <p class="hint" style="margin:0 0 10px">流程固定为「审读后统一写入」：全文云端生成 → 推荐先「AI 审读优化全稿」→ 再统一写入 Word。</p>
             <button type="button" class="primary" :disabled="Boolean(busy)" @click="onStartWriting">开始撰写</button>
             <p class="hint">点「开始撰写」会在 Word 当前光标处建立插入锚点——请先在 Word 中点击要开始插入的位置。</p>
           </template>
@@ -4181,7 +4199,6 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 .pick-label{flex:1;min-width:0;gap:6px}
 .pick-label input[type=checkbox]{flex:none}
 .pick-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mode-row{display:flex;gap:18px;margin:10px 0 14px}
 .writing-head{display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap}
 .event-log{max-height:180px;overflow:auto;border:1px solid #f0f0f0;border-radius:8px;padding:8px 10px;margin-bottom:10px;background:#fafafa}
 .log-line{font-size:12px;color:#555;line-height:1.8}

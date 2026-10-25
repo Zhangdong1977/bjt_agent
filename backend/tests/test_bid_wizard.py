@@ -1582,7 +1582,7 @@ def test_normalize_generation_options_bounds_and_defaults():
         "parts": ["technical"],
         "word_count": 50000,
         "charts": False,
-        "fig_mode": "mermaid",
+        "fig_mode": "bidfig",
     }
     assert normalize_generation_options({"parts": ["business"]})["parts"] == ["technical"]
     # 空 parts → 默认仅技术；字数越界 → None（草稿态）；charts 缺省 True
@@ -1590,13 +1590,14 @@ def test_normalize_generation_options_bounds_and_defaults():
         "parts": ["technical"],
         "word_count": None,
         "charts": True,
-        "fig_mode": "mermaid",
+        "fig_mode": "bidfig",
     }
     assert normalize_generation_options({"word_count": 2_000_000})["word_count"] is None
     assert normalize_generation_options({"word_count": True})["word_count"] is None
-    # fig_mode（23 号 O8）：合法值透传，非法值回默认 mermaid
+    # fig_mode（23 号 O8）：2026-10-24 废弃 mermaid——合法值透传，非法值/存量 mermaid 一律归一 bidfig
     assert normalize_generation_options({"fig_mode": "bidfig"})["fig_mode"] == "bidfig"
-    assert normalize_generation_options({"fig_mode": "svg"})["fig_mode"] == "mermaid"
+    assert normalize_generation_options({"fig_mode": "svg"})["fig_mode"] == "bidfig"
+    assert normalize_generation_options({"fig_mode": "mermaid"})["fig_mode"] == "bidfig"
 
 
 def test_generation_options_schema_collapses_business():
@@ -1606,8 +1607,10 @@ def test_generation_options_schema_collapses_business():
     collapsed = GenerationOptions(parts=["business", "technical"], word_count=50_000)
     assert collapsed.model_dump()["parts"] == ["technical"]
     assert GenerationOptions(parts=["business"]).model_dump()["parts"] == ["technical"]
-    assert collapsed.model_dump()["fig_mode"] == "mermaid"
+    assert collapsed.model_dump()["fig_mode"] == "bidfig"
     assert GenerationOptions(fig_mode="bidfig").model_dump()["fig_mode"] == "bidfig"
+    # 2026-10-24 废弃 mermaid：老客户端载荷在 schema 层即收敛
+    assert GenerationOptions(fig_mode="mermaid").model_dump()["fig_mode"] == "bidfig"
 
 
 def test_build_generation_constraints_text_variants():
@@ -2031,7 +2034,7 @@ class TestGenerationOptionsApi:
             "parts": ["technical"],
             "word_count": 50000,
             "charts": False,
-            "fig_mode": "mermaid",
+            "fig_mode": "bidfig",
         }
         # 不带 generation_options 再保存（老客户端 / 只改作答）→ 沿用已保存值
         again = await client.put(

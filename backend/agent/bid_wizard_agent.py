@@ -79,8 +79,9 @@ GENERATION_PARTS: tuple[str, ...] = ("business", "technical")
 GENERATION_PART_LABELS = {"business": "商务部分", "technical": "技术部分"}
 # 2026-10-23 产品要求：屏蔽商务应标编写，只提供技术应标部分——parts 消费侧只放行 technical
 GENERATION_PARTS_ENABLED: tuple[str, ...] = ("technical",)
-# 图表引擎（23 号 O8，照 V1 fig_mode）：mermaid=默认；bidfig=原语库确定性渲染
-GENERATION_FIG_MODES: tuple[str, ...] = ("mermaid", "bidfig")
+# 图表引擎（23 号 O8）：bidfig=原语库确定性渲染。2026-10-24 用户反馈废弃纯 mermaid 制图——
+# 存量 mermaid 选项在规范化/读取时一律归一为 bidfig（mermaid 分支仅作 charts=false 的纯文态）
+GENERATION_FIG_MODES: tuple[str, ...] = ("bidfig",)
 # 只勾一个部分时，告诉 Spec 生成器另一部分的典型章节不得出现
 _GENERATION_PART_EXCLUSIONS = {
     "technical": "商务部分的章节（如资质证明、业绩证明、报价、商务条款响应/偏离表）",
@@ -1296,7 +1297,7 @@ def normalize_generation_options(raw: Any) -> dict[str, Any] | None:
     charts = raw.get("charts")
     fig_mode = str(raw.get("fig_mode") or "").strip().lower()
     if fig_mode not in GENERATION_FIG_MODES:
-        fig_mode = "mermaid"
+        fig_mode = "bidfig"
     return {
         "parts": parts,
         "word_count": word_count,
@@ -2553,7 +2554,7 @@ class BidWizardWriteAgent:
         # 生成要求「不配图」（决策 41）贯穿到章节正文：system prompt 与图表计划文本都切无图版
         generation_options = generation_options_of(context["requirements"])
         charts_enabled = bool(generation_options.get("charts", True)) if generation_options else True
-        fig_mode = str(generation_options.get("fig_mode") or "mermaid") if generation_options else "mermaid"
+        fig_mode = str(generation_options.get("fig_mode") or "bidfig") if generation_options else "bidfig"
         prev_sections = await self._load_prev_sections(wizard.id, spec)
         intro_plan = chapter_intro_plan(spec_scope)
         # 评分台账（23 号 O2）：旧向导无 scoring_items 时全链路自然跳过
@@ -3326,7 +3327,7 @@ class BidWizardReviewAgent:
         scoring_items = scoring_items_of(analysis)
         generation_options = generation_options_of(requirements)
         fig_mode = (
-            str(generation_options.get("fig_mode") or "mermaid") if generation_options else "mermaid"
+            str(generation_options.get("fig_mode") or "bidfig") if generation_options else "bidfig"
         )
         rejections_text = rejection_items_text(analysis)
         tender_text = tender_requirements_text(analysis)
@@ -3420,7 +3421,7 @@ class BidWizardReviewAgent:
 
         requirements_text = build_requirements_text(requirements)
         generation_options = generation_options_of(requirements)
-        fig_mode = str(generation_options.get("fig_mode") or "mermaid") if generation_options else "mermaid"
+        fig_mode = str(generation_options.get("fig_mode") or "bidfig") if generation_options else "bidfig"
         scoring_items = scoring_items_of(context["analysis"])
         rejections_text = rejection_items_text(context["analysis"])
         tender_text = tender_requirements_text(context["analysis"])
