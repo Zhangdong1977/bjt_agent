@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from decimal import ROUND_CEILING, Decimal
@@ -2487,30 +2488,37 @@ class BidWizardWriteAgent:
                 self._publish("section_failed", {"node_id": node["node_id"], "error": message})
 
         self._check_cancel()
+        # 质检自动修复闭环（2026-10-25 用户反馈：不合格项直接甩给用户，用户无从下手）：
+        # 机检 error 自动修订+复检直至清零（复用审读轮修订机制，计费经 UsageContext 同任务结算），
+        # summary.doc_checks 呈现最终合格态、auto_fix 记录修复过程——机检从「只报告」升级为「报告即修复」
+        checks: list[dict[str, str]] = []
+        auto_fix_info: dict[str, Any] = {}
+        try:
+            fixer = BidWizardReviewAgent(
+                task_id=self.task_id,
+                workspace_dir=self.workspace_dir,
+                session_factory=self.session_factory,
+                event_callback=self.event_callback,
+                cancel_event=self.cancel_event,
+            )
+            done, checks, auto_fix_info = await fixer.auto_fix_machine_errors(
+                spec=spec,
+                requirements=context["requirements"],
+                analysis=context["analysis"],
+                sections=done,
+            )
+        except BidWizardCancelled:
+            raise
+        except Exception:
+            logger.exception("bid-wizard draft_checks/auto-fix failed: task=%s", self.task_id)
         summary: dict[str, Any] = {
             "section_total": len(spec_scope),
             "section_generated": len(done),
             "section_failed": len(failed),
             "word_count": sum(int(item.get("word_count") or 0) for item in done),
+            "auto_fix": auto_fix_info,
         }
-        # 全稿机检（23 号 O1/O6）：只报告不改写，前端完成态展示质检报告卡；
-        # O4——口径卡驱动的统一称谓/禁词检查；O3——existing 口径无素材依据红线联动
-        try:
-            style_card = (context["requirements"] or {}).get("style_card")
-            checks = draft_checks(
-                done,
-                style_card=style_card,
-                outline_ids={str(item.get("node_id") or "") for item in spec},
-            )
-            try:
-                checks.extend(
-                    capability_stance_issues(spec, done, (context["requirements"] or {}).get("capability_map"))
-                )
-            except Exception:
-                logger.exception("bid-wizard capability stance checks failed: task=%s", self.task_id)
-            summary["doc_checks"] = checks
-        except Exception:
-            logger.exception("bid-wizard draft_checks failed: task=%s", self.task_id)
+        summary["doc_checks"] = checks
         # 得分点覆盖矩阵（23 号 O2，S9 判定点核查）：无评分台账时为空列表（前端隐藏卡片）
         try:
             summary["score_coverage"] = score_coverage_matrix(
@@ -2539,6 +2547,35 @@ REVIEW_CHAPTER_MAX_CHARS = 6_000
 REVIEW_REVISE_INPUT_MAX_CHARS = 12_000
 REVIEW_MAX_REVISIONS = 20
 REVIEW_FINDINGS_MAX = 60
+
+# 质检自动修复闭环（2026-10-25 用户反馈：质检报告把「需处理」项直接甩给用户，用户无从下手）：
+# 撰写/审读完成后的机检 error 不再只报告——复用修订机制自动改写涉事章并复检，直至 error
+# 清零或轮次用尽；summary.doc_checks 只呈现最终（合格）状态，auto_fix 字段记录修复过程。
+# 应急开关 BID_WIZARD_AUTO_FIX_ENABLED=0 回到「只报告」旧行为。
+AUTO_FIX_MAX_ROUNDS = 3
+AUTO_FIX_MAX_NODES_PER_ROUND = 12
+# error 类型 → 修订指令补充（detail 已描述问题，hint 告诉修订代理怎么改）
+AUTO_FIX_TYPE_HINTS = {
+    "missing_content": "本章正文为空——依据本章摘要、大纲与素材摘录完整撰写本章正文",
+    "paired_duplication": (
+        "删除本章正文中与直属子节同名的标题行及其重复内容：父章正文保持章首导语形态"
+        "（1-2 个自然段，只概述本章定位与各小节安排），子节正文由系统另行生成、不得并入本章"
+    ),
+    "invalid_outline_ref": "把该引用改为大纲中实际存在的章节编号，或删除该引用",
+    "chart_placeholder": (
+        "删除图表（表格单元格/图内节点标签）中的「（请补充）」占位：能确定建议值的写建议值"
+        "（可注明按采购人环境调整），确属待投标人补充的移出图表、在邻近正文段落说明"
+    ),
+}
+
+
+def _auto_fix_enabled() -> bool:
+    return os.environ.get("BID_WIZARD_AUTO_FIX_ENABLED", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 REVIEW_FINDINGS_SYSTEM_PROMPT = (
     "你是资深投标文件审读专家（Reader）。逐章审读投标文件章节，找出影响得分的实质问题。"
@@ -2944,6 +2981,180 @@ class BidWizardReviewAgent:
             "text_count": int(node.get("text_count") or 400),
         }
 
+    async def auto_fix_machine_errors(
+        self,
+        *,
+        spec: list[dict[str, Any]],
+        requirements: Optional[dict[str, Any]],
+        analysis: Optional[dict[str, Any]],
+        sections: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]], dict[str, Any]]:
+        """质检自动修复闭环：机检 error 转定向修订 finding，逐章修订后复检。
+
+        撰写任务（生成完成后）与审读任务（修订复算后）共用。error 清零或轮次用尽即停；
+        单章修订失败保留原文（原文仍是可用基线），下轮复检仍报则再试。全稿级 stance
+        冲突不直接下发 detail，而是按 stance_conflict_targets 的裁决口径定向下发涉事章
+        （与审读轮 ①.5 同款指令），并把裁决注入 global_findings_text 保证涉事章同一结论。
+        返回 (最终章节列表, 最终机检条目, auto_fix 摘要)。
+        """
+        requirements = requirements or {}
+        analysis = analysis or {}
+        spec_by_id = {str(node.get("node_id")): node for node in spec}
+        outline_ids = {str(node.get("node_id") or "") for node in spec}
+        current = [dict(section) for section in sections]
+
+        def _all_checks(items: list[dict[str, Any]]) -> list[dict[str, str]]:
+            checks = draft_checks(
+                items,
+                style_card=requirements.get("style_card"),
+                outline_ids=outline_ids,
+            )
+            try:
+                checks.extend(
+                    capability_stance_issues(spec, items, requirements.get("capability_map"))
+                )
+            except Exception:
+                logger.exception(
+                    "bid-wizard auto-fix capability checks failed: task=%s", self.task_id
+                )
+            return checks
+
+        def _error_findings(items: list[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
+            findings: dict[str, list[dict[str, str]]] = {}
+
+            def _add(node_id: str, where: str, issue: str) -> None:
+                if node_id and node_id in spec_by_id:
+                    findings.setdefault(node_id, []).append(
+                        {"node_id": node_id, "severity": "high", "where": where, "issue": issue[:500]}
+                    )
+
+            for issue in _all_checks(items):
+                if str(issue.get("severity")) != "error":
+                    continue
+                node_id = str(issue.get("node_id") or "")
+                issue_type = str(issue.get("type") or "")
+                detail = str(issue.get("detail") or "")
+                if not node_id:
+                    continue  # 全稿级（stance_conflict）由下方 targets 按裁决口径下发
+                hint = AUTO_FIX_TYPE_HINTS.get(issue_type)
+                _add(
+                    node_id,
+                    "机检（%s）" % issue_type or "机检",
+                    (detail + ("——" + hint if hint else ""))[:500],
+                )
+            try:
+                for target in stance_conflict_targets(items):
+                    ruling = str(target.get("ruling") or "")
+                    if not ruling:
+                        continue
+                    for affected in sorted(
+                        (target.get("open_nodes") or set()) | (target.get("restricted_nodes") or set())
+                    ):
+                        _add(
+                            affected,
+                            "全稿口径（%s）" % target["topic"],
+                            (
+                                "（机检自动检出）全稿对「%s」并存多种口径，统一裁决为：%s。"
+                                "请把本章与该裁决冲突的表述改写为裁决口径"
+                                "（自动降级/无条件启用在线等表述删除或改为「经授权后可启用」），"
+                                "本章内前后矛盾的同类表述一并对齐。" % (target["topic"], ruling)
+                            )[:500],
+                        )
+            except Exception:
+                logger.exception(
+                    "bid-wizard auto-fix stance findings failed: task=%s", self.task_id
+                )
+            return findings
+
+        checks = _all_checks(current)
+        errors = [item for item in checks if str(item.get("severity")) == "error"]
+        info: dict[str, Any] = {
+            "enabled": _auto_fix_enabled(),
+            "rounds": 0,
+            "initial_errors": len(errors),
+            "fixed_total": 0,
+            "remaining_errors": len(errors),
+            "revised_nodes": [],
+        }
+        if not errors or not info["enabled"]:
+            return current, checks, info
+
+        requirements_text = build_requirements_text(requirements)
+        scoring_items = scoring_items_of(analysis)
+        generation_options = generation_options_of(requirements)
+        fig_mode = (
+            str(generation_options.get("fig_mode") or "mermaid") if generation_options else "mermaid"
+        )
+        rejections_text = rejection_items_text(analysis)
+        tender_text = tender_requirements_text(analysis)
+
+        for round_no in range(1, AUTO_FIX_MAX_ROUNDS + 1):
+            self._check_cancel()
+            findings = _error_findings(current)
+            affected = [
+                str(node.get("node_id"))
+                for node in spec
+                if str(node.get("node_id")) in findings
+            ][:AUTO_FIX_MAX_NODES_PER_ROUND]
+            if not affected:
+                break
+            info["rounds"] = round_no
+            self._publish(
+                "phase",
+                {"phase": "auto_fixing", "round": round_no, "section_total": len(affected)},
+            )
+            # 全稿口径基准：立场裁决下发给每个涉事章的修订调用，各章按同一结论对齐
+            global_findings_text = (
+                "\n".join(
+                    "- %s" % finding["issue"]
+                    for node_id in affected
+                    for finding in findings[node_id]
+                    if str(finding.get("where") or "").startswith("全稿口径")
+                )[:4_200]
+                or "（无）"
+            )
+            for node_id in affected:
+                self._check_cancel()
+                section = next(
+                    (item for item in current if str(item.get("node_id")) == node_id), None
+                )
+                if section is None:
+                    continue
+                try:
+                    revised = await self._revise_section(
+                        spec_by_id[node_id],
+                        current_content=str(section.get("content") or ""),
+                        node_findings=findings[node_id],
+                        requirements_text=requirements_text,
+                        spec=spec,
+                        score_items_text=render_score_items_text(
+                            score_items_for_node(spec, spec_by_id[node_id], scoring_items)
+                        ),
+                        fig_mode=fig_mode,
+                        global_findings_text=global_findings_text,
+                        rejection_items_text=rejections_text,
+                        tender_text=tender_text,
+                    )
+                except BidWizardCancelled:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "bid-wizard auto-fix revise failed: task=%s node=%s", self.task_id, node_id
+                    )
+                    continue
+                current = [
+                    revised if str(item.get("node_id")) == node_id else item for item in current
+                ]
+                if node_id not in info["revised_nodes"]:
+                    info["revised_nodes"].append(node_id)
+            checks = _all_checks(current)
+            errors = [item for item in checks if str(item.get("severity")) == "error"]
+            if not errors:
+                break
+        info["remaining_errors"] = len(errors)
+        info["fixed_total"] = max(0, int(info["initial_errors"]) - len(errors))
+        return current, checks, info
+
     async def run(self) -> dict[str, Any]:
         context = await self._load_context()
         task = context["task"]
@@ -2956,7 +3167,6 @@ class BidWizardReviewAgent:
             raise RuntimeError("没有可审读的已生成章节")
 
         requirements_text = build_requirements_text(requirements)
-        style_card = requirements.get("style_card")
         generation_options = generation_options_of(requirements)
         fig_mode = str(generation_options.get("fig_mode") or "mermaid") if generation_options else "mermaid"
         scoring_items = scoring_items_of(context["analysis"])
@@ -3149,6 +3359,21 @@ class BidWizardReviewAgent:
         review_of = ""
         if isinstance(task.summary, dict):
             review_of = str(task.summary.get("review_of") or "")
+        # 质检自动修复闭环（2026-10-25，同撰写路径）：修订复算后机检仍有 error 时继续
+        # 定向修复+复检直至清零——修订掷骰子引入的新缺陷也在这里兜住
+        checks: list[dict[str, str]] = []
+        auto_fix_info: dict[str, Any] = {}
+        try:
+            final_sections, checks, auto_fix_info = await self.auto_fix_machine_errors(
+                spec=spec,
+                requirements=requirements,
+                analysis=context["analysis"],
+                sections=final_sections,
+            )
+        except BidWizardCancelled:
+            raise
+        except Exception:
+            logger.exception("bid-wizard review draft_checks/auto-fix failed: task=%s", self.task_id)
         summary: dict[str, Any] = {
             "action": "review",
             "review_of": review_of,
@@ -3158,15 +3383,9 @@ class BidWizardReviewAgent:
             "revised_nodes": list(revised_map),
             "revised_total": len(revised_map),
             "word_count": sum(int(item.get("word_count") or 0) for item in final_sections),
+            "auto_fix": auto_fix_info,
         }
-        try:
-            summary["doc_checks"] = draft_checks(
-                final_sections,
-                style_card=style_card,
-                outline_ids={str(item.get("node_id") or "") for item in spec},
-            )
-        except Exception:
-            logger.exception("bid-wizard review draft_checks failed: task=%s", self.task_id)
+        summary["doc_checks"] = checks
         try:
             summary["score_coverage"] = score_coverage_matrix(
                 spec, [chapter["node_id"] for chapter in chapters], scoring_items

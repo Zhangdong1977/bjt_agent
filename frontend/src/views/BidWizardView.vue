@@ -2224,6 +2224,8 @@ function handleTaskEvent(event: Record<string, unknown>) {
       pushLog("info", `开始 AI 审读（共 ${event.section_total || "?"} 章）…`);
     } else if (phase === "revising") {
       pushLog("info", `审读完成，开始修订 ${event.section_total || 0} 个重点章节…`);
+    } else if (phase === "auto_fixing") {
+      pushLog("info", `质检发现不合格项，自动修复中（第 ${event.round || 1} 轮，涉及 ${event.section_total || 0} 章）…`);
     } else {
       pushLog("info", `开始逐章撰写（共 ${event.section_total || "?"} 章）`);
     }
@@ -2478,6 +2480,18 @@ const docChecks = computed<WizardDocCheck[]>(() => {
 });
 const docCheckErrors = computed(() => docChecks.value.filter((item) => item.severity === "error"));
 const docCheckWarnings = computed(() => docChecks.value.filter((item) => item.severity !== "error"));
+/** summary.auto_fix（2026-10-25 质检自动修复闭环）：系统自动修复轮次/修复数/残留 error 数。 */
+const autoFixInfo = computed(() => {
+  const raw = task.value?.summary?.auto_fix;
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  return {
+    enabled: record.enabled !== false,
+    rounds: Number(record.rounds) || 0,
+    fixedTotal: Number(record.fixed_total) || 0,
+    remainingErrors: Number(record.remaining_errors) || 0,
+  };
+});
 /** summary.score_coverage：得分点覆盖矩阵；空数组（无评分台账/旧任务）隐藏卡片。 */
 const scoreCoverage = computed<WizardScoreCoverage[]>(() => {
   const raw = task.value?.summary?.score_coverage;
@@ -3732,16 +3746,19 @@ onUnmounted(() => {
                 </li>
               </ul>
             </div>
-            <!-- 23 号 O1/O6：全稿质检报告（机检只报告不改写；error=建议重生成对应章） -->
-            <div v-if="!taskRunning && docChecks.length" class="card qc-card">
+            <!-- 23 号 O1/O6 + 2026-10-25 质检自动修复闭环：error 项由系统自动修复并复检后才呈现，
+                 用户不再面对「需处理」清单；残留（多轮未消除，罕见）才出现且直接给重生成指引 -->
+            <div v-if="!taskRunning && (docChecks.length || autoFixInfo)" class="card qc-card">
               <h3>全稿质检报告</h3>
               <p class="hint" style="margin:0 0 8px">
-                共 {{ docChecks.length }} 条：{{ docCheckErrors.length }} 条建议处理、{{ docCheckWarnings.length }} 条建议人工确认。
-                机检只做提示，不会改动任何章节内容。
+                <template v-if="autoFixInfo && autoFixInfo.fixedTotal">系统已自动修复 {{ autoFixInfo.fixedTotal }} 处不合格项（经 {{ autoFixInfo.rounds }} 轮修复复检）。</template>
+                <template v-if="docCheckErrors.length">仍有 {{ docCheckErrors.length }} 处经自动修复未完全消除——建议对相应章节单章重生成。</template>
+                <template v-else>全稿机检通过。</template>
+                <template v-if="docCheckWarnings.length">另有 {{ docCheckWarnings.length }} 条提示供人工确认。</template>
               </p>
-              <ul class="qc-list">
+              <ul v-if="docChecks.length" class="qc-list">
                 <li v-for="(item, index) in docChecks" :key="index" :class="item.severity">
-                  <span class="qc-badge">{{ item.severity === "error" ? "需处理" : "提示" }}</span>
+                  <span class="qc-badge">{{ item.severity === "error" ? "建议重生成" : "提示" }}</span>
                   <span v-if="item.node_id" class="qc-node">{{ item.node_id }}</span>
                   {{ item.detail }}
                 </li>
