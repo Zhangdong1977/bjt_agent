@@ -289,7 +289,43 @@ def test_build_chart_plan_text():
                     {"type": "mermaid", "title": "进度横道图", "points": None}]}
     )
     assert "[表格] 开标一览表：报价构成" in text
-    assert "[mermaid 图] 进度横道图" in text
+    assert "[mermaid 图（存量）] 进度横道图" in text
+
+
+def test_build_chart_plan_text_bidfig_vocab():
+    """2026-10-24 图表词汇与 bidfig 原语对齐：pie/bar/arch/flow/seq/gantt 各得标签。"""
+    text = build_chart_plan_text({"charts": [
+        {"type": "pie", "title": "人员结构"},
+        {"type": "bar", "title": "指标对比"},
+        {"type": "arch", "title": "架构"},
+        {"type": "flow", "title": "流程"},
+        {"type": "seq", "title": "时序"},
+        {"type": "gantt", "title": "进度"},
+        {"type": "unknown-kind", "title": "未知"},
+    ]})
+    assert "[占比图（bidfig pie）]" in text
+    assert "[柱状对比图（bidfig bar）]" in text
+    assert "[架构图（bidfig arch）]" in text
+    assert "[流程图（bidfig flow）]" in text
+    assert "[时序图（bidfig seq）]" in text
+    assert "[横道图（bidfig gantt）]" in text
+    assert "[图] 未知" in text  # 未知类型回落通用图标签
+
+
+def test_bound_charts_accepts_bidfig_types():
+    """spec 规范化不再把新图型钳成 table（2026-10-24 前的唯一词表是 table|mermaid）。"""
+    from backend.agent.bid_wizard_agent import _bound_charts
+    charts = _bound_charts([
+        {"type": "pie", "title": "a"}, {"type": "bar", "title": "b"},
+        {"type": "gantt", "title": "c"}, {"type": "seq", "title": "d"},
+        {"type": "谁都不认识", "title": "e"},
+    ])
+    assert [c["type"] for c in charts] == ["pie", "bar", "gantt", "seq", "table"]
+
+
+def test_spec_prompt_chart_vocab_matches_primitives():
+    from backend.agent.bid_wizard_agent import SPEC_USER_TEMPLATE
+    assert "table|pie|bar|arch|flow|seq|gantt" in SPEC_USER_TEMPLATE
 
 
 # ------------------------------------------------------------------ 素材检索 refs

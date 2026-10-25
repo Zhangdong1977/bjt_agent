@@ -173,7 +173,7 @@ __TOC_REFERENCE__
 {"title": "章节标题", "level": 1,
  "summary": "本章内容要点摘要（1-3 句，写作时的执行纲领）",
  "article_count": 2, "text_count": 400,
- "charts": [{"type": "table|mermaid", "title": "图表标题", "points": "图表要呈现的要点"}]}
+ "charts": [{"type": "table|pie|bar|arch|flow|seq|gantt", "title": "图表标题", "points": "图表要呈现的要点"}]}
 
 层级示例（小节紧跟其所属大章之后；示例省略了其他字段）：
 [{"title": "技术方案", "level": 1}, {"title": "总体架构设计", "level": 2}, {"title": "网络架构", "level": 3},
@@ -183,7 +183,7 @@ __TOC_REFERENCE__
 1. 大纲完整覆盖招标需求与评分标准对应的响应内容，与评分办法呼应；只覆盖「生成要求」指定的生成内容范围；
 2. 必须是多级目录：一级大章（level=1）一般 6-12 个，每个大章下按内容拆分二级小节（level=2），内容复杂的小节再拆三级（level=3）；level 必须如实标注所属层级，严禁把全部章节都标成 level=1 平铺——只有目标总字数不足 5,000 字时才允许仅有一级章节；
 3. summary 写清楚本章要回应什么、用什么素材支撑；
-4. charts 按「生成要求」执行：需要配图时按内容需要规划（每章 0-3 项）——对比/参数/人员/进度用 table，组织架构/流程/横道图/占比用 mermaid；图（mermaid 类）只规划在叶子小节上，一级大章与含子节的父章节正文只是章首导语、不承载图（表格不限）；不配图时每章 charts 一律为 []；
+4. charts 按「生成要求」执行：需要配图时按内容需要规划（每章 0-3 项）——对比/参数/人员/进度明细用 table，占比构成用 pie，指标对比（招标要求 vs 应答值）用 bar，架构用 arch，流程用 flow，交互时序用 seq，进度横道图用 gantt；图（pie/bar/arch/flow/seq/gantt 类）只规划在叶子小节上，一级大章与含子节的父章节正文只是章首导语、不承载图（表格不限）；不配图时每章 charts 一律为 []；
 5. 素材里有真实业绩/资质可引用的章节，在 summary 中点明引用方向；严禁虚构；
 6. 「生成要求」给了目标总字数时，所有章节 article_count×text_count 之和必须落在允许区间——通过调整每章篇幅（article_count/text_count）与小节数量来满足，不得为凑字数把大纲压成只有一级章节的平级结构；
 7. 招标要素含 scoring_items（评分台账）时：大纲必须让每个评分项至少有一个章节实质响应；响应某评分项的章节，其 summary 末尾以「响应得分点：<评分项标题>」点名（多项用顿号分隔，标题照抄台账原文不得改写）。技术类评分项一项都不能漏——确无现成章节可安放的（如逐条应答类评分项）必须增设专门章节承接，不得静默丢弃。"""
@@ -1391,7 +1391,8 @@ def _bound_charts(raw: Any) -> list[dict[str, Any]] | None:
         if not isinstance(item, dict):
             continue
         chart_type = str(item.get("type") or "table").strip().lower()
-        if chart_type not in ("table", "mermaid"):
+        # 2026-10-24 图表词汇与 bidfig 原语对齐（mermaid 仅存量数据保留）
+        if chart_type not in ("table", "mermaid", "pie", "bar", "arch", "flow", "seq", "gantt"):
             chart_type = "table"
         title = str(item.get("title") or "").strip()[:200]
         if not title:
@@ -1472,15 +1473,28 @@ def is_flat_degraded_spec(spec: list[dict[str, Any]]) -> bool:
     return all(int(node.get("level") or 1) == 1 for node in spec)
 
 
+_CHART_PLAN_LABELS = {
+    "table": "表格",
+    "pie": "占比图（bidfig pie）",
+    "bar": "柱状对比图（bidfig bar）",
+    "arch": "架构图（bidfig arch）",
+    "flow": "流程图（bidfig flow）",
+    "seq": "时序图（bidfig seq）",
+    "gantt": "横道图（bidfig gantt）",
+    "mermaid": "mermaid 图（存量）",
+}
+
+
 def build_chart_plan_text(node: dict[str, Any], *, charts_enabled: bool = True) -> str:
     if not charts_enabled:
-        return "- 不配图（用户生成要求）：本章不要输出任何表格或 mermaid 图，全部用文字段落或列表表达"
+        return "- 不配图（用户生成要求）：本章不要输出任何表格或图示，全部用文字段落或列表表达"
     charts = node.get("charts") or []
     if not charts:
         return "- 无（本章按内容需要自行把握，结构化内容优先表格）"
     lines = []
     for chart in charts:
-        chart_type = "表格" if chart.get("type") == "table" else "mermaid 图"
+        chart_type = _CHART_PLAN_LABELS.get(
+            str(chart.get("type") or "").strip().lower(), "图")
         points = f"：{chart['points']}" if chart.get("points") else ""
         lines.append(f"- [{chart_type}] {chart.get('title')}{points}")
     return "\n".join(lines)

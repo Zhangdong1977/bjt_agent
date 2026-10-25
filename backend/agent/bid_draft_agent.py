@@ -108,10 +108,18 @@ _CHART_RULES_BIDFIG = (
     '{"kind":"seq","title":"图题","actors":["参与方A","参与方B","参与方C"],'
     '"messages":[{"from":0,"to":1,"text":"消息或调用说明"}]}'
     "（from/to 填 actors 数组下标，返回消息可加 \"dash\":true，参与方 2-6 个）；"
-    "⑥以上图表的日期、名称、数值严禁虚构，日期一律 YYYY-MM-DD 且与正文一致，每节 bidfig 图最多 2 张；"
+    # 2026-10-24 用户反馈补充：占比构成（pie）与成组柱状对比（bar）原语上线——
+    # 占比类从"降级表格"清单移出，成为第五/第六种可出图类型。
+    "⑥占比构成类（人员结构、工作量/工期构成、分值分布等）用 ```bidfig 围栏输出 JSON，格式："
+    '{"kind":"pie","title":"图题","unit":"人","items":[{"name":"名称","value":12}]}'
+    "（items 2-12 项，value 填数量、不要自己算百分比，unit 可省略）；"
+    "⑦柱状对比类（性能/服务指标“招标要求 vs 我方应答”、各阶段资源投入等）用 ```bidfig 围栏输出 JSON，格式："
+    '{"kind":"bar","title":"图题","unit":"ms","groups":[{"name":"指标名","bars":[{"name":"招标要求","value":500},{"name":"我方应答","value":200}]}]}'
+    "（groups 1-8 组、每组 bars 1-4 根，value 与正文口径一致）；"
+    "⑧以上图表的日期、名称、数值严禁虚构，日期一律 YYYY-MM-DD 且与正文一致，每节 bidfig 图最多 2 张；"
     # 2026-10-23 批次五 E1：bidfig 模式实测 mermaid 混出 29%（16/56）——本模式图表只允许
-    # bidfig 围栏与 Markdown 表格，占比构成等无原语的图示一律表格化，严禁输出 mermaid 代码块。
-    "⑦其余类型图示（占比构成、构成分析等）一律改用 Markdown 表格表达；"
+    # bidfig 围栏与 Markdown 表格，无原语支撑的图示一律表格化，严禁输出 mermaid 代码块。
+    "⑨其余类型图示（地图、界面示意等无原语支撑的）一律改用 Markdown 表格表达；"
     "本模式严禁输出任何 mermaid 代码块（```mermaid 围栏）；"
 )
 

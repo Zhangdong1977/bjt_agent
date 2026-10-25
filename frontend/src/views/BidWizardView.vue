@@ -3315,7 +3315,7 @@ onUnmounted(() => {
             <span class="gen-label">图表引擎</span>
             <div class="gen-field gen-inline">
               <!-- 2026-10-24 用户反馈：废弃标准（mermaid）制图，固定新版渲染 -->
-              <span class="gen-fixed">新版渲染（架构/流程/甘特/时序，版式更精美）</span>
+              <span class="gen-fixed">新版渲染（架构/流程/甘特/时序/占比/指标对比，版式更精美）</span>
             </div>
           </div>
           <p v-if="hasUnsavedGenOptions" class="hint" style="margin:6px 0 0;color:#d46b08">

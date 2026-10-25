@@ -337,3 +337,115 @@ def test_render_spec_selfcheck_fallback_keeps_original(monkeypatch):
                   '<text x="150" y="50" font-size="12">超宽文字超宽文字超宽文字超宽</text></svg>')
     monkeypatch.setitem(fences._RENDERS, "flow", lambda spec: always_bad)
     assert fences.render_spec({"kind": "flow", "title": "t"}) == always_bad
+
+
+# ---------------------------------------------------------- 2026-10-24 补充：pie / bar
+
+PIE_SPEC = {
+    "kind": "pie", "title": "项目团队人员结构", "unit": "人",
+    "items": [
+        {"name": "高级工程师", "value": 12},
+        {"name": "中级工程师", "value": 20},
+        {"name": "项目经理", "value": 3},
+        {"name": "实施工程师", "value": 8},
+    ],
+}
+
+BAR_SPEC = {
+    "kind": "bar", "title": "关键性能指标对比", "unit": "ms",
+    "groups": [
+        {"name": "页面响应时间", "bars": [
+            {"name": "招标要求", "value": 500}, {"name": "我方应答", "value": 200}]},
+        {"name": "并发处理能力", "bars": [
+            {"name": "招标要求", "value": 1000}, {"name": "我方应答", "value": 1200}]},
+        {"name": "数据处理吞吐（条/秒）", "bars": [
+            {"name": "招标要求", "value": 800}, {"name": "我方应答", "value": 1500}]},
+    ],
+}
+
+
+def test_pie_render_wellformed_deterministic_selfcheck():
+    svg = render_spec(PIE_SPEC)
+    _parse(svg)
+    assert render_spec(PIE_SPEC) == svg
+    assert "<title>项目团队人员结构</title>" in svg
+    assert svg.count("<path") == len(PIE_SPEC["items"])   # 每项一个环形扇区
+    assert "合计" in svg and "43 人" in svg               # unit 提供时中心显合计（12+20+3+8）
+    assert "27.9%" in svg                                  # 12/43 百分比由渲染器算，不由 LLM 给
+    from backend.agent.bidfig.primitives import svg_bounds_issues
+    assert not svg_bounds_issues(svg)
+
+
+def test_pie_no_unit_hides_center_and_small_slice_has_no_label():
+    spec = {"kind": "pie", "title": "t",
+            "items": [{"name": "a", "value": 100}, {"name": "b", "value": 1}]}
+    svg = render_spec(spec)
+    _parse(svg)
+    assert "合计" not in svg                                # 无 unit 中心留白
+    # 1% 扇区 <5% 不放扇区内标签：扇区内白色百分比文本只有 1 处（大扇区 99.0%）
+    assert svg.count('fill="#FFFFFF" font-weight="600"') == 1 and "99.0%" in svg
+    assert "1.0%" in svg                                   # 小项占比仍完整出现在图例行
+
+
+def test_pie_validation_errors():
+    for bad in (
+        {"kind": "pie", "title": "", "items": [{"name": "a", "value": 1}, {"name": "b", "value": 1}]},
+        {"kind": "pie", "title": "t", "items": [{"name": "a", "value": 1}]},
+        {"kind": "pie", "title": "t", "items": [{"name": "a", "value": 0}, {"name": "b", "value": 0}]},
+        {"kind": "pie", "title": "t", "items": [{"name": "a", "value": "x"}, {"name": "b", "value": 1}]},
+        {"kind": "pie", "title": "t", "items": [{"name": "a", "value": -1}, {"name": "b", "value": 1}]},
+    ):
+        with pytest.raises(BidfigSpecError):
+            render_spec(bad)
+
+
+def test_bar_render_wellformed_deterministic_selfcheck():
+    svg = render_spec(BAR_SPEC)
+    _parse(svg)
+    assert render_spec(BAR_SPEC) == svg
+    assert "<title>关键性能指标对比</title>" in svg
+    assert svg.count("单位：ms") == 1
+    assert svg.count("招标要求") == 1 and svg.count("我方应答") == 1  # 图例按名去重
+    assert "2000" in svg                                     # nice_max(1500)=2000 纵轴顶格刻度
+    assert svg.count("1500") == 1                            # 柱顶数值标签（1500 不是五等分刻度）
+    from backend.agent.bidfig.primitives import svg_bounds_issues
+    assert not svg_bounds_issues(svg)
+
+
+def test_bar_same_name_same_color_and_nice_axis():
+    from backend.agent.bidfig import bar as bar_mod
+    assert bar_mod._nice_max(1500) == 2000.0
+    assert bar_mod._nice_max(999) == 1000.0
+    assert bar_mod._nice_max(0.4) == 0.5
+    assert bar_mod._nice_max(11) == 20.0
+    spec = {"kind": "bar", "title": "t",
+            "groups": [{"name": "g1", "bars": [{"name": "A", "value": 3}, {"name": "B", "value": 5}]},
+                       {"name": "g2", "bars": [{"name": "A", "value": 4}, {"name": "B", "value": 1}]}]}
+    svg = render_spec(spec)
+    fills = [seg.split('fill="')[1].split('"')[0] for seg in svg.split('<rect ')[1:]]
+    # rect 序：图例A/B 色块 → 每组 [柱A,柱A高亮,柱B,柱B高亮]；同名柱跨组同色、A≠B
+    legend_a, legend_b = fills[0], fills[1]
+    bar_a1, bar_b1, bar_a2, bar_b2 = fills[2], fills[4], fills[6], fills[8]
+    assert legend_a == bar_a1 == bar_a2 and legend_b == bar_b1 == bar_b2
+    assert bar_a1 != bar_b1
+
+
+def test_bar_validation_errors():
+    for bad in (
+        {"kind": "bar", "title": "t", "groups": []},
+        {"kind": "bar", "title": "t", "groups": [{"name": "g", "bars": []}]},
+        {"kind": "bar", "title": "t", "groups": [{"name": "g", "bars": [{"name": "v", "value": 0}]}]},
+        {"kind": "bar", "title": "t", "groups": [{"name": "", "bars": [{"name": "v", "value": 1}]}]},
+        {"kind": "bar", "title": "t", "groups": [{"name": "g", "bars": [{"name": "v", "value": "abc"}]}]},
+    ):
+        with pytest.raises(BidfigSpecError):
+            render_spec(bad)
+
+
+def test_pie_bar_registered_in_renders_and_prompt():
+    import backend.agent.bidfig.fences as fences
+    assert set(fences._RENDERS) >= {"gantt", "arch", "flow", "seq", "pie", "bar"}
+    from backend.agent.bid_draft_agent import SECTION_SYSTEM_PROMPT_BIDFIG
+    assert '"kind":"pie"' in SECTION_SYSTEM_PROMPT_BIDFIG
+    assert '"kind":"bar"' in SECTION_SYSTEM_PROMPT_BIDFIG
+    assert "占比构成" not in SECTION_SYSTEM_PROMPT_BIDFIG.split("⑨")[0].split("⑥")[0]  # 占比已移出降级清单

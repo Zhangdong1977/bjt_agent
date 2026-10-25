@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 
-from . import arch, flow, gantt, seq
+from . import arch, bar, flow, gantt, pie, seq
 from .gantt import BidfigSpecError
 from .primitives import svg_bounds_issues, tightened
 
@@ -21,7 +21,15 @@ logger = logging.getLogger(__name__)
 BIDFIG_LANG = "bidfig"
 BIDFIG_SVG_LANG = "bidfig-svg"
 INVALID_PLACEHOLDER = "（图表数据无效，已省略）"
-_RENDERS = {"gantt": gantt.render, "arch": arch.render, "flow": flow.render, "seq": seq.render}
+# 2026-10-24 用户反馈补充：pie（占比构成）/bar（成组柱状对比）
+_RENDERS = {
+    "gantt": gantt.render,
+    "arch": arch.render,
+    "flow": flow.render,
+    "seq": seq.render,
+    "pie": pie.render,
+    "bar": bar.render,
+}
 
 
 def render_spec(spec: dict) -> str:
@@ -36,7 +44,8 @@ def render_spec(spec: dict) -> str:
     kind = str(spec.get("kind") or "").strip()
     fn = _RENDERS.get(kind)
     if fn is None:
-        raise BidfigSpecError("不支持的图表类型 kind=%r（支持 gantt/arch/flow/seq）" % kind)
+        raise BidfigSpecError(
+            "不支持的图表类型 kind=%r（支持 gantt/arch/flow/seq/pie/bar）" % kind)
     svg = fn(spec)
     issues = svg_bounds_issues(svg)
     if issues:
