@@ -121,9 +121,10 @@ function normalizeUsePoints(value: number | null | undefined) {
 async function loadData() {
   loading.value = true;
   try {
+    // 优惠券接口需登录，独立充值窗口万一取不到登录态时不连累套餐列表展示
     const [packageRows, couponRows] = await Promise.all([
       billingApi.listPackages(),
-      billingApi.listCoupons(),
+      billingApi.listCoupons().catch(() => []),
     ]);
     packages.value = packageRows;
     coupons.value = couponRows;
@@ -280,6 +281,9 @@ watch(
       stopPolling();
     }
   },
+  // immediate：独立充值窗口（RechargeView）挂载时 open 初始即 true，
+  // 不加 immediate 则 watch 不触发、套餐列表永远不加载
+  { immediate: true },
 );
 
 watch(

@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { cancelPolishTask, createPolishTask, getPolishTask, type PolishMode } from "@/api/polish";
 import { useVstoBridge } from "@/composables/useVstoBridge";
 import { useBillingStore } from "@/stores/billing";
+import RechargeEntry from "@/components/billing/RechargeEntry.vue";
+import { notifyInsufficientBalance } from "@/components/billing/recharge";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 import iconWallet from "@/assets/images/ui/metric-icon-wallet.png";
 import iconPoints from "@/assets/images/ui/metric-icon-points.png";
@@ -130,7 +132,9 @@ async function submitTask() {
     statusMessage.value = "任务已提交，等待处理…";
     startPolling(task.id);
   } catch (error) {
-    errorMessage.value = friendlyError(error, "提交润色任务失败");
+    if (!notifyInsufficientBalance(error, "点数余额不足，无法发起 AI 润色。")) {
+      errorMessage.value = friendlyError(error, "提交润色任务失败");
+    }
     statusMessage.value = "";
   } finally {
     submitting.value = false;
@@ -261,6 +265,7 @@ onUnmounted(stopPolling);
         <span class="metric-pill" :style="{ '--pill-icon': `url(${iconPoints})` }">
           <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.points) }}积分</span>
         </span>
+        <RechargeEntry />
       </div>
     </header>
 

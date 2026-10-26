@@ -15,6 +15,8 @@ import {
 } from "@/api/blindCheck";
 import { apiErrorText } from "@/utils/apiError";
 import { useBillingStore } from "@/stores/billing";
+import RechargeEntry from "@/components/billing/RechargeEntry.vue";
+import { notifyInsufficientBalance } from "@/components/billing/recharge";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 import iconWallet from "@/assets/images/ui/metric-icon-wallet.png";
 import iconPoints from "@/assets/images/ui/metric-icon-points.png";
@@ -310,7 +312,9 @@ async function startCheck() {
     progressMessage.value = "已提交，等待智能体读取文档…";
     void listenTask(task.id);
   } catch (error) {
-    errorMessage.value = errorText(error, "提交暗标检查失败");
+    if (!notifyInsufficientBalance(error, "点数余额不足，无法发起暗标检查。")) {
+      errorMessage.value = errorText(error, "提交暗标检查失败");
+    }
   } finally {
     submitting.value = false;
   }
@@ -586,6 +590,7 @@ onUnmounted(() => {
         <span class="metric-pill" :style="{ '--pill-icon': `url(${iconPoints})` }">
           <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.points) }}积分</span>
         </span>
+        <RechargeEntry />
       </div>
     </header>
 

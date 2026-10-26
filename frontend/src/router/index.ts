@@ -35,6 +35,15 @@ const router = createRouter({
       meta: { title: "AI 扩写润色" },
     },
     {
+      // 独立充值窗口（/vsto/* 页余额条「充值」与 402 提示框经 window.open 唤起）：
+      // 充值界面 960px 宽，在窄 TaskPane 内嵌会错位，弹出窗口以完整宽度展示。
+      // 不设 requiresAuth（弹窗与任务面板同 profile 共享登录态，缺失时页面内自检提示）。
+      path: "/recharge",
+      name: "recharge-window",
+      component: () => import("@/views/RechargeView.vue"),
+      meta: { title: "账户充值" },
+    },
+    {
       // 兼容早期测试地址，但始终脱离 AppLayout，浏览器访问也不会显示站内导航。
       path: "/home/blind-check",
       redirect: "/vsto/blind-check",

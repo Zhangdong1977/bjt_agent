@@ -11,6 +11,7 @@ import AnnouncementPopup from './announcement/AnnouncementPopup.vue'
 import AnnouncementInbox from './announcement/AnnouncementInbox.vue'
 import AnnouncementMarquee from './announcement/AnnouncementMarquee.vue'
 import logoUrl from '@/assets/images/ui/common-logo-black.png'
+import { getOfficialSiteUrl } from '@/utils/externalLinks'
 import iconWallet from '@/assets/images/ui/metric-icon-wallet.png'
 import iconPoints from '@/assets/images/ui/metric-icon-points.png'
 import iconCart from '@/assets/images/ui/common-icon-cart-full.png'
@@ -25,7 +26,6 @@ const rechargeOpen = ref(false)
 const contactOpen = ref(false)
 const inboxOpen = ref(false)
 const marqueeVisible = ref(false)
-const officialSiteUrl = 'https://aibjt.com/'
 
 onMounted(() => {
   void billingStore.remindLowBalance('login')
@@ -45,7 +45,9 @@ function goProfile() {
 }
 
 function goOfficialSite() {
-  window.open(officialSiteUrl, '_blank', 'noopener')
+  // 经 externalLinks 取值：预发布按当前 host 推导（10.0.3.23 → 运营平台入口），
+  // 不硬编码生产官网地址，避免预发布产物泄漏生产链接（07 §7.6 门禁）
+  window.open(getOfficialSiteUrl(), '_blank', 'noopener')
 }
 
 // 千分位格式化（点数/积分统一取整，不显示小数），与 BlindCheckView 的 formatMetric 保持一致

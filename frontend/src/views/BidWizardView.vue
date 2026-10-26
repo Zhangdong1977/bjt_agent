@@ -73,6 +73,8 @@ import { useBillingStore } from "@/stores/billing";
 import { prepareChartAssets, splitMermaidFences, svgToDataUrl } from "@/utils/chartAssets";
 import { renderMarkdown } from "@/utils/markdown";
 import StatusDot from "@/components/StatusDot.vue";
+import RechargeEntry from "@/components/billing/RechargeEntry.vue";
+import { notifyInsufficientBalance } from "@/components/billing/recharge";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 import iconWallet from "@/assets/images/ui/metric-icon-wallet.png";
 import iconPoints from "@/assets/images/ui/metric-icon-points.png";
@@ -341,7 +343,11 @@ async function withBusy(name: string, action: () => Promise<void>): Promise<bool
     await action();
     return true;
   } catch (error) {
-    pageError.value = friendlyError(error, "操作失败，请稍后重试");
+    // 402 计费闸门弹「点数余额不足」提示框（含去充值入口），覆盖撰写/重生成/审读/问答等
+    // 所有经 withBusy 的计费提交；其余错误维持页面文案
+    if (!notifyInsufficientBalance(error, "点数余额不足，无法发起任务。")) {
+      pageError.value = friendlyError(error, "操作失败，请稍后重试");
+    }
     return false;
   } finally {
     busy.value = "";
@@ -501,6 +507,8 @@ async function uploadMaterialsResilient(
         const status = (error as { status?: number }).status;
         const reason = friendlyError(error, "上传失败");
         if (status === 402) {
+          // 弹「点数余额不足」提示框（一键去充值）；abortedReason 仍带回页面说明中止原因
+          notifyInsufficientBalance(error, "点数余额不足，已中止剩余素材上传。");
           return { uploaded, failed, abortedReason: reason };
         }
         if (status === 409) {
@@ -2853,6 +2861,7 @@ onUnmounted(() => {
         <span class="metric-pill" :style="{ '--pill-icon': `url(${iconPoints})` }">
           <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.points) }}积分</span>
         </span>
+        <RechargeEntry />
       </div>
     </header>
 

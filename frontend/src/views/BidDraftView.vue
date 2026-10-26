@@ -29,6 +29,8 @@ import { useVstoBridge } from "@/composables/useVstoBridge";
 import { prepareChartAssets, splitMermaidFences } from "@/utils/chartAssets";
 import MermaidFigure from "@/components/MermaidFigure.vue";
 import SvgFigure from "@/components/SvgFigure.vue";
+import RechargeEntry from "@/components/billing/RechargeEntry.vue";
+import { notifyInsufficientBalance } from "@/components/billing/recharge";
 import { useBillingStore } from "@/stores/billing";
 import logoUrl from "@/assets/images/ui/common-logo-black.png";
 import iconWallet from "@/assets/images/ui/metric-icon-wallet.png";
@@ -423,7 +425,9 @@ async function startGeneration() {
     });
     trackTask(created);
   } catch (error) {
-    taskErrorMessage.value = friendlyError(error, "创建标书生成任务失败");
+    if (!notifyInsufficientBalance(error, "点数余额不足，无法发起 AI 标书生成。")) {
+      taskErrorMessage.value = friendlyError(error, "创建标书生成任务失败");
+    }
   } finally {
     submitting.value = false;
   }
@@ -788,7 +792,9 @@ async function regenerateSection(node: BidDraftSectionMeta) {
     const next = await regenerateBidDraftSection(taskId.value, node.node_id);
     trackTask(next);
   } catch (error) {
-    taskErrorMessage.value = friendlyError(error, "创建单节重生成任务失败");
+    if (!notifyInsufficientBalance(error, "点数余额不足，无法发起单节重生成。")) {
+      taskErrorMessage.value = friendlyError(error, "创建单节重生成任务失败");
+    }
   } finally {
     regeneratingNode.value = "";
   }
@@ -852,6 +858,7 @@ onUnmounted(() => {
         <span class="metric-pill" :style="{ '--pill-icon': `url(${iconPoints})` }">
           <span>{{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.points) }}积分</span>
         </span>
+        <RechargeEntry />
       </div>
     </header>
 
