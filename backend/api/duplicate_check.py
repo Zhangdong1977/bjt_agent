@@ -47,6 +47,7 @@ from backend.services.duplicate_sources import (
 )
 from backend.services.duplicate_tables import compare_table_blocks
 from backend.services.sse_service import sse_manager
+from backend.services.quota_client import resolve_sub_agent_concurrency
 from backend.utils.time_utils import utc_now
 
 router = APIRouter(
@@ -866,9 +867,8 @@ async def start_duplicate_check(
 
     token = await oauth2_scheme(request)
     claims = get_token_claims(token)
-    concurrency = (
-        claims.get("concurrency") or get_settings().max_sub_agent_concurrency
-    )
+    # 私有云模式统一覆盖为 private_cloud_sub_agent_concurrency（公有云不变）
+    concurrency = resolve_sub_agent_concurrency(claims.get("concurrency"))
     feature_snapshot = build_duplicate_feature_snapshot(settings)
     task = ReviewTask(
         project_id=project.id,

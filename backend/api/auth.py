@@ -18,7 +18,10 @@ from backend.api.deps import (
     oauth2_scheme,
 )
 from backend.config import get_settings
-from backend.services.quota_client import private_cloud_forbidden
+from backend.services.quota_client import (
+    private_cloud_forbidden,
+    resolve_sub_agent_concurrency,
+)
 from backend.models import User
 from backend.schemas.auth import (
     CaptchaResponse,
@@ -155,7 +158,7 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
         logger.warning("Using mock auth data (external API disabled)")
         ext_result = MOCK_AUTH_RESPONSE["data"]
         interior_user = ext_result["interiorUser"] == 1
-        concurrency = ext_result["concurrency"]
+        concurrency = resolve_sub_agent_concurrency(ext_result.get("concurrency"))
         external_user_id = None
         external_user_name = body.username
         external_nickname = None
@@ -186,7 +189,8 @@ async def login(request: Request, body: LoginRequest, db: DBSession) -> Token:
 
         ext_result = ext_data.get("data", {})
         interior_user = ext_result.get("interiorUser", 0) == 1
-        concurrency = ext_result.get("concurrency") or settings.max_sub_agent_concurrency
+        # 私有云模式统一覆盖为 private_cloud_sub_agent_concurrency（公有云不变）
+        concurrency = resolve_sub_agent_concurrency(ext_result.get("concurrency"))
         # 运营台 aiCheckLogin 扩展返回的归属维度（userId/userName/enterpriseName），
         # 落库到本地 users + JWT claims，供 ai_usage_records 归属使用
         external_user_id = ext_result.get("userId")  # sys_user.user_id (bigint)
@@ -303,7 +307,8 @@ async def vsto_sso(request: Request, body: VstoSsoRequest, db: DBSession) -> Tok
         )
 
     interior_user = ext_result.get("interiorUser", 0) == 1
-    concurrency = ext_result.get("concurrency") or settings.max_sub_agent_concurrency
+    # 私有云模式统一覆盖为 private_cloud_sub_agent_concurrency（公有云不变）
+    concurrency = resolve_sub_agent_concurrency(ext_result.get("concurrency"))
     external_user_id = ext_result.get("userId")
     external_nickname = ext_result.get("nickName")
     enterprise_name = ext_result.get("enterpriseName")
@@ -406,7 +411,8 @@ async def refresh_token(request: RefreshTokenRequest, db: DBSession) -> Token:
 
         # Propagate claims from refresh token
         interior_user = payload.get("interior_user", False)
-        concurrency = payload.get("concurrency", 2)
+        # 私有云模式统一覆盖：治愈部署前签发、经 refresh 链透传的旧 concurrency 值
+        concurrency = resolve_sub_agent_concurrency(payload.get("concurrency"))
     except JWTError:
         raise credentials_exception
 

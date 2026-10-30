@@ -26,6 +26,7 @@ from backend.schemas.review import (
     TodoItemResponse,
 )
 from backend.services.sse_service import sse_manager
+from backend.services.quota_client import resolve_sub_agent_concurrency
 
 router = APIRouter(prefix="/projects/{project_id}/review", tags=["Review"])
 # 全局路由（不挂在项目下）：发起检查前的检查项大类列表在项目创建之前就要展示
@@ -171,7 +172,8 @@ async def start_review(
     from backend.services.sales import multiplier_for_task
     token = await oauth2_scheme(request)
     claims = get_token_claims(token)
-    concurrency = claims.get("concurrency", settings.max_sub_agent_concurrency)
+    # 私有云模式统一覆盖为 private_cloud_sub_agent_concurrency（公有云不变）
+    concurrency = resolve_sub_agent_concurrency(claims.get("concurrency"))
 
     # Create new review task
     task = ReviewTask(

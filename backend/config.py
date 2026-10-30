@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     private_cloud_quota_cache_seconds: float = 30.0
     # OCR 消耗上报批量缓冲秒数（fire-and-forget，失败仅告警不阻塞主流程）
     private_cloud_ocr_report_timeout_seconds: float = 5.0
+    # 私有云统一"任务内 Sub-Agent 并发数"（标书检查/查重，2026-10-30 定为 3）。
+    # 私有云后台 /aiCheckLogin 固定返回 concurrency=2，私有云也不做逐用户并发管理；
+    # 本值在 private_cloud 模式下覆盖登录返回与存量 JWT claim，全租户统一生效。
+    # 公有云（wallet）不受影响：仍用 JWT claim（operate sys_user.concurrency 逐用户值）。
+    # env: PRIVATE_CLOUD_SUB_AGENT_CONCURRENCY
+    private_cloud_sub_agent_concurrency: int = 3
 
     # AI编标（bid-wizard）功能开关：enabled / disabled / whitelist。默认 disabled——
     # 发版即暗启动，白名单表 bid_wizard_whitelist 配合 whitelist 模式放量（doc 20 §4.1）。

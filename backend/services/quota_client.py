@@ -41,6 +41,22 @@ def is_private_cloud() -> bool:
     return get_settings().billing_mode == "private_cloud"
 
 
+def resolve_sub_agent_concurrency(claim_value: Optional[int]) -> int:
+    """解析任务内 Sub-Agent 并发数（标书检查/查重用，≥1）。
+
+    私有云模式：统一返回 ``private_cloud_sub_agent_concurrency``（默认 3）——
+    忽略登录上游 /aiCheckLogin 固定返回的 concurrency=2，也治愈存量会话
+    （refresh 链会无限透传旧 claim，仅改私有云后台硬编码治不了已登录用户）。
+    公有云（wallet）：沿用 JWT claim（operate sys_user.concurrency 逐用户值），
+    缺省回退 max_sub_agent_concurrency，与历史行为一致。
+    """
+    settings = get_settings()
+    if is_private_cloud():
+        return max(1, int(settings.private_cloud_sub_agent_concurrency))
+    fallback = settings.max_sub_agent_concurrency
+    return max(1, int(claim_value if claim_value else fallback))
+
+
 def private_cloud_forbidden(feature: str):
     """装饰器：私有云模式下禁用被装饰的端点（短信/充值/优惠券等公有云专属流程）。
 
