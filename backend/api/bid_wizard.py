@@ -232,7 +232,7 @@ async def _store_wizard_document(
         _validate_upload_file(
             file,
             SUPPORTED_EXTENSIONS | IMAGE_EXTENSIONS | MARKDOWN_EXTENSIONS,
-            "PDF、DOCX、DOC、XLSX、MD 或图片（PNG/JPG/JPEG/BMP/WEBP）",
+            "PDF、DOCX、XLSX、MD 或图片（PNG/JPG/JPEG/BMP/WEBP）",
         )
     else:
         _validate_upload_file(file)

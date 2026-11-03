@@ -72,6 +72,7 @@ import { useVstoBridge } from "@/composables/useVstoBridge";
 import { useBillingStore } from "@/stores/billing";
 import { prepareChartAssets, splitMermaidFences, svgToDataUrl } from "@/utils/chartAssets";
 import { renderMarkdown } from "@/utils/markdown";
+import { isLegacyOfficeFilename, partitionLegacyFiles } from "@/utils/uploadValidation";
 import StatusDot from "@/components/StatusDot.vue";
 import RechargeEntry from "@/components/billing/RechargeEntry.vue";
 import { notifyInsufficientBalance } from "@/components/billing/recharge";
@@ -465,11 +466,20 @@ function onUploadTender(event: Event) {
   const files = Array.from(input.files || []);
   input.value = "";
   if (!files.length || !wizard.value) return;
+  // 旧版 .doc/.xls 拦截（后端解析必败）：出队提示，其余文件继续
+  const { accepted, warnings } = partitionLegacyFiles(files);
+  if (warnings.length) {
+    Modal.warning({
+      title: "已跳过旧版格式文件",
+      content: warnings.join("") + (accepted.length ? `其余 ${accepted.length} 份继续上传。` : ""),
+    });
+  }
+  if (!accepted.length) return;
   void withBusy("tender", async () => {
     // 支持多份（正文 + 补遗/澄清等）：逐份上传；任一文件变化后端清空旧解读
     tenderUploading.value = true;
     try {
-      for (const file of files) {
+      for (const file of accepted) {
         await apiUploadTender(wizard.value!.id, file);
       }
       await Promise.all([refreshWizard(), loadTenderDoc()]);
@@ -536,10 +546,19 @@ function onUploadMaterials(event: Event) {
   const files = Array.from(input.files || []);
   input.value = "";
   if (!files.length || !wizard.value) return;
+  // 旧版 .doc/.xls 拦截：与招标文件同口径，出队提示、其余继续（不计入预估与计费确认）
+  const { accepted, warnings } = partitionLegacyFiles(files);
+  if (warnings.length) {
+    Modal.warning({
+      title: "已跳过旧版格式文件",
+      content: warnings.join(""),
+    });
+  }
+  if (!accepted.length) return;
   void withBusy("material", async () => {
     // 上传前预估确认（决策 17a）：token 量级 + 约点数，实际按用量计费
     const estimate = await estimateIndexCost(
-      files.reduce((sum, file) => sum + file.size, 0),
+      accepted.reduce((sum, file) => sum + file.size, 0),
     ).catch(() => null);
     let costText = "按实际用量计费";
     if (estimate) {
@@ -549,7 +568,7 @@ function onUploadMaterials(event: Event) {
     const confirmed = await new Promise<boolean>((resolve) => {
       Modal.confirm({
         title: "确认上传素材？",
-        content: `已选 ${files.length} 份素材，${costText}（上传后自动建立索引，费用计入账户）`,
+        content: `已选 ${accepted.length} 份素材，${costText}（上传后自动建立索引，费用计入账户）`,
         okText: "上传并索引",
         cancelText: "取消",
         onOk: () => resolve(true),
@@ -558,7 +577,7 @@ function onUploadMaterials(event: Event) {
     });
     if (!confirmed) return;
     materialUploading.value = true;
-    const outcome = await uploadMaterialsResilient(files, localCategory.value || null, (done, total) => {
+    const outcome = await uploadMaterialsResilient(accepted, localCategory.value || null, (done, total) => {
       uploadProgressText.value = `上传中 ${done}/${total}…`;
     }).finally(() => {
       materialUploading.value = false;
@@ -572,7 +591,7 @@ function onUploadMaterials(event: Event) {
     } else if (outcome.failed.length) {
       Modal.warning({
         title: "部分素材上传失败",
-        content: `已上传 ${outcome.uploaded.length}/${files.length} 份，失败 ${outcome.failed.length} 份（可稍后重试）：${outcome.failed.map((item) => item.name).join("、")}`,
+        content: `已上传 ${outcome.uploaded.length}/${accepted.length} 份，失败 ${outcome.failed.length} 份（可稍后重试）：${outcome.failed.map((item) => item.name).join("、")}`,
       });
     }
   });
@@ -659,8 +678,18 @@ function onUploadFromClient() {
     clientError.value = "所选素材缺少本机文件路径，无法上传；请刷新列表后重新勾选";
     return;
   }
+  // 客户端素材库可能存有旧版 .doc/.xls（桥只回文件名没有 File 对象，按扩展名拦截）
+  const legacyItems = picked.filter((item) =>
+    isLegacyOfficeFilename(item.original_filename || item.url || ""),
+  );
+  const uploadable = picked.filter((item) => !legacyItems.includes(item));
+  if (!uploadable.length) {
+    clientError.value = "所选素材均为旧版 .doc/.xls 格式，暂不支持解析；请先在 Office 中另存为 .docx/.xlsx 后再选取。";
+    return;
+  }
   const skipped = clientChecked.value.size - picked.length;
-  const items = picked.map((item) => ({
+  const legacySkipped = legacyItems.length;
+  const items = uploadable.map((item) => ({
     id: String(item.id),
     url: item.url!,
     filename: item.original_filename || (item.url || "").split(/[\\/]/).pop() || String(item.id),
@@ -669,7 +698,7 @@ function onUploadFromClient() {
   // 桥列表无文件大小，无法按字节预估（决策 17a 的预估弹窗退化为通用文案）
   Modal.confirm({
     title: "上传所选客户端素材？",
-    content: `已选 ${items.length} 份素材${skipped ? `（另 ${skipped} 份缺少本机路径已跳过）` : ""}，上传后自动建立索引（按实际用量计费，费用计入账户）`,
+    content: `已选 ${items.length} 份素材${skipped ? `（另 ${skipped} 份缺少本机路径已跳过）` : ""}${legacySkipped ? `（另 ${legacySkipped} 份旧版 .doc/.xls 已跳过）` : ""}，上传后自动建立索引（按实际用量计费，费用计入账户）`,
     okText: "上传并索引",
     cancelText: "取消",
     onOk: () =>
@@ -1364,6 +1393,15 @@ function onSupplementFilesChange(event: Event) {
   const files = Array.from(input.files || []);
   input.value = "";
   if (!files.length || !wizard.value) return;
+  // 旧版 .doc/.xls 拦截：与素材准备阶段同口径，出队提示、其余继续
+  const { accepted, warnings } = partitionLegacyFiles(files);
+  if (warnings.length) {
+    Modal.warning({
+      title: "已跳过旧版格式文件",
+      content: warnings.join(""),
+    });
+  }
+  if (!accepted.length) return;
   const targetQuestion = supplementForQuestion.value
     ? questionnaire.value.find((item) => item.id === supplementForQuestion.value) || null
     : null;
@@ -1372,7 +1410,7 @@ function onSupplementFilesChange(event: Event) {
     try {
       // 上传前预估确认（决策 17a），与素材准备阶段同口径
       const estimate = await estimateIndexCost(
-        files.reduce((sum, file) => sum + file.size, 0),
+        accepted.reduce((sum, file) => sum + file.size, 0),
       ).catch(() => null);
       let costText = "按实际用量计费";
       if (estimate) {
@@ -1384,7 +1422,7 @@ function onSupplementFilesChange(event: Event) {
           title: "确认补充素材？",
           content: `${
             targetQuestion ? "上传后该问题关闭，其余问题与作答保留。" : "上传后素材自动建立索引。"
-          }已选 ${files.length} 份素材，${costText}（费用计入账户）。索引完成后点「再次检查」，AI 将基于新素材发起下一轮提问。`,
+          }已选 ${accepted.length} 份素材，${costText}（费用计入账户）。索引完成后点「再次检查」，AI 将基于新素材发起下一轮提问。`,
           okText: "上传并索引",
           cancelText: "取消",
           onOk: () => resolve(true),
@@ -1392,7 +1430,7 @@ function onSupplementFilesChange(event: Event) {
         });
       });
       if (!confirmed) return;
-      const outcome = await uploadMaterialsResilient(files, null);
+      const outcome = await uploadMaterialsResilient(accepted, null);
       const createdIds = outcome.uploaded.map((item) => item.id);
       supplementMaterialIds.value.push(...createdIds);
       if (targetQuestion) {
@@ -1414,7 +1452,7 @@ function onSupplementFilesChange(event: Event) {
       const failNote = outcome.abortedReason
         ? outcome.abortedReason
         : outcome.failed.length
-          ? `已上传 ${outcome.uploaded.length}/${files.length} 份，失败 ${outcome.failed.length} 份（可稍后重试）：${outcome.failed.map((item) => item.name).join("、")}`
+          ? `已上传 ${outcome.uploaded.length}/${accepted.length} 份，失败 ${outcome.failed.length} 份（可稍后重试）：${outcome.failed.map((item) => item.name).join("、")}`
           : "";
       if (failNote) reqActionError.value = failNote;
     } catch (error) {
@@ -3060,11 +3098,11 @@ onUnmounted(() => {
                 ? "上传中…"
                 : tenderDocs.length
                   ? "继续添加招标文件（补遗 / 澄清等，可多选）"
-                  : "点击上传招标文件（PDF / Word / Excel，可多选）"
+                  : "点击上传招标文件（PDF / Word .docx / Excel .xlsx，可多选）"
             }}
-            <input type="file" multiple accept=".pdf,.docx,.doc,.xlsx" hidden :disabled="tenderUploading || Boolean(busy)" @change="onUploadTender">
+            <input type="file" multiple accept=".pdf,.docx,.xlsx" hidden :disabled="tenderUploading || Boolean(busy)" @change="onUploadTender">
           </label>
-          <p class="hint">支持多份招标文件（正文、补遗书、澄清/修改文件等），格式 PDF / Word / Excel；AI 解读将合并全部文件内容。</p>
+          <p class="hint">支持多份招标文件（正文、补遗书、澄清/修改文件等），格式 PDF / Word（.docx）/ Excel（.xlsx），暂不支持旧版 .doc / .xls；AI 解读将合并全部文件内容。</p>
         </div>
 
         <div v-if="tenderReady" class="card">
@@ -3161,9 +3199,9 @@ onUnmounted(() => {
             </div>
             <label class="upload-btn" :class="{ disabled: materialUploading || Boolean(busy) }">
               {{ materialUploading ? uploadProgressText || "上传中…" : "点击上传素材（可多选）" }}
-              <input type="file" multiple accept=".pdf,.docx,.doc,.xlsx,.md,.markdown,.png,.jpg,.jpeg,.bmp,.webp" hidden :disabled="materialUploading || Boolean(busy)" @change="onUploadMaterials">
+              <input type="file" multiple accept=".pdf,.docx,.xlsx,.md,.markdown,.png,.jpg,.jpeg,.bmp,.webp" hidden :disabled="materialUploading || Boolean(busy)" @change="onUploadMaterials">
             </label>
-            <p class="hint">支持 PDF / Word / Excel / 图片（PNG、JPG 等），图片将自动 OCR 识别文字后建立索引。</p>
+            <p class="hint">支持 PDF / Word（.docx）/ Excel（.xlsx）/ 图片（PNG、JPG 等），图片将自动 OCR 识别文字后建立索引；暂不支持旧版 .doc / .xls，请另存为 .docx / .xlsx 后上传。</p>
           </template>
 
           <template v-else>

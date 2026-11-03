@@ -192,7 +192,7 @@ def test_validate_upload_file_image_only_for_extended_set():
     documents_api._validate_upload_file(
         upload,
         documents_api.SUPPORTED_EXTENSIONS | documents_api.IMAGE_EXTENSIONS,
-        "PDF、DOCX、DOC、XLSX 或图片",
+        "PDF、DOCX、XLSX 或图片",
     )
 
 

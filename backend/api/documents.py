@@ -544,7 +544,10 @@ async def delete_document(
 # 草稿文档（独立于项目）：选文件即上传解析，点「开始检查」时才关联到项目
 # ============================================================
 
-SUPPORTED_EXTENSIONS = {"pdf", "docx", "doc", "xlsx"}
+# 2026-11-03 移除 "doc"：解析器（mammoth）仅支持 OOXML 的 .docx，.doc（Word 97-2003
+# 二进制）落盘后解析必败（素材索引还会计费）；.xls 同理从未进过白名单。
+# 前端 utils/uploadValidation.ts 在选文件阶段同步拦截并提示另存为 .docx/.xlsx。
+SUPPORTED_EXTENSIONS = {"pdf", "docx", "xlsx"}
 # 图片素材（AI编标 material 上传放开，反馈⑩）：解析任务对整图走 OCR（document_parser._parse_image_with_ocr）
 IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "bmp", "webp"}
 # Markdown 素材（2026-10-23）：仅 AI编标 material 上传放开，正文直读为 parsed.md；
@@ -557,7 +560,7 @@ MARKDOWN_FILE_EXTS = {f".{ext}" for ext in MARKDOWN_EXTENSIONS}
 def _validate_upload_file(
     file: UploadFile,
     allowed_extensions: set[str] | None = None,
-    allowed_hint: str = "PDF、DOCX、DOC 或 XLSX",
+    allowed_hint: str = "PDF、DOCX 或 XLSX",
 ) -> None:
     """上传文件的通用校验：先大小，再校验文件名和扩展名。
 
@@ -583,9 +586,12 @@ def _validate_upload_file(
     file_ext = Path(file.filename).suffix.lower().lstrip(".")
     allowed = allowed_extensions if allowed_extensions is not None else SUPPORTED_EXTENSIONS
     if file_ext not in allowed:
+        detail = f"暂不支持 {file_ext or '未知'} 格式，请上传 {allowed_hint} 文件"
+        if file_ext in {"doc", "xls"}:
+            detail += f"；{file_ext} 为 Office 97-2003 旧版二进制格式，请先另存为 .docx/.xlsx 后再上传"
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"暂不支持 {file_ext or '未知'} 格式，请上传 {allowed_hint} 文件",
+            detail=detail,
         )
 
 

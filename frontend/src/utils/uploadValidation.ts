@@ -44,6 +44,25 @@ export function legacyXlsWarning(filename: string): string {
   return `「${filename}」是 .xls（Excel 97-2003）旧版格式，暂不支持解析。请用 Excel「另存为 .xlsx」后重新上传。`
 }
 
+/** 批量上传前的拆分：旧版 .doc/.xls 出队并生成提示文案，accepted 继续走上传流程。
+ *  2026-11-03 标书向导接入，与后端 SUPPORTED_EXTENSIONS 移除 doc 同批。 */
+export function partitionLegacyFiles(files: File[]): { accepted: File[]; warnings: string[] } {
+  const accepted: File[] = []
+  const warnings: string[] = []
+  for (const file of files) {
+    if (isLegacyDocFile(file)) warnings.push(legacyDocWarning(file.name))
+    else if (isLegacyXlsFile(file)) warnings.push(legacyXlsWarning(file.name))
+    else accepted.push(file)
+  }
+  return { accepted, warnings }
+}
+
+/** 文件名/路径（字符串）形态的旧格式判断：客户端素材桥只给文件名，没有 File 对象。 */
+export function isLegacyOfficeFilename(filename: string): boolean {
+  const ext = getFileExtension(filename)
+  return ext === 'doc' || ext === 'xls'
+}
+
 /** 超过 1 GiB 时返回友好提示；大小合法时返回 null。 */
 export function uploadSizeWarning(file: File): string | null {
   if (file.size <= MAX_UPLOAD_SIZE_BYTES) return null

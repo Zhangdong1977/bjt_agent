@@ -564,13 +564,39 @@ class TestWizardLifecycleApi:
         assert txt.status_code == 400
         assert "MD" in txt.json()["detail"]
 
-        # 招标文件上传不放开 md：仍走 SUPPORTED_EXTENSIONS（pdf/docx/doc/xlsx）
+        # 招标文件上传不放开 md：仍走 SUPPORTED_EXTENSIONS（pdf/docx/xlsx）
         tender_md = await client.post(
             f"{base}/tender",
             files={"file": ("tender.md", b"# tender", "text/markdown")},
             headers=auth_headers,
         )
         assert tender_md.status_code == 400
+
+    async def test_upload_rejects_legacy_doc_and_xls(self, client, auth_headers):
+        """2026-11-03：doc/xls 从上传白名单移除（mammoth/openpyxl 只认 OOXML，落盘解析必败
+        且素材索引已计费）；tender 与 material 双端点上传即 400 并提示另存为。"""
+        wizard = await self._create_wizard(client, auth_headers)
+        base = f"/api/bid-wizard/wizards/{wizard['id']}"
+
+        for name, mime in (
+            ("旧版招标文件.doc", "application/msword"),
+            ("清单.xls", "application/vnd.ms-excel"),
+        ):
+            tender = await client.post(
+                f"{base}/tender",
+                files={"file": (name, b"ole2-binary-bytes", mime)},
+                headers=auth_headers,
+            )
+            assert tender.status_code == 400, tender.text
+            assert "另存为" in tender.json()["detail"]
+
+            material = await client.post(
+                f"{base}/materials",
+                files={"file": (name, b"ole2-binary-bytes", mime)},
+                headers=auth_headers,
+            )
+            assert material.status_code == 400, material.text
+            assert "另存为" in material.json()["detail"]
 
     async def test_stored_analysis_business_suggestions_filtered_on_read(self, client, auth_headers):
         """2026-10-23 商务屏蔽：存量解读里已落库的商务素材建议出参时过滤，技术类保留。"""
