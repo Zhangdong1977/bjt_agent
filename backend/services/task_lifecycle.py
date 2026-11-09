@@ -149,6 +149,7 @@ async def authorize_billable_task_start(
     user_id: str,
     operation_name: str,
     max_active_tasks: int | None = None,
+    quota_usage: str = "ai_task",
 ):
     """Lock the wallet and validate balance plus account-level concurrency.
 
@@ -157,17 +158,28 @@ async def authorize_billable_task_start(
 
     私有云模式（billing_mode=private_cloud）：余额预检替换为私有云后台的
     次数配额预检（企业共享池，无本地钱包）；并发任务限制照旧执行。
+    ``quota_usage`` 选择预检的配额维度：ai_task（默认，标书检查/查重/生成/
+    润色等）或 parse_task（招标文件解析独立配额池，2026-11-09 与 AI 次数
+    拆开）；公有云 wallet 模式下该参数无效。
 
     ``max_active_tasks`` optionally overrides the account-level limit — used by
     the open API channel where the per-key quota replaces the default.
     """
 
-    from backend.services.quota_client import QuotaExhausted, check_ai_quota, is_private_cloud
+    from backend.services.quota_client import (
+        QuotaExhausted,
+        check_ai_quota,
+        check_parse_quota,
+        is_private_cloud,
+    )
 
     private_cloud = is_private_cloud()
     if private_cloud:
         try:
-            await check_ai_quota()
+            if quota_usage == "parse_task":
+                await check_parse_quota()
+            else:
+                await check_ai_quota()
         except QuotaExhausted as exc:
             # 复用公有云 402 语义（前端 utils/apiError 已有余额不足弹窗文案处理）
             raise HTTPException(

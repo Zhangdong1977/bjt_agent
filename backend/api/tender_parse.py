@@ -208,7 +208,10 @@ async def create_record(
     _validate_upload_file(file)
 
     sales_config = await authorize_billable_task_start(
-        db, user_id=current_user.id, operation_name="招标文件解析"
+        db,
+        user_id=current_user.id,
+        operation_name="招标文件解析",
+        quota_usage="parse_task",
     )
     stem = Path(file.filename or "").stem.strip()[:200] or "未命名招标文件"
     record = TenderParseRecord(
@@ -301,8 +304,12 @@ async def retry_record(record_id: str, db: DBSession, current_user: CurrentUser)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该记录正在解析中")
 
     # 重新发起会再次调用 LLM（失败续跑也可能到提取环节）→ 重新过计费闸门
+    # （解析独立配额池 parse_task，与标书检查的 AI 次数分开，2026-11-09）
     sales_config = await authorize_billable_task_start(
-        db, user_id=current_user.id, operation_name="招标文件解析"
+        db,
+        user_id=current_user.id,
+        operation_name="招标文件解析",
+        quota_usage="parse_task",
     )
     record.status = "pending"
     record.stage = "queued"

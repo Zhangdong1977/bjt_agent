@@ -2,7 +2,8 @@
 
 私有云模式（settings.billing_mode == "private_cloud"）下：
 - 任务提交前预检：GET  {base}/pc/quota/status
-- 任务终态结算：POST {base}/pc/quota/consume  （AI 任务：usage_type=ai_task, times=1）
+- 任务终态结算：POST {base}/pc/quota/consume  （AI 任务：usage_type=ai_task, times=1；
+  招标文件解析：usage_type=parse_task, times=1——2026-11-09 起独立配额池，与 AI 次数分开）
 - OCR 计量上报：POST {base}/pc/quota/consume  （usage_type=ocr, ref_id=uuid）
 
 鉴权复用 X-Internal-Token（= settings.operate_internal_token，与私有云后台
@@ -139,6 +140,35 @@ async def check_ai_quota(*, force: bool = False) -> dict[str, Any]:
     return data
 
 
+async def check_parse_quota(*, force: bool = False) -> dict[str, Any]:
+    """招标文件解析独立配额预检（2026-11-09 与 AI 次数拆池）。
+
+    Raises QuotaExhausted: 授权无效（QUOTA_LICENSE_INVALID）或解析次数耗尽
+    （PARSE_QUOTA_EXHAUSTED）。响应缺 parseRemaining 键（私有云后台未升级，
+    配额维度未开通）时放行并告警——避免滚动部署窗口期把解析全拦死；
+    结算侧照常落 parse_task 流水，后台升级后自然纳入统计。
+    """
+    data = await fetch_quota_status(force=force)
+
+    if not data.get("valid"):
+        raise QuotaExhausted(
+            "QUOTA_LICENSE_INVALID",
+            str(data.get("reason") or "私有云授权无效（到期或停用），请联系管理员"),
+        )
+    if data.get("parseRemaining") is None:
+        logger.warning("[quota] parse dimension not provisioned upstream; allow parse task")
+        return data
+    if float(data.get("parseRemaining") or 0) <= 0:
+        raise QuotaExhausted(
+            "PARSE_QUOTA_EXHAUSTED",
+            "招标文件解析次数已用尽，请联系管理员扩容",
+            parseRemaining=data.get("parseRemaining"),
+            aiRemaining=data.get("aiRemaining"),
+            ocrRemaining=data.get("ocrRemaining"),
+        )
+    return data
+
+
 def invalidate_quota_cache() -> None:
     _status_cache["at"] = 0.0
     _status_cache["data"] = None
@@ -148,6 +178,7 @@ async def consume_ai_task(
     *,
     ref_id: str,
     service_type: str,
+    usage_type: str = "ai_task",
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     total_tokens: int = 0,
@@ -155,10 +186,13 @@ async def consume_ai_task(
     user_id: Optional[str] = None,
     user_name: Optional[str] = None,
 ) -> dict[str, Any]:
-    """AI 任务结算上报（ref_id=bjt 任务ID，私有云侧幂等）。失败抛异常（结算保持 retry）。"""
+    """任务结算上报（ref_id=bjt 任务ID，私有云侧幂等）。失败抛异常（结算保持 retry）。
+
+    usage_type 默认 ai_task；招标文件解析传 parse_task（独立配额池）。
+    """
     body = {
         "refId": ref_id,
-        "usageType": "ai_task",
+        "usageType": usage_type,
         "serviceType": service_type,
         "times": 1,
         "promptTokens": int(prompt_tokens or 0),

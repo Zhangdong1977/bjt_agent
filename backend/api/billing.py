@@ -178,6 +178,12 @@ async def get_wallet(db: DBSession, current_user: CurrentUser) -> WalletResponse
             quota = {}
         ai_remaining = float(quota.get("aiRemaining") or 0)
         ocr_remaining = float(quota.get("ocrRemaining") or 0)
+        # 解析独立配额池：后台未升级（键缺失）时为 None，前端不展示该胶囊
+        parse_remaining = (
+            float(quota["parseRemaining"])
+            if quota.get("parseRemaining") is not None
+            else None
+        )
         return WalletResponse(
             balance_wen=0,
             points=int(ai_remaining),
@@ -186,6 +192,7 @@ async def get_wallet(db: DBSession, current_user: CurrentUser) -> WalletResponse
             total_balance_points=ai_remaining,
             low_balance_threshold=0,
             low_balance=ai_remaining <= 0,
+            parse_remaining_points=parse_remaining,
         )
 
     wallet = await ensure_wallet(db, current_user.id, for_update=True)

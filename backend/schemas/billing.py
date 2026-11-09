@@ -13,6 +13,9 @@ class WalletResponse(BaseModel):
     total_balance_points: float = 0
     low_balance_threshold: float = 0
     low_balance: bool = False
+    # 私有云模式：招标文件解析独立配额池剩余次数（2026-11-09 拆池）；
+    # None = 配额维度未开通（后台未升级）或公有云 wallet 模式，前端不展示。
+    parse_remaining_points: float | None = None
 
 
 class PackageResponse(BaseModel):

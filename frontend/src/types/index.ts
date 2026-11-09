@@ -47,6 +47,8 @@ export interface Wallet {
   total_balance_points: number;
   low_balance_threshold: number;
   low_balance: boolean;
+  /** 私有云：招标文件解析独立配额池剩余次数；null = 维度未开通/公有云，不展示 */
+  parse_remaining_points?: number | null;
 }
 
 export interface RechargePackage {

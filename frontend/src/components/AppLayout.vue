@@ -92,6 +92,16 @@ function formatMetric(value: number) {
                   : formatMetric(billingStore.giftBalance)
               }} 次</span>
             </span>
+            <span
+              v-if="billingStore.parseRemaining !== null"
+              class="metric metric--pill metric--points"
+              :style="{ '--pill-icon': `url(${iconPoints})` }"
+              title="解析剩余次数（招标文件解析独立次数池，每次解析消耗 1 次，与 AI 次数分开）"
+            >
+              <span class="metric-value">解析剩余 {{
+                formatMetric(billingStore.parseRemaining ?? 0)
+              }} 次</span>
+            </span>
           </template>
           <span
             v-if="!billingStore.privateCloud"

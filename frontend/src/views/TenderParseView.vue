@@ -381,6 +381,14 @@ onUnmounted(() => {
           >
             <span>OCR 剩余 {{ billingStore.loading && !billingStore.wallet ? "--" : formatMetric(billingStore.giftBalance) }} 次</span>
           </span>
+          <span
+            v-if="billingStore.parseRemaining !== null"
+            class="metric-pill"
+            :style="{ '--pill-icon': `url(${iconPoints})` }"
+            title="解析剩余次数（招标文件解析独立次数池，每次解析消耗 1 次，与 AI 次数分开）"
+          >
+            <span>解析剩余 {{ formatMetric(billingStore.parseRemaining ?? 0) }} 次</span>
+          </span>
         </template>
         <template v-else>
           <span class="metric-pill" :style="{ '--pill-icon': `url(${iconWallet})` }">

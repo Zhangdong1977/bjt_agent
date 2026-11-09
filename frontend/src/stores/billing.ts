@@ -26,6 +26,8 @@ export const useBillingStore = defineStore("billing", () => {
   const rechargeBalance = computed(() => wallet.value?.recharge_balance_points ?? 0);
   const giftBalance = computed(() => wallet.value?.gift_balance_points ?? 0);
   const points = computed(() => wallet.value?.points ?? 0);
+  // 私有云：招标文件解析独立配额池剩余（null = 维度未开通，不展示）
+  const parseRemaining = computed<number | null>(() => wallet.value?.parse_remaining_points ?? null);
   const remindedScenes = new Set<string>();
 
   async function fetchWallet() {
@@ -66,6 +68,7 @@ export const useBillingStore = defineStore("billing", () => {
     rechargeBalance,
     giftBalance,
     points,
+    parseRemaining,
     fetchWallet,
     fetchFeatures,
     remindLowBalance,
