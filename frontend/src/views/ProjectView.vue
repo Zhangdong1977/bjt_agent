@@ -36,7 +36,7 @@ const tenderDocs = computed(() => projectStore.documents.filter(d => d.doc_type 
 const bidDocs = computed(() => projectStore.documents.filter(d => d.doc_type === 'bid'))
 
 // 每类文档（招标/投标）的数量上限，与后端 settings.review_doc_role_limit 配套
-const MAX_DOCS_PER_TYPE = 20
+const MAX_DOCS_PER_TYPE = 50
 const hasParsedTender = computed(() => tenderDocs.value.some(d => d.status === 'parsed'))
 const hasParsedBid = computed(() => bidDocs.value.some(d => d.status === 'parsed'))
 

@@ -38,7 +38,7 @@ const projectDesc = ref('')
 const submitting = ref(false)
 
 // 每类文档（招标/投标）的数量上限，与后端 settings.review_doc_role_limit 配套
-const MAX_DOCS_PER_TYPE = 20
+const MAX_DOCS_PER_TYPE = 50
 
 // 草稿文档（project_id === null）按类型分组
 const tenderDrafts = computed(() =>
