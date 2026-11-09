@@ -259,7 +259,7 @@ class Settings(BaseSettings):
     # 标书检查项目每类文档（tender 招标 / bid 投标）的数量上限，草稿上传与
     # 关联到项目两处闸门共用；前端 CheckView/ProjectView 的「已达上限」提示
     # 与之配套。env: REVIEW_DOC_ROLE_LIMIT。
-    review_doc_role_limit: int = 20
+    review_doc_role_limit: int = 50
 
     # —— 开放 API 通道（/api/v1/open，WorkBuddy skill 等第三方客户端）——
     # 总开关：关闭时整层 404。env: OPEN_API_ENABLED。
