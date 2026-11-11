@@ -63,6 +63,11 @@ export interface RechargePackage {
   loyalty_deduction_limit?: number | null;
 }
 
+export interface PromoBanner {
+  /** 充值弹窗顶部活动横幅文案；空串 = 不显示（运营端已下架） */
+  promo_text: string;
+}
+
 export interface Coupon {
   id: number;
   code?: string | null;

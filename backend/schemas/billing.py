@@ -29,6 +29,12 @@ class PackageResponse(BaseModel):
     loyalty_deduction_limit: int | None = None
 
 
+class PromoBannerResponse(BaseModel):
+    """充值弹窗顶部活动横幅文案；空串表示不显示（活动下架）。"""
+
+    promo_text: str = ""
+
+
 class CouponResponse(BaseModel):
     id: int
     code: str | None = None

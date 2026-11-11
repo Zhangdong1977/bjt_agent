@@ -286,3 +286,55 @@ async def test_consumption_details_exposes_reliable_task_identity_and_status():
     assert item["task_id"] == "task-failed"
     assert item["task_type"] == "duplicate"
     assert item["task_status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_apply_sales_snapshot_promo_text_semantics():
+    """充值活动横幅文案：显式下发生效、空串下架、缺键（旧版 operate-two）保持现状。
+
+    直接操作共享库（本地 .env 指预发布 PG），全程单事务内 flush、最终
+    rollback，不落任何变更——config_version 一旦被抬高，真实 operate-two
+    的后续快照会 409，故绝不能提交。
+    """
+    from backend.models import SalesConfig as SalesConfigRow, async_session_factory
+    from backend.schemas.sales import SalesConfigPayload, SalesSnapshotPayload
+    from backend.services.sales import apply_sales_snapshot
+
+    async with async_session_factory() as db:
+        try:
+            config = await apply_sales_snapshot(
+                db,
+                SalesSnapshotPayload(
+                    config=SalesConfigPayload(
+                        sales_multiplier=4, low_balance_threshold=0, version=10**9, promo_text="新年充100送50"
+                    ),
+                    packages=[],
+                ),
+            )
+            assert config.promo_text == "新年充100送50"
+
+            # 缺键 = 旧版 operate-two：不回退、不下架，保持当前文案
+            legacy = SalesSnapshotPayload(
+                config=SalesConfigPayload(sales_multiplier=4, low_balance_threshold=0, version=10**9 + 1),
+                packages=[],
+            )
+            assert "promo_text" not in legacy.config.model_fields_set
+            config = await apply_sales_snapshot(db, legacy)
+            assert config.promo_text == "新年充100送50"
+
+            # 空串 = 活动下架
+            config = await apply_sales_snapshot(
+                db,
+                SalesSnapshotPayload(
+                    config=SalesConfigPayload(
+                        sales_multiplier=4, low_balance_threshold=0, version=10**9 + 2, promo_text="  "
+                    ),
+                    packages=[],
+                ),
+            )
+            assert config.promo_text == ""
+
+            row = await db.get(SalesConfigRow, "default")
+            assert row is not None
+        finally:
+            await db.rollback()

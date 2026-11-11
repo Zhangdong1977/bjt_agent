@@ -35,6 +35,9 @@ class SalesConfig(Base):
     low_balance_threshold: Mapped[float] = mapped_column(
         Numeric(16, 2), nullable=False, default=0, server_default="0"
     )
+    # 充值弹窗顶部活动横幅文案；空 = 不显示横幅（活动下架）。
+    # 由 operate-two 销售配置快照下发，见 services/sales.py DEFAULT_PROMO_TEXT。
+    promo_text: Mapped[str | None] = mapped_column(String(500), nullable=True)
     config_version: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=1, server_default="1"
     )

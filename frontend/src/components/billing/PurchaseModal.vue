@@ -48,6 +48,8 @@ const emit = defineEmits<{
 
 const packages = ref<RechargePackage[]>([]);
 const coupons = ref<Coupon[]>([]);
+// 充值活动横幅文案（运营端销售配置下发；空 = 活动已下架，不渲染横幅）
+const promoText = ref("");
 const selectedPackageCode = ref("premium");
 const selectedCouponId = ref<number | null>(null);
 const couponCode = ref("");
@@ -122,12 +124,14 @@ async function loadData() {
   loading.value = true;
   try {
     // 优惠券接口需登录，独立充值窗口万一取不到登录态时不连累套餐列表展示
-    const [packageRows, couponRows] = await Promise.all([
+    const [packageRows, couponRows, banner] = await Promise.all([
       billingApi.listPackages(),
       billingApi.listCoupons().catch(() => []),
+      billingApi.getPromoBanner().catch(() => null),
     ]);
     packages.value = packageRows;
     coupons.value = couponRows;
+    promoText.value = banner?.promo_text ?? "";
     if (!packages.value.some((item) => item.code === selectedPackageCode.value)) {
       selectedPackageCode.value = packages.value[0]?.code ?? "";
     }
@@ -307,9 +311,9 @@ watch(
   >
     <a-spin :spinning="loading && !qr">
       <template v-if="!qr">
-      <div class="promo-banner">
+      <div v-if="promoText" class="promo-banner">
         <span class="promo-tag">重磅优惠</span>
-        <span class="promo-text">为庆祝标捷通智能标书检查服务上线，推出重磅优惠活动，充值满50元，赠送5元；满100元，赠送20元；满300元，赠送100元；满1000元，赠送500元！充值越多，赠送越多！活动随时下架，欢迎尽快充值！</span>
+        <span class="promo-text">{{ promoText }}</span>
       </div>
       <div class="purchase-body">
         <!-- 左侧：套餐选择区 -->

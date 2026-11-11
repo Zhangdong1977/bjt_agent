@@ -31,6 +31,7 @@ import type {
   PaginatedProjectSummary,
   Wallet,
   RechargePackage,
+  PromoBanner,
   Coupon,
   CouponRedeemResponse,
   OrderPreviewRequest,
@@ -359,6 +360,11 @@ export const billingApi = {
 
   async listPackages(): Promise<RechargePackage[]> {
     const response = await apiClient.get("/billing/packages");
+    return response.data;
+  },
+
+  async getPromoBanner(): Promise<PromoBanner> {
+    const response = await apiClient.get("/billing/promo-banner");
     return response.data;
   },
 

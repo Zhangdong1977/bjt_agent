@@ -23,6 +23,7 @@ from backend.schemas.billing import (
     OrderStatusResponse,
     PackageResponse,
     PaymentQrResponse,
+    PromoBannerResponse,
     WalletResponse,
 )
 from backend.services.billing import (
@@ -188,6 +189,15 @@ async def get_wallet(db: DBSession, current_user: CurrentUser) -> WalletResponse
 @router.get("/packages", response_model=list[PackageResponse])
 async def get_packages(db: DBSession) -> list[PackageResponse]:
     return await list_runtime_packages(db)
+
+
+@router.get("/promo-banner", response_model=PromoBannerResponse)
+async def get_promo_banner(db: DBSession) -> PromoBannerResponse:
+    """充值弹窗活动横幅文案（与套餐列表同为公开接口；空=不显示横幅）。"""
+    from backend.services.sales import get_sales_config
+
+    config = await get_sales_config(db)
+    return PromoBannerResponse(promo_text=(config.promo_text or "").strip())
 
 
 @router.get("/coupons", response_model=list[CouponResponse])

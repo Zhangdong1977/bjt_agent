@@ -49,12 +49,24 @@ DEFAULT_PACKAGES = (
     ("luxury", "豪华套餐", 100000, "10000", "5000", "plan-icon-luxury", None, 40),
 )
 
+# 充值弹窗活动横幅的初始文案（migration 049 同步种子到 sales_configs.promo_text；
+# 此处仅覆盖 sales_configs 空表的新环境 bootstrap，生产以运营端配置为准）。
+DEFAULT_PROMO_TEXT = (
+    "为庆祝标捷通智能标书检查服务上线，推出重磅优惠活动，充值满50元，赠送5元；"
+    "满100元，赠送20元；满300元，赠送100元；满1000元，赠送500元！充值越多，赠送越多！"
+    "活动随时下架，欢迎尽快充值！"
+)
+
 
 async def ensure_sales_defaults(db: AsyncSession) -> SalesConfig:
     config = await db.get(SalesConfig, "default")
     if config is None:
         config = SalesConfig(
-            id="default", sales_multiplier=Decimal("4"), low_balance_threshold=Decimal("0"), config_version=1
+            id="default",
+            sales_multiplier=Decimal("4"),
+            low_balance_threshold=Decimal("0"),
+            promo_text=DEFAULT_PROMO_TEXT,
+            config_version=1,
         )
         db.add(config)
         await db.flush()
@@ -174,6 +186,14 @@ async def apply_sales_snapshot(db: AsyncSession, payload: SalesSnapshotPayload) 
         else None
     )
     config.low_balance_threshold = point_value(payload.config.low_balance_threshold)
+    # Recharge promo banner copy. An omitted key (older operate-two) keeps the
+    # current value, mirroring the per-feature multiplier compatibility rule;
+    # an explicit value (including "" to take the campaign down) is applied.
+    if "promo_text" in payload.config.model_fields_set:
+        promo_text = (payload.config.promo_text or "").strip()
+        if len(promo_text) > 500:
+            raise HTTPException(status_code=422, detail="充值活动文案不能超过 500 字")
+        config.promo_text = promo_text
     config.config_version = incoming_version
 
     existing = {

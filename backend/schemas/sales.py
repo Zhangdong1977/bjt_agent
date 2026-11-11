@@ -24,6 +24,9 @@ class SalesConfigPayload(BaseModel):
     bid_wizard_qa_multiplier: float | None = Field(default=None, ge=0, le=1000)
     bid_wizard_index_multiplier: float | None = Field(default=None, ge=0, le=1000)
     bid_wizard_write_multiplier: float | None = Field(default=None, ge=0, le=1000)
+    # 充值弹窗活动横幅文案。省略（旧版 operate-two）时保持当前值不变；
+    # 显式空串=下架横幅。恒为非 null（operate-two 侧已归一），null 兼容按省略处理。
+    promo_text: str | None = Field(default=None, max_length=500)
 
 
 class SalesPackagePayload(BaseModel):
