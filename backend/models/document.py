@@ -71,3 +71,42 @@ class Document(Base):
 
     def __repr__(self) -> str:
         return f"<Document(id={self.id}, doc_type={self.doc_type}, filename={self.original_filename})>"
+
+
+class DocumentImageAnnotation(Base):
+    """单张解析图片的预识别结果（doc 25 号方案一）。
+
+    审查任务启动前对该项目全部已解析文档的落盘图片批量 OCR，全文与内容
+    类型标签入库、跨任务复用（同一张图全库只识别一次）。标签注入
+    get_section_images / doc_search 的输出，让子 agent 按图选图而非按
+    文件名盲选——根治「证明材料在未识别图片中」导致的「未提供」误报。
+    """
+
+    __tablename__ = "document_image_annotations"
+
+    document_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # 图片文件名（basename，如 image_97.png）；(document_id, image_name) 唯一
+    image_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 内容类型标签（关键词词表命中，如「会计师事务所营业执照」）；未命中为 NULL
+    label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # 首行文本摘要（无标签时的类型线索）
+    summary: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    ocr_text: Mapped[str | None] = mapped_column(nullable=True)
+    provider: Mapped[str] = mapped_column(
+        String(20), default="baidu", server_default="baidu", nullable=False
+    )
+    # ok=识别成功；failed=OCR 失败（门禁兜底场景）
+    status: Mapped[str] = mapped_column(
+        String(20), default="ok", server_default="ok", nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<DocumentImageAnnotation(document_id={self.document_id}, "
+            f"image={self.image_name}, label={self.label}, status={self.status})>"
+        )

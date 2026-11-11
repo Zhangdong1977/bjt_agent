@@ -2,7 +2,7 @@
 from .base import Base, get_db_session, engine, async_session_factory, usage_engine, usage_session_factory, init_db, close_db
 from .user import User
 from .project import Project
-from .document import Document
+from .document import Document, DocumentImageAnnotation
 from .review_task import ReviewTask
 from .review_result import ReviewResult
 from .duplicate_result import DuplicateResult
@@ -71,6 +71,7 @@ __all__ = [
     "User",
     "Project",
     "Document",
+    "DocumentImageAnnotation",
     "ReviewTask",
     "ReviewResult",
     "DuplicateResult",

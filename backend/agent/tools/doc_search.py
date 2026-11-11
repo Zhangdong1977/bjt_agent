@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from backend.agent.tools.base import ToolResult
+from backend.services.image_annotation import get_annotation_display
 from backend.utils.markdown_images import IMAGE_REF_RE
 from mini_agent.tools.base import Tool as BaseTool
 
@@ -656,9 +657,12 @@ class DocSearchTool(BaseTool):
                 for img in img_refs:
                     alt = (img.get('alt_text') or '').strip()
                     alt_part = f"（说明: {alt[:_MAX_IMG_ALT_DISPLAY]}）" if alt else ""
+                    # doc 25 号：附预识别类型标签，LLM 按内容选图而非按文件名盲选
+                    ann = get_annotation_display(m.get("source_doc"), Path(img['path']).name)
+                    ann_part = f" 〔{ann}〕" if ann else ""
                     nearby = img.get('nearby_line_number')
                     loc_part = f"，位于第{nearby}行" if nearby else ""
-                    formatted.append(f"      - {img['path']}{alt_part}{loc_part}")
+                    formatted.append(f"      - {img['path']}{alt_part}{ann_part}{loc_part}")
             # 构建结构化引用数据
             citation = {
                 "index": i,

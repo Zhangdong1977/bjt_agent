@@ -20,6 +20,7 @@ from typing import Optional
 import httpx
 
 from backend.agent.tools.base import ToolResult
+from backend.services.image_annotation import get_annotation_display
 from backend.services.ocr_image_normalizer import normalize_image_for_ocr
 from backend.utils.markdown_images import IMAGE_REF_RE
 from mini_agent.tools.base import Tool as BaseTool
@@ -530,7 +531,10 @@ class SectionImagesTool(BaseTool):
                     source = f" [{name}]" if len(targets) > 1 else ""
                     result_lines.append(f"{doc_label}{source}章节 [{section_id}] 下有 {len(images)} 张图片：")
                     for img in images:
-                        result_lines.append(f"  * [{img['image_id']}] {img['filename']}")
+                        # doc 25 号：附预识别类型标签（如「— 会计师事务所营业执照（北京衡川…）」）
+                        ann = get_annotation_display(name, img["filename"])
+                        ann_part = f" — {ann}" if ann else ""
+                        result_lines.append(f"  * [{img['image_id']}] {img['filename']}{ann_part}")
                         if len(targets) > 1:
                             img["source_doc"] = name
                     all_images.extend(images)

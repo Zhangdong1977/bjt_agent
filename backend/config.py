@@ -122,6 +122,13 @@ class Settings(BaseSettings):
     baidu_seal_converge_after: int = 8  # env: BAIDU_SEAL_CONVERGE_AFTER（0=不按窗口收敛）
     baidu_seal_max_calls_per_task: int = 30  # env: BAIDU_SEAL_MAX_CALLS_PER_TASK（0=不限）
 
+    # 图片预识别（doc 25 号方案一）：审查任务启动前对项目全部已解析图片批量
+    # OCR 打类型标签、跨任务缓存，标签注入 get_section_images/doc_search 输出。
+    # 关闭后工具输出回到无标签形态（不回滚 d1c8c07/b4e75ba 的修复与门禁）。
+    image_preannotate_enabled: bool = True  # env: IMAGE_PREANNOTATE_ENABLED
+    image_preannotate_concurrency: int = 5  # env: IMAGE_PREANNOTATE_CONCURRENCY
+    image_preannotate_max_images_per_task: int = 3000  # env: IMAGE_PREANNOTATE_MAX_IMAGES_PER_TASK
+
     # Duplicate S2 selective image/OCR channel.  Hashing is always local;
     # OCR/VLM calls are separately switchable and bounded so an upload never
     # fans out into unmetered paid calls.

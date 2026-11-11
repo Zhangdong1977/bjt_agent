@@ -832,6 +832,27 @@ async def _run_agent_review(
                 logger.error(f"Incremental save failed: {e}")
                 await cb_db.rollback()
 
+    # doc 25 号方案一：图片预识别——任务启动前对项目全部已解析图片批量 OCR
+    # 打类型标签（跨任务缓存，仅识别增量），标签由 get_section_images /
+    # doc_search 输出时附在图片名后，子 agent 按内容选图而非按文件名盲选。
+    # 失败不阻塞审查：工具输出回退无标签形态，由「无法确认」门禁兜底。
+    from backend.services.image_annotation import (
+        clear_annotation_store,
+        preannotate_project_documents,
+    )
+    try:
+        async with session_factory() as ann_db:
+            stats = await preannotate_project_documents(
+                ann_db, project_id, user_id, task_id
+            )
+        if stats.get("new"):
+            event_cb("image_preannotation_done", {"stats": stats})
+    except Exception as ann_err:
+        logger.warning(
+            f"[run_review] image preannotation failed for {task_id}: {ann_err}",
+            exc_info=True,
+        )
+
     master = MasterAgent(
         project_id=project_id,
         rule_library_path=rule_library_path,
@@ -868,6 +889,10 @@ async def _run_agent_review(
             raise TimeoutError(
                 f"任务执行超时（超过 {total_timeout // 60} 分钟），已强制终止"
             )
+        finally:
+            # master.run 结束（含超时/取消）后清理任务内标注 store——
+            # 后续报告/落库逻辑不再访问工具，残留映射会污染 worker 的下一个任务。
+            clear_annotation_store()
 
         if result.get("success"):
             # 总体报告生成（尽力而为）：在任务标记 completed 前汇总各子 agent 输出。
