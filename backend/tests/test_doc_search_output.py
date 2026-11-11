@@ -29,8 +29,8 @@ class TestDocSearchOutput:
     def search_tool(self, temp_doc, tmp_path):
         """Create DocSearchTool instance."""
         return DocSearchTool(
-            tender_doc_path=str(temp_doc),
-            bid_doc_path=str(tmp_path / "bid.md"),
+            tender_docs=[("test_tender.md", str(temp_doc))],
+            bid_docs=[],
         )
 
     @pytest.mark.asyncio

@@ -20,6 +20,9 @@ _MAX_LINES_PER_CATEGORY = 3
 _FALLBACK_LINE_TRUNCATE = 100
 _FALLBACK_LINE_COUNT = 5
 
+# 渲染图片清单时 alt 文本的最大显示长度（alt 常为无语义原始文件名）
+_MAX_IMG_ALT_DISPLAY = 30
+
 def strip_html_tags(text: str) -> str:
     """去除HTML标签，保留纯文本"""
     if not text:
@@ -184,6 +187,27 @@ class DocSearchTool(BaseTool):
     # 默认上下文窗口大小（匹配行前后各N行）
     _DEFAULT_CONTEXT_WINDOW = 5
 
+    def _truncate_line_preserving_images(self, line: str, max_length: int) -> str:
+        """截断行文本；若截断隐藏了行内图片引用，在末尾补全被隐藏图片的清单。
+
+        连排扫描件（审计报告/证书复印件等）常把几十张图连排在同一超长行，
+        普通截断会让靠后的图从行文本中消失、对 LLM 结构性不可见（2026-11-11
+        审查误报「未附营业执照」的根因，详见 doc/workspace/25 号事故文档）。
+        """
+        text = smart_truncate(strip_html_tags(line.strip()), max_length)
+        all_refs = IMAGE_REF_RE.findall(line)
+        if not all_refs:
+            return text
+        visible = {src for _, src in IMAGE_REF_RE.findall(text)}
+        hidden = [src for _, src in all_refs if src not in visible]
+        if hidden:
+            names = ", ".join(hidden)
+            text = (
+                text.rstrip("。.…")
+                + f"…[本行共 {len(all_refs)} 张图片，其中 {len(hidden)} 张因文本截断未显示: {names}]"
+            )
+        return text
+
     def _search_by_keyword(self, lines: list[str], query: str, max_results: int = MAX_LINES_PER_QUERY, context_lines: int = _DEFAULT_CONTEXT_WINDOW) -> list[dict]:
         """按关键词搜索文档行并返回带上下文的匹配结果。
 
@@ -198,17 +222,17 @@ class DocSearchTool(BaseTool):
         for i, line in enumerate(lines):
             if query_lower in line.lower():
                 # 获取上下文（前后各 context_lines 行）
-                # 先去除HTML，再截断，避免在标签中间截断
+                # 先去除HTML，再截断，避免在标签中间截断；含图片引用的行保留完整图片清单
                 before_start = max(0, i - context_lines)
                 before_lines = [
-                    smart_truncate(strip_html_tags(lines[j].strip()), 200)
+                    self._truncate_line_preserving_images(lines[j], 200)
                     for j in range(before_start, i)
                 ]
                 context_before = "\n".join(before_lines)
 
                 after_end = min(len(lines), i + context_lines + 1)
                 after_lines = [
-                    smart_truncate(strip_html_tags(lines[j].strip()), 200)
+                    self._truncate_line_preserving_images(lines[j], 200)
                     for j in range(i + 1, after_end)
                 ]
                 context_after = "\n".join(after_lines)
@@ -242,7 +266,7 @@ class DocSearchTool(BaseTool):
 
                 results.append({
                     "line_number": i + 1,  # 从1开始编号
-                    "line_content": smart_truncate(strip_html_tags(line.strip()), 400),
+                    "line_content": self._truncate_line_preserving_images(line, 400),
                     "context_before": context_before,
                     "context_after": context_after,
                     "image_refs": image_refs,
@@ -619,16 +643,22 @@ class DocSearchTool(BaseTool):
                 for al in after_lines:
                     if al:
                         formatted.append(f"      {al}")
-            # 检查此匹配中的图片引用
+            # 检查此匹配中的图片引用（全部列出文件名+说明，保证对 LLM 可见；
+            # 旧版只显首张 path + "(还有 N 张图片)"，连排扫描件第 5 张之后
+            # 对 LLM 结构性不可见，导致 2026-11-11 审查误报，见 doc 25 号）
             img_refs = m.get('image_refs', [])
             if img_refs:
                 has_images = True
                 for img in img_refs:
                     img["line_number"] = m['line_number']
                     all_image_refs.append(img)
-                formatted.append(f"   📷 图片: {img_refs[0]['path']}")
-                if len(img_refs) > 1:
-                    formatted.append(f"   (还有 {len(img_refs) - 1} 张图片)")
+                formatted.append(f"   📷 图片（共 {len(img_refs)} 张）:")
+                for img in img_refs:
+                    alt = (img.get('alt_text') or '').strip()
+                    alt_part = f"（说明: {alt[:_MAX_IMG_ALT_DISPLAY]}）" if alt else ""
+                    nearby = img.get('nearby_line_number')
+                    loc_part = f"，位于第{nearby}行" if nearby else ""
+                    formatted.append(f"      - {img['path']}{alt_part}{loc_part}")
             # 构建结构化引用数据
             citation = {
                 "index": i,

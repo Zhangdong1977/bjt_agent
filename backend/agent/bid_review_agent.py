@@ -1387,7 +1387,8 @@ class BidReviewAgent(BaseAgent):
 3. 如需精确判断，调用 compare_bid(requirement=..., bid_content=...) 进行深入比对
 4. 如搜索结果含 image_refs，优先使用 understand_image 分析图片；understand_image 失败时再用 get_image_ocr
 5. 如果 get_section_images 返回"无图片"，不要立即判定为无图片。改用 search_tender_doc(query="相关关键词") 搜索，结果可能包含 image_refs
-6. 记录结果后，继续下一个检查项
+6. 判定"未提供某证明材料图片"前，必须先用 get_section_images 核对该材料所在章节的完整图片清单（关键词搜索只覆盖命中行附近，多张扫描件常连排在同一超长行，搜索结果可能只展示部分图片）；仍有未识别图片时，在结果中注明"另有 N 张图片未识别"，禁止由"已识别的图片中没有"推断"未提供"
+7. 记录结果后，继续下一个检查项
 
 所有 {total_items} 个检查项完成后，调用 write_file 将完整结果写入 {output_md_path}。
 
