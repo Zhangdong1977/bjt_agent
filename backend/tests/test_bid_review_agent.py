@@ -570,3 +570,88 @@ critical
         assert findings is not None and len(findings) == 1
         assert findings[0]["location_page"] is None
         assert findings[0]["suggestion"] == "补签。"
+
+
+class TestCheckItemNameAttribution:
+    """检查项归位（历史缺陷：_parse_md_findings 提取了节标题却丢弃，全部落到
+    _enrich_findings 的第一个检查项兜底，总体报告按（规则×检查项）聚合时同规则
+    多条问题被并成一组、只留一条摘要）。"""
+
+    @pytest.fixture
+    def agent(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
+            f.write("# Test Rule\n检查规则内容")
+            rule_doc_path = f.name
+        return BidReviewAgent(
+            project_id="test_project",
+            tender_doc_path="/tmp/test_tender.md",
+            bid_doc_path="/tmp/test_bid.md",
+            user_id="test_user",
+            rule_doc_path=rule_doc_path,
+            max_steps=5,
+        )
+
+    def test_parse_md_findings_keeps_section_check_item_name(self, agent):
+        md = """## 检查项1: 招标编号全文一致性
+
+### 招标书要求
+招标编号为 AN3J-2026-005。
+
+### 投标文件内容
+变更说明引用了 AN3J-2026-004。
+
+### 不符合项说明
+编号与本项目不符。
+
+### 严重程度
+critical
+
+## 检查项2: 单位名称一致性与白名单核查
+
+### 招标书要求
+致函单位为招标人蛟河分公司。
+
+### 投标文件内容
+抬头写为武汉分公司。
+
+### 不符合项说明
+致函单位错误。
+
+### 严重程度
+critical
+"""
+        findings = agent._parse_md_findings(md)
+        assert findings is not None and len(findings) == 2
+        assert findings[0]["check_item_name"] == "招标编号全文一致性"
+        assert findings[1]["check_item_name"] == "单位名称一致性与白名单核查"
+
+    def test_enrich_findings_respects_parsed_check_item_name(self, agent):
+        findings = [{"requirement_key": "req_001", "check_item_name": "单位名称一致性与白名单核查"}]
+        enriched = agent._enrich_findings(findings)
+        assert enriched[0]["check_item_name"] == "单位名称一致性与白名单核查"
+
+    def test_normalize_finding_passes_through_check_item_name(self, agent):
+        result = agent._normalize_finding(
+            {
+                "requirement_content": "项目名称须与招标文件一致",
+                "bid_content": "引用了其他项目名称",
+                "is_compliant": False,
+                "severity": "major",
+                "check_item_name": "项目名称全文一致性",
+            },
+            counter=1,
+        )
+        assert result["check_item_name"] == "项目名称全文一致性"
+
+    def test_normalize_finding_without_check_item_name_keeps_key_absent(self, agent):
+        """键必须保持不存在（而非 None）——_enrich_findings 以「键不存在」判定兜底。"""
+        result = agent._normalize_finding(
+            {
+                "requirement_content": "项目名称须与招标文件一致",
+                "bid_content": "引用了其他项目名称",
+                "is_compliant": False,
+                "severity": "major",
+            },
+            counter=1,
+        )
+        assert "check_item_name" not in result

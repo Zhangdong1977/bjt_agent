@@ -1823,7 +1823,7 @@ class BidReviewAgent(BaseAgent):
                     # Override to minor for optional requirements
                     severity = "minor"
 
-        return {
+        normalized = {
             "requirement_key": item.get("requirement_key") or f"req_{counter:03d}",
             "requirement_content": requirement_content,
             "bid_content": item.get("bid_content"),
@@ -1834,6 +1834,11 @@ class BidReviewAgent(BaseAgent):
             "suggestion": item.get("suggestion"),
             "explanation": item.get("explanation", ""),
         }
+        # 透传 LLM 标注的检查项名称；仅非空时写入——_enrich_findings 用
+        # 「键不存在」判定兜底，写 None 会挡住兜底值导致检查项归位丢失。
+        if item.get("check_item_name"):
+            normalized["check_item_name"] = item.get("check_item_name")
+        return normalized
 
     def _try_parse_json(self, content: str) -> Optional[list | dict]:
         """Try to parse JSON from content string.
@@ -2240,6 +2245,10 @@ class BidReviewAgent(BaseAgent):
                     "location_line": None,
                     "suggestion": suggestion,
                     "explanation": explanation or "",
+                    # 按输出文档「## 检查项N: 名称」头部归位检查项；此前该值被丢弃，
+                    # 全部落到 _enrich_findings 的第一个检查项兜底，总体报告按
+                    # （规则×检查项）聚合时同规则多条问题会被并成一组、只留一条摘要。
+                    "check_item_name": check_item_name,
                 }
                 findings.append(finding)
                 requirement_counter += 1
