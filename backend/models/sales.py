@@ -32,6 +32,9 @@ class SalesConfig(Base):
     bid_wizard_qa_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     bid_wizard_index_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     bid_wizard_write_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # OCR 用量独立销售倍率（全局，不分任务 kind；迁移 051）。NULL=不拆分：
+    # 任务的 OCR 成本继续跟随功能倍率计价，行为与历史一致。
+    ocr_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     low_balance_threshold: Mapped[float] = mapped_column(
         Numeric(16, 2), nullable=False, default=0, server_default="0"
     )

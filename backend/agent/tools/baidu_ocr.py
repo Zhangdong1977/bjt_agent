@@ -11,6 +11,7 @@
 import asyncio
 import base64
 import logging
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -196,6 +197,101 @@ def _signature_gate_matched(ocr_text: str) -> bool:
     return any(kw in (ocr_text or "") for kw in SEAL_SIGNATURE_KEYWORDS)
 
 
+# ---------------------------------------------------------------------------
+# 图片标注缓存命中（2026-11，doc 25 号预识别的计费闭环）：understand_image
+# 前置查 document_image_annotations——预识别已对项目全部落盘图片付费 OCR 并
+# 持久化全文，子 agent 再看同一张图时直接复用，不再调百度；跨任务重审同样
+# 命中（任务 607de39c 实证：预识别 2889 次 + 按需 186 次重复看图）。
+#
+# 命中条件：OCR_ANNOTATION_CACHE_ENABLED 开；UsageContext 有 project_id 且
+# seal_required=False（缓存全文无【印章检测】小节，E001 等印章规则必须真调；
+# 素材图解析 project_id=None 天然跳过）；status='ok' 行（failed 终态无全文）。
+# 预识别只对"库中无行"的 pending 图发起调用，与本缓存天然无冲突；命中不记
+# ai_usage_records（用量口径=真实百度调用量）。
+# 目录→document 反查按 (task_id, images_dir) 模块级 LRU：BaiduOcrTool 按次
+# 创建不共享实例，状态挂模块级（与印章收敛注册表同模式）。
+# ---------------------------------------------------------------------------
+_ANNOTATION_DIR_MAX_KEYS = 256
+_annotation_dir_cache: "OrderedDict[tuple[str | None, str], str | None]" = OrderedDict()
+_ANNOTATION_DIR_LOCK = threading.Lock()
+_ANNOTATION_CACHE_MISS = object()
+
+
+def _annotation_doc_id_cached(task_id: str | None, images_dir: str):
+    """读目录反查缓存；未查过返回模块级 sentinel _ANNOTATION_CACHE_MISS。"""
+    with _ANNOTATION_DIR_LOCK:
+        key = (task_id, images_dir)
+        if key in _annotation_dir_cache:
+            _annotation_dir_cache.move_to_end(key)
+            return _annotation_dir_cache[key]
+    return _ANNOTATION_CACHE_MISS
+
+
+def _annotation_doc_id_remember(task_id: str | None, images_dir: str, document_id: str | None) -> None:
+    with _ANNOTATION_DIR_LOCK:
+        key = (task_id, images_dir)
+        _annotation_dir_cache[key] = document_id
+        _annotation_dir_cache.move_to_end(key)
+        while len(_annotation_dir_cache) > _ANNOTATION_DIR_MAX_KEYS:
+            _annotation_dir_cache.popitem(last=False)
+
+
+async def _resolve_annotation_document_id(project_id: str, image_path: Path) -> str | None:
+    """在项目已解析文档中找 images_dir 与图片所在目录一致的 document_id。"""
+    from sqlalchemy import select as sa_select
+
+    from backend.models.base import usage_session_factory
+    from backend.models.document import Document
+
+    async with usage_session_factory() as session:
+        rows = (
+            await session.execute(
+                sa_select(Document.id, Document.parsed_images_dir).where(
+                    Document.project_id == project_id,
+                    Document.status == "parsed",
+                    Document.parsed_images_dir.isnot(None),
+                )
+            )
+        ).all()
+    parent = str(image_path.parent)
+    for document_id, images_dir in rows:
+        if images_dir and str(Path(images_dir)) == parent:
+            return document_id
+    return None
+
+
+async def _lookup_annotation_text(image_path: Path) -> str | None:
+    """查预识别标注缓存全文；未命中/不适用返回 None（异常上抛由调用方降级）。"""
+    from sqlalchemy import select as sa_select
+
+    from backend.models.base import usage_session_factory
+    from backend.models.document import DocumentImageAnnotation
+
+    ctx = get_usage_context()
+    if not ctx or not ctx.project_id or ctx.seal_required:
+        return None
+
+    dir_key = str(image_path.parent)
+    document_id = _annotation_doc_id_cached(ctx.task_id, dir_key)
+    if document_id is _ANNOTATION_CACHE_MISS:
+        document_id = await _resolve_annotation_document_id(ctx.project_id, image_path)
+        _annotation_doc_id_remember(ctx.task_id, dir_key, document_id)
+    if not document_id:
+        return None
+
+    async with usage_session_factory() as session:
+        text = (
+            await session.execute(
+                sa_select(DocumentImageAnnotation.ocr_text).where(
+                    DocumentImageAnnotation.document_id == document_id,
+                    DocumentImageAnnotation.image_name == image_path.name,
+                    DocumentImageAnnotation.status == "ok",
+                )
+            )
+        ).scalar_one_or_none()
+    return text or None
+
+
 class BaiduOcrTool(BaseTool):
     """百度云 OCR 文字识别工具，作为 understand_image 的可切换实现。"""
 
@@ -219,6 +315,7 @@ class BaiduOcrTool(BaseTool):
         self._seal_mode = mode
         self._seal_converge_after = max(0, int(settings.baidu_seal_converge_after))
         self._seal_max_calls = max(0, int(settings.baidu_seal_max_calls_per_task))
+        self._annotation_cache_enabled = settings.ocr_annotation_cache_enabled
         self._normalization_cache_dir = settings.workspace_path / ".ocr_image_cache"
 
     @property
@@ -289,6 +386,39 @@ class BaiduOcrTool(BaseTool):
         image_path = Path(source)
         if not image_path.exists():
             return ToolResult(success=False, error=f"图片文件不存在: {image_path}")
+
+        # 图片标注缓存命中（见模块头注释）：预识别已付费 OCR 过的图直接复用全文。
+        # 命中前置条件在调用侧显式判定（便于测试与日志归因），查询函数内部
+        # 另有同样的防御性判定。
+        cache_ctx = get_usage_context()
+        if (
+            self._annotation_cache_enabled
+            and cache_ctx is not None
+            and cache_ctx.project_id
+            and not cache_ctx.seal_required
+        ):
+            try:
+                cached_text = await _lookup_annotation_text(image_path)
+            except Exception as exc:  # 缓存故障绝不阻塞审查，降级真调
+                logger.debug(
+                    "[BaiduOcrTool] annotation cache lookup failed for %s: %s",
+                    image_path.name,
+                    exc,
+                )
+                cached_text = None
+            if cached_text:
+                logger.info("[BaiduOcrTool] annotation cache hit: %s", image_path.name)
+                return ToolResult(
+                    success=True,
+                    content=cached_text,
+                    data={
+                        "image_path": str(image_path),
+                        "ocr_text": cached_text,
+                        "words_result_num": len(cached_text.splitlines()),
+                        "provider": "baidu",
+                        "ocr_cache_hit": True,
+                    },
+                )
 
         file_size = image_path.stat().st_size
         try:

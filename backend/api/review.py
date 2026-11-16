@@ -168,7 +168,7 @@ async def start_review(
 
     # Extract concurrency from JWT claims
     from backend.api.deps import oauth2_scheme, get_token_claims
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
     token = await oauth2_scheme(request)
     claims = get_token_claims(token)
     concurrency = claims.get("concurrency", settings.max_sub_agent_concurrency)
@@ -180,6 +180,7 @@ async def start_review(
         status="pending",
         max_concurrency=concurrency,
         billing_multiplier=multiplier_for_task(sales_config, "review"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
         selected_rule_docs=selected_rule_docs,
     )

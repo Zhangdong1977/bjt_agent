@@ -118,6 +118,21 @@ def multiplier_for_task(config: SalesConfig, task_kind: str) -> Decimal:
     return decimal_value(specific) if specific not in (None, "") else decimal_value(config.sales_multiplier)
 
 
+def ocr_multiplier_for_task(config: SalesConfig) -> Decimal | None:
+    """Independent OCR sales multiplier (migration 051).
+
+    Unlike :func:`multiplier_for_task`, NULL is meaningful here and does NOT
+    fall back to ``sales_multiplier``: it means "do not split OCR pricing", so
+    the task's OCR cost keeps riding the per-kind multiplier (historical
+    behaviour).  A configured value (including 0 = OCR free) is snapshotted
+    onto the task row and applied to the ``usage_type='ocr'`` cost share at
+    settlement.  Global on purpose — the OCR unit price is uniform across
+    task kinds, so no per-kind matrix is warranted.
+    """
+    value = config.ocr_multiplier
+    return decimal_value(value) if value not in (None, "") else None
+
+
 async def list_sales_packages(db: AsyncSession, *, online_only: bool = True) -> list[SalesPackage]:
     await ensure_sales_defaults(db)
     stmt = select(SalesPackage)
@@ -184,6 +199,11 @@ async def apply_sales_snapshot(db: AsyncSession, payload: SalesSnapshotPayload) 
         Decimal(str(payload.config.bid_wizard_write_multiplier))
         if payload.config.bid_wizard_write_multiplier is not None
         else None
+    )
+    # OCR 独立销售倍率（迁移 051）。旧版 operate-two 不推送该键 → None → 置 NULL
+    # （不拆分，OCR 跟随功能倍率），与分功能倍率的兼容规则一致。
+    config.ocr_multiplier = (
+        Decimal(str(payload.config.ocr_multiplier)) if payload.config.ocr_multiplier is not None else None
     )
     config.low_balance_threshold = point_value(payload.config.low_balance_threshold)
     # Recharge promo banner copy. An omitted key (older operate-two) keeps the

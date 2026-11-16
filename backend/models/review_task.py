@@ -51,6 +51,8 @@ class ReviewTask(Base):
     )
     max_concurrency: Mapped[int] = mapped_column(Integer, default=2, server_default="2", nullable=False)
     billing_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # OCR 用量独立销售倍率快照（迁移 051）：NULL=结算不拆分（OCR 成本跟随功能倍率）
+    ocr_billing_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     # Business lifecycle and billing lifecycle are deliberately independent.
     # A failed/cancelled task may still have incurred provider cost and must be
     # settled after its usage writes have been durably flushed.

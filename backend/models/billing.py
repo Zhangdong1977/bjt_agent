@@ -117,6 +117,10 @@ class ConsumptionRecord(Base):
     cost_points: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
     sales_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     sales_points: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
+    # OCR 拆分计价审计列（迁移 051）：结算时任务 usage_type='ocr' 的成本小计
+    # 与生效的 OCR 倍率。NULL=未拆分（旧口径：全额 × sales_multiplier）。
+    ocr_cost_cny: Mapped[float | None] = mapped_column(Numeric(12, 6), nullable=True)
+    ocr_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     gift_points_used: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False, default=0, server_default="0")
     recharge_points_used: Mapped[float] = mapped_column(Numeric(16, 2), nullable=False, default=0, server_default="0")
     recharge_balance_before: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)

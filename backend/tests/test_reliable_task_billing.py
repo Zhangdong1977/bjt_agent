@@ -184,6 +184,7 @@ async def test_failed_task_is_settled_from_actual_usage_cost():
             _scalar(project),
             _scalar(user),
             _scalar(Decimal("0.5")),
+            _scalar(Decimal("0.3")),  # OCR 成本小计（迁移 051 拆分查询；未配置拆分倍率）
             _scalar(wallet),
         ]
     )
@@ -206,7 +207,7 @@ async def test_failed_task_is_settled_from_actual_usage_cost():
         "folded_income": Decimal("2"),
         "weighted_unit_value": Decimal("0.1"),
     }
-    config = SimpleNamespace(sales_multiplier=Decimal("4"))
+    config = SimpleNamespace(sales_multiplier=Decimal("4"), ocr_multiplier=None)
     with patch.object(billing_service, "async_session_factory", factory), patch.object(
         billing_service, "get_sales_config", new=AsyncMock(return_value=config)
     ), patch.object(
@@ -221,3 +222,77 @@ async def test_failed_task_is_settled_from_actual_usage_cost():
     assert record.sales_points == Decimal("20.00")
     assert task.billing_status == "settled"
     assert any(isinstance(call.args[0], ConsumptionRecord) for call in db.add.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_settled_with_ocr_multiplier_split():
+    """迁移 051：配置 OCR 倍率后结算拆分——OCR 小计乘 OCR 倍率、其余乘功能倍率。
+
+    cost 0.5（其中 OCR 0.3）、功能倍率 4、OCR 倍率 2：
+    sales_points = (0.2×10×4) + (0.3×10×2) = 8.00 + 6.00 = 14.00；
+    审计列 ocr_cost_cny=0.3、ocr_multiplier=2。
+    """
+    task = ReviewTask(
+        id="task-ocr-split",
+        project_id="project-1",
+        task_type="review",
+        status="failed",
+        billing_multiplier=Decimal("4"),
+        ocr_billing_multiplier=Decimal("2"),
+        billing_status="pending",
+        billing_attempts=0,
+        usage_finalized_at=datetime.now(timezone.utc),
+    )
+    project = SimpleNamespace(id="project-1", user_id="user-1", name="拆分项目")
+    user = SimpleNamespace(id="user-1", username="tester")
+    wallet = SimpleNamespace(
+        user_id="user-1",
+        balance_wen=100,
+        points=0,
+        recharge_balance_points=Decimal("100"),
+        gift_balance_points=Decimal("0"),
+    )
+    db = MagicMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _scalar(task),
+            _scalar(None),
+            _scalar(project),
+            _scalar(user),
+            _scalar(Decimal("0.5")),
+            _scalar(Decimal("0.3")),
+            _scalar(wallet),
+        ]
+    )
+    db.add = MagicMock()
+    db.flush = AsyncMock()
+    db.commit = AsyncMock()
+
+    @asynccontextmanager
+    async def factory():
+        yield db
+
+    allocation = {
+        "gift_used": Decimal("0"),
+        "recharge_used": Decimal("14"),
+        "earned_loyalty": 14,
+        "before_recharge": Decimal("100"),
+        "before_gift": Decimal("0"),
+        "after_recharge": Decimal("86"),
+        "after_gift": Decimal("0"),
+        "folded_income": Decimal("1.4"),
+        "weighted_unit_value": Decimal("0.1"),
+    }
+    config = SimpleNamespace(sales_multiplier=Decimal("4"), ocr_multiplier=None)
+    with patch.object(billing_service, "async_session_factory", factory), patch.object(
+        billing_service, "get_sales_config", new=AsyncMock(return_value=config)
+    ), patch.object(
+        billing_service, "allocate_consumption", new=AsyncMock(return_value=allocation)
+    ):
+        record = await billing_service.settle_task_consumption("review", task.id)
+
+    assert record is not None
+    assert record.sales_points == Decimal("14.00")
+    assert record.ocr_cost_cny == Decimal("0.3")
+    assert record.ocr_multiplier == Decimal("2")
+    assert task.billing_status == "settled"

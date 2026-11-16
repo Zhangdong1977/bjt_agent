@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     image_preannotate_enabled: bool = True  # env: IMAGE_PREANNOTATE_ENABLED
     image_preannotate_concurrency: int = 5  # env: IMAGE_PREANNOTATE_CONCURRENCY
     image_preannotate_max_images_per_task: int = 3000  # env: IMAGE_PREANNOTATE_MAX_IMAGES_PER_TASK
+    # understand_image 前置命中图片预识别标注缓存（document_image_annotations
+    # 的 OCR 全文）：命中直接返回不调百度，消除"预识别已付费、子 agent 再付费
+    # 看同一张图"的重复计费，跨任务重审同样命中。印章场景（seal_required）
+    # 不命中——缓存全文无【印章检测】小节。
+    ocr_annotation_cache_enabled: bool = True  # env: OCR_ANNOTATION_CACHE_ENABLED
 
     # Duplicate S2 selective image/OCR channel.  Hashing is always local;
     # OCR/VLM calls are separately switchable and bounded so an upload never

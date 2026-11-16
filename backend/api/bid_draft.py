@@ -109,7 +109,7 @@ async def create_task(
     options_value = body.options.model_dump(exclude_none=True) if body.options is not None else None
 
     from backend.services.task_lifecycle import authorize_billable_task_start
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
 
     sales_config = await authorize_billable_task_start(
         db, user_id=current_user.id, operation_name="AI 标书生成"
@@ -123,6 +123,7 @@ async def create_task(
         generation_options=options_value,
         status="pending",
         billing_multiplier=multiplier_for_task(sales_config, "bid_draft"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
     )
     return await _dispatch_new_task(db, task)
@@ -150,7 +151,7 @@ async def regenerate_section(
         raise HTTPException(status_code=404, detail="章节不存在于该任务的大纲中")
 
     from backend.services.task_lifecycle import authorize_billable_task_start
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
 
     sales_config = await authorize_billable_task_start(
         db, user_id=current_user.id, operation_name="AI 标书生成"
@@ -168,6 +169,7 @@ async def regenerate_section(
         continue_of=task.id,
         status="pending",
         billing_multiplier=multiplier_for_task(sales_config, "bid_draft"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
     )
     return await _dispatch_new_task(db, new_task)

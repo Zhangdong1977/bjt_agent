@@ -278,7 +278,7 @@ async def _run_qa_task(
     timeout_seconds: int = _QA_TIMEOUT_SECONDS,
 ) -> Any:
     """Synchronous micro task: authorize → row → UsageContext → LLM → finalize（结束即结算）."""
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
     from backend.services.task_lifecycle import (
         authorize_billable_task_start,
         finalize_task_usage,
@@ -308,6 +308,7 @@ async def _run_qa_task(
         action=action,
         status="running",
         billing_multiplier=multiplier_for_task(sales_config, "bid_wizard_qa"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
         started_at=utc_now(),
     )
@@ -796,7 +797,7 @@ async def upload_material(
     wizard = await _owned_wizard(wizard_id, current_user, db)
     await _require_access(db, current_user)
 
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
     from backend.services.task_lifecycle import (
         add_task_dispatch,
         authorize_billable_task_start,
@@ -838,6 +839,7 @@ async def upload_material(
         user_id=current_user.id,
         status="pending",
         billing_multiplier=multiplier_for_task(sales_config, "bid_wizard_index"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
     )
     db.add(index_task)
@@ -986,7 +988,7 @@ async def reindex_material(
     if document is None or document.status != "parsed":
         raise HTTPException(status_code=409, detail="素材尚未解析完成，请稍候")
 
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
     from backend.services.task_lifecycle import (
         add_task_dispatch,
         authorize_billable_task_start,
@@ -1007,6 +1009,7 @@ async def reindex_material(
         user_id=current_user.id,
         status="pending",
         billing_multiplier=multiplier_for_task(sales_config, "bid_wizard_index"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
     )
     db.add(index_task)
@@ -1729,7 +1732,7 @@ async def create_writing_task(
     if unknown:
         raise HTTPException(status_code=400, detail=f"章节不存在于大纲中：{', '.join(unknown[:5])}")
 
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
     from backend.services.task_lifecycle import authorize_billable_task_start
 
     sales_config = await authorize_billable_task_start(
@@ -1742,6 +1745,7 @@ async def create_writing_task(
         selected_nodes=list(dict.fromkeys(body.node_ids)),
         status="pending",
         billing_multiplier=multiplier_for_task(sales_config, "bid_wizard_write"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
     )
     return await _dispatch_writing_task(db, task)
@@ -1871,7 +1875,7 @@ async def regenerate_writing_section(
     if not any(isinstance(node, dict) and node.get("node_id") == node_id for node in spec):
         raise HTTPException(status_code=404, detail="章节不存在于当前大纲中")
 
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
     from backend.services.task_lifecycle import authorize_billable_task_start
 
     sales_config = await authorize_billable_task_start(
@@ -1885,6 +1889,7 @@ async def regenerate_writing_section(
         continue_of=task.id,
         status="pending",
         billing_multiplier=multiplier_for_task(sales_config, "bid_wizard_write"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
     )
     return await _dispatch_writing_task(db, new_task)
@@ -1981,7 +1986,7 @@ async def create_review_task(
     ]
     node_ids = ordered or sorted(chapters)
 
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
     from backend.services.task_lifecycle import authorize_billable_task_start
 
     sales_config = await authorize_billable_task_start(
@@ -1996,6 +2001,7 @@ async def create_review_task(
         summary={"action": "review", "review_of": task.id},
         status="pending",
         billing_multiplier=multiplier_for_task(sales_config, "bid_wizard_write"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
     )
     return await _dispatch_writing_task(db, review_task)

@@ -40,6 +40,8 @@ class BlindCheckTask(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     billing_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # OCR 用量独立销售倍率快照（迁移 051）：NULL=结算不拆分（OCR 成本跟随功能倍率）
+    ocr_billing_multiplier: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     billing_status: Mapped[str] = mapped_column(
         String(20), default="pending", server_default="pending", nullable=False, index=True
     )

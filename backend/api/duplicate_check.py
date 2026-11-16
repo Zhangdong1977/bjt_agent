@@ -862,7 +862,7 @@ async def start_duplicate_check(
     )
 
     from backend.api.deps import get_token_claims, oauth2_scheme
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
 
     token = await oauth2_scheme(request)
     claims = get_token_claims(token)
@@ -879,6 +879,7 @@ async def start_duplicate_check(
         status="pending",
         max_concurrency=max(1, int(concurrency)),
         billing_multiplier=multiplier_for_task(sales_config, "duplicate"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
     )
     db.add(task)

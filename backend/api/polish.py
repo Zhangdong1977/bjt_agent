@@ -40,7 +40,7 @@ async def create_task(
     )
 
     sales_config = await authorize_billable_task_start(db, user_id=current_user.id, operation_name="AI 润色")
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
 
     task = PolishTask(
         user_id=current_user.id,
@@ -50,6 +50,7 @@ async def create_task(
         target_length=body.target_length,
         status="pending",
         billing_multiplier=multiplier_for_task(sales_config, "polish"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
     )
     db.add(task)

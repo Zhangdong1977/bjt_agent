@@ -228,7 +228,7 @@ async def _submit_open_task(
 ) -> ReviewTask:
     """Authorize billing with the per-key quota, then create + dispatch a task."""
 
-    from backend.services.sales import multiplier_for_task
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
     from backend.services.task_lifecycle import (
         add_task_dispatch,
         authorize_billable_task_start,
@@ -254,6 +254,7 @@ async def _submit_open_task(
         status="pending",
         max_concurrency=max(1, int(settings.max_sub_agent_concurrency)),
         billing_multiplier=multiplier_for_task(sales_config, task_type),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
         billing_status="pending",
         client_channel="api",
     )

@@ -162,6 +162,25 @@ def sales_points_for(cost_cny: Decimal | float | str | None, multiplier: Decimal
     return point_value(cost_to_points(cost_cny) * Decimal(str(multiplier)))
 
 
+def split_sales_points(
+    cost_total: Decimal | float | str | None,
+    cost_ocr: Decimal | float | str | None,
+    multiplier: Decimal | float | str,
+    ocr_multiplier: Decimal | float | str | None,
+) -> Decimal:
+    """OCR 拆分计价（迁移 051）。
+
+    ``ocr_multiplier`` 为 None 时不拆分：全额按功能倍率（与历史口径逐字节一致）；
+    非 None（含 0 = OCR 部分免费）时，OCR 成本小计按 OCR 倍率、其余成本按功能
+    倍率，分段各自舍入（ROUND_HALF_UP 2 位）后相加。
+    """
+    total = decimal_value(cost_total)
+    ocr = decimal_value(cost_ocr)
+    if ocr_multiplier is None:
+        return sales_points_for(total, multiplier)
+    return sales_points_for(total - ocr, multiplier) + sales_points_for(ocr, ocr_multiplier)
+
+
 def cost_to_wen(cost_cny: Decimal | float | str | None) -> int:
     """Legacy alias using the default 4x multiplier, rounded half-up."""
     return int(sales_points_for(cost_cny, Decimal("4")).to_integral_value(rounding=ROUND_HALF_UP))
@@ -595,7 +614,30 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
                 ).scalar_one()
             )
             cost_points = cost_to_points(cost_yuan)
-            sales_points = sales_points_for(cost_yuan, multiplier)
+            # OCR 拆分计价（迁移 051）：usage_type='ocr' 的成本小计按独立 OCR 倍率
+            # 计价。任务行快照优先（与 billing_multiplier 同原则），NULL 回退当下
+            # config.ocr_multiplier；仍为 NULL = 不拆分，全额按功能倍率——与历史
+            # 行为逐字节一致。baidu_seal 印章流水成本恒 0，计入小计不影响金额。
+            ocr_cost_yuan = decimal_value(
+                (
+                    await db.execute(
+                        select(func.coalesce(func.sum(AiUsageRecord.cost_cny), 0)).where(
+                            AiUsageRecord.task_id == task_id,
+                            AiUsageRecord.usage_type == "ocr",
+                        )
+                    )
+                ).scalar_one()
+            )
+            effective_ocr_multiplier = (
+                task.ocr_billing_multiplier
+                if task.ocr_billing_multiplier not in (None, "")
+                else config.ocr_multiplier
+            )
+            if effective_ocr_multiplier not in (None, ""):
+                ocr_multiplier = decimal_value(effective_ocr_multiplier)
+            else:
+                ocr_multiplier = None
+            sales_points = split_sales_points(cost_yuan, ocr_cost_yuan, multiplier, ocr_multiplier)
 
             wallet = (
                 await db.execute(
@@ -628,6 +670,9 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
                 cost_points=cost_points,
                 sales_multiplier=multiplier,
                 sales_points=sales_points,
+                # 拆分审计（迁移 051）：仅实际拆分时落值；NULL=旧口径（全额×单倍率）
+                ocr_cost_cny=ocr_cost_yuan if ocr_multiplier is not None else None,
+                ocr_multiplier=ocr_multiplier,
             )
             db.add(record)
             await db.flush()
@@ -686,7 +731,7 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
             task.billing_settled_at = utc_now()
             await db.commit()
             logger.info(
-                "[billing] settled %s task %s: status=%s cost=%s multiplier=%s sales_points=%s%s",
+                "[billing] settled %s task %s: status=%s cost=%s multiplier=%s sales_points=%s%s%s",
                 task_kind,
                 task_id,
                 task.status,
@@ -694,6 +739,9 @@ async def settle_task_consumption(task_kind: str, task_id: str) -> ConsumptionRe
                 multiplier,
                 sales_points,
                 " [free-task] zero-multiplier" if multiplier == 0 else "",
+                f" [ocr-split] ocr_cost={ocr_cost_yuan} ocr_multiplier={ocr_multiplier}"
+                if ocr_multiplier is not None
+                else "",
             )
             return record
     except Exception as exc:

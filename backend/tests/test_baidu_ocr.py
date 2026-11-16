@@ -54,13 +54,24 @@ def _make_fake_client(token_payload, ocr_payload, recorder, seal_payload=None):
 
 
 @pytest.fixture(autouse=True)
-def _reset_token_cache():
-    """Clear module-level token/seal-registry caches before/after each test."""
+def _reset_token_cache(monkeypatch):
+    """Clear module-level token/seal-registry caches before/after each test.
+
+    同时默认屏蔽图片标注缓存查询（防止单测意外触碰真实 DB）；
+    标注缓存用例通过再次 monkeypatch _lookup_annotation_text 显式覆盖。
+    """
     baidu_ocr._token_cache.clear()
     baidu_ocr._seal_registries.clear()
+    baidu_ocr._annotation_dir_cache.clear()
+
+    async def _no_annotation_cache(image_path):
+        return None
+
+    monkeypatch.setattr(baidu_ocr, "_lookup_annotation_text", _no_annotation_cache)
     yield
     baidu_ocr._token_cache.clear()
     baidu_ocr._seal_registries.clear()
+    baidu_ocr._annotation_dir_cache.clear()
 
 
 def _make_png(path: Path, size=(50, 50)) -> Path:
@@ -741,3 +752,157 @@ async def test_live_ocr_real_image():
 
     assert result.success is True, f"live OCR failed: {result.error}"
     assert isinstance(result.content, str)
+
+
+# ---------------------------------------------------------------------------
+# 图片标注缓存命中（迁移 051 配套）：预识别全文复用，命中不调百度
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_annotation_cache_hit_skips_baidu(monkeypatch, tmp_path, _no_usage_recording):
+    """命中缓存：不发起任何百度请求，直接返回预识别全文。"""
+    img = _make_png(tmp_path / "page_1_img_1.png")
+    ocr_payload = {"words_result": [{"words": "不应被打到的真调结果"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr, "AsyncClient", _make_fake_client(token_payload, ocr_payload, recorder)
+    )
+
+    async def _cached_text(image_path):
+        return "预识别缓存的证书全文\n第二行"
+
+    monkeypatch.setattr(baidu_ocr, "_lookup_annotation_text", _cached_text)
+
+    with _seal_ctx(task_id="task-cache-1", seal_required=False):
+        result = await BaiduOcrTool().execute(prompt="核对证书编号", image_source=str(img))
+
+    assert result.success is True
+    assert result.content.startswith("预识别缓存的证书全文")
+    assert result.data["ocr_cache_hit"] is True
+    assert result.data["provider"] == "baidu"
+    assert result.data["words_result_num"] == 2
+    assert recorder == []  # 无 token / OCR / seal 任何请求
+
+
+@pytest.mark.unit
+async def test_annotation_cache_skipped_when_seal_required(monkeypatch, tmp_path, _no_usage_recording):
+    """seal_required=True（E001 等印章规则）必须真调：缓存全文无【印章检测】小节。"""
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {
+        "words_result": [{"words": "投标函"}, {"words": "盖章"}],
+        "words_result_num": 2,
+    }
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr, "AsyncClient", _make_fake_client(token_payload, ocr_payload, recorder)
+    )
+
+    async def _should_not_be_called(image_path):
+        raise AssertionError("seal_required 场景不应查询标注缓存")
+
+    monkeypatch.setattr(baidu_ocr, "_lookup_annotation_text", _should_not_be_called)
+
+    with _seal_ctx(task_id="task-seal-cache", seal_required=True):
+        result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+
+    assert result.success is True
+    assert any("accurate_basic" in u for u in recorder)
+
+
+@pytest.mark.unit
+async def test_annotation_cache_miss_falls_through(monkeypatch, tmp_path, _no_usage_recording):
+    """缓存未命中（None）：照常走百度真调。"""
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "真调文本"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr, "AsyncClient", _make_fake_client(token_payload, ocr_payload, recorder)
+    )
+
+    async def _miss(image_path):
+        return None
+
+    monkeypatch.setattr(baidu_ocr, "_lookup_annotation_text", _miss)
+
+    with _seal_ctx(task_id="task-miss", seal_required=False):
+        result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+
+    assert result.success is True
+    assert result.content.startswith("真调文本")
+    assert "ocr_cache_hit" not in result.data
+    assert any("accurate_basic" in u for u in recorder)
+
+
+@pytest.mark.unit
+async def test_annotation_cache_error_falls_through(monkeypatch, tmp_path, _no_usage_recording):
+    """缓存查询异常：吞掉降级真调，绝不阻塞审查。"""
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "降级后文本"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr, "AsyncClient", _make_fake_client(token_payload, ocr_payload, recorder)
+    )
+
+    async def _boom(image_path):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(baidu_ocr, "_lookup_annotation_text", _boom)
+
+    with _seal_ctx(task_id="task-err", seal_required=False):
+        result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+
+    assert result.success is True
+    assert result.content.startswith("降级后文本")
+    assert any("accurate_basic" in u for u in recorder)
+
+
+@pytest.mark.unit
+async def test_annotation_cache_disabled_by_flag(monkeypatch, tmp_path, _no_usage_recording):
+    """OCR_ANNOTATION_CACHE_ENABLED=false：不查询缓存，直接真调（应急开关）。"""
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "开关关闭真调"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr, "AsyncClient", _make_fake_client(token_payload, ocr_payload, recorder)
+    )
+
+    async def _should_not_be_called(image_path):
+        raise AssertionError("开关关闭时不应查询标注缓存")
+
+    monkeypatch.setattr(baidu_ocr, "_lookup_annotation_text", _should_not_be_called)
+
+    tool = BaiduOcrTool()
+    tool._annotation_cache_enabled = False
+    with _seal_ctx(task_id="task-flag", seal_required=False):
+        result = await tool.execute(prompt="p", image_source=str(img))
+
+    assert result.success is True
+    assert any("accurate_basic" in u for u in recorder)
+
+
+@pytest.mark.unit
+async def test_annotation_cache_skipped_without_project_context(monkeypatch, tmp_path):
+    """无 UsageContext（脚本/测试）或 project_id 为空（素材图解析）：不走缓存。"""
+    img = _make_png(tmp_path / "a.png")
+    ocr_payload = {"words_result": [{"words": "无上下文真调"}], "words_result_num": 1}
+    token_payload = {"access_token": "tok", "expires_in": 2592000}
+    recorder: list[str] = []
+    monkeypatch.setattr(
+        baidu_ocr, "AsyncClient", _make_fake_client(token_payload, ocr_payload, recorder)
+    )
+
+    async def _should_not_be_called(image_path):
+        raise AssertionError("无 project_id 上下文不应查询标注缓存")
+
+    monkeypatch.setattr(baidu_ocr, "_lookup_annotation_text", _should_not_be_called)
+
+    # 无 ctx（autouse fixture 已保证 get_usage_context() 为 None 的默认态）
+    result = await BaiduOcrTool().execute(prompt="p", image_source=str(img))
+    assert result.success is True
+    assert any("accurate_basic" in u for u in recorder)
