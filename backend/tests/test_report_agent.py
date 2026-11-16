@@ -442,6 +442,71 @@ def test_md_inline_converts_tokens():
     assert "<script>" not in _md_inline("<script>alert(1)</script>")
 
 
+def test_md_inline_preserves_blank_fill_lines():
+    from backend.services.pdf_export import _md_inline
+
+    # 招标表单原文的空格填写线（4 连以上下划线）不是加粗标记，应原样保留
+    assert _md_inline("工期：____，质量要求：____（¥____）") == "工期：____，质量要求：____（¥____）"
+
+
+def test_md_inline_balances_crossed_markup():
+    """md 标记互相跨越时不能产生交叉/未闭合标签（2026-11-16 五虎山导出 500）.
+
+    反引号引用的响应函原文带 ____ 空格线时，__ 加粗会跨越反引号收尾，
+    与后插入的 <font> 交叉嵌套，paraparser 抛 ValueError 使整个导出 500。
+    """
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph
+
+    from backend.services.pdf_export import CJK_FONT, _ensure_font, _md_inline
+
+    _ensure_font()
+    style = ParagraphStyle("probe", fontName=CJK_FONT, fontSize=9, leading=13)
+    samples = [
+        # 生产真实翻车模式：空格线在反引号引用内，且加粗跨越引用收尾
+        "`响应函：____（¥____）的首轮报价，工期：____`；落款：____（签字）",
+        "`A **B` C** D",
+        "**A ~~B** C~~ D",
+        "*A **B* C** D",
+        "**未闭合加粗",
+    ]
+    for s in samples:
+        Paragraph(_md_inline(s), style)  # 不应抛 ValueError
+
+
+def test_pdf_export_survives_straddled_markdown():
+    """端到端：含交叉标记/空格填写线的 findings 导出必须成功."""
+    from backend.services.pdf_export import build_review_pdf
+
+    groups = [{
+        "label": "投标函检查",
+        "is_compliant": False,
+        "non_compliant_count": 1,
+        "findings": [{
+            "check_item_name": "投标函检查",
+            "requirement_key": "req_1",
+            "requirement_content": (
+                "1. 第六章“响应文件格式”响应函格式：`（采购人名称）: 愿意以人民币"
+                "（大写）____（¥____）的首轮报价，工期：____，质量要求：____`；"
+                "落款“供应商：____（盖单位章）／日期”。"
+            ),
+            "bid_content": None,
+            "is_compliant": False,
+            "severity": "critical",
+            "location_page": None,
+            "location_line": None,
+            "suggestion": None,
+            "explanation": None,
+        }],
+    }]
+    pdf_bytes = build_review_pdf(
+        "五虎山", None,
+        {"category_count": 1, "check_item_count": 1, "risk_item_count": 1},
+        groups,
+    )
+    assert pdf_bytes[:5] == b"%PDF-"
+
+
 def test_md_blocks_types():
     from backend.services.pdf_export import _md_blocks
 

@@ -608,6 +608,16 @@ _MD_TABLE_CHUNK_ROWS = 12
 def _md_inline(text: str) -> str:
     """Markdown 行内标记 → reportlab 段落标记（先转义，用户内容不会注入标签）."""
     t = _escape(text)
+    # 招标表单原文常带 ____（4 连以上下划线的空格填写线），不是加粗标记；
+    # 先摘出防止被下面的 __ 规则两两配对成 <b>（2026-11-16 五虎山任务导出
+    # 500：空格线加粗跨越反引号收尾，与 <font> 交叉嵌套致 paraparser 抛错）。
+    blanks: list[str] = []
+
+    def _stash_blank(m: re.Match) -> str:
+        blanks.append(m.group(0))
+        return f"\x00{len(blanks) - 1}\x00"
+
+    t = re.sub(r"_{4,}", _stash_blank, t)
     t = re.sub(r"\*\*\*(.+?)\*\*\*", r"<b><i>\1</i></b>", t)
     t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
     t = re.sub(r"__(.+?)__", r"<b>\1</b>", t)
@@ -623,7 +633,44 @@ def _md_inline(text: str) -> str:
     t = re.sub(r"~~(.+?)~~", r"<strike>\1</strike>", t)
     t = re.sub(r"`([^`]+)`", r'<font face="Courier">\1</font>', t)
     t = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r"\1（\2）", t)
-    return t
+    t = re.sub(r"\x00(\d+)\x00", lambda m: blanks[int(m.group(1))], t)
+    return _balance_markup(t)
+
+
+# _md_inline 只生成这四种标签（font 带属性），配平器只需识别它们
+_INLINE_TAG_RE = re.compile(r"</?(?:b|i|strike|font)\b[^>]*>", re.IGNORECASE)
+
+
+def _balance_markup(t: str) -> str:
+    """把顺序正则替换可能产生的交叉/未闭合标签重排成合法嵌套。
+
+    各替换自身成对，但 md 标记互相跨越时整体可交叉（如 ``A **B` C**`` 生成
+    ``<font>A <b>B</font> C</b>``），reportlab paraparser 遇到直接抛
+    ValueError 使整个导出 500。策略：闭合标签比栈顶更深时先闭外层再闭目标
+    （格式可能早收一个词，可接受）；无对应开标签的闭合标签丢弃；结尾补齐。
+    """
+    out: list[str] = []
+    stack: list[str] = []
+    pos = 0
+    for m in _INLINE_TAG_RE.finditer(t):
+        out.append(t[pos:m.start()])
+        token = m.group(0)
+        name = re.match(r"</?(\w+)", token).group(1).lower()
+        if token.startswith("</"):
+            if name in stack:
+                while stack and stack[-1] != name:
+                    out.append(f"</{stack.pop()}>")
+                stack.pop()
+                out.append(token)
+            # 没有开标签的孤儿闭合标签：丢弃
+        else:
+            stack.append(name)
+            out.append(token)
+        pos = m.end()
+    out.append(t[pos:])
+    while stack:
+        out.append(f"</{stack.pop()}>")
+    return "".join(out)
 
 
 def _md_blocks(text: str) -> list[tuple[str, Any]]:
