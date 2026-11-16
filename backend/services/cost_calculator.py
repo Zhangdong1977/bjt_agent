@@ -66,8 +66,9 @@ _LLM_RATES = {
 }
 
 # —— OCR（按次）—— 百度 accurate_basic，按内部约定结转单价（非厂商公开价）
+# 2026-11-16 起结转单价 0.028 → 0.018；历史流水按当时实际单价记账，不回溯订正。
 _OCR_PER_CALL = {
-    "baidu_ocr": 0.028,
+    "baidu_ocr": 0.018,
 }
 
 # Embedding 按估算输入 token 计价（元/token）；缓存命中不产生输入 token。

@@ -153,7 +153,7 @@ for label, dt, want in BOUNDARIES:
 check("error 不计费", estimate_cost(provider="deepseek", status="error") is None)
 check("timeout 不计费", estimate_cost(provider="deepseek", status="timeout") is None)
 c_ocr = estimate_cost(provider="baidu_ocr", status="success")
-check("baidu_ocr success = 0.028", c_ocr is not None and abs(c_ocr - 0.028) < 1e-9, f"got {c_ocr}")
+check("baidu_ocr success = 0.018", c_ocr is not None and abs(c_ocr - 0.018) < 1e-9, f"got {c_ocr}")
 check("未知 provider 返回 None", estimate_cost(provider="xxx", status="success") is None)
 c_default = estimate_cost(provider="deepseek", model="unknown-model",
                           prompt_tokens=1, completion_tokens=0, status="success", at=AT_OFFPEAK)
