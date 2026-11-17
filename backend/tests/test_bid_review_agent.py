@@ -655,3 +655,118 @@ critical
             counter=1,
         )
         assert "check_item_name" not in result
+
+
+class TestReportMisnamedRecovery:
+    """LLM 抄错输出路径的自愈：预期报告缺失时按内容标题找回兄弟文件。
+
+    背景（2026-11-16 生产事故）：任务 prompt 要求 LLM 把报告写到
+    review_{task_id}_{rule_stem}.md，LLM 调 write_file 时把 A002 抄成 A02，
+    文件落错名而 DB report_path 仍记预期路径 → 结果页「无法加载报告内容」。
+    """
+
+    TASK_ID = "e2b1b057-f4d0-4359-8825-9fadbafaeb50"
+    STEM = "A002 检查投标文件结构与招标文件提供的模板一致性"
+
+    @pytest.fixture
+    def agent(self, tmp_path):
+        rule = tmp_path / f"{self.STEM}.md"
+        rule.write_text("# 评标规则\n\n## 检查项1\n- 规则内容", encoding="utf-8")
+        agent = BidReviewAgent(
+            project_id="test_project",
+            tender_doc_path="/tmp/test_tender.md",
+            bid_doc_path="/tmp/test_bid.md",
+            user_id="test_user",
+            rule_doc_path=str(rule),
+            max_steps=5,
+        )
+        agent.workspace_dir = tmp_path  # 输出目录指回测试沙箱
+        return agent
+
+    @staticmethod
+    def _report(rule_stem: str) -> str:
+        return (
+            f"# 投标文件合规审查报告（{rule_stem}）\n\n"
+            "## 检查项1: 投标文件结构与招标文件提供的模板一致性检查\n\n"
+            "### 规则项\n结构与模板一致\n\n"
+            "### 招标书要求\n按招标文件第六章模板编写\n\n"
+            "### 投标文件内容\n缺少开标一览表整个章节\n\n"
+            "### 不符合项说明\n必交组成文件整章缺失\n\n"
+            "### 严重程度\nmajor\n"
+        )
+
+    def _expected_path(self, tmp_path):
+        return tmp_path / f"review_{self.TASK_ID}_{self.STEM}.md"
+
+    def test_adopts_mistyped_sibling(self, agent, tmp_path):
+        """复现事故：文件名 A002→A02，正文标题仍含正确规则名 → 采用实际文件."""
+        wrong = tmp_path / f"review_{self.TASK_ID}_{self.STEM.replace('A002', 'A02', 1)}.md"
+        wrong.write_text(self._report(self.STEM), encoding="utf-8")
+
+        recovered = agent._recover_misnamed_report(str(self._expected_path(tmp_path)))
+
+        assert recovered == str(wrong)
+
+    def test_ignores_other_rules_siblings(self, agent, tmp_path):
+        """同任务其他规则的报告在、但无本规则错名文件 → 不误领，返回 None."""
+        for other in ("A001 检查投标文件填写完整性", "A003 基本招标要求符合性检查"):
+            p = tmp_path / f"review_{self.TASK_ID}_{other}.md"
+            p.write_text(self._report(other), encoding="utf-8")
+
+        assert agent._recover_misnamed_report(str(self._expected_path(tmp_path))) is None
+
+    def test_newest_match_wins(self, agent, tmp_path):
+        """两个错名变体都命中（LLM 重写场景）→ 取 mtime 最新的."""
+        import os
+        older = tmp_path / f"review_{self.TASK_ID}_{self.STEM.replace('A002', 'A02', 1)}.md"
+        newer = tmp_path / f"review_{self.TASK_ID}_{self.STEM.replace('A002', 'A0022', 1)}.md"
+        for p in (older, newer):
+            p.write_text(self._report(self.STEM), encoding="utf-8")
+        os.utime(older, (1000000000, 1000000000))
+        os.utime(newer, (2000000000, 2000000000))
+
+        recovered = agent._recover_misnamed_report(str(self._expected_path(tmp_path)))
+
+        assert recovered == str(newer)
+
+    def test_returns_none_without_siblings(self, agent, tmp_path):
+        """目录里没有任何同前缀文件 → None（走原消息兜底）."""
+        assert agent._recover_misnamed_report(str(self._expected_path(tmp_path))) is None
+
+    @pytest.mark.asyncio
+    async def test_run_review_adopts_misnamed_report(self, agent, tmp_path, monkeypatch):
+        """端到端：报告被写错名时 run_review 采用实际文件——
+        _output_md_path（写入 DB 的 report_path）指向真实存在的文件，
+        findings 直接从找回的文件解析（不再依赖消息兜底）."""
+        import time as time_mod
+        monkeypatch.setattr(time_mod, "time", lambda: 1700000000.0)
+
+        wrong = tmp_path / f"review_1700000000_{self.STEM.replace('A002', 'A02', 1)}.md"
+        wrong.write_text(self._report(self.STEM), encoding="utf-8")
+
+        async def mock_initialize():
+            pass
+        agent.initialize = mock_initialize
+
+        async def mock_generate(**kwargs):
+            # 基类 run() 消费 LLMResponse（读 usage/finish_reason），
+            # 返回 Message 会在循环里抛 AttributeError（现有集成测试即如此假绿）。
+            from mini_agent.schema import LLMResponse, TokenUsage
+            return LLMResponse(
+                content="审查完成",
+                thinking=None,
+                tool_calls=None,
+                finish_reason="stop",
+                usage=TokenUsage(),
+            )
+
+        agent.llm_client.generate = mock_generate
+        for tool in agent.tools.values():
+            tool.execute = AsyncMock(return_value=MagicMock(success=True, content="mocked"))
+
+        findings = await agent.run_review()
+
+        assert agent._output_md_path == str(wrong)
+        assert findings, "findings 应从找回的报告文件解析"
+        assert findings[0]["severity"] == "major"
+        await agent.close()

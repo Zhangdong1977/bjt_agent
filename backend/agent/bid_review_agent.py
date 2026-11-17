@@ -1497,7 +1497,23 @@ class BidReviewAgent(BaseAgent):
                 logger.info(f"[BidReviewAgent.run_review] Fallback extraction returned {len(findings)} findings")
                 return findings
 
-            # Normal or max-steps: try post_process first
+            # Normal or max-steps: try post_process first.
+            # The task prompt asks the LLM to write the report to output_md_path,
+            # but it occasionally mistypes the long CJK filename (2026-11-16 prod
+            # incident: ..._A002 ....md written as ..._A02 ....md — findings were
+            # still recovered from messages, yet todo.result.report_path kept
+            # pointing at the missing intended file and the results page 404'd
+            # with「无法加载报告内容」). Adopt the actually-written sibling file
+            # when its header identifies our rule doc.
+            if not Path(output_md_path).exists():
+                recovered = self._recover_misnamed_report(output_md_path)
+                if recovered:
+                    logger.warning(
+                        f"[BidReviewAgent.run_review] Expected report missing, "
+                        f"adopting misnamed sibling: {recovered}"
+                    )
+                    output_md_path = recovered
+                    self._output_md_path = recovered  # persisted to DB as report_path
             findings = await self._post_process(output_md_path)
             logger.info(f"[BidReviewAgent.run_review] Post-processing completed, found {len(findings)} findings")
 
@@ -2150,6 +2166,51 @@ class BidReviewAgent(BaseAgent):
         # All retries failed
         logger.error(f"[BidReviewAgent] All {max_retries} LLM attempts failed")
         raise last_exception
+
+    def _recover_misnamed_report(self, expected_path: str) -> Optional[str]:
+        """Find the actually-written report when the LLM mistyped the filename.
+
+        The LLM transcribes the long CJK output path itself when calling
+        write_file and sometimes drops/duplicates a character (filename only —
+        the report body header still names the correct rule doc). Match same
+        review_{task_id}_ prefix siblings in the same workspace dir whose head
+        contains our rule stem; multiple hits → newest mtime (later write wins).
+
+        Returns the adopted path, or None when nothing matches (caller keeps
+        the intended path and falls back to message extraction as before).
+        """
+        import logging
+        logger = self._logger or logging.getLogger(__name__)
+
+        expected = Path(expected_path)
+        rule_stem = Path(self.rule_doc_path).stem
+        suffix = f"_{rule_stem}.md"
+        if not expected.name.endswith(suffix):
+            return None
+        task_prefix = expected.name[: len(expected.name) - len(suffix)] + "_"
+
+        candidates: list[tuple[float, str]] = []
+        try:
+            siblings = list(expected.parent.iterdir())
+        except OSError:
+            return None
+        for cand in siblings:
+            if cand == expected or not cand.name.startswith(task_prefix) or not cand.is_file():
+                continue
+            try:
+                head = cand.read_text(encoding="utf-8")[:300]
+            except (OSError, UnicodeDecodeError):
+                continue
+            if rule_stem in head:
+                candidates.append((cand.stat().st_mtime, str(cand)))
+        if not candidates:
+            logger.warning(
+                f"[BidReviewAgent._recover_misnamed_report] No recoverable sibling "
+                f"for missing report: {expected_path}"
+            )
+            return None
+        candidates.sort()
+        return candidates[-1][1]
 
     async def _post_process(self, md_path: str) -> list[dict]:
         """Post-process md file to extract structured findings.
