@@ -176,6 +176,9 @@ export interface WizardSection {
   written_at?: string | null;
   attempts: number;
   error_message?: string | null;
+  /** 章节行所属任务（审读任务上下文展示跨任务底座时，底座章指向其源撰写任务——
+   * 取内容/标记 written 必须用行级 task_id，不能用当前任务 id）。 */
+  task_id?: string | null;
 }
 
 export interface WizardSectionContent {

@@ -3617,6 +3617,8 @@ class BidWizardReviewAgent:
             self._publish("phase", {"phase": "reviewing", "section_total": len(chapters)})
             for batch in batch_review_chapters(chapters):
                 self._check_cancel()
+                # 正在审读的批（2026-11-19 用户反馈）：前端全目录展示时据此给本章标「审读中」
+                self._publish("review_batch", {"nodes": [item["node_id"] for item in batch]})
                 chapters_text = "\n\n".join(
                     "### 章节 %s %s\n%s" % (chapter["node_id"], chapter["title"], chapter["content"][:REVIEW_CHAPTER_MAX_CHARS])
                     for chapter in batch

@@ -1999,6 +1999,13 @@ function upsertSection(meta: Partial<WizardSection> & { node_id: string }) {
   }
 }
 
+/** 章节行所属任务 id（审读任务上下文展示跨任务底座时，底座章指向源撰写任务——
+ * 取内容/标记 written/替换 Word 必须用行级 id，用当前任务 id 会 404）。 */
+function sectionTaskId(nodeId: string): string {
+  const row = sections.value.find((item) => item.node_id === nodeId);
+  return row?.task_id || taskId.value || "";
+}
+
 function specNodeIds(): string[] {
   return (wizard.value?.spec || []).map((node) => node.node_id);
 }
@@ -2195,12 +2202,17 @@ async function repositionAnchor() {
   }
 }
 
+/** 审读轮正在审读的批（2026-11-19 用户反馈）：全目录展示时给对应章节标「审读中」；
+ * 每收到新批整体替换（上一批自动清除），进入修订阶段/任务终态清空。 */
+const reviewingNodes = ref<Set<string>>(new Set());
+
 function trackTask(next: WizardWritingTask) {
   stopTaskStream();
   stopTaskPoll();
   taskId.value = next.id;
   task.value = next;
   sections.value = [];
+  reviewingNodes.value = new Set();
   awaitingWrite.value = [];
   writeError.value = "";
   anchorLost.value = false;
@@ -2223,11 +2235,33 @@ function trackTask(next: WizardWritingTask) {
 
 /** 先回填章节终态再开流：SSE 无 Last-Event-ID 会从 0 全量回放，已 written 章节必须先已知，
  * 幂等防护才能跳过（否则重开页面会把已写章节重复插入 Word）；顺带把已生成未写入章节
- * 入队补写（§4.3 断点续作：撰写中重开页面继续写入"已生成未写入"章节）。 */
+ * 入队补写（§4.3 断点续作：撰写中重开页面继续写入"已生成未写入"章节）。
+ * 审读任务上下文（2026-11-19 用户反馈）：先拉跨任务全稿清单作**底座**（全目录展示，
+ * 底座章 task_id 指向其源撰写任务），再叠加当前任务的修订章行（task_id=当前任务）。 */
 async function primeTaskSectionsThenListen(id: string) {
   try {
-    for (const row of await listWritingSections(id)) upsertSection(row);
-    if (writeMode.value === "auto") {
+    if (isReviewTask.value && wizard.value) {
+      try {
+        for (const row of await listLatestSections(wizard.value.id)) {
+          const status = (["pending", "generating", "generated", "written", "failed"] as const).includes(
+            row.status as never,
+          )
+            ? (row.status as WizardSection["status"])
+            : "generated";
+          upsertSection({
+            node_id: row.node_id,
+            title: row.title,
+            status,
+            word_count: row.word_count ?? undefined,
+            task_id: row.task_id,
+          });
+        }
+      } catch {
+        /* 底座失败不阻断：靠当前任务回填（退回旧的部分列表行为） */
+      }
+    }
+    for (const row of await listWritingSections(id)) upsertSection({ ...row, task_id: id });
+    if (!isReviewTask.value && writeMode.value === "auto") {
       for (const item of sections.value.filter((section) => section.status === "generated")) {
         enqueueWrite(item.node_id);
       }
@@ -2303,18 +2337,26 @@ function handleTaskEvent(event: Record<string, unknown>) {
   const type = String(event.type || "");
   if (type === "status") {
     const status = String(event.status || "");
-    if (status === "completed" || status === "failed" || status === "cancelled") void refreshTask();
+    if (status === "completed" || status === "failed" || status === "cancelled") {
+      reviewingNodes.value = new Set(); // 终态清掉「审读中」标记
+      void refreshTask();
+    }
   } else if (type === "phase") {
     const phase = String(event.phase || "");
     if (phase === "reviewing") {
       pushLog("info", `开始 AI 审读（共 ${event.section_total || "?"} 章）…`);
     } else if (phase === "revising") {
+      reviewingNodes.value = new Set(); // 批审读全部结束，进入修订
       pushLog("info", `审读完成，开始修订 ${event.section_total || 0} 个重点章节…`);
     } else if (phase === "auto_fixing") {
       pushLog("info", `质检发现不合格项，自动修复中（第 ${event.round || 1} 轮，涉及 ${event.section_total || 0} 章）…`);
     } else {
       pushLog("info", `开始逐章撰写（共 ${event.section_total || "?"} 章）`);
     }
+  } else if (type === "review_batch") {
+    // 正在审读的批（整批替换：SSE 重放时旧批事件不残留）
+    const nodes = Array.isArray(event.nodes) ? (event.nodes as unknown[]).map(String) : [];
+    reviewingNodes.value = new Set(nodes);
   } else if (type === "review_findings") {
     pushLog("info", `AI 审读已发现 ${event.total || 0} 个问题…`);
   } else if (type === "revision_completed") {
@@ -2325,6 +2367,7 @@ function handleTaskEvent(event: Record<string, unknown>) {
       title: String(event.title || ""),
       status: "generated",
       word_count: Number(event.word_count || 0),
+      task_id: taskId.value || undefined,
     });
     pushLog("ok", `修订完成 ${nodeId} ${displayTitle(nodeId, String(event.title || ""))}——用「替换 Word 中本章」更新`);
   } else if (type === "section_started") {
@@ -2335,6 +2378,7 @@ function handleTaskEvent(event: Record<string, unknown>) {
       node_id: nodeId,
       title: String(event.title || event.node_id || ""),
       status: "generating",
+      task_id: taskId.value || undefined,
     });
   } else if (type === "section_completed") {
     const nodeId = String(event.node_id || "");
@@ -2345,6 +2389,7 @@ function handleTaskEvent(event: Record<string, unknown>) {
       title: String(event.title || ""),
       status: "generated",
       word_count: Number(event.word_count || 0),
+      task_id: taskId.value || undefined,
     });
     pushLog("ok", `完成章节 ${event.node_id} ${displayTitle(String(event.node_id), String(event.title || ""))}`);
     if (writeMode.value === "auto") {
@@ -2356,6 +2401,7 @@ function handleTaskEvent(event: Record<string, unknown>) {
       node_id: String(event.node_id || ""),
       status: "failed",
       error_message: String(event.error || "生成失败"),
+      task_id: taskId.value || undefined,
     });
     pushLog("error", `章节失败 ${event.node_id}：${String(event.error || "生成失败")}`);
   } else if (type === "error") {
@@ -2378,18 +2424,22 @@ async function refreshTask(quiet = false) {
       listWritingSections(taskId.value),
     ]);
     task.value = current;
-    for (const row of sectionRows) upsertSection(row);
+    // 行级 task_id：审读任务轮询回填的行属于当前任务（否则会 merge 到底座章的源任务 id 上）
+    for (const row of sectionRows) upsertSection({ ...row, task_id: taskId.value });
     if (!taskRunning.value) {
       stopTaskPoll();
       stopTaskStream();
       refreshWallet();
-      if (current.status === "completed") pushLog("ok", "撰写任务完成");
+      if (current.status === "completed") pushLog("ok", taskStatusText.value);
       if (current.status === "failed") pushLog("error", current.error_message || "任务失败");
       if (current.status === "cancelled") pushLog("info", "任务已取消");
-      // 恢复场景：已生成未写入的章节进入待写入队列
-      const pending = sectionRows.filter((row) => row.status === "generated").map((row) => row.node_id);
-      for (const node of pending) enqueueWrite(node);
-      pumpWriteQueue();
+      // 恢复场景：已生成未写入的章节进入待写入队列。
+      // 审读任务除外——修订章此前多已写入 Word，自动插入会成稿重复（统一走「替换 Word 中本章」）
+      if (!isReviewTask.value) {
+        const pending = sectionRows.filter((row) => row.status === "generated").map((row) => row.node_id);
+        for (const node of pending) enqueueWrite(node);
+        pumpWriteQueue();
+      }
     }
   } catch (error) {
     if (!quiet) pageError.value = friendlyError(error, "读取撰写任务失败");
@@ -2409,7 +2459,7 @@ function pumpWriteQueue() {
 
 /** 把一章写入 Word（书签锚点推进 + 章首/章尾书签对 + 图表预处理 + written 回报）。 */
 async function writeSection(nodeId: string) {
-  return writeSectionForRow(taskId.value, nodeId);
+  return writeSectionForRow(sectionTaskId(nodeId), nodeId);
 }
 
 /** 「重新写入 Word」批量动作可跨任务消费各章最新内容（决策 31），故接受行级 task_id。 */
@@ -2483,7 +2533,7 @@ const previewSegments = computed(() =>
 
 async function previewSection(nodeId: string) {
   if (!taskId.value) return;
-  const content = await getWritingSectionContent(taskId.value, nodeId);
+  const content = await getWritingSectionContent(sectionTaskId(nodeId), nodeId);
   previewModal.nodeId = nodeId;
   previewModal.title = displayTitle(nodeId, content.title);
   previewModal.content = content.content || "";
@@ -2509,10 +2559,11 @@ function onRegenerateSection(nodeId: string) {
 /** 重生成完成后替换 Word 中的旧章（书签对删旧插新，同一撤销单元）。 */
 async function replaceSectionInWord(nodeId: string) {
   if (!taskId.value || writingNode.value) return;
+  const rowTaskId = sectionTaskId(nodeId);
   writingNode.value = nodeId;
   writeError.value = "";
   try {
-    const content = await getWritingSectionContent(taskId.value, nodeId);
+    const content = await getWritingSectionContent(rowTaskId, nodeId);
     if (!content.content) throw new Error("章节内容为空");
     // 题注按节编号（图 节号-N）：替换旧章时与本节原编号口径保持一致
     const prepared = await prepareChartAssets(content.content, { numberPrefix: nodeId });
@@ -2531,7 +2582,7 @@ async function replaceSectionInWord(nodeId: string) {
           : result.error || "替换 Word 章节失败";
       return;
     }
-    await markSectionWritten(taskId.value, nodeId);
+    await markSectionWritten(rowTaskId, nodeId);
     upsertSection({ node_id: nodeId, status: "written" });
     pushLog("ok", `已替换 Word 中的本章：${displayTitle(nodeId, content.title)}`);
   } catch (error) {
@@ -2719,7 +2770,8 @@ async function copyFullDraft() {
     const rows = sortedSections.value.filter((item) => item.status === "generated" || item.status === "written");
     const parts: string[] = [];
     for (const row of rows) {
-      const content = await getWritingSectionContent(taskId.value, row.node_id);
+      // 行级 task_id（审读任务上下文列表含跨任务底座章，须向其源任务取内容）
+      const content = await getWritingSectionContent(row.task_id || taskId.value!, row.node_id);
       if (content.content) parts.push(content.content);
     }
     if (!parts.length) {
@@ -2814,6 +2866,26 @@ const SECTION_STATUS_TEXT: Record<string, string> = {
   written: "已写入",
   failed: "失败",
 };
+
+/** 审读任务上下文的章节行状态文案（2026-11-19 用户反馈：全目录展示时区分
+ * 「正在审读的批/正在修订的章/已修订章」与底座章的原内容状态）。 */
+function sectionStatusText(section: { node_id: string; status: string; task_id?: string | null }): string {
+  if (!isReviewTask.value) return SECTION_STATUS_TEXT[section.status] || section.status;
+  if (section.status === "generating") return "修订中";
+  if (section.task_id === taskId.value) {
+    // 属于本审读任务的行 = 修订章（generated=已修订待替换进 Word；written=已修订并替换）
+    return section.status === "written" ? "已修订·已替换" : "已修订";
+  }
+  return SECTION_STATUS_TEXT[section.status] || section.status;
+}
+
+/** 已修订章数：完成后用 summary 权威值；运行中按属于当前审读任务的章节行计数
+ * （全目录底座章 task_id 指向源撰写任务，不计入）。 */
+const reviewRevisedSoFar = computed(() => {
+  if (!isReviewTask.value) return 0;
+  if (task.value?.status === "completed") return reviewRevisedCount.value;
+  return sections.value.filter((item) => item.task_id === taskId.value).length;
+});
 function sectionTone(status: string): "waiting" | "running" | "done" | "error" | "todo" {
   if (status === "written") return "done";
   if (status === "failed") return "error";
@@ -3892,7 +3964,7 @@ onUnmounted(() => {
               <!-- 审读任务上下文不显示「已写入 X / N 章」（分母是本轮修订章数，曾把全稿 60 章
                    误读成 20 章）——改显全稿口径，修订/写入进度在下方区块分别说明 -->
               <span v-if="isReviewTask">
-                全稿 {{ reviewChaptersTotal || sections.length }} 章<template v-if="reviewTotalWords"> · {{ reviewTotalWords.toLocaleString() }} 字</template> · 本轮自动修订 {{ sections.length }} 章
+                全稿 {{ reviewChaptersTotal || sections.length }} 章<template v-if="reviewTotalWords"> · {{ reviewTotalWords.toLocaleString() }} 字</template> · 已修订 {{ reviewRevisedSoFar }} 章
               </span>
               <span v-else>已写入 {{ writtenCount }} / {{ sections.length }} 章<template v-if="writtenWords"> · {{ writtenWords.toLocaleString() }} 字</template></span>
               <span v-if="taskRunning" class="hint" style="margin:0">{{ writeMode === "review" ? "全文生成中，完成后统一写入 Word；可离开此页，重新进入会自动恢复进度" : "撰写与写入在后台进行，可离开此页；重新进入会自动恢复进度" }}</span>
@@ -3905,12 +3977,13 @@ onUnmounted(() => {
               class="hint"
               style="margin:0 0 6px"
             >全文已生成。推荐先「AI 审读优化全稿」找出问题并自动修订重点章节，再点「写入 Word」统一输出；着急成稿也可直接写入。</p>
-            <!-- 2026-11-19 生产工单：明确告知「审读优化不会减少章节」，防把本轮修订章数误读成全稿章数 -->
+            <!-- 2026-11-19 生产工单：明确告知「审读优化不会减少章节」，防把本轮修订章数误读成全稿章数；
+                 审读运行中也展示（全目录 + 审读中/修订中标识，2026-11-19 用户反馈） -->
             <p
-              v-if="!taskRunning && isReviewTask"
+              v-if="isReviewTask"
               class="hint"
               style="margin:0 0 6px"
-            >AI 审读优化不会删减章节——全稿 {{ reviewChaptersTotal || sections.length }} 章内容完整保留，下方章节列表仅为本轮被修订的章节；「写入 Word / 重新写入 Word」始终输出全稿全部章节。</p>
+            >AI 审读优化不会删减章节——全稿 {{ reviewChaptersTotal || sections.length }} 章内容完整保留，下方为全稿章节目录；「写入 Word / 重新写入 Word」始终输出全稿全部章节。</p>
             <!-- 2026-10-25 按键优化：主流程动作（审读/写入）升为主按钮并按推荐顺序排列；
                  复制全稿文本（原名「复制全稿 Markdown」）带用途说明；移除类破坏性操作右置隔开 -->
             <div v-if="!taskRunning && (generatedCount > 0 || writtenCount > 0)" class="writing-tools">
@@ -4053,15 +4126,18 @@ onUnmounted(() => {
                 <span class="log-time">{{ log.time }}</span>{{ log.text }}
               </div>
             </div>
-            <!-- 2026-11-19：审读任务下列表仅含修订章，须说明全稿其余章未改动、不在本列表 -->
-            <p v-if="!taskRunning && isReviewTask" class="hint" style="margin:0 0 6px">
-              以下仅为本轮自动修订的 {{ sections.length }} 章；全稿 {{ reviewChaptersTotal || sections.length }} 章均已生成，其余章节内容未改动、不在本列表——点上方「写入 Word / 重新写入 Word」统一输出全稿。
+            <!-- 2026-11-19 用户反馈：审读运行中也展示全稿目录，正在审读的批/正在修订的章带状态标识 -->
+            <p v-if="isReviewTask" class="hint" style="margin:0 0 6px">
+              <template v-if="taskRunning">正在逐章审读全稿 {{ reviewChaptersTotal || sections.length }} 章目录——标「审读中」的是当前正在通读的章节，进入修订后标「修订中」；其余章节为已生成内容、暂未处理。</template>
+              <template v-else>全稿 {{ reviewChaptersTotal || sections.length }} 章目录如下；本轮自动修订了 {{ reviewRevisedSoFar }} 章（标「已修订」，已更新为修订版），其余章节为原生成内容、未改动。</template>
             </p>
             <ul class="section-list">
               <li v-for="section in sortedSections" :key="section.node_id" class="section-row">
                 <span class="doc-name">{{ section.node_id }} {{ displayTitle(section.node_id, section.title) }}</span>
                 <StatusDot v-if="writingNode === section.node_id" tone="running">写入 Word 中…</StatusDot>
-                <StatusDot v-else :tone="sectionTone(section.status)">{{ SECTION_STATUS_TEXT[section.status] || section.status }}</StatusDot>
+                <!-- 2026-11-19 用户反馈：审读轮全目录展示——正在审读的批/正在修订的章给运行态标识 -->
+                <StatusDot v-else-if="reviewingNodes.has(section.node_id)" tone="running">审读中…</StatusDot>
+                <StatusDot v-else :tone="sectionTone(section.status)">{{ sectionStatusText(section) }}</StatusDot>
                 <button
                   v-if="section.status === 'generated' && !writingNode"
                   type="button"
