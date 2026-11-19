@@ -3125,6 +3125,21 @@ def prioritize_review_revisions(
     return actionable, pending
 
 
+def dedupe_review_findings(findings: list[dict[str, str]]) -> list[dict[str, str]]:
+    """审读清单去重+封顶（2026-11-19 预发布实测：continue 轮 carried+机检补录+跨章传播
+    无去重无上限，findings 120→314→978 逐轮膨胀，报告明细虚高）——同 (node,severity,
+    where,issue) 四元组只留首条，总量封顶 2×REVIEW_FINDINGS_MAX。"""
+    seen: set[tuple] = set()
+    result: list[dict[str, str]] = []
+    for item in findings:
+        key = (item.get("node_id"), item.get("severity"), item.get("where"), item.get("issue"))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result[: REVIEW_FINDINGS_MAX * 2]
+
+
 def normalize_review_findings(payload: Any, valid_node_ids: set[str]) -> list[dict[str, str]]:
     """审读结果归一：node_id 必须在本次章节集内（模型跑偏的丢弃），severity 回退 low。"""
     raw = payload.get("findings") if isinstance(payload, dict) else payload
@@ -3911,6 +3926,10 @@ class BidWizardReviewAgent:
             for item in findings:
                 if item["severity"] not in ("high", "medium"):
                     continue
+                # 传播项不再二次传播（2026-11-19 预发布实测膨胀根因之一：传播副本的 issue
+                # 仍点名其他章节号，下一轮被当作源再传播，findings 逐轮翻倍）
+                if str(item["issue"]).startswith("（同源跨章意见"):
+                    continue
                 issue_text = item["issue"]
                 mentioned = [
                     other
@@ -3931,6 +3950,8 @@ class BidWizardReviewAgent:
             findings.extend(propagated)
         except Exception:
             logger.exception("bid-wizard finding propagation failed: task=%s", self.task_id)
+        # 去重+封顶（两分支统一收口；reader 分支此前的 [:REVIEW_FINDINGS_MAX] 只管 Reader 原始输出）
+        findings = dedupe_review_findings(findings)
 
         # ② 修订（Revise）：仅 high/medium 触发；severity 优先选章（2026-11-19 生产工单：
         # 原按大纲序截断曾把 11 个含 high 的章挤出修订集、medium-only 章反占名额），

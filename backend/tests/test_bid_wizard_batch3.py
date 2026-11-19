@@ -355,6 +355,20 @@ def test_normalize_review_findings_filters_and_defaults():
     assert normalize_review_findings(None, {"5"}) == []
 
 
+def test_dedupe_review_findings_caps_inflation():
+    """去重+封顶（2026-11-19 预发布实测：continue 轮 120→314→978 膨胀）——
+    同四元组只留首条、封顶 2×REVIEW_FINDINGS_MAX。"""
+    from backend.agent.bid_wizard_agent import REVIEW_FINDINGS_MAX, dedupe_review_findings
+
+    item = {"node_id": "5", "severity": "high", "where": "第 2 段", "issue": "口径矛盾"}
+    assert len(dedupe_review_findings([item, dict(item), {**item, "severity": "medium"}])) == 2
+
+    bulk = [{"node_id": "5", "severity": "low", "where": "", "issue": f"问题{i}"} for i in range(500)]
+    assert len(dedupe_review_findings(bulk)) == REVIEW_FINDINGS_MAX * 2
+    # 首条保留（顺序稳定），封顶去尾
+    assert dedupe_review_findings(bulk)[0]["issue"] == "问题0"
+
+
 def test_estimate_review_usage_and_points_monotonic():
     from backend.agent.bid_wizard_agent import estimate_review_points, estimate_review_usage
 
