@@ -2454,7 +2454,7 @@ function handleTaskEvent(event: Record<string, unknown>) {
       word_count: Number(event.word_count || 0),
       task_id: taskId.value || undefined,
     });
-    pushLog("ok", `修订完成 ${nodeId} ${displayTitle(nodeId, String(event.title || ""))}——用「替换 Word 中本章」更新`);
+    pushLog("ok", `修订完成 ${nodeId} ${displayTitle(nodeId, String(event.title || ""))}——修订版已保存，Word 中仍是旧版；在目录该章行点「替换 Word 中本章」原位更新`);
   } else if (type === "section_started") {
     const nodeId = String(event.node_id || "");
     // SSE 重放幂等：written 是终态，不被旧的 started 事件降级（否则紧随的 completed 防护会失效）
@@ -4261,7 +4261,7 @@ onUnmounted(() => {
                     <template v-if="item.where">{{ item.where }}：</template>{{ item.issue }}
                   </li>
                 </ul>
-                <p class="hint">严重/中等问题对应的章节已自动修订；轻微问题未改动、仅供人工参考。修订后的章节用「替换 Word 中本章」或「重新写入 Word」更新到文档。</p>
+                <p class="hint">严重/中等问题对应的章节已自动修订（目录中标「已修订」）；轻微问题未改动、仅供人工参考。注意：AI 修订只更新系统里的稿子，<b>Word 文档仍是旧版</b>，需手动更新——逐章更新：在下方目录对「已修订」的章节点「替换 Word 中本章」（原位替换旧章，只动该章，其余内容不变）；整本更新：先「移除全部 AI 内容」（一次 Ctrl+Z 可整体恢复）再「重新写入 Word」。</p>
               </template>
             </div>
             <!-- 23 号 O1/O6 + 2026-10-25 质检自动修复闭环：error 项由系统自动修复并复检后才呈现，
