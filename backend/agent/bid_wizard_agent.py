@@ -92,6 +92,10 @@ GENERATION_WORD_COUNT_MIN = 1_000
 GENERATION_WORD_COUNT_MAX = 1_000_000
 # Spec 生成按目标总字数 ±20% 软约束规划章数与每章字数（决策 40）
 GENERATION_WORD_COUNT_TOLERANCE = 0.2
+# 目录层数（2026-11-19 用户需求）：用户可选的大纲最大层级，默认 4（与历史 1-4 级行为一致）
+OUTLINE_DEPTH_MIN = 2
+OUTLINE_DEPTH_MAX = 6
+OUTLINE_DEPTH_DEFAULT = 4
 # 平级劣化判据（2026-09-15 预发布实证：字数约束下模型把 56 章全标 level=1）：
 # 全部节点 level=1 且数量超过此值即视为结构劣化，带纠正指令重试一次；少量一级章节的小纲要属正常
 SPEC_FLAT_DEGRADATION_MIN_NODES = 12
@@ -169,7 +173,7 @@ __GENERATION_CONSTRAINTS__
 __MATERIAL_INDEX__
 __TOC_REFERENCE__
 
-请输出 Spec JSON 数组（不超过 __MAX_NODES__ 个节点；按目录顺序平铺，用 level 标注层级，1-4 级），每项格式：
+请输出 Spec JSON 数组（不超过 __MAX_NODES__ 个节点；按目录顺序平铺，用 level 标注层级，最多 __OUTLINE_DEPTH__ 级），每项格式：
 
 {"title": "章节标题", "level": 1,
  "summary": "本章内容要点摘要（1-3 句，写作时的执行纲领）",
@@ -1323,8 +1327,23 @@ async def tighten_bidfig_fences(llm, body: str) -> tuple[str, dict[str, int]]:
 # ------------------------------------------------------------------ 生成要求（决策 38-41）
 
 
+def _outline_depth_of(options: dict[str, Any] | None) -> int:
+    """读取用户设定的目录层数；未设置/非法/越界一律回默认 4（存量行为不变）。"""
+    if not isinstance(options, dict):
+        return OUTLINE_DEPTH_DEFAULT
+    raw = options.get("outline_depth")
+    if raw is None or isinstance(raw, bool):
+        return OUTLINE_DEPTH_DEFAULT
+    try:
+        depth = int(raw)
+    except (TypeError, ValueError):
+        return OUTLINE_DEPTH_DEFAULT
+    return depth if OUTLINE_DEPTH_MIN <= depth <= OUTLINE_DEPTH_MAX else OUTLINE_DEPTH_DEFAULT
+
+
 def normalize_generation_options(raw: Any) -> dict[str, Any] | None:
-    """生成要求规范化：parts 去重保序且非空（空→仅技术）、word_count 越界回 None、charts 布尔、fig_mode 透传。
+    """生成要求规范化：parts 去重保序且非空（空→仅技术）、word_count 越界回 None、charts 布尔、
+    fig_mode 透传、outline_depth 越界回默认 4（2026-11-19 目录层数用户可选）。
 
     返回 None 表示"未设置"（存量向导 / 老客户端载荷），下游一律按无约束处理（决策 42）。
     word_count=None 是允许的草稿态——必填校验在进入编写大纲时做（决策 40）。
@@ -1360,6 +1379,7 @@ def normalize_generation_options(raw: Any) -> dict[str, Any] | None:
         "word_count": word_count,
         "charts": True if charts is None else bool(charts),
         "fig_mode": fig_mode,
+        "outline_depth": _outline_depth_of(raw),
     }
 
 
@@ -1400,6 +1420,11 @@ def build_generation_constraints_text(options: dict[str, Any] | None) -> str:
         lines.append("- 图表：需要配图——charts 按内容需要规划（每章 0-3 项）")
     else:
         lines.append("- 图表：不配图——每个章节的 charts 必须为空数组 []，不要规划任何表格或 mermaid 图")
+    depth = _outline_depth_of(options)
+    lines.append(
+        f"- 目录层数：最多 {depth} 级（level 1-{depth}）——任何章节的 level 不得超过 {depth}；"
+        "层级按内容需要设置，不必为凑层级而细分，超出该深度的内容并入所在小节"
+    )
     return "\n".join(lines)
 
 
@@ -1434,10 +1459,22 @@ def build_questionnaire_scope_text(options: dict[str, Any] | None) -> str:
 def apply_generation_options_to_spec(
     spec: list[dict[str, Any]], options: dict[str, Any] | None
 ) -> list[dict[str, Any]]:
-    """配图=否时强制清空 charts（决策 41）：AI 输出与手工保存都经此处，UI 隐藏入口不是唯一防线。"""
-    if not options or options.get("charts", True):
+    """生成选项落地收口：配图=否时强制清空 charts（决策 41）；目录层数收口（2026-11-19）
+    ——AI 生成/修订输出经此处把超深节点夹回用户设定深度（prompt 是主控，这里是防线；
+    超深节点并为其父辈层级，不再往下分层）。"""
+    if not options:
         return spec
-    return [{**node, "charts": None} for node in spec]
+    if not options.get("charts", True):
+        spec = [{**node, "charts": None} for node in spec]
+    depth = _outline_depth_of(options)
+    result: list[dict[str, Any]] = []
+    for node in spec:
+        try:
+            level = int(node.get("level") or 1)
+        except (TypeError, ValueError):
+            level = 1
+        result.append({**node, "level": min(level, depth)} if level > depth else node)
+    return result
 
 
 def _bound_charts(raw: Any) -> list[dict[str, Any]] | None:
@@ -2115,6 +2152,7 @@ async def generate_spec(
         .replace("__MATERIAL_INDEX__", material_index_text or "（无素材）")
         .replace("__TOC_REFERENCE__", toc_reference_text or "")
         .replace("__MAX_NODES__", str(OUTLINE_MAX_NODES))
+        .replace("__OUTLINE_DEPTH__", str(_outline_depth_of(generation_options)))
     )
     started = time.monotonic()
     spec = await _generate_spec_once(llm, user_prompt)

@@ -50,6 +50,8 @@ import {
   GENERATION_WORD_COUNT_MAX,
   GENERATION_WORD_COUNT_MIN,
   GENERATION_WORD_COUNT_PRESETS,
+  GENERATION_OUTLINE_DEPTH_CHOICES,
+  OUTLINE_DEPTH_DEFAULT,
   type GenerationOptions,
   type GenerationPart,
   type CapabilityStance,
@@ -939,11 +941,13 @@ const genOptions = reactive<{
   word_count: number | null;
   charts: boolean;
   fig_mode: "bidfig";
+  outline_depth: number;
 }>({
   parts: ["technical"],
   word_count: null,
   charts: true,
   fig_mode: "bidfig",
+  outline_depth: OUTLINE_DEPTH_DEFAULT,
 });
 const genWordInput = ref<number | "">(""); // type=number 输入框原值（"" = 未填）
 const genWordInputEl = ref<HTMLInputElement | null>(null);
@@ -973,6 +977,12 @@ function loadGenerationOptionsFromWizard() {
   genOptions.word_count = typeof saved?.word_count === "number" ? saved.word_count : null;
   genOptions.charts = saved ? saved.charts !== false : true;
   genOptions.fig_mode = "bidfig";
+  // 目录层数（2026-11-19）：存量数据无该字段=默认 4；越界值后端也会收敛，这里同步回退
+  genOptions.outline_depth = (GENERATION_OUTLINE_DEPTH_CHOICES as readonly number[]).includes(
+    saved?.outline_depth as number,
+  )
+    ? (saved!.outline_depth as number)
+    : OUTLINE_DEPTH_DEFAULT;
   genWordInput.value = genOptions.word_count ?? "";
   genOptionsError.value = "";
 }
@@ -1003,18 +1013,20 @@ const genOptionsPayload = computed<GenerationOptions>(() => ({
   word_count: genOptions.word_count,
   charts: genOptions.charts,
   fig_mode: genOptions.fig_mode,
+  outline_depth: genOptions.outline_depth,
 }));
 
 const hasUnsavedGenOptions = computed(() => {
   const saved = savedGenerationOptions();
   const draft = genOptionsPayload.value;
   if (!saved) {
-    return draft.word_count != null || draft.charts !== true;
+    return draft.word_count != null || draft.charts !== true || draft.outline_depth !== OUTLINE_DEPTH_DEFAULT;
   }
   // parts/fig_mode 已固定（商务屏蔽、mermaid 废弃），不参与脏比对；存量由保存动作收敛
   return (
     (saved.word_count ?? null) !== draft.word_count ||
-    (saved.charts !== false) !== draft.charts
+    (saved.charts !== false) !== draft.charts ||
+    (saved.outline_depth ?? OUTLINE_DEPTH_DEFAULT) !== draft.outline_depth
   );
 });
 
@@ -3163,7 +3175,7 @@ onUnmounted(() => {
       <p class="hint" style="margin:0 0 8px">前提：已安装标捷通插件并登录，在 Word 中打开「标书生成」进入本页；点数余额见右上角，AI 生成/审读按用量消耗点数。</p>
       <ol class="guide-steps">
         <li><b>步骤一 · 素材准备</b>：上传招标文件（必填，可多份）与公司素材（资质业绩、方案资料、历史标书模板等）。系统自动解析并建立素材索引，解析与索引完成前「下一步」不可点；历史标书会被识别为「历史模板」，生成大纲时参照其目录结构。</li>
-        <li><b>步骤二 · 需求确认</b>：①先填「生成要求」——字数必填、选择是否配图；②点「开始检查」，AI 对照招标要求检查素材并向你提问，逐条作答（可直接采纳建议答案，也可改为实际情况）；③逐条确认「应答口径」；④其他要求写入「额外的需求」（可选）。需求变化后可点「再次检查」让 AI 复查。</li>
+        <li><b>步骤二 · 需求确认</b>：①先填「生成要求」——字数必填、目录层数（默认 4 级）、选择是否配图；②点「开始检查」，AI 对照招标要求检查素材并向你提问，逐条作答（可直接采纳建议答案，也可改为实际情况）；③逐条确认「应答口径」；④其他要求写入「额外的需求」（可选）。需求变化后可点「再次检查」让 AI 复查。</li>
         <li><b>步骤三 · 编写大纲</b>：AI 生成目录、每章摘要与图表规划；可拖拽调整章节顺序、编辑内容，或用一句话让「AI 修改」调整。点「下一步：逐章撰写（确认大纲）」时系统会核对技术类评分项是否都有章节响应——有漏项会提示补章（可用 AI 修改或手动添加），补齐后才能确认。</li>
         <li><b>步骤四 · 逐章撰写</b>：点「开始撰写」前先在 Word 中点好要开始插入的位置（锚点）；流程固定为全文生成 → 推荐先「AI 审读优化全稿」→ 再统一写入 Word。撰写在云端进行，可离开页面，重新进入自动恢复进度。</li>
       </ol>
@@ -3567,6 +3579,22 @@ onUnmounted(() => {
                 </span>
               </div>
               <p v-if="genOptionsError || genWordCountError" class="wiz-error" style="margin:4px 0 0">{{ genOptionsError || genWordCountError }}</p>
+            </div>
+          </div>
+          <div class="gen-row">
+            <span class="gen-label">目录层数</span>
+            <div class="gen-field gen-inline">
+              <!-- 目录层数（2026-11-19）：大纲最大层级用户可选，默认 4 级 -->
+              <button
+                v-for="depth in GENERATION_OUTLINE_DEPTH_CHOICES"
+                :key="depth"
+                type="button"
+                class="chip"
+                :class="{ active: genOptions.outline_depth === depth }"
+                :disabled="Boolean(busy)"
+                @click="genOptions.outline_depth = depth"
+              >{{ depth }} 级</button>
+              <span class="hint" style="margin:0 0 0 8px">生成大纲的最深层级，默认 4 级（章-节-条-目）</span>
             </div>
           </div>
           <div class="gen-row">

@@ -1651,6 +1651,7 @@ def test_normalize_generation_options_bounds_and_defaults():
         "word_count": 50000,
         "charts": False,
         "fig_mode": "bidfig",
+        "outline_depth": 4,
     }
     assert normalize_generation_options({"parts": ["business"]})["parts"] == ["technical"]
     # 空 parts → 默认仅技术；字数越界 → None（草稿态）；charts 缺省 True
@@ -1659,6 +1660,7 @@ def test_normalize_generation_options_bounds_and_defaults():
         "word_count": None,
         "charts": True,
         "fig_mode": "bidfig",
+        "outline_depth": 4,
     }
     assert normalize_generation_options({"word_count": 2_000_000})["word_count"] is None
     assert normalize_generation_options({"word_count": True})["word_count"] is None
@@ -1666,6 +1668,43 @@ def test_normalize_generation_options_bounds_and_defaults():
     assert normalize_generation_options({"fig_mode": "bidfig"})["fig_mode"] == "bidfig"
     assert normalize_generation_options({"fig_mode": "svg"})["fig_mode"] == "bidfig"
     assert normalize_generation_options({"fig_mode": "mermaid"})["fig_mode"] == "bidfig"
+    # 目录层数（2026-11-19）：合法值透传；缺省/非法/越界一律回默认 4（存量行为不变）
+    assert normalize_generation_options({"outline_depth": 2})["outline_depth"] == 2
+    assert normalize_generation_options({"outline_depth": 6})["outline_depth"] == 6
+    assert normalize_generation_options({})["outline_depth"] == 4
+    assert normalize_generation_options({"outline_depth": 1})["outline_depth"] == 4
+    assert normalize_generation_options({"outline_depth": 9})["outline_depth"] == 4
+    assert normalize_generation_options({"outline_depth": "三"})["outline_depth"] == 4
+    assert normalize_generation_options({"outline_depth": True})["outline_depth"] == 4
+
+
+def test_outline_depth_constraints_and_apply():
+    """目录层数（2026-11-19）：constraints 注入最大层级指令；apply 把超深节点夹回设定深度。"""
+    from backend.agent.bid_wizard_agent import (
+        apply_generation_options_to_spec,
+        build_generation_constraints_text,
+    )
+
+    text = build_generation_constraints_text({"parts": ["technical"], "outline_depth": 3})
+    assert "最多 3 级（level 1-3）" in text and "不得超过 3" in text
+    # 缺省 → 默认 4；选项未设置（存量）时整块保持"无约束"文案不变
+    assert "最多 4 级" in build_generation_constraints_text({"parts": ["technical"]})
+    assert build_generation_constraints_text(None) == "无（按招标要素与编写需求自行规划）"
+
+    spec = [
+        {"title": "大章", "level": 1, "charts": []},
+        {"title": "小节", "level": 2, "charts": []},
+        {"title": "超深", "level": 5, "charts": []},
+        {"title": "更超深", "level": 7, "charts": []},
+    ]
+    clamped = apply_generation_options_to_spec(spec, {"charts": True, "outline_depth": 3})
+    assert [node["level"] for node in clamped] == [1, 2, 3, 3]
+    # 配图=否仍与层级收口叠加生效（决策 41 不回归）
+    no_charts = apply_generation_options_to_spec(spec, {"charts": False, "outline_depth": 4})
+    assert all(node["charts"] is None for node in no_charts)
+    assert [node["level"] for node in no_charts] == [1, 2, 4, 4]
+    # 无选项 → 原样返回
+    assert apply_generation_options_to_spec(spec, None) == spec
 
 
 def test_generation_options_schema_collapses_business():
@@ -1679,6 +1718,9 @@ def test_generation_options_schema_collapses_business():
     assert GenerationOptions(fig_mode="bidfig").model_dump()["fig_mode"] == "bidfig"
     # 2026-10-24 废弃 mermaid：老客户端载荷在 schema 层即收敛
     assert GenerationOptions(fig_mode="mermaid").model_dump()["fig_mode"] == "bidfig"
+    # 目录层数（2026-11-19）：默认 4；越界在 schema 层拒绝
+    assert GenerationOptions().model_dump()["outline_depth"] == 4
+    assert GenerationOptions(outline_depth=5).model_dump()["outline_depth"] == 5
 
 
 def test_spec_update_schema_accepts_bidfig_chart_types():
@@ -2126,6 +2168,7 @@ class TestGenerationOptionsApi:
             "word_count": 50000,
             "charts": False,
             "fig_mode": "bidfig",
+            "outline_depth": 4,  # 缺省目录层数=4（2026-11-19）
         }
         # 不带 generation_options 再保存（老客户端 / 只改作答）→ 沿用已保存值
         again = await client.put(

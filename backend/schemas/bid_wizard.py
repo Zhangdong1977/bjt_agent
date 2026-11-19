@@ -184,6 +184,8 @@ class GenerationOptions(BaseModel):
     )
     charts: bool = True
     fig_mode: Literal["mermaid", "bidfig"] = "bidfig"
+    # 目录层数（2026-11-19）：大纲最大层级，用户可选；默认 4 与历史行为一致，agent 侧越界回退同值
+    outline_depth: int = Field(default=4, ge=2, le=6)
 
     @field_validator("fig_mode")
     @classmethod

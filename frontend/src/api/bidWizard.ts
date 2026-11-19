@@ -47,10 +47,15 @@ export interface GenerationOptions {
   word_count: number | null;
   charts: boolean;
   fig_mode?: "mermaid" | "bidfig";
+  /** 目录层数（2026-11-19）：大纲最大层级，2-6，默认 4；旧数据缺省=4。 */
+  outline_depth?: number;
 }
 
 export const GENERATION_WORD_COUNT_MIN = 1_000;
 export const GENERATION_WORD_COUNT_MAX = 1_000_000;
+/** 目录层数可选项（2026-11-19）：2-6 级，默认 4（与历史 1-4 级行为一致）。 */
+export const GENERATION_OUTLINE_DEPTH_CHOICES = [2, 3, 4, 5, 6] as const;
+export const OUTLINE_DEPTH_DEFAULT = 4;
 /** 字数快捷档（决策 40）：5万/10万/20万/30万/50万/80万/100万 */
 export const GENERATION_WORD_COUNT_PRESETS = [
   50_000, 100_000, 200_000, 300_000, 500_000, 800_000, 1_000_000,
