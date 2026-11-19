@@ -168,7 +168,7 @@ const STAGES: { key: WizardStage; title: string; hint: string; guide: string }[]
     key: "outline",
     title: "编写大纲",
     hint: "目录＋每章摘要＋图表规划，可手工或 AI 修改",
-    guide: "先生成大纲，再按需调整（拖拽排序 / 编辑摘要 / AI 一句话修改）。确认后进入撰写——确认前可反复调整，撰写中修改大纲需重新生成对应章。",
+    guide: "先生成大纲（可选目录层数，默认 4 级），再按需调整（拖拽排序 / 编辑摘要 / AI 一句话修改）。确认后进入撰写——确认前可反复调整，撰写中修改大纲需重新生成对应章。",
   },
   {
     key: "writing",
@@ -1020,13 +1020,13 @@ const hasUnsavedGenOptions = computed(() => {
   const saved = savedGenerationOptions();
   const draft = genOptionsPayload.value;
   if (!saved) {
-    return draft.word_count != null || draft.charts !== true || draft.outline_depth !== OUTLINE_DEPTH_DEFAULT;
+    return draft.word_count != null || draft.charts !== true;
   }
-  // parts/fig_mode 已固定（商务屏蔽、mermaid 废弃），不参与脏比对；存量由保存动作收敛
+  // parts/fig_mode 已固定（商务屏蔽、mermaid 废弃）；outline_depth 归步骤三所有（2026-11-19 用户定位），
+  // 步骤二无入口不会改动，不参与脏比对（payload 仍携带当前值回传，防整体覆盖时被重置）
   return (
     (saved.word_count ?? null) !== draft.word_count ||
-    (saved.charts !== false) !== draft.charts ||
-    (saved.outline_depth ?? OUTLINE_DEPTH_DEFAULT) !== draft.outline_depth
+    (saved.charts !== false) !== draft.charts
   );
 });
 
@@ -3185,8 +3185,8 @@ onUnmounted(() => {
       <p class="hint" style="margin:0 0 8px">前提：已安装标捷通插件并登录，在 Word 中打开「标书生成」进入本页；点数余额见右上角，AI 生成/审读按用量消耗点数。</p>
       <ol class="guide-steps">
         <li><b>步骤一 · 素材准备</b>：上传招标文件（必填，可多份）与公司素材（资质业绩、方案资料、历史标书模板等）。系统自动解析并建立素材索引，解析与索引完成前「下一步」不可点；历史标书会被识别为「历史模板」，生成大纲时参照其目录结构。</li>
-        <li><b>步骤二 · 需求确认</b>：①先填「生成要求」——字数必填、目录层数（默认 4 级）、选择是否配图；②点「开始检查」，AI 对照招标要求检查素材并向你提问，逐条作答（可直接采纳建议答案，也可改为实际情况）；③逐条确认「应答口径」；④其他要求写入「额外的需求」（可选）。需求变化后可点「再次检查」让 AI 复查。</li>
-        <li><b>步骤三 · 编写大纲</b>：AI 生成目录、每章摘要与图表规划；可拖拽调整章节顺序、编辑内容，或用一句话让「AI 修改」调整。点「下一步：逐章撰写（确认大纲）」时系统会核对技术类评分项是否都有章节响应——有漏项会提示补章（可用 AI 修改或手动添加），补齐后才能确认。</li>
+        <li><b>步骤二 · 需求确认</b>：①先填「生成要求」——字数必填、选择是否配图；②点「开始检查」，AI 对照招标要求检查素材并向你提问，逐条作答（可直接采纳建议答案，也可改为实际情况）；③逐条确认「应答口径」；④其他要求写入「额外的需求」（可选）。需求变化后可点「再次检查」让 AI 复查。</li>
+        <li><b>步骤三 · 编写大纲</b>：生成前可选「目录层数」（2-6 级，默认 4 级）；AI 生成目录、每章摘要与图表规划；可拖拽调整章节顺序、编辑内容，或用一句话让「AI 修改」调整。点「下一步：逐章撰写（确认大纲）」时系统会核对技术类评分项是否都有章节响应——有漏项会提示补章（可用 AI 修改或手动添加），补齐后才能确认。</li>
         <li><b>步骤四 · 逐章撰写</b>：点「开始撰写」前先在 Word 中点好要开始插入的位置（锚点）；流程固定为全文生成 → 推荐先「AI 审读优化全稿」→ 再统一写入 Word。撰写在云端进行，可离开页面，重新进入自动恢复进度。</li>
       </ol>
       <p class="guide-sub"><b>成稿后推荐顺序</b>：①「AI 审读优化全稿」——AI 通读全文找出影响得分的问题并自动修订重点章节（消耗点数，提交前先出预估）；②机检不合格项（图表编号、占位、失效引用、措辞红线等）系统已自动修复并复检，质检报告只呈现合格状态；③「写入 Word」统一输出，写入后每章可单独重写、替换或移除；④「复制全稿文本」可粘贴到任意编辑器继续加工。</p>
@@ -3592,22 +3592,6 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="gen-row">
-            <span class="gen-label">目录层数</span>
-            <div class="gen-field gen-inline">
-              <!-- 目录层数（2026-11-19）：大纲最大层级用户可选，默认 4 级 -->
-              <button
-                v-for="depth in GENERATION_OUTLINE_DEPTH_CHOICES"
-                :key="depth"
-                type="button"
-                class="chip"
-                :class="{ active: genOptions.outline_depth === depth }"
-                :disabled="Boolean(busy)"
-                @click="genOptions.outline_depth = depth"
-              >{{ depth }} 级</button>
-              <span class="hint" style="margin:0 0 0 8px">生成大纲的最深层级，默认 4 级（章-节-条-目）</span>
-            </div>
-          </div>
-          <div class="gen-row">
             <span class="gen-label">是否配图</span>
             <div class="gen-field gen-inline">
               <label class="radio"><input v-model="genOptions.charts" type="radio" name="gen-charts" :value="true" :disabled="Boolean(busy)">是（AI 按需规划表格/图示）</label>
@@ -3981,7 +3965,7 @@ onUnmounted(() => {
                   :disabled="Boolean(busy)"
                   @click="genOptions.outline_depth = depth"
                 >{{ depth }} 级</button>
-                <span class="hint" style="margin:0 0 0 8px">生成大纲的最深层级，默认 4 级（章-节-条-目）；生成后可在步骤二改并重新生成</span>
+                <span class="hint" style="margin:0 0 0 8px">生成大纲的最深层级，默认 4 级（章-节-条-目）；想改层级时，调整后重新生成大纲</span>
               </div>
             </div>
             <button type="button" class="primary" :disabled="Boolean(busy)" @click="onGenerateSpec">生成编写大纲</button>
