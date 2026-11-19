@@ -3965,7 +3965,7 @@ onUnmounted(() => {
                   :disabled="Boolean(busy)"
                   @click="genOptions.outline_depth = depth"
                 >{{ depth }} 级</button>
-                <span class="hint" style="margin:0 0 0 8px">生成大纲的最深层级，默认 4 级（章-节-条-目）；想改层级时，调整后重新生成大纲</span>
+                <span class="hint" style="margin:0 0 0 8px">目录的目标层级，默认 4 级（章-节-条-目）；想改层级时，调整后重新生成大纲</span>
               </div>
             </div>
             <button type="button" class="primary" :disabled="Boolean(busy)" @click="onGenerateSpec">生成编写大纲</button>

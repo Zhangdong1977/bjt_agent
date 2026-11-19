@@ -1679,16 +1679,17 @@ def test_normalize_generation_options_bounds_and_defaults():
 
 
 def test_outline_depth_constraints_and_apply():
-    """目录层数（2026-11-19）：constraints 注入最大层级指令；apply 把超深节点夹回设定深度。"""
+    """目录层数（2026-11-19）：constraints 注入目标层级指令（用户实测"上限语义"导致选 5 出 2，改为目标语义）；apply 把超深节点夹回设定深度。"""
     from backend.agent.bid_wizard_agent import (
         apply_generation_options_to_spec,
         build_generation_constraints_text,
     )
 
     text = build_generation_constraints_text({"parts": ["technical"], "outline_depth": 3})
-    assert "最多 3 级（level 1-3）" in text and "不得超过 3" in text
+    assert "目录层数：3 级（一级大章 → 二级小节 → 三级条款，level 1-3）" in text
+    assert "目标深度而非上限" in text and "逐级细分到第 3 级" in text and "不得超过 3" in text
     # 缺省 → 默认 4；选项未设置（存量）时整块保持"无约束"文案不变
-    assert "最多 4 级" in build_generation_constraints_text({"parts": ["technical"]})
+    assert "目录层数：4 级" in build_generation_constraints_text({"parts": ["technical"]})
     assert build_generation_constraints_text(None) == "无（按招标要素与编写需求自行规划）"
 
     spec = [
@@ -1925,6 +1926,64 @@ def test_generate_spec_retries_flat_outline_once():
 
     llm = _ScriptedLLM([_TREE_SPEC_PAYLOAD, _flat_spec_payload(20)])  # 首轮已是多级不重试
     assert len(run(llm)) == 3 and len(llm.prompts) == 1
+
+
+def test_generate_spec_retries_shallow_outline_for_deep_target():
+    """目录深度纠偏（2026-11-19 用户实测：选 5 级生成 2-3 级）：目标 ≥5 且差两级以上 →
+    点名层级要求重试一次；更深才替换；默认 4 级不触发（沿用历史行为，防全民双倍调用）。"""
+    import asyncio
+
+    from backend.agent.bid_wizard_agent import generate_spec, spec_max_level
+
+    shallow = [  # max 3 级：用户实测的失败形态
+        {"title": "技术方案", "level": 1, "article_count": 1, "text_count": 400},
+        {"title": "架构", "level": 2, "article_count": 1, "text_count": 400},
+        {"title": "网络", "level": 3, "article_count": 1, "text_count": 400},
+    ]
+    deep = [
+        {"title": "技术方案", "level": 1, "article_count": 1, "text_count": 400},
+        {"title": "架构", "level": 2, "article_count": 1, "text_count": 400},
+        {"title": "网络", "level": 3, "article_count": 1, "text_count": 400},
+        {"title": "组网设计", "level": 4, "article_count": 1, "text_count": 400},
+        {"title": "协议要点", "level": 5, "article_count": 1, "text_count": 400},
+    ]
+    options5 = {"parts": ["technical"], "charts": True, "outline_depth": 5}
+
+    def run(llm):
+        return asyncio.run(
+            generate_spec(
+                llm,
+                analysis={},
+                requirements_text="",
+                material_index_text="",
+                generation_options=options5,
+                time_budget_seconds=300,
+            )
+        )
+
+    llm = _ScriptedLLM([shallow, deep])
+    spec = run(llm)
+    assert len(llm.prompts) == 2 and llm.prompts[1].startswith(llm.prompts[0])
+    assert "上一次输出层级不足" in llm.prompts[1] and "逐级细分到第 5 级" in llm.prompts[1]
+    assert spec_max_level(spec) == 5  # 更深 → 替换
+
+    llm = _ScriptedLLM([shallow, shallow])  # 重试仍 3 级 → 保留首轮
+    assert spec_max_level(run(llm)) == 3 and len(llm.prompts) == 2
+
+    llm = _ScriptedLLM([shallow, RuntimeError("模型输出不是合法 JSON，请重试")])  # 重试失败不丢首轮
+    assert spec_max_level(run(llm)) == 3 and len(llm.prompts) == 2
+
+    # 默认 4 级（未选深度）：同样浅的大纲不触发纠偏（历史行为）
+    llm = _ScriptedLLM([shallow])
+    spec = asyncio.run(
+        generate_spec(llm, analysis={}, requirements_text="", material_index_text="", time_budget_seconds=300)
+    )
+    assert len(llm.prompts) == 1 and spec_max_level(spec) == 3
+
+    # 选 5 但已到 4 级（差一级，可接受）→ 不重试
+    llm = _ScriptedLLM([deep[:4]])
+    spec = run(llm)
+    assert len(llm.prompts) == 1 and spec_max_level(spec) == 4
 
 
 def test_generate_spec_skips_retry_when_time_budget_exhausted(monkeypatch):

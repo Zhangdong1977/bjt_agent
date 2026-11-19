@@ -92,10 +92,16 @@ GENERATION_WORD_COUNT_MIN = 1_000
 GENERATION_WORD_COUNT_MAX = 1_000_000
 # Spec 生成按目标总字数 ±20% 软约束规划章数与每章字数（决策 40）
 GENERATION_WORD_COUNT_TOLERANCE = 0.2
-# 目录层数（2026-11-19 用户需求）：用户可选的大纲最大层级，默认 4（与历史 1-4 级行为一致）
+# 目录层数（2026-11-19 用户需求）：用户可选的大纲层级，默认 4（与历史 1-4 级行为一致）
 OUTLINE_DEPTH_MIN = 2
 OUTLINE_DEPTH_MAX = 6
 OUTLINE_DEPTH_DEFAULT = 4
+# 各级名称（prompt 里给 LLM 的层级链条示意，按深度截取）
+_OUTLINE_LEVEL_NAMES = ("一级大章", "二级小节", "三级条款", "四级细目", "五级要点", "六级子目")
+
+
+def _outline_chain_text(depth: int) -> str:
+    return " → ".join(_OUTLINE_LEVEL_NAMES[: max(1, min(depth, len(_OUTLINE_LEVEL_NAMES)))])
 # 平级劣化判据（2026-09-15 预发布实证：字数约束下模型把 56 章全标 level=1）：
 # 全部节点 level=1 且数量超过此值即视为结构劣化，带纠正指令重试一次；少量一级章节的小纲要属正常
 SPEC_FLAT_DEGRADATION_MIN_NODES = 12
@@ -186,7 +192,7 @@ __TOC_REFERENCE__
 
 规则：
 1. 大纲完整覆盖招标需求与评分标准对应的响应内容，与评分办法呼应；只覆盖「生成要求」指定的生成内容范围；
-2. 必须是多级目录：一级大章（level=1）一般 6-12 个，每个大章下按内容拆分二级小节（level=2），内容复杂的小节再拆三级（level=3）；level 必须如实标注所属层级，严禁把全部章节都标成 level=1 平铺——只有目标总字数不足 5,000 字时才允许仅有一级章节；
+2. 必须是多级目录：一级大章（level=1）一般 6-12 个，其下按「生成要求」的目录层数逐级细分——目录层数是目标深度而非上限，主要分支应组织到该层级（如 4 级=大章→小节→条款→细目，5 级再往下分到要点），确无实质内容可分的小节可提前收叶；level 必须如实标注所属层级，严禁把全部章节都标成 level=1 平铺——只有目标总字数不足 5,000 字时才允许仅有一级章节；
 3. summary 写清楚本章要回应什么、用什么素材支撑；
 4. charts 按「生成要求」执行：需要配图时按内容需要规划（每章 0-3 项）——对比/参数/人员/进度明细用 table，占比构成用 pie，指标对比（招标要求 vs 应答值）用 bar，架构用 arch，流程用 flow，交互时序用 seq，进度横道图用 gantt；图（pie/bar/arch/flow/seq/gantt 类）只规划在叶子小节上，一级大章与含子节的父章节正文只是章首导语、不承载图（表格不限）；不配图时每章 charts 一律为 []；
 5. 素材里有真实业绩/资质可引用的章节，在 summary 中点明引用方向；严禁虚构；
@@ -1422,8 +1428,9 @@ def build_generation_constraints_text(options: dict[str, Any] | None) -> str:
         lines.append("- 图表：不配图——每个章节的 charts 必须为空数组 []，不要规划任何表格或 mermaid 图")
     depth = _outline_depth_of(options)
     lines.append(
-        f"- 目录层数：最多 {depth} 级（level 1-{depth}）——任何章节的 level 不得超过 {depth}；"
-        "层级按内容需要设置，不必为凑层级而细分，超出该深度的内容并入所在小节"
+        f"- 目录层数：{depth} 级（{_outline_chain_text(depth)}，level 1-{depth}）——这是目标深度而非上限："
+        f"各一级大章之下的主要内容分支应逐级细分到第 {depth} 级，仅当某小节内容确实单一、"
+        f"无实质条目可分时才允许提前收叶；同时任何章节的 level 不得超过 {depth}"
     )
     return "\n".join(lines)
 
@@ -1565,6 +1572,17 @@ def is_flat_degraded_spec(spec: list[dict[str, Any]]) -> bool:
     if len(spec) <= SPEC_FLAT_DEGRADATION_MIN_NODES:
         return False
     return all(int(node.get("level") or 1) == 1 for node in spec)
+
+
+def spec_max_level(spec: list[dict[str, Any]]) -> int:
+    """大纲实际到达的最深层级（2026-11-19 目录深度纠偏用）。"""
+    result = 0
+    for node in spec:
+        try:
+            result = max(result, int(node.get("level") or 1))
+        except (TypeError, ValueError):
+            continue
+    return result
 
 
 _CHART_PLAN_LABELS = {
@@ -2213,6 +2231,42 @@ async def generate_spec(
                         "bid-wizard spec coverage-retry not better (%d -> %d uncovered); keeping first pass",
                         len(uncovered), len(gate_blocking_scoring_items(retried, analysis)),
                     )
+    # 目录深度纠偏（2026-11-19 用户实测：选 5 级仍生成 2-3 级）：用户明确选了比默认更深的
+    # 层级（≥5）但首轮差两级以上时，点名层级要求重试一次；默认 4 级沿用历史行为不强制
+    # （目标语义措辞已在 prompt 里引导），避免全民双倍 LLM 调用。
+    target_depth = _outline_depth_of(generation_options)
+    if target_depth >= 5 and spec and spec_max_level(spec) < target_depth - 1:
+        first_max = spec_max_level(spec)
+        elapsed = time.monotonic() - started
+        if time_budget_seconds is not None and elapsed * _SPEC_RETRY_BUDGET_FACTOR >= time_budget_seconds:
+            logger.warning(
+                "bid-wizard spec shallow (max level %d < target %d) but %.0fs of %.0fs budget used; skip retry",
+                first_max, target_depth, elapsed, time_budget_seconds,
+            )
+        else:
+            logger.warning(
+                "bid-wizard spec shallow (max level %d < target %d); retrying once with depth correction",
+                first_max, target_depth,
+            )
+            depth_addendum = (
+                "\n\n## 上一次输出层级不足，必须修正后重新输出\n"
+                f"上一次的大纲最多只组织到第 {first_max} 级，但「生成要求」的目录层数为 {target_depth} 级"
+                f"（{_outline_chain_text(target_depth)}）——这是目标深度而非上限：请把各一级大章下的主要"
+                f"内容分支逐级细分到第 {target_depth} 级（仅内容确实单一的小节可提前收叶），"
+                "章节总数与总字数区间、其余规则不变。"
+            )
+            try:
+                retried = await _generate_spec_once(llm, user_prompt + depth_addendum)
+            except Exception as exc:  # 重试失败保留首轮
+                logger.warning("bid-wizard spec depth-retry failed, keeping first pass: %s", exc)
+                retried = []
+            if retried and spec_max_level(retried) > first_max:
+                spec = retried
+            elif retried:
+                logger.warning(
+                    "bid-wizard spec depth-retry not deeper (%d -> %d); keeping first pass",
+                    first_max, spec_max_level(retried),
+                )
     return apply_generation_options_to_spec(spec, generation_options)
 
 
