@@ -12,6 +12,8 @@ import {
   estimateIndexCost,
   estimateReviewTask,
   createReviewTask,
+  estimateReviewContinue,
+  createReviewContinueTask,
   generateCapabilityMap as apiGenerateCapability,
   generateQuestionnaire,
   generateQuestionnaireRound,
@@ -2640,6 +2642,36 @@ const reviewRevisedCount = computed(() => {
   const raw = task.value?.summary?.revised_total;
   return Number(raw) || 0;
 });
+/** 待继续修订的章（上轮 severity 优先选章后、未获单轮修订名额的剩余问题章）。 */
+interface ReviewPendingNode {
+  node_id: string;
+  top_severity: "high" | "medium";
+}
+const reviewPending = computed<ReviewPendingNode[]>(() => {
+  if (!isReviewTask.value) return [];
+  const raw = (task.value?.summary as Record<string, unknown> | null)?.revision_pending;
+  if (!Array.isArray(raw)) return [];
+  return (raw as Record<string, unknown>[])
+    .filter((item) => item && typeof item === "object" && item.node_id)
+    .map((item) => ({
+      node_id: String(item.node_id),
+      top_severity: String(item.top_severity) === "high" ? "high" : "medium",
+    }));
+});
+const reviewPendingHighCount = computed(
+  () => reviewPending.value.filter((item) => item.top_severity === "high").length,
+);
+/** 审读任务的全稿章数（chapters_total）——页面所有「全稿 N 章」口径以此为准，
+ * 防止把「本轮修订章数」误当全稿章数（2026-11-19 生产工单：60 章被误读成 20 章）。 */
+const reviewChaptersTotal = computed(() => {
+  const raw = (task.value?.summary as Record<string, unknown> | null)?.chapters_total;
+  return Number(raw) || 0;
+});
+/** 审读任务的全稿字数（word_count 为终态复算口径，含修订版与未修订章）。 */
+const reviewTotalWords = computed(() => {
+  const raw = (task.value?.summary as Record<string, unknown> | null)?.word_count;
+  return Number(raw) || 0;
+});
 const REVIEW_SEVERITY_TEXT: Record<ReviewFinding["severity"], string> = {
   high: "严重",
   medium: "中等",
@@ -2710,16 +2742,58 @@ const TASK_STATUS_TEXT: Record<string, string> = {
   failed: "失败",
   cancelled: "已取消",
 };
-/** 当前任务是否审读轮（23 号 O5）：summary.action=review（Writer/Reader 编排在同一任务行）。 */
-const isReviewTask = computed(
-  () => (task.value?.summary as Record<string, unknown> | null)?.action === "review",
+/** 当前任务是否审读轮（23 号 O5 + 2026-11-19 继续修订）：summary.action=review /
+ * review_continue（Reader/Revise 编排在同一任务行，续修轮跳过 Reader 只做修订）。 */
+const isReviewTask = computed(() =>
+  ["review", "review_continue"].includes(
+    String((task.value?.summary as Record<string, unknown> | null)?.action || ""),
+  ),
 );
+/** 可继续修订：审读系任务已完成、仍有待修订章、无进行中任务（用户决定，逐段预估确认）。 */
+const canContinueReview = computed(
+  () =>
+    Boolean(taskId.value) &&
+    isReviewTask.value &&
+    task.value?.status === "completed" &&
+    reviewPending.value.length > 0 &&
+    !taskRunning.value,
+);
+function onStartReviewContinue() {
+  if (!taskId.value || busy.value || !canContinueReview.value) return;
+  void withBusy("review", async () => {
+    const estimate = await estimateReviewContinue(taskId.value!).catch(() => null);
+    let costText = "按实际用量计费";
+    if (estimate) {
+      costText = `待修订 ${estimate.chapters} 章约 ${(estimate.total_words / 10000).toFixed(1)} 万字，预计约 ${(estimate.estimated_tokens / 1000).toFixed(1)} 千 token`;
+      if (estimate.estimated_points != null) costText += `（约 ${estimate.estimated_points} 点）`;
+    }
+    const confirmed = await new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title: `继续修订剩余 ${reviewPending.value.length} 章？`,
+        content:
+          `上一轮审读发现这些章节存在问题但未及自动修订（其中 ${reviewPendingHighCount.value} 章为严重问题）。` +
+          `继续后将按原审读结论逐章修订——不再通读全稿，${costText}。` +
+          `修订完成后用「替换 Word 中本章」或「重新写入 Word」更新文档；也可以保持现状，仅对个别章节手动「重生成」。`,
+        okText: "继续修订",
+        cancelText: "暂不修订",
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+    if (!confirmed) return;
+    const created = await createReviewContinueTask(taskId.value!);
+    trackTask(created);
+  });
+}
 const taskStatusText = computed(() => {
   const status = task.value?.status || "";
   if (isReviewTask.value) {
-    if (status === "running") return "AI 审读中";
-    if (status === "pending") return "排队审读";
-    if (status === "completed") return "审读完成";
+    const isContinue =
+      String((task.value?.summary as Record<string, unknown> | null)?.action || "") ===
+      "review_continue";
+    if (status === "running") return isContinue ? "AI 修订中" : "AI 审读中";
+    if (status === "pending") return isContinue ? "排队修订" : "排队审读";
+    if (status === "completed") return isContinue ? "修订完成" : "审读完成";
   }
   return TASK_STATUS_TEXT[status] || "撰写任务";
 });
@@ -3815,7 +3889,12 @@ onUnmounted(() => {
           <template v-else>
             <div class="writing-head">
               <StatusDot :tone="taskTone">{{ taskStatusText }}</StatusDot>
-              <span>已写入 {{ writtenCount }} / {{ sections.length }} 章<template v-if="writtenWords"> · {{ writtenWords.toLocaleString() }} 字</template></span>
+              <!-- 审读任务上下文不显示「已写入 X / N 章」（分母是本轮修订章数，曾把全稿 60 章
+                   误读成 20 章）——改显全稿口径，修订/写入进度在下方区块分别说明 -->
+              <span v-if="isReviewTask">
+                全稿 {{ reviewChaptersTotal || sections.length }} 章<template v-if="reviewTotalWords"> · {{ reviewTotalWords.toLocaleString() }} 字</template> · 本轮自动修订 {{ sections.length }} 章
+              </span>
+              <span v-else>已写入 {{ writtenCount }} / {{ sections.length }} 章<template v-if="writtenWords"> · {{ writtenWords.toLocaleString() }} 字</template></span>
               <span v-if="taskRunning" class="hint" style="margin:0">{{ writeMode === "review" ? "全文生成中，完成后统一写入 Word；可离开此页，重新进入会自动恢复进度" : "撰写与写入在后台进行，可离开此页；重新进入会自动恢复进度" }}</span>
               <button v-if="taskRunning" type="button" class="ghost" :disabled="Boolean(busy)" @click="onCancelTask">取消撰写</button>
             </div>
@@ -3826,6 +3905,12 @@ onUnmounted(() => {
               class="hint"
               style="margin:0 0 6px"
             >全文已生成。推荐先「AI 审读优化全稿」找出问题并自动修订重点章节，再点「写入 Word」统一输出；着急成稿也可直接写入。</p>
+            <!-- 2026-11-19 生产工单：明确告知「审读优化不会减少章节」，防把本轮修订章数误读成全稿章数 -->
+            <p
+              v-if="!taskRunning && isReviewTask"
+              class="hint"
+              style="margin:0 0 6px"
+            >AI 审读优化不会删减章节——全稿 {{ reviewChaptersTotal || sections.length }} 章内容完整保留，下方章节列表仅为本轮被修订的章节；「写入 Word / 重新写入 Word」始终输出全稿全部章节。</p>
             <!-- 2026-10-25 按键优化：主流程动作（审读/写入）升为主按钮并按推荐顺序排列；
                  复制全稿文本（原名「复制全稿 Markdown」）带用途说明；移除类破坏性操作右置隔开 -->
             <div v-if="!taskRunning && (generatedCount > 0 || writtenCount > 0)" class="writing-tools">
@@ -3873,13 +3958,31 @@ onUnmounted(() => {
                 @click="onRemoveAllSections"
               >移除全部 AI 内容</button>
             </div>
-            <!-- 23 号 O5：审读报告（Reader 问题清单 + 自动修订统计；修订章用「替换 Word 中本章」更新） -->
+            <!-- 23 号 O5：审读报告（Reader 问题清单 + 自动修订统计；修订章用「替换 Word 中本章」更新）
+                 + 2026-11-19：severity 优先选章说明 + 待修订章「继续修订」入口（用户决定，逐段预估确认） -->
             <div v-if="!taskRunning && isReviewTask && reviewFindings.length" class="card qc-card">
               <h3>审读报告</h3>
               <p class="hint" style="margin:0 0 8px">
-                共发现 {{ reviewFindings.length }} 个问题，已自动修订 {{ reviewRevisedCount }} 章（严重/中等）；
-                轻微问题仅供人工参考。修订后的章节用下方「替换 Word 中本章」更新。
+                AI 通读全稿 {{ reviewChaptersTotal || sections.length }} 章，共发现 {{ reviewFindings.length }} 个问题；
+                本轮已自动修订 {{ reviewRevisedCount }} 章（按严重程度优先选章，单轮上限 20 章）。
+                <template v-if="reviewPending.length">仍有 {{ reviewPending.length }} 章待修订（含 {{ reviewPendingHighCount }} 章严重问题）——可用下方「继续修订」处理，或保持现状。</template>
+                <template v-else>待修订章节已全部处理。</template>
+                轻微问题仅供人工参考；修订后的章节用「替换 Word 中本章」或「重新写入 Word」更新到文档。
               </p>
+              <div v-if="reviewPending.length" style="margin:0 0 10px">
+                <button
+                  type="button"
+                  class="ghost"
+                  :disabled="Boolean(busy)"
+                  title="按上轮审读结论继续修订剩余问题章节（不通读全稿，费用低于完整审读；提交前先出预估确认）"
+                  @click="onStartReviewContinue"
+                >{{ busy === "review" ? "AI 修订中…" : `继续修订剩余 ${reviewPending.length} 章（预估后确认）` }}</button>
+                <p class="hint" style="margin:6px 0 0">
+                  待修订章节：
+                  <template v-for="(item, index) in reviewPending" :key="item.node_id"
+                    >{{ index ? "、" : "" }}{{ item.node_id }}{{ item.top_severity === "high" ? "（严重）" : "" }}</template>
+                </p>
+              </div>
               <ul class="qc-list">
                 <li
                   v-for="(item, index) in reviewFindings"
@@ -3950,6 +4053,10 @@ onUnmounted(() => {
                 <span class="log-time">{{ log.time }}</span>{{ log.text }}
               </div>
             </div>
+            <!-- 2026-11-19：审读任务下列表仅含修订章，须说明全稿其余章未改动、不在本列表 -->
+            <p v-if="!taskRunning && isReviewTask" class="hint" style="margin:0 0 6px">
+              以下仅为本轮自动修订的 {{ sections.length }} 章；全稿 {{ reviewChaptersTotal || sections.length }} 章均已生成，其余章节内容未改动、不在本列表——点上方「写入 Word / 重新写入 Word」统一输出全稿。
+            </p>
             <ul class="section-list">
               <li v-for="section in sortedSections" :key="section.node_id" class="section-row">
                 <span class="doc-name">{{ section.node_id }} {{ displayTitle(section.node_id, section.title) }}</span>

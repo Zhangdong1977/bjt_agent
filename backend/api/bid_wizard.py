@@ -1963,12 +1963,19 @@ async def create_review_task(
     """发起一轮 AI 审读（O5，可选）：Reader 全稿找问题 → 仅 high/medium 章节自动修订。
 
     复用 write 队列与计费 kind（零 operate-two 发版）；审读任务行 summary={"action":"review"}，
-    一轮封顶（审读任务不能再发起审读）；修订章节走「替换 Word 中本章」交互。
+    一轮封顶（审读系任务不能再发起完整审读——剩余问题章走「继续修订」）；修订章节走
+    「替换 Word 中本章」交互。
     """
     task = await _owned_writing_task(task_id, current_user, db)
     # 一轮封顶先于终态检查：进行中的审读任务同样点不出更明确的 400（而非笼统的 409）
-    if isinstance(task.summary, dict) and task.summary.get("action") == "review":
-        raise HTTPException(status_code=400, detail="审读任务不能再发起审读（一轮封顶）")
+    if isinstance(task.summary, dict) and task.summary.get("action") in (
+        "review",
+        "review_continue",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="已完成过 AI 审读，不能再重复完整审读；仍有待修订章节时可用「继续修订」",
+        )
     if task.status not in _TERMINAL_STATUSES:
         raise HTTPException(status_code=409, detail="任务尚未结束，不能发起审读")
     wizard = await _reviewable_wizard_of_task(task, current_user, db)
@@ -2005,6 +2012,133 @@ async def create_review_task(
         billing_status="pending",
     )
     return await _dispatch_writing_task(db, review_task)
+
+
+# ---------------- 继续修订（2026-11-19 生产工单：单轮修订封顶 ≤20 章，severity 优先
+# 选章后仍可能有剩余问题章——决定权交给用户：跳过 Reader 通读、按上轮审读结论继续
+# 修订剩余章，每段 ≤20 章并各自预估确认，不破坏「预估-实扣」一致性）
+
+
+def _review_task_action(task: BidWritingTask) -> str:
+    if isinstance(task.summary, dict):
+        return str(task.summary.get("action") or "")
+    return ""
+
+
+def _pending_revision_nodes(task: BidWritingTask) -> list[str]:
+    """上轮（首轮审读或上一次继续修订）summary.revision_pending 的章清单。"""
+    pending = task.summary.get("revision_pending") if isinstance(task.summary, dict) else None
+    if not isinstance(pending, list):
+        return []
+    nodes: list[str] = []
+    for item in pending:
+        if isinstance(item, dict) and item.get("node_id"):
+            nodes.append(str(item["node_id"]))
+    return nodes
+
+
+@router.get(
+    "/writing-tasks/{task_id}/review-continue-estimate",
+    response_model=ReviewEstimateResponse,
+)
+async def estimate_review_continue_cost(
+    task_id: str, db: DBSession, current_user: CurrentUser
+) -> ReviewEstimateResponse:
+    """继续修订发起前预估：只按待修订章计费（不通读全稿，费用低于完整审读）。"""
+    task = await _owned_writing_task(task_id, current_user, db)
+    if _review_task_action(task) not in ("review", "review_continue"):
+        raise HTTPException(status_code=400, detail="只能对 AI 审读任务继续修订")
+    if task.status != "completed":
+        raise HTTPException(status_code=400, detail="审读任务尚未完成，不能继续修订")
+    pending = _pending_revision_nodes(task)
+    if not pending:
+        raise HTTPException(status_code=400, detail="没有待继续修订的章节")
+    wizard = await _reviewable_wizard_of_task(task, current_user, db)
+    chapters = await _latest_writable_chapters(db, wizard)
+    pending_set = set(pending)
+    pending_words = sum(words for node, words in chapters.items() if node in pending_set)
+    from backend.agent.bid_wizard_agent import (
+        estimate_review_continue_points,
+        estimate_review_continue_usage,
+    )
+
+    prompt_tokens, completion_tokens = estimate_review_continue_usage(pending_words)
+    from backend.services.sales import get_sales_config, multiplier_for_task
+
+    sales_config = await get_sales_config(db)
+    multiplier = multiplier_for_task(sales_config, "bid_wizard_write")
+    return ReviewEstimateResponse(
+        chapters=len(pending_set & set(chapters)),
+        total_words=pending_words,
+        estimated_tokens=prompt_tokens + completion_tokens,
+        estimated_points=estimate_review_continue_points(pending_words, multiplier),
+    )
+
+
+@router.post(
+    "/writing-tasks/{task_id}/review-continue",
+    response_model=WritingTaskResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_review_continue_task(
+    task_id: str, db: DBSession, current_user: CurrentUser
+) -> BidWritingTask:
+    """继续修订上一轮审读发现但未及自动修订的章节（用户决定、逐段预估确认）。
+
+    新任务 action=review_continue：跳过 Reader 通读，carried_findings/pending_nodes 由
+    上轮 summary 拷贝（findings 全量拷贝供全稿口径基准与报告展示）；修订循环复用
+    首轮机制（severity 优先取满 ≤20 章、auto_fix、终态机检），剩余仍记 revision_pending
+    供再续。selected_nodes 仍为全稿章（终态复算/机检需全稿视角）。
+    """
+    task = await _owned_writing_task(task_id, current_user, db)
+    if _review_task_action(task) not in ("review", "review_continue"):
+        raise HTTPException(status_code=400, detail="只能对 AI 审读任务继续修订")
+    if task.status != "completed":
+        raise HTTPException(status_code=400, detail="审读任务尚未完成，不能继续修订")
+    pending = _pending_revision_nodes(task)
+    if not pending:
+        raise HTTPException(status_code=400, detail="没有待继续修订的章节")
+    wizard = await _reviewable_wizard_of_task(task, current_user, db)
+    if wizard.status != "active":
+        raise HTTPException(status_code=400, detail="向导已结束，不能继续修订")
+    await _guard_writing_idle(db, wizard)
+    chapters = await _latest_writable_chapters(db, wizard)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="没有可修订的已生成章节")
+    spec = wizard.spec if isinstance(wizard.spec, list) else []
+    ordered = [
+        str(node.get("node_id"))
+        for node in spec
+        if isinstance(node, dict) and str(node.get("node_id")) in chapters
+    ]
+    node_ids = ordered or sorted(chapters)
+    carried_findings = task.summary.get("findings") if isinstance(task.summary, dict) else None
+    carried_findings = carried_findings if isinstance(carried_findings, list) else []
+
+    from backend.services.sales import multiplier_for_task, ocr_multiplier_for_task
+    from backend.services.task_lifecycle import authorize_billable_task_start
+
+    sales_config = await authorize_billable_task_start(
+        db, user_id=current_user.id, operation_name="AI 标书继续修订"
+    )
+    continue_task = BidWritingTask(
+        wizard_id=wizard.id,
+        project_id=task.project_id,
+        user_id=current_user.id,
+        selected_nodes=node_ids,
+        continue_of=task.id,
+        summary={
+            "action": "review_continue",
+            "review_of": task.id,
+            "pending_nodes": pending,
+            "carried_findings": carried_findings,
+        },
+        status="pending",
+        billing_multiplier=multiplier_for_task(sales_config, "bid_wizard_write"),
+        ocr_billing_multiplier=ocr_multiplier_for_task(sales_config),
+        billing_status="pending",
+    )
+    return await _dispatch_writing_task(db, continue_task)
 
 
 @router.post(

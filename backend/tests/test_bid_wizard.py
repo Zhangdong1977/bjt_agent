@@ -800,7 +800,9 @@ class TestSectionsResetAndLatestApi:
         monkeypatch.setattr(get_settings(), "bid_wizard_access_mode", "enabled")
 
     @staticmethod
-    async def _seed_task(wizard: dict, status: str, sections: list[dict]):
+    async def _seed_task(
+        wizard: dict, status: str, sections: list[dict], summary: dict | None = None
+    ) -> dict:
         from backend.models import BidWritingTask, async_session_factory, engine
 
         async with async_session_factory() as session:
@@ -813,6 +815,8 @@ class TestSectionsResetAndLatestApi:
                 billing_multiplier=Decimal("1"),
                 billing_status="pending",
             )
+            if summary is not None:
+                task.summary = summary
             if task.user_id is None:
                 from backend.models import BidWizard
 
@@ -833,7 +837,9 @@ class TestSectionsResetAndLatestApi:
                     )
                 )
             await session.commit()
+            task_id = str(task.id)
         await engine.dispose()
+        return {"id": task_id}
 
     async def test_reset_written_and_latest(self, client, auth_headers):
         from backend.utils.time_utils import utc_now
@@ -2787,3 +2793,185 @@ def test_wizard_response_analysis_egress_normalizes_rejection():
         }
     )
     assert wizard.analysis["rejection_items"] == [{"title": "未按要求盖章签字", "requirement": ""}]
+
+
+# ------------------------------------------------------------------ 审读修订选章与继续修订
+# 2026-11-19 生产工单（用户 13581858001，向导 2cc65be3）：60 章成稿、AI 审读优化后页面
+# 显示 20 章——本轮修订清单被误读成全稿章数；且修订按大纲序截断，11 个含 high 问题的
+# 章被静默跳过。落地三件套：severity 优先选章 / 继续修订分段（用户决定）/ UI 全稿口径。
+
+
+def _rev_finding(node_id: str, severity: str) -> dict[str, str]:
+    return {"node_id": node_id, "severity": severity, "where": "", "issue": "问题描述"}
+
+
+def _rev_chapters(*node_ids: str) -> list[dict]:
+    return [{"node_id": node_id, "title": node_id, "content": "正文"} for node_id in node_ids]
+
+
+def test_prioritize_review_revisions_orders_high_first():
+    """生产工单回归：大纲序前部仅 medium、后部含 high 时，high 章必须先进修订集。"""
+    from backend.agent.bid_wizard_agent import prioritize_review_revisions
+
+    chapters = _rev_chapters(*[str(i) for i in range(1, 31)])
+    findings = [_rev_finding(str(i), "medium") for i in range(1, 11)] + [
+        _rev_finding(str(i), "high") for i in range(11, 26)
+    ]
+    actionable, pending = prioritize_review_revisions(chapters, findings, limit=20)
+    high_nodes = {str(i) for i in range(11, 26)}
+    # 15 个 high 章全部入选（旧实现按大纲序会把后部 high 挤出）、medium 前 5 章补位
+    assert high_nodes.issubset(set(actionable))
+    assert len(actionable) == 20
+    assert all(item["top_severity"] == "medium" for item in pending)
+    assert len(pending) == 5
+    assert [item["node_id"] for item in pending] == [str(i) for i in range(6, 11)]
+
+
+def test_prioritize_review_revisions_tie_by_outline_order():
+    from backend.agent.bid_wizard_agent import prioritize_review_revisions
+
+    chapters = _rev_chapters("1", "1.1", "2", "2.1")
+    findings = [_rev_finding("2", "high"), _rev_finding("1", "high"), _rev_finding("1.1", "medium")]
+    actionable, pending = prioritize_review_revisions(chapters, findings, limit=2)
+    assert actionable == ["1", "2"]  # 同级按大纲序
+    assert pending == [{"node_id": "1.1", "top_severity": "medium"}]
+
+
+def test_prioritize_review_revisions_continue_round_uses_candidates():
+    """续修轮：candidates 限定上轮 pending 清单——非候选章的 high 发现不挤占本轮名额。"""
+    from backend.agent.bid_wizard_agent import prioritize_review_revisions
+
+    chapters = _rev_chapters("1", "2", "3", "4")
+    findings = [_rev_finding("1", "high"), _rev_finding("3", "high"), _rev_finding("4", "medium")]
+    actionable, pending = prioritize_review_revisions(
+        chapters, findings, limit=1, candidates=["3", "4"]
+    )
+    assert actionable == ["3"]
+    assert pending == [{"node_id": "4", "top_severity": "medium"}]
+
+
+def test_prioritize_review_revisions_no_high_medium_findings():
+    from backend.agent.bid_wizard_agent import prioritize_review_revisions
+
+    actionable, pending = prioritize_review_revisions(
+        _rev_chapters("1", "2"), [_rev_finding("1", "low")]
+    )
+    assert actionable == []
+    assert pending == []
+
+
+def test_estimate_review_continue_usage_scales_with_pending_words():
+    """续修预估口径：无读全稿项（0 字仍含固定上下文开销），completion 按整章重写假设。"""
+    from backend.agent.bid_wizard_agent import estimate_review_continue_usage
+
+    prompt, completion = estimate_review_continue_usage(20_000)
+    assert prompt > 4_000
+    assert completion > 0
+    zero_prompt, zero_completion = estimate_review_continue_usage(0)
+    assert zero_prompt == 4_000
+    assert zero_completion == 0
+
+
+class TestReviewContinueApi:
+    """继续修订守卫（HTTP 层；创建 happy path 走 E2E——POST 会触发 outbox 派发）。"""
+
+    @pytest.fixture(autouse=True)
+    def _enable_access(self, monkeypatch):
+        from backend.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "bid_wizard_access_mode", "enabled")
+
+    async def _make_wizard(self, client, auth_headers) -> dict:
+        return (
+            await client.post(
+                "/api/bid-wizard/wizards", json={"project_name": "续修守卫测试"}, headers=auth_headers
+            )
+        ).json()
+
+    async def test_continue_rejected_for_non_review_task(self, client, auth_headers):
+        from backend.tests.test_bid_wizard import TestSectionsResetAndLatestApi
+
+        wizard = await self._make_wizard(client, auth_headers)
+        task = await TestSectionsResetAndLatestApi._seed_task(
+            wizard,
+            status="completed",
+            sections=[{"node_id": "1", "status": "written"}],
+        )
+        resp = await client.get(
+            f"/api/bid-wizard/writing-tasks/{task['id']}/review-continue-estimate",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+        resp = await client.post(
+            f"/api/bid-wizard/writing-tasks/{task['id']}/review-continue", headers=auth_headers
+        )
+        assert resp.status_code == 400
+
+    async def test_continue_rejected_without_pending_or_not_completed(self, client, auth_headers):
+        from backend.tests.test_bid_wizard import TestSectionsResetAndLatestApi
+
+        wizard = await self._make_wizard(client, auth_headers)
+        # 已完成但无剩余待修订章
+        done = await TestSectionsResetAndLatestApi._seed_task(
+            wizard,
+            status="completed",
+            sections=[{"node_id": "1", "status": "written"}],
+            summary={"action": "review", "revision_pending": []},
+        )
+        resp = await client.get(
+            f"/api/bid-wizard/writing-tasks/{done['id']}/review-continue-estimate",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+        # 有待修订章但任务未完成（running）→ 拒绝
+        running = await TestSectionsResetAndLatestApi._seed_task(
+            wizard,
+            status="running",
+            sections=[{"node_id": "1", "status": "written"}],
+            summary={
+                "action": "review",
+                "revision_pending": [{"node_id": "2", "top_severity": "high"}],
+            },
+        )
+        resp = await client.get(
+            f"/api/bid-wizard/writing-tasks/{running['id']}/review-continue-estimate",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+        # completed + pending 非空 → 可预估（chapters 只计待修订章）
+        ready = await TestSectionsResetAndLatestApi._seed_task(
+            wizard,
+            status="completed",
+            sections=[{"node_id": "1", "status": "written"}, {"node_id": "2", "status": "generated"}],
+            summary={
+                "action": "review",
+                "chapters_total": 2,
+                "revision_pending": [{"node_id": "2", "top_severity": "high"}],
+            },
+        )
+        resp = await client.get(
+            f"/api/bid-wizard/writing-tasks/{ready['id']}/review-continue-estimate",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["chapters"] == 1  # 只算待修订章，不是全稿章数
+
+    async def test_full_review_capped_after_review_task(self, client, auth_headers):
+        """一轮封顶：对审读任务再发完整审读 → 400（继续走 review-continue）。"""
+        from backend.tests.test_bid_wizard import TestSectionsResetAndLatestApi
+
+        wizard = await self._make_wizard(client, auth_headers)
+        review = await TestSectionsResetAndLatestApi._seed_task(
+            wizard,
+            status="completed",
+            sections=[{"node_id": "1", "status": "written"}],
+            summary={
+                "action": "review",
+                "revision_pending": [{"node_id": "2", "top_severity": "high"}],
+            },
+        )
+        resp = await client.post(
+            f"/api/bid-wizard/writing-tasks/{review['id']}/review", headers=auth_headers
+        )
+        assert resp.status_code == 400

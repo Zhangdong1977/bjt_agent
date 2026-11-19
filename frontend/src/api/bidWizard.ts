@@ -613,6 +613,22 @@ export async function createReviewTask(taskId: string) {
   );
 }
 
+/** 继续修订（上轮审读发现但未及自动修订的章节）发起前预估（不通读全稿，费用低于完整审读）。 */
+export async function estimateReviewContinue(taskId: string) {
+  return request<ReviewEstimate>(
+    "get",
+    `/bid-wizard/writing-tasks/${encodeURIComponent(taskId)}/review-continue-estimate`,
+  );
+}
+
+/** 继续修订剩余问题章节：新建 action=review_continue 的撰写任务（沿用上轮审读结论）。 */
+export async function createReviewContinueTask(taskId: string) {
+  return request<WizardWritingTask>(
+    "post",
+    `/bid-wizard/writing-tasks/${encodeURIComponent(taskId)}/review-continue`,
+  );
+}
+
 export function wizardToken() {
   return getAccessToken();
 }

@@ -457,6 +457,26 @@ def estimate_review_points(total_words: int, multiplier: Decimal | float) -> Opt
     return estimate_points_for_usage(prompt, completion, multiplier)
 
 
+def estimate_review_continue_usage(pending_words: int) -> tuple[int, int]:
+    """继续修订（review_continue）用量预估口径：(prompt_tokens, completion_tokens)。
+
+    不再通读全稿，只按待修订章正文估算：prompt=章内容×1.2+修订上下文固定开销
+    （findings+全稿口径基准+系统 prompt）；completion 按整章重写假设（保守上界）。
+    """
+    body_tokens = int(max(0, int(pending_words or 0)) * ESTIMATE_TOKENS_PER_CHAR)
+    prompt = int(body_tokens * 1.2) + 4_000
+    completion = body_tokens
+    return prompt, completion
+
+
+def estimate_review_continue_points(
+    pending_words: int, multiplier: Decimal | float
+) -> Optional[int]:
+    """继续修订点数预估（发起前确认弹窗）；口径见 estimate_review_continue_usage。"""
+    prompt, completion = estimate_review_continue_usage(pending_words)
+    return estimate_points_for_usage(prompt, completion, multiplier)
+
+
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 
@@ -2858,6 +2878,39 @@ def batch_review_chapters(
     return batches
 
 
+def prioritize_review_revisions(
+    chapters: list[dict[str, Any]],
+    findings: list[dict[str, str]],
+    limit: int = REVIEW_MAX_REVISIONS,
+    candidates: list[str] | None = None,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """修订选章（2026-11-19 生产工单）：severity 优先——含 high 的章最先进修订集，
+    同级按大纲序；超出 limit 的章进入 pending（供「继续修订」与 UI 说明，不再静默丢弃）。
+
+    生产实证（向导 2cc65be3）：按大纲序截断曾把 11 个含 high 问题的章挤出修订集、
+    而 medium-only 章占了名额——名额必须先给最严重的问题。
+    candidates=None 时从全稿有 high/medium 发现的章中选（首轮审读）；续修轮传入上轮
+    pending 清单（保持 severity 优先序）继续取满。返回 (actionable, pending)。
+    """
+    order_index = {str(chapter["node_id"]): idx for idx, chapter in enumerate(chapters)}
+    has_high = {item["node_id"] for item in findings if item.get("severity") == "high"}
+    has_medium = {item["node_id"] for item in findings if item.get("severity") == "medium"}
+    if candidates is None:
+        pool = [node_id for node_id in order_index if node_id in has_high or node_id in has_medium]
+    else:
+        pool = [node_id for node_id in candidates if node_id in order_index]
+    pool.sort(key=lambda node_id: (0 if node_id in has_high else 1, order_index[node_id]))
+    actionable = pool[:limit]
+    pending = [
+        {
+            "node_id": node_id,
+            "top_severity": "high" if node_id in has_high else "medium",
+        }
+        for node_id in pool[limit:]
+    ]
+    return actionable, pending
+
+
 def normalize_review_findings(payload: Any, valid_node_ids: set[str]) -> list[dict[str, str]]:
     """审读结果归一：node_id 必须在本次章节集内（模型跑偏的丢弃），severity 回退 low。"""
     raw = payload.get("findings") if isinstance(payload, dict) else payload
@@ -3527,32 +3580,63 @@ class BidWizardReviewAgent:
         tender_text = tender_requirements_text(context["analysis"])
         spec_by_id = {str(node.get("node_id")): node for node in spec}
 
-        # ① 审读（Reader）：按章分批；单批失败不终止整轮（审读是增值非必需环节）
-        self._publish("phase", {"phase": "reviewing", "section_total": len(chapters)})
+        # ① 审读（Reader）：按章分批；单批失败不终止整轮（审读是增值非必需环节）。
+        # 继续修订（review_continue，2026-11-19 生产工单）：跳过 Reader 通读，沿用上轮
+        # 审读结论（carried_findings/pending_nodes 由 API 创建任务时自上轮 summary 拷贝），
+        # 只修订剩余问题章——费用与时长均低于完整审读，预估口径见 estimate_review_continue_usage。
+        action = "review"
+        if isinstance(task.summary, dict):
+            action = str(task.summary.get("action") or "review")
+        is_continue = action == "review_continue"
         findings: list[dict[str, str]] = []
         valid_nodes = {chapter["node_id"] for chapter in chapters}
-        for batch in batch_review_chapters(chapters):
-            self._check_cancel()
-            chapters_text = "\n\n".join(
-                "### 章节 %s %s\n%s" % (chapter["node_id"], chapter["title"], chapter["content"][:REVIEW_CHAPTER_MAX_CHARS])
-                for chapter in batch
-            )
-            try:
-                payload = await self.llm.generate_json(
-                    REVIEW_FINDINGS_SYSTEM_PROMPT,
-                    REVIEW_FINDINGS_USER_TEMPLATE.replace("__OUTLINE_TEXT__", _outline_text(spec))
-                    .replace("__REQUIREMENTS_TEXT__", (requirements_text or "无")[:SPEC_CONTEXT_MAX_CHARS])
-                    .replace("__TENDER_REQ_TEXT__", tender_text or "（无）")
-                    .replace("__REJECTION_ITEMS_TEXT__", rejections_text or "（无）")
-                    .replace("__CHAPTERS__", chapters_text),
+        pending_nodes: list[str] = []
+        if is_continue:
+            raw_carried = task.summary.get("carried_findings") if isinstance(task.summary, dict) else None
+            for item in raw_carried if isinstance(raw_carried, list) else []:
+                if not isinstance(item, dict) or not item.get("issue"):
+                    continue
+                node_id = str(item.get("node_id") or "")
+                if node_id not in valid_nodes:
+                    continue
+                findings.append(
+                    {
+                        "node_id": node_id,
+                        "severity": str(item.get("severity") or "low"),
+                        "where": str(item.get("where") or "")[:120],
+                        "issue": str(item.get("issue") or "")[:500],
+                    }
                 )
-                findings.extend(normalize_review_findings(payload, valid_nodes))
-                self._publish("review_findings", {"total": len(findings)})
-            except BidWizardCancelled:
-                raise
-            except Exception:
-                logger.exception("bid-wizard review findings batch failed: task=%s", self.task_id)
-        findings = findings[:REVIEW_FINDINGS_MAX]
+            raw_pending = task.summary.get("pending_nodes") if isinstance(task.summary, dict) else None
+            pending_nodes = [
+                str(node)
+                for node in (raw_pending if isinstance(raw_pending, list) else [])
+                if str(node) in valid_nodes
+            ]
+        else:
+            self._publish("phase", {"phase": "reviewing", "section_total": len(chapters)})
+            for batch in batch_review_chapters(chapters):
+                self._check_cancel()
+                chapters_text = "\n\n".join(
+                    "### 章节 %s %s\n%s" % (chapter["node_id"], chapter["title"], chapter["content"][:REVIEW_CHAPTER_MAX_CHARS])
+                    for chapter in batch
+                )
+                try:
+                    payload = await self.llm.generate_json(
+                        REVIEW_FINDINGS_SYSTEM_PROMPT,
+                        REVIEW_FINDINGS_USER_TEMPLATE.replace("__OUTLINE_TEXT__", _outline_text(spec))
+                        .replace("__REQUIREMENTS_TEXT__", (requirements_text or "无")[:SPEC_CONTEXT_MAX_CHARS])
+                        .replace("__TENDER_REQ_TEXT__", tender_text or "（无）")
+                        .replace("__REJECTION_ITEMS_TEXT__", rejections_text or "（无）")
+                        .replace("__CHAPTERS__", chapters_text),
+                    )
+                    findings.extend(normalize_review_findings(payload, valid_nodes))
+                    self._publish("review_findings", {"total": len(findings)})
+                except BidWizardCancelled:
+                    raise
+                except Exception:
+                    logger.exception("bid-wizard review findings batch failed: task=%s", self.task_id)
+            findings = findings[:REVIEW_FINDINGS_MAX]
 
         # ①.5 口径冲突定向收敛（2026-10-24 第 2 轮质量轮）：机检检出跨章口径冲突后，
         # 涉事章若无 Reader finding 就不会进修订集（上轮统一方案只落实到有意见的 2.4/2.5
@@ -3632,15 +3716,13 @@ class BidWizardReviewAgent:
         except Exception:
             logger.exception("bid-wizard finding propagation failed: task=%s", self.task_id)
 
-        # ② 修订（Revise）：仅 high/medium 触发、按大纲序、一轮封顶；low 只进报告
-        actionable = [
-            chapter["node_id"]
-            for chapter in chapters
-            if any(
-                item["node_id"] == chapter["node_id"] and item["severity"] in ("high", "medium")
-                for item in findings
-            )
-        ][:REVIEW_MAX_REVISIONS]
+        # ② 修订（Revise）：仅 high/medium 触发；severity 优先选章（2026-11-19 生产工单：
+        # 原按大纲序截断曾把 11 个含 high 的章挤出修订集、medium-only 章反占名额），
+        # 超出单轮上限的章记入 revision_pending（供「继续修订」与 UI 说明，不再静默丢弃）；
+        # 续修轮沿用上轮 pending 清单（已 severity 优先）继续取满；low 只进报告
+        actionable, revision_pending = prioritize_review_revisions(
+            chapters, findings, candidates=pending_nodes if is_continue else None
+        )
         self._publish("phase", {"phase": "revising", "section_total": len(actionable)})
         # 全稿口径基准：跨章 high 发现注入每个修订调用——口径/指标/承诺类问题跨章可见，
         # 修订代理才能按同一结论对齐（2026-10-24 质量轮：验收指标四章分裂、在线算力三套说法）；
@@ -3731,13 +3813,17 @@ class BidWizardReviewAgent:
         except Exception:
             logger.exception("bid-wizard review draft_checks/auto-fix failed: task=%s", self.task_id)
         summary: dict[str, Any] = {
-            "action": "review",
+            "action": action,
             "review_of": review_of,
             "chapters_total": len(chapters),
             "findings": findings,
             "findings_total": len(findings),
             "revised_nodes": list(revised_map),
             "revised_total": len(revised_map),
+            # 有问题但本轮未获修订名额的章（severity 优先截断剩余）——驱动「继续修订」
+            # 入口与 UI 说明（2026-11-19 生产工单：此前静默截断，11 个含 high 的章被跳过）
+            "revision_pending": revision_pending,
+            "revision_pending_total": len(revision_pending),
             "word_count": sum(int(item.get("word_count") or 0) for item in final_sections),
             "auto_fix": auto_fix_info,
         }

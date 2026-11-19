@@ -424,8 +424,12 @@ async def _run_write(task_id: str) -> dict[str, Any]:
                 return {"status": "ignored", "message": "任务不存在、已结束或已由其他 worker 认领"}
             wizard_id = task.wizard_id
             user_id = task.user_id
-            # O5 审读轮：同一 write 队列/计费 kind，任务行 summary.action 区分编排
-            is_review = isinstance(task.summary, dict) and task.summary.get("action") == "review"
+            # O5 审读轮（含 2026-11-19 继续修订 review_continue）：同一 write 队列/计费 kind，
+            # 任务行 summary.action 区分编排
+            is_review = isinstance(task.summary, dict) and task.summary.get("action") in (
+                "review",
+                "review_continue",
+            )
             user = (
                 await db.execute(select(User).where(User.id == task.user_id))
             ).scalar_one_or_none()
