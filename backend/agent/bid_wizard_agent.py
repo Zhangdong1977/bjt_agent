@@ -192,7 +192,7 @@ __TOC_REFERENCE__
 
 规则：
 1. 大纲完整覆盖招标需求与评分标准对应的响应内容，与评分办法呼应；只覆盖「生成要求」指定的生成内容范围；
-2. 必须是多级目录：一级大章（level=1）一般 6-12 个，其下按「生成要求」的目录层数逐级细分——目录层数是目标深度而非上限，主要分支应组织到该层级（如 4 级=大章→小节→条款→细目，5 级再往下分到要点），确无实质内容可分的小节可提前收叶；level 必须如实标注所属层级，严禁把全部章节都标成 level=1 平铺——只有目标总字数不足 5,000 字时才允许仅有一级章节；
+2. 必须是多级目录：一级大章（level=1）一般 6-12 个，其下按「生成要求」的目录层数逐级细分——目录层数是目标深度而非上限，主要分支应组织到该层级（如 4 级=大章→小节→条款→细目，5 级再往下分到要点），确无实质内容可分的小节可提前收叶；同级小节至少两个——父级下不得只挂一个子级（"独生章节"不符合标书目录要求），某内容点拆不出第二个同级小节时不设该级、内容并入父级；level 必须如实标注所属层级，严禁把全部章节都标成 level=1 平铺——只有目标总字数不足 5,000 字时才允许仅有一级章节；
 3. summary 写清楚本章要回应什么、用什么素材支撑；
 4. charts 按「生成要求」执行：需要配图时按内容需要规划（每章 0-3 项）——对比/参数/人员/进度明细用 table，占比构成用 pie，指标对比（招标要求 vs 应答值）用 bar，架构用 arch，流程用 flow，交互时序用 seq，进度横道图用 gantt；图（pie/bar/arch/flow/seq/gantt 类）只规划在叶子小节上，一级大章与含子节的父章节正文只是章首导语、不承载图（表格不限）；不配图时每章 charts 一律为 []；
 5. 素材里有真实业绩/资质可引用的章节，在 summary 中点明引用方向；严禁虚构；
@@ -1585,6 +1585,88 @@ def spec_max_level(spec: list[dict[str, Any]]) -> int:
     return result
 
 
+def _spec_to_tree(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """平铺 spec → 树（临时 _children 字段）；level 异常值按 1 处理。"""
+    roots: list[dict[str, Any]] = []
+    stack: list[tuple[int, dict[str, Any]]] = []
+    for raw in nodes:
+        node = dict(raw)
+        node["_children"] = []
+        try:
+            level = max(1, int(raw.get("level") or 1))
+        except (TypeError, ValueError):
+            level = 1
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        (stack[-1][1]["_children"] if stack else roots).append(node)
+        stack.append((level, node))
+    return roots
+
+
+def _merge_single_child_pass(nodes: list[dict[str, Any]]) -> bool:
+    """后序遍历消一层「独生章节」；返回是否发生合并（供外层迭代收敛链式独生）。
+
+    父下仅一个子节点时：子为叶子 → 并入父级（父吸收其摘要要点/篇幅/charts，成为撰写叶）；
+    子有后代 → 删掉该子、其后代整体上提挂到父下。后序保证自底向上，链式独生一遍即收敛。
+    """
+    changed = False
+    for node in nodes:
+        changed = _merge_single_child_pass(node["_children"]) or changed
+    for node in nodes:
+        children = node["_children"]
+        if len(children) != 1:
+            continue
+        only = children[0]
+        if only["_children"]:
+            node["_children"] = only["_children"]
+        else:
+            node["_children"] = []
+            if only.get("article_count"):
+                node["article_count"] = only["article_count"]
+            if only.get("text_count"):
+                node["text_count"] = only["text_count"]
+            extra = str(only.get("summary") or "").strip()
+            base = str(node.get("summary") or "").strip()
+            if extra and extra not in base:
+                node["summary"] = (f"{base}；{extra}" if base else extra)[:2_000]
+            if only.get("charts"):
+                kept = list(node.get("charts") or [])
+                node["charts"] = (kept + [c for c in only["charts"] if c not in kept])[:6] or None
+        changed = True
+    return changed
+
+
+def merge_single_child_spec(spec: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """脱「独生章节」（2026-11-19 用户反馈：某层级只有一个节点不符合标书目录要求）。
+
+    AI 生成/修订的大纲经此归一：任何父级下不再只挂一个子级（叶子并入父级、
+    中间独生节点删除后其子树上提一级）；层级按树深重算并重新编号（normalize_spec）。
+    无独生结构时原样返回（含 node_id，不触发重编号）。
+    """
+    if not isinstance(spec, list) or len(spec) < 2:
+        return spec
+    current: list[dict[str, Any]] = [dict(node) for node in spec]
+    for _ in range(len(spec) + 1):
+        roots = _spec_to_tree(current)
+        changed = _merge_single_child_pass(roots)
+        flat: list[dict[str, Any]] = []
+
+        def _flatten(nodes: list[dict[str, Any]], level: int) -> None:
+            for node in nodes:
+                children = node.pop("_children", [])
+                node["level"] = level
+                flat.append(node)
+                _flatten(children, level + 1)
+
+        _flatten(roots, 1)
+        current = flat
+        if not changed:
+            break
+    if len(current) == len(spec):
+        return spec
+    return normalize_spec(current)
+
+
 _CHART_PLAN_LABELS = {
     "table": "表格",
     "pie": "占比图（bidfig pie）",
@@ -2234,6 +2316,8 @@ async def generate_spec(
     # 目录深度纠偏（2026-11-19 用户实测：选 5 级仍生成 2-3 级）：用户明确选了比默认更深的
     # 层级（≥5）但首轮差两级以上时，点名层级要求重试一次；默认 4 级沿用历史行为不强制
     # （目标语义措辞已在 prompt 里引导），避免全民双倍 LLM 调用。
+    # 先脱「独生章节」（同日用户反馈：某层级只有自己一个节点不符合标书目录要求）再测深度。
+    spec = merge_single_child_spec(spec)
     target_depth = _outline_depth_of(generation_options)
     if target_depth >= 5 and spec and spec_max_level(spec) < target_depth - 1:
         first_max = spec_max_level(spec)
@@ -2256,7 +2340,7 @@ async def generate_spec(
                 "章节总数与总字数区间、其余规则不变。"
             )
             try:
-                retried = await _generate_spec_once(llm, user_prompt + depth_addendum)
+                retried = merge_single_child_spec(await _generate_spec_once(llm, user_prompt + depth_addendum))
             except Exception as exc:  # 重试失败保留首轮
                 logger.warning("bid-wizard spec depth-retry failed, keeping first pass: %s", exc)
                 retried = []
@@ -2289,6 +2373,8 @@ async def revise_spec(
     spec = normalize_spec(nodes if isinstance(nodes, list) else [])
     if not spec:
         raise RuntimeError("Spec 修订结果为空，请重试")
+    # AI 修订同样脱「独生章节」（2026-11-19）：修订指令容易产生单节点层级
+    spec = merge_single_child_spec(spec)
     return apply_generation_options_to_spec(spec, generation_options)
 
 

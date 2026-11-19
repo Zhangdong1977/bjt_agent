@@ -1873,9 +1873,12 @@ def _flat_spec_payload(count: int) -> list[dict]:
     return [{"title": f"章节{index}", "level": 1, "article_count": 1, "text_count": 400} for index in range(count)]
 
 
+# 注意：2026-11-19 起生成链路会脱「独生章节」（merge_single_child_spec），测试夹具
+# 必须是每个父级下 ≥2 个子级（或无子级）的合规树，链式夹具会被折叠。
 _TREE_SPEC_PAYLOAD = [
     {"title": "技术方案", "level": 1, "article_count": 1, "text_count": 400},
     {"title": "总体架构", "level": 2, "article_count": 2, "text_count": 400},
+    {"title": "网络架构", "level": 2, "article_count": 1, "text_count": 400},
     {"title": "实施方案", "level": 1, "article_count": 1, "text_count": 400},
 ]
 
@@ -1912,8 +1915,8 @@ def test_generate_spec_retries_flat_outline_once():
     assert "上一次输出不合格" not in llm.prompts[0]
     assert "上一次输出不合格" in llm.prompts[1] and "全部 20 个章节" in llm.prompts[1]
     assert llm.prompts[1].startswith(llm.prompts[0])  # 纠正指令是追加，不改原上下文
-    assert [node["level"] for node in spec] == [1, 2, 1]
-    assert [node["node_id"] for node in spec] == ["1", "1.1", "2"]
+    assert [node["level"] for node in spec] == [1, 2, 2, 1]
+    assert [node["node_id"] for node in spec] == ["1", "1.1", "1.2", "2"]
 
     llm = _ScriptedLLM([_flat_spec_payload(20), _flat_spec_payload(15)])  # 重试仍平级 → 保留首轮
     assert len(run(llm)) == 20 and len(llm.prompts) == 2
@@ -1925,27 +1928,39 @@ def test_generate_spec_retries_flat_outline_once():
     assert len(run(llm)) == 5 and len(llm.prompts) == 1
 
     llm = _ScriptedLLM([_TREE_SPEC_PAYLOAD, _flat_spec_payload(20)])  # 首轮已是多级不重试
-    assert len(run(llm)) == 3 and len(llm.prompts) == 1
+    assert len(run(llm)) == 4 and len(llm.prompts) == 1
 
 
 def test_generate_spec_retries_shallow_outline_for_deep_target():
     """目录深度纠偏（2026-11-19 用户实测：选 5 级生成 2-3 级）：目标 ≥5 且差两级以上 →
-    点名层级要求重试一次；更深才替换；默认 4 级不触发（沿用历史行为，防全民双倍调用）。"""
+    点名层级要求重试一次；更深才替换；默认 4 级不触发（沿用历史行为，防全民双倍调用）。
+    夹具必须是合规树（每个父级 ≥2 子级）——生成链路现在会脱「独生章节」。"""
     import asyncio
 
     from backend.agent.bid_wizard_agent import generate_spec, spec_max_level
 
-    shallow = [  # max 3 级：用户实测的失败形态
-        {"title": "技术方案", "level": 1, "article_count": 1, "text_count": 400},
-        {"title": "架构", "level": 2, "article_count": 1, "text_count": 400},
-        {"title": "网络", "level": 3, "article_count": 1, "text_count": 400},
+    def node(title, level):
+        return {"title": title, "level": level, "article_count": 1, "text_count": 400}
+
+    shallow = [  # max 3 级、无独生
+        node("技术方案", 1), node("方案架构", 2), node("网络架构", 3), node("数据架构", 3),
+        node("安全设计", 2),
+        node("实施方案", 1), node("实施计划", 2), node("培训方案", 2),
     ]
-    deep = [
-        {"title": "技术方案", "level": 1, "article_count": 1, "text_count": 400},
-        {"title": "架构", "level": 2, "article_count": 1, "text_count": 400},
-        {"title": "网络", "level": 3, "article_count": 1, "text_count": 400},
-        {"title": "组网设计", "level": 4, "article_count": 1, "text_count": 400},
-        {"title": "协议要点", "level": 5, "article_count": 1, "text_count": 400},
+    deep4 = [  # max 4 级（差一级，可接受）
+        node("技术方案", 1), node("方案架构", 2), node("网络架构", 3),
+        node("组网设计", 4), node("协议适配", 4),
+        node("数据架构", 3),
+        node("安全设计", 2),
+        node("实施方案", 1), node("实施计划", 2), node("培训方案", 2),
+    ]
+    deep5 = [  # max 5 级
+        node("技术方案", 1), node("方案架构", 2), node("网络架构", 3),
+        node("组网设计", 4), node("拓扑规划", 5), node("带宽规划", 5),
+        node("协议适配", 4),
+        node("数据架构", 3),
+        node("安全设计", 2),
+        node("实施方案", 1), node("实施计划", 2), node("培训方案", 2),
     ]
     options5 = {"parts": ["technical"], "charts": True, "outline_depth": 5}
 
@@ -1961,7 +1976,7 @@ def test_generate_spec_retries_shallow_outline_for_deep_target():
             )
         )
 
-    llm = _ScriptedLLM([shallow, deep])
+    llm = _ScriptedLLM([shallow, deep5])
     spec = run(llm)
     assert len(llm.prompts) == 2 and llm.prompts[1].startswith(llm.prompts[0])
     assert "上一次输出层级不足" in llm.prompts[1] and "逐级细分到第 5 级" in llm.prompts[1]
@@ -1981,9 +1996,41 @@ def test_generate_spec_retries_shallow_outline_for_deep_target():
     assert len(llm.prompts) == 1 and spec_max_level(spec) == 3
 
     # 选 5 但已到 4 级（差一级，可接受）→ 不重试
-    llm = _ScriptedLLM([deep[:4]])
+    llm = _ScriptedLLM([deep4])
     spec = run(llm)
     assert len(llm.prompts) == 1 and spec_max_level(spec) == 4
+
+
+def test_merge_single_child_spec_variants():
+    """脱「独生章节」（2026-11-19 用户反馈：某层级只有自己一个节点不符合标书目录要求）：
+    独生中间节点 → 子树上提一级；独生叶子链 → 逐级吸收进父级；合规树原样返回。"""
+    from backend.agent.bid_wizard_agent import merge_single_child_spec, normalize_spec
+
+    def node(title, level, summary="", text_count=400):
+        return {"title": title, "level": level, "article_count": 1, "text_count": text_count, "summary": summary}
+
+    # ①独生中间节点：网络架构是技术方案的独生子、自己有两个孩子 → 删除网络架构、孩子上提
+    spec = normalize_spec(
+        [node("技术方案", 1), node("网络架构", 2), node("组网设计", 3), node("协议适配", 3)]
+    )
+    merged = merge_single_child_spec(spec)
+    assert [(n["title"], n["node_id"], n["level"]) for n in merged] == [
+        ("技术方案", "1", 1), ("组网设计", "1.1", 2), ("协议适配", "1.2", 2),
+    ]
+
+    # ②独生叶子链：网络架构(独生子、叶) 被技术方案吸收（摘要/篇幅继承）
+    spec = normalize_spec(
+        [node("技术方案", 1, summary="总体设计"), node("网络架构", 2, summary="组网要点", text_count=600)]
+    )
+    merged = merge_single_child_spec(spec)
+    assert [(n["title"], n["node_id"]) for n in merged] == [("技术方案", "1")]
+    assert "组网要点" in merged[0]["summary"] and merged[0]["text_count"] == 600
+
+    # ③合规树（父级下均 ≥2 子级）→ 原样返回（同一对象，不触发重编号）
+    spec = normalize_spec(
+        [node("技术方案", 1), node("网络架构", 2), node("数据架构", 2), node("实施方案", 1)]
+    )
+    assert merge_single_child_spec(spec) is spec
 
 
 def test_generate_spec_skips_retry_when_time_budget_exhausted(monkeypatch):
@@ -2010,7 +2057,7 @@ def test_generate_spec_skips_retry_when_time_budget_exhausted(monkeypatch):
     spec = asyncio.run(
         bid_wizard_agent.generate_spec(llm, analysis={}, requirements_text="", material_index_text="")
     )
-    assert len(llm.prompts) == 2 and len(spec) == 3
+    assert len(llm.prompts) == 2 and len(spec) == 4
 
 
 # ------------------------------------------------------------------ JSON 交互容错（2026-09-15 首轮问卷不是合法 JSON）
