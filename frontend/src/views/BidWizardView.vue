@@ -2213,6 +2213,7 @@ function trackTask(next: WizardWritingTask) {
   task.value = next;
   sections.value = [];
   reviewingNodes.value = new Set();
+  reviewFindingsExpanded.value = false;
   awaitingWrite.value = [];
   writeError.value = "";
   anchorLost.value = false;
@@ -2692,6 +2693,15 @@ const reviewFindings = computed<ReviewFinding[]>(() => {
 const reviewRevisedCount = computed(() => {
   const raw = task.value?.summary?.revised_total;
   return Number(raw) || 0;
+});
+/** 问题明细默认收起（2026-11-19 用户反馈：明细占屏大、多数用户只看概要）——
+ * 收起态只看严重程度分布 + 修订/待修订统计，愿意看再展开；切任务重置为收起。 */
+const reviewFindingsExpanded = ref(false);
+/** 概要行的严重程度分布（严重/中等/轻微各几条）。 */
+const reviewSeverityCounts = computed(() => {
+  const counts = { high: 0, medium: 0, low: 0 };
+  for (const item of reviewFindings.value) counts[item.severity] += 1;
+  return counts;
 });
 /** 待继续修订的章（上轮 severity 优先选章后、未获单轮修订名额的剩余问题章）。 */
 interface ReviewPendingNode {
@@ -4032,15 +4042,16 @@ onUnmounted(() => {
               >移除全部 AI 内容</button>
             </div>
             <!-- 23 号 O5：审读报告（Reader 问题清单 + 自动修订统计；修订章用「替换 Word 中本章」更新）
-                 + 2026-11-19：severity 优先选章说明 + 待修订章「继续修订」入口（用户决定，逐段预估确认） -->
+                 + 2026-11-19：severity 优先选章说明 + 待修订章「继续修订」入口（用户决定，逐段预估确认）
+                 + 2026-11-19（二轮反馈）：明细默认收起只留概要（严重程度分布 + 修订统计），愿意看再展开 -->
             <div v-if="!taskRunning && isReviewTask && reviewFindings.length" class="card qc-card">
               <h3>审读报告</h3>
               <p class="hint" style="margin:0 0 8px">
-                AI 通读全稿 {{ reviewChaptersTotal || sections.length }} 章，共发现 {{ reviewFindings.length }} 个问题；
+                AI 通读全稿 {{ reviewChaptersTotal || sections.length }} 章，发现 {{ reviewFindings.length }} 个问题
+                （严重 {{ reviewSeverityCounts.high }} · 中等 {{ reviewSeverityCounts.medium }} · 轻微 {{ reviewSeverityCounts.low }}）；
                 本轮已自动修订 {{ reviewRevisedCount }} 章（按严重程度优先选章，单轮上限 20 章）。
-                <template v-if="reviewPending.length">仍有 {{ reviewPending.length }} 章待修订（含 {{ reviewPendingHighCount }} 章严重问题）——可用下方「继续修订」处理，或保持现状。</template>
+                <template v-if="reviewPending.length">仍有 {{ reviewPending.length }} 章待修订（含 {{ reviewPendingHighCount }} 章严重问题）。</template>
                 <template v-else>待修订章节已全部处理。</template>
-                轻微问题仅供人工参考；修订后的章节用「替换 Word 中本章」或「重新写入 Word」更新到文档。
               </p>
               <div v-if="reviewPending.length" style="margin:0 0 10px">
                 <button
@@ -4056,17 +4067,25 @@ onUnmounted(() => {
                     >{{ index ? "、" : "" }}{{ item.node_id }}{{ item.top_severity === "high" ? "（严重）" : "" }}</template>
                 </p>
               </div>
-              <ul class="qc-list">
-                <li
-                  v-for="(item, index) in reviewFindings"
-                  :key="index"
-                  :class="{ error: item.severity === 'high', warn: item.severity === 'medium' }"
-                >
-                  <span class="qc-badge" :class="`rev-${item.severity}`">{{ REVIEW_SEVERITY_TEXT[item.severity] }}</span>
-                  <span v-if="item.node_id" class="qc-node">{{ item.node_id }}</span>
-                  <template v-if="item.where">{{ item.where }}：</template>{{ item.issue }}
-                </li>
-              </ul>
+              <button
+                type="button"
+                class="link-btn"
+                @click="reviewFindingsExpanded = !reviewFindingsExpanded"
+              >{{ reviewFindingsExpanded ? "收起问题明细 ▴" : `展开全部 ${reviewFindings.length} 条问题明细 ▾` }}</button>
+              <template v-if="reviewFindingsExpanded">
+                <ul class="qc-list findings-list">
+                  <li
+                    v-for="(item, index) in reviewFindings"
+                    :key="index"
+                    :class="{ error: item.severity === 'high', warn: item.severity === 'medium' }"
+                  >
+                    <span class="qc-badge" :class="`rev-${item.severity}`">{{ REVIEW_SEVERITY_TEXT[item.severity] }}</span>
+                    <span v-if="item.node_id" class="qc-node">{{ item.node_id }}</span>
+                    <template v-if="item.where">{{ item.where }}：</template>{{ item.issue }}
+                  </li>
+                </ul>
+                <p class="hint">严重/中等问题对应的章节已自动修订；轻微问题未改动、仅供人工参考。修订后的章节用「替换 Word 中本章」或「重新写入 Word」更新到文档。</p>
+              </template>
             </div>
             <!-- 23 号 O1/O6 + 2026-10-25 质检自动修复闭环：error 项由系统自动修复并复检后才呈现，
                  用户不再面对「需处理」清单；残留（多轮未消除，罕见）才出现且直接给重生成指引 -->
@@ -4297,6 +4316,8 @@ onUnmounted(() => {
 /* 全稿质检报告卡 / 得分点覆盖卡（23 号 O1/O2） */
 .qc-card{border-top:3px solid #e6f7ff}
 .qc-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:5px}
+/* 审读问题明细展开态限高滚动（2026-11-19 二轮反馈）：几十条明细也不把页面撑穿 */
+.findings-list{max-height:340px;overflow-y:auto;margin-top:6px;padding-right:4px}
 .qc-list>li{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;padding:5px 8px;border-radius:6px;background:#fafafa;color:#555;font-size:12px;line-height:1.6}
 .qc-list>li.error{background:#fff1f0;color:#a8071a}
 .qc-badge{flex:none;padding:0 7px;border-radius:8px;background:#ededed;color:#666;font-size:10.5px;font-weight:600}
