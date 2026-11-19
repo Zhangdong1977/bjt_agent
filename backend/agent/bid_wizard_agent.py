@@ -763,6 +763,8 @@ def build_requirements_text(requirements: dict[str, Any] | None) -> str:
 
 # 三态口径：existing=现有已实现（须有素材依据）/ build=本项目建设内容 / confirm=待用户确认
 CAPABILITY_STANCES = ("existing", "build", "confirm")
+# 口径建议置信度（2026-11-19 口径确认项）：high=素材可明确对应 / medium=需推断 / low=基本靠猜
+CAPABILITY_CONFIDENCES = ("high", "medium", "low")
 CAPABILITY_MAX_ITEMS = 30
 # 口径卡统一称谓候选（与 bid_doc_checks._SELF_REFERENCE_VARIANTS 对齐）
 SELF_REFERENCE_CHOICES = ("我司", "我公司", "我方", "本公司")
@@ -847,10 +849,14 @@ def build_capability_lines(capability_map: Any) -> list[str]:
 
 
 def normalize_capability_map(raw: Any) -> list[dict[str, Any]]:
-    """能力口径映射归一（O3）：[{title, requirement, stance, evidence, note, confirmed}]。
+    """能力口径映射归一（O3 + 2026-11-19 口径确认项）。
 
-    stance 非法回退 confirm（宁待确认不虚构）；商务/报价类条目直接丢弃（产品口径仅技术标，
-    复用评分项商务判定词表）；confirmed 保持入参值（生成建议=False，保存确认=True）。
+    [{title, requirement, stance, evidence, confidence, confirm_question, confirm_owner,
+      evidence_needed, risk_note, note, confirmed}]。
+    stance 非法回退 confirm（宁待确认不虚构）；confidence 非法按 stance 推断回退
+    （confirm→low，其余→medium——待确认项按低置信对待，前端进「需拍板」区）；
+    商务/报价类条目直接丢弃（产品口径仅技术标，复用评分项商务判定词表）；
+    confirmed 保持入参值（生成建议=False，保存确认=True）。
     """
     if not isinstance(raw, list):
         return []
@@ -867,12 +873,20 @@ def normalize_capability_map(raw: Any) -> list[dict[str, Any]]:
         stance = str(entry.get("stance") or "").strip()
         if stance not in CAPABILITY_STANCES:
             stance = "confirm"
+        confidence = str(entry.get("confidence") or "").strip()
+        if confidence not in CAPABILITY_CONFIDENCES:
+            confidence = "low" if stance == "confirm" else "medium"
         items.append(
             {
                 "title": title[:200],
                 "requirement": requirement[:500],
                 "stance": stance,
                 "evidence": str(entry.get("evidence") or "").strip()[:200],
+                "confidence": confidence,
+                "confirm_question": str(entry.get("confirm_question") or "").strip()[:200],
+                "confirm_owner": str(entry.get("confirm_owner") or "").strip()[:50],
+                "evidence_needed": str(entry.get("evidence_needed") or "").strip()[:200],
+                "risk_note": str(entry.get("risk_note") or "").strip()[:300],
                 "note": str(entry.get("note") or "").strip()[:500],
                 "confirmed": bool(entry.get("confirmed")),
             }
@@ -903,6 +917,11 @@ __MATERIAL_INDEX__
   {"title": "招标要求短语", "requirement": "该要求的具体内容，一句话",
    "stance": "existing|build|confirm",
    "evidence": "素材依据（如 '素材名#3'，existing 必填且必须是素材索引里真实存在的条目；其余留空）",
+   "confidence": "high|medium|low（对建议口径的置信度：素材可明确对应=high，需推断=medium，基本靠猜=low）",
+   "confirm_question": "需人工确认时的具体问题（一句话，用户可直接复制转发研发/售前；把握充足无疑问留空）",
+   "confirm_owner": "建议找谁确认：研发|产品|售前|商务|法务（不确定留空）",
+   "evidence_needed": "补什么证据可升级为「现有已实现」（检测报告/项目案例/功能截图等；不适用留空）",
+   "risk_note": "口径错判或拖延确认的实质后果（★条款废标风险/高分项失分/履约成本）；无实质风险留空，别每条都写",
    "note": "口径说明（一句话，如按 existing 写时的能力事实概要）"}
 ],
  "style_card": {
@@ -915,8 +934,10 @@ __MATERIAL_INDEX__
 规则：
 1. capability_map 只覆盖技术类要求（技术方案/实施/人员/培训/售后/检测/标准规范等）——资质、业绩、财务、报价、商务条款类一律不出（商务标不在生成范围）；
 2. stance 判定必须诚实：素材索引里有能对应上的能力事实才给 existing 并如实填 evidence，否则给 build 或 confirm——严禁把没有素材依据的能力标成 existing；
-3. 素材覆盖不了的给 confirm，note 里写清缺什么信息；
-4. 最多 __MAX_ITEMS__ 项，按招标要求重要度排序；严禁虚构素材里不存在的内容。"""
+3. 素材覆盖不了的给 confirm，confirm_question 写清要去确认什么（缺什么信息/卡在哪个事实），note 写口径说明；
+4. confidence 与 stance 分开评：stance 是建议，confidence 是你对这条建议的把握——把握不足必须如实标 low 并给 confirm_question，交给投标人拍板；
+5. risk_note 只写有实质后果的（★/废标条款/高分值评分项/明显履约成本），其余留空；
+6. 最多 __MAX_ITEMS__ 项，按招标要求重要度排序；严禁虚构素材里不存在的内容。"""
 
 
 async def generate_capability_map(
@@ -959,20 +980,26 @@ def capability_stance_issues(
     done: list[dict[str, Any]],
     capability_map: Any,
 ) -> list[dict[str, str]]:
-    """口径红线联动（O3 机检扩展）：口径为 existing 但无素材依据的章节 → warning。
+    """口径红线联动（O3 机检扩展 + 2026-11-19 口径确认项）。
 
-    只查已确认（confirmed）条目——AI 建议草稿尚未拍板，不进机检；
+    只查已确认（confirmed）条目——AI 建议草稿尚未拍板，不进机检：
+    ①existing 无素材依据 → warning（原有）；
+    ②confirm 态且带 risk_note → warning「开标前必须拍板」（口径确认项联动：
+      正文按"本项目建设内容（确认阶段固化）"兜底能交稿，但风险项拖到开标即失分/废标）。
     命中章节（标题匹配口径条目标题，口径含祖先链）逐章报，无命中章节时报全稿级一条。
     """
     if not isinstance(capability_map, list):
         return []
     issues: list[dict[str, str]] = []
     for entry in capability_map:
-        if not isinstance(entry, dict) or entry.get("stance") != "existing":
+        if not isinstance(entry, dict) or entry.get("confirmed") is not True:
             continue
-        if entry.get("confirmed") is not True:
+        stance = entry.get("stance")
+        if stance == "existing" and str(entry.get("evidence") or "").strip():
             continue
-        if str(entry.get("evidence") or "").strip():
+        if stance == "confirm" and not str(entry.get("risk_note") or "").strip():
+            continue
+        if stance not in ("existing", "confirm"):
             continue
         title = str(entry.get("title") or "").strip()
         key = _norm_match_key(title)
@@ -986,14 +1013,23 @@ def capability_stance_issues(
             )
             if key in chain_text:
                 matched.append(str(item.get("node_id") or ""))
-        detail = (
-            "「%s」口径为「现有已实现」但未给出素材依据——existing 口径必须有素材支撑，"
-            "请补充素材证据或把口径改判为「本项目建设」/「待确认」" % title[:60]
-        )
+        if stance == "existing":
+            detail = (
+                "「%s」口径为「现有已实现」但未给出素材依据——existing 口径必须有素材支撑，"
+                "请补充素材证据或把口径改判为「本项目建设」/「待确认」" % title[:60]
+            )
+            issue_type = "capability_no_evidence"
+        else:
+            risk = str(entry.get("risk_note") or "").strip()[:80]
+            detail = (
+                "「%s」口径仍为「待确认」且标注有风险（%s）——开标前必须拍板："
+                "改为「现有已实现」需补素材依据，或明确为「本项目建设」并落实交付安排" % (title[:60], risk)
+            )
+            issue_type = "capability_confirm_risk"
         for node_id in matched[:5]:
-            issues.append({"severity": "warning", "node_id": node_id, "type": "capability_no_evidence", "detail": detail})
+            issues.append({"severity": "warning", "node_id": node_id, "type": issue_type, "detail": detail})
         if not matched:
-            issues.append({"severity": "warning", "node_id": "", "type": "capability_no_evidence", "detail": detail})
+            issues.append({"severity": "warning", "node_id": "", "type": issue_type, "detail": detail})
         if len(issues) >= 10:
             break
     return issues

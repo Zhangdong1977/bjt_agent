@@ -67,11 +67,20 @@ export interface WizardQaHistoryItem {
 /** 应答口径三态（23 号 O3）：existing=现有已实现/build=本项目建设/confirm=待确认。 */
 export type CapabilityStance = "existing" | "build" | "confirm";
 
+/** 口径建议置信度（2026-11-19 口径确认项）：AI 对自己建议口径的把握。 */
+export type CapabilityConfidence = "high" | "medium" | "low";
+
 export interface WizardCapabilityItem {
   title: string;
   requirement?: string;
   stance: CapabilityStance;
   evidence?: string;
+  /** 决策包（口径确认项）：置信度 + 要确认什么/找谁/补什么证据/错判风险。 */
+  confidence?: CapabilityConfidence;
+  confirm_question?: string;
+  confirm_owner?: string;
+  evidence_needed?: string;
+  risk_note?: string;
   note?: string;
   confirmed?: boolean;
 }

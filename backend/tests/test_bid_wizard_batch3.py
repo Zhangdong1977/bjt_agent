@@ -216,6 +216,37 @@ def test_normalize_capability_map_filters_business_and_bounds():
     assert normalize_capability_map("bad") == []
 
 
+def test_normalize_capability_map_decision_package():
+    """口径确认项（2026-11-19）：决策包字段透传 + confidence 非法按 stance 推断回退。"""
+    from backend.agent.bid_wizard_agent import normalize_capability_map
+
+    items = normalize_capability_map(
+        [
+            {
+                "title": "信创适配",
+                "requirement": "支持国产化数据库",
+                "stance": "confirm",
+                "confirm_question": "当前版本是否已完成达梦适配？",
+                "confirm_owner": "研发",
+                "evidence_needed": "适配测试报告",
+                "risk_note": "★条款，不实响应有废标风险",
+                "note": "素材未覆盖",
+            },
+            {"title": "大模型审查", "stance": "existing", "evidence": "案例#1", "confidence": "high"},
+            {"title": "接口协议", "stance": "build", "confidence": "瞎标"},  # 非法回退 medium
+        ]
+    )
+    first = items[0]
+    # confirm 态缺 confidence → 回退 low（前端进「需拍板」区）
+    assert first["confidence"] == "low"
+    assert first["confirm_question"] == "当前版本是否已完成达梦适配？"
+    assert first["confirm_owner"] == "研发"
+    assert first["evidence_needed"] == "适配测试报告"
+    assert first["risk_note"] == "★条款，不实响应有废标风险"
+    assert items[1]["confidence"] == "high" and items[1]["confirm_question"] == ""
+    assert items[2]["confidence"] == "medium"
+
+
 def test_capability_stance_issues_flags_confirmed_existing_without_evidence():
     from backend.agent.bid_wizard_agent import capability_stance_issues
 
@@ -237,6 +268,27 @@ def test_capability_stance_issues_flags_confirmed_existing_without_evidence():
     issues = capability_stance_issues(spec, [], capability)  # 无命中章节 → 全稿级一条
     assert len(issues) == 1 and issues[0]["node_id"] == ""
     assert capability_stance_issues(spec, done, None) == []
+
+
+def test_capability_stance_issues_flags_confirm_with_risk():
+    """口径确认项机检（2026-11-19）：已确认 confirm 态且带 risk_note → 「开标前必须拍板」。"""
+    from backend.agent.bid_wizard_agent import capability_stance_issues
+
+    spec = [{"node_id": "7", "title": "国产化适配", "summary": ""}]
+    done = [{"node_id": "7", "title": "国产化适配", "content": "# 正文"}]
+    capability = [
+        # 已确认 + confirm + 风险 → 报
+        {"title": "国产化适配", "stance": "confirm", "risk_note": "★条款不实响应有废标风险", "confirmed": True},
+        # confirm 但无风险注记 → 不报（常规待确认可安全兜底交稿）
+        {"title": "报表导出", "stance": "confirm", "confirmed": True},
+        # 带风险但未确认（AI 建议草稿）→ 不报
+        {"title": "等保三级", "stance": "confirm", "risk_note": "高分项", "confirmed": False},
+    ]
+    issues = capability_stance_issues(spec, done, capability)
+    assert len(issues) == 1
+    assert issues[0]["type"] == "capability_confirm_risk"
+    assert issues[0]["node_id"] == "7" and issues[0]["severity"] == "warning"
+    assert "开标前必须拍板" in issues[0]["detail"] and "废标风险" in issues[0]["detail"]
 
 
 async def test_generate_capability_map_normalizes_payload():
@@ -407,7 +459,19 @@ class TestCapabilityApi:
             f"{base}/capability",
             json={
                 "items": [
-                    {"title": "数据中台", "requirement": "亿级数据", "stance": "build", "evidence": "", "note": ""},
+                    {
+                        "title": "数据中台",
+                        "requirement": "亿级数据",
+                        "stance": "build",
+                        "evidence": "",
+                        "note": "",
+                        # 决策包随保存透传（口径确认项，2026-11-19）——丢了已拍板卡片会退回裸三态
+                        "confidence": "low",
+                        "confirm_question": "达梦适配当前版本是否完成？",
+                        "confirm_owner": "研发",
+                        "evidence_needed": "适配测试报告",
+                        "risk_note": "高分项",
+                    },
                     {"title": "AI 审查", "requirement": "", "stance": "confirm", "evidence": "", "note": ""},
                 ],
                 "style_card": {"self_reference": "我方", "forbidden_words": ["行业领先"]},
@@ -417,6 +481,11 @@ class TestCapabilityApi:
         assert saved.status_code == 200, saved.text
         detail = saved.json()
         assert all(item["confirmed"] is True for item in detail["requirements"]["capability_map"])
+        first = detail["requirements"]["capability_map"][0]
+        assert first["confidence"] == "low" and first["confirm_question"] == "达梦适配当前版本是否完成？"
+        assert first["confirm_owner"] == "研发" and first["evidence_needed"] == "适配测试报告"
+        assert first["risk_note"] == "高分项"
+        assert detail["requirements"]["capability_map"][1]["confidence"] == "medium"  # pydantic 缺省（confirm 态本身已触发需拍板区）
         assert detail["requirements"]["style_card"]["self_reference"] == "我方"
         assert detail["spec_stale"] is True  # 口径变化 → 大纲过期
 

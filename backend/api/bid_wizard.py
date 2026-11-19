@@ -1492,6 +1492,12 @@ async def save_capability(
             "requirement": item.requirement,
             "stance": item.stance,
             "evidence": item.evidence,
+            # 口径确认项决策包随保存透传（2026-11-19）：保存丢失会让已拍板卡片退化成裸三态
+            "confidence": item.confidence,
+            "confirm_question": item.confirm_question,
+            "confirm_owner": item.confirm_owner,
+            "evidence_needed": item.evidence_needed,
+            "risk_note": item.risk_note,
             "note": item.note,
             "confirmed": True,
         }

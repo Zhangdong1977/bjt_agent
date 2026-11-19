@@ -53,6 +53,7 @@ import {
   type GenerationOptions,
   type GenerationPart,
   type CapabilityStance,
+  type CapabilityConfidence,
   type Wizard,
   type WizardCapabilityItem,
   type WizardStyleCard,
@@ -1230,6 +1231,60 @@ const STANCE_LABELS: Record<CapabilityStance, string> = {
   build: "本项目建设",
   confirm: "待确认",
 };
+const CONFIDENCE_LABELS: Record<CapabilityConfidence, string> = {
+  high: "高置信",
+  medium: "中置信",
+  low: "低置信",
+};
+const CAP_CONFIDENCE_RANK: Record<CapabilityConfidence, number> = { low: 0, medium: 1, high: 2 };
+
+/** 需拍板判定（口径确认项，2026-11-19）：待确认态/低置信/无据 existing/带风险注记。
+ * 分区在生成、载入、保存时快照冻结——编辑中改判不挪卡片（点一下 radio 行就跳区会很乱），
+ * 下一次 sync（保存回填/重新生成）才重算分区。 */
+const capDecisionIdx = ref<Set<number>>(new Set());
+const capLowRiskExpanded = ref(false);
+function capNeedsDecision(item: WizardCapabilityItem): boolean {
+  return (
+    item.stance === "confirm" ||
+    item.confidence === "low" ||
+    (item.stance === "existing" && !item.evidence) ||
+    Boolean(item.risk_note)
+  );
+}
+function refreshCapZones() {
+  capDecisionIdx.value = new Set(
+    capabilityItems.value.map((item, idx) => (capNeedsDecision(item) ? idx : -1)).filter((idx) => idx >= 0),
+  );
+  capLowRiskExpanded.value = false;
+}
+/** 需拍板行：风险注记优先、置信度低在前，同序保持 AI 原始重要度序。 */
+const capDecisionRows = computed(() =>
+  capabilityItems.value
+    .map((item, idx) => ({ item, idx }))
+    .filter(({ idx }) => capDecisionIdx.value.has(idx))
+    .sort((a, b) => {
+      const key = (row: { item: WizardCapabilityItem }) =>
+        (row.item.risk_note ? 0 : 10) + (CAP_CONFIDENCE_RANK[row.item.confidence || "medium"] ?? 1);
+      return key(a) - key(b) || a.idx - b.idx;
+    })
+    .map(({ item }) => item),
+);
+const capLowRiskRows = computed(() =>
+  capabilityItems.value.filter((_, idx) => !capDecisionIdx.value.has(idx)),
+);
+
+/** 复制口径确认问题（贴到微信/钉钉发给确认人，线下拍板后回来改判）。 */
+async function copyCapabilityQuestion(item: WizardCapabilityItem) {
+  const lines = [`【应标口径确认】${item.title}`];
+  if (item.confirm_question) lines.push(item.confirm_question);
+  if (item.evidence_needed) lines.push(`需补证据（可改判「现有已实现」）：${item.evidence_needed}`);
+  try {
+    await navigator.clipboard.writeText(lines.join("\n"));
+    pushLog("ok", "确认问题已复制——可粘贴到微信/钉钉发给确认人");
+  } catch (error) {
+    pageError.value = friendlyError(error, "复制失败，请手动选择文本复制");
+  }
+}
 
 /** 把已存 requirements 里的口径数据同步进本地编辑态（进入阶段/生成后调用）。 */
 function syncCapabilityFromWizard() {
@@ -1242,6 +1297,7 @@ function syncCapabilityFromWizard() {
   styleCardDraft.value = card
     ? { ...card, forbidden_words: [...(card.forbidden_words || [])] }
     : { company_name: "", project_short_name: "", self_reference: "我司", forbidden_words: [], notes: "" };
+  refreshCapZones();
 }
 
 /** 已保存并注入下游（confirmed 条目存在）——展示「已保存」提示的依据。 */
@@ -1283,6 +1339,12 @@ function onSaveCapability() {
         requirement: item.requirement || "",
         stance: item.stance,
         evidence: item.evidence || "",
+        // 决策包随保存透传——丢了会让已拍板卡片退回裸三态（后端归一同样透传）
+        confidence: item.confidence || "medium",
+        confirm_question: item.confirm_question || "",
+        confirm_owner: item.confirm_owner || "",
+        evidence_needed: item.evidence_needed || "",
+        risk_note: item.risk_note || "",
         note: item.note || "",
       })),
       style_card: styleCardDraft.value,
@@ -3668,7 +3730,7 @@ onUnmounted(() => {
         <div class="card">
           <h3>③ 应答口径</h3>
           <template v-if="!capabilityItems.length">
-            <p class="hint">AI 对照招标要求与素材索引，逐条建议应答口径：「现有已实现」（须有素材依据）、「本项目建设」（交付内容）或「待确认」。确认保存后口径将注入大纲与章节撰写，杜绝虚构能力。</p>
+            <p class="hint">AI 对照招标要求与素材索引，逐条建议应答口径：「现有已实现」（须有素材依据）、「本项目建设」（交付内容）或「待确认」；对把握不足或标注风险的条目会给出确认问题，可复制发给研发/售前线下确认后再拍板。确认保存后口径将注入大纲与章节撰写，杜绝虚构能力。</p>
             <p v-if="!questionnaire.length" class="hint">先完成上方「② 素材检查和需求确认」，AI 检查完成后即可在这里生成口径建议。</p>
             <button type="button" class="primary" :disabled="Boolean(busy) || !analysis || !questionnaire.length" @click="onGenerateCapability">AI 生成口径建议</button>
             <div v-if="busy === 'capability'" class="status-row">
@@ -3679,22 +3741,58 @@ onUnmounted(() => {
           <template v-else>
             <div class="req-toolbar">
               <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="onGenerateCapability">重新生成建议</button>
-              <span class="hint" style="margin:0">逐条确认或改判口径后点「保存口径」；「现有已实现」须有素材依据，否则机检会提示。</span>
+              <span class="hint" style="margin:0">需拍板的条目排在上方（待确认/低置信/有风险），逐条改判后点「保存口径」；低风险条目按 AI 建议直接生效。「现有已实现」须有素材依据，否则机检会提示。</span>
             </div>
-            <div v-for="(item, index) in capabilityItems" :key="index" class="cap-item">
-              <div class="cap-head">
-                <strong>{{ item.title }}</strong>
+            <!-- 口径确认项（2026-11-19）：需拍板区平铺决策包（置信度/确认问题/补证指引/风险），
+                 风险与低置信排最前；低风险区默认折叠只留计数，想核对再展开 -->
+            <template v-if="capDecisionRows.length">
+              <h4>需拍板（{{ capDecisionRows.length }} 条）</h4>
+              <div v-for="(item, index) in capDecisionRows" :key="`cap-d-${index}`" class="cap-item">
+                <div class="cap-head">
+                  <strong>{{ item.title }}</strong>
+                  <span class="cap-badge" :class="`conf-${item.confidence || 'medium'}`">{{ CONFIDENCE_LABELS[item.confidence || "medium"] }}</span>
+                  <span v-if="item.risk_note" class="cap-badge risk">有风险</span>
+                </div>
+                <p v-if="item.requirement" class="cap-req">{{ item.requirement }}</p>
+                <div class="q-actions cap-actions">
+                  <label v-for="(label, stanceValue) in STANCE_LABELS" :key="stanceValue" class="radio">
+                    <input v-model="item.stance" type="radio" :name="`cap-d-${index}`" :value="stanceValue">{{ label }}
+                  </label>
+                </div>
+                <p v-if="item.evidence" class="cap-evidence">素材依据：{{ item.evidence }}</p>
+                <p v-else-if="item.stance === 'existing'" class="cap-evidence warn">该口径为「现有已实现」但没有素材依据——建议补充素材或改判，保存后机检会持续提示</p>
+                <p v-if="item.confirm_question || item.evidence_needed" class="cap-confirm">
+                  <template v-if="item.confirm_question">确认问题：{{ item.confirm_question }}<template v-if="item.confirm_owner">（建议找{{ item.confirm_owner }}确认）</template></template>
+                  <template v-if="item.evidence_needed"><br>补齐证据可改判「现有已实现」：{{ item.evidence_needed }}</template>
+                  <button type="button" class="link-btn" style="margin-left:6px" @click="copyCapabilityQuestion(item)">复制去确认</button>
+                </p>
+                <p v-if="item.risk_note" class="cap-risk">风险：{{ item.risk_note }}</p>
+                <p v-if="item.note" class="hint" style="margin:2px 0 0">{{ item.note }}</p>
               </div>
-              <p v-if="item.requirement" class="cap-req">{{ item.requirement }}</p>
-              <div class="q-actions cap-actions">
-                <label v-for="(label, stanceValue) in STANCE_LABELS" :key="stanceValue" class="radio">
-                  <input v-model="item.stance" type="radio" :name="`cap-${index}`" :value="stanceValue">{{ label }}
-                </label>
-              </div>
-              <p v-if="item.evidence" class="cap-evidence">素材依据：{{ item.evidence }}</p>
-              <p v-else-if="item.stance === 'existing'" class="cap-evidence warn">该口径为「现有已实现」但没有素材依据——建议补充素材或改判，保存后机检会持续提示</p>
-              <p v-if="item.note" class="hint" style="margin:2px 0 0">{{ item.note }}</p>
-            </div>
+            </template>
+            <template v-if="capLowRiskRows.length">
+              <h4 class="cap-zone-head">
+                低风险·按建议确认（{{ capLowRiskRows.length }} 条）
+                <button type="button" class="link-btn" @click="capLowRiskExpanded = !capLowRiskExpanded">{{ capLowRiskExpanded ? "收起 ▴" : "展开核对 ▾" }}</button>
+              </h4>
+              <p class="hint" style="margin:0 0 6px">这些建议置信度高且依据齐全——点「保存口径」即按建议生效；展开可逐条核对或改判。</p>
+              <template v-if="capLowRiskExpanded">
+                <div v-for="(item, index) in capLowRiskRows" :key="`cap-l-${index}`" class="cap-item cap-item-dim">
+                  <div class="cap-head">
+                    <strong>{{ item.title }}</strong>
+                    <span class="cap-badge" :class="`conf-${item.confidence || 'medium'}`">{{ CONFIDENCE_LABELS[item.confidence || "medium"] }}</span>
+                  </div>
+                  <p v-if="item.requirement" class="cap-req">{{ item.requirement }}</p>
+                  <div class="q-actions cap-actions">
+                    <label v-for="(label, stanceValue) in STANCE_LABELS" :key="stanceValue" class="radio">
+                      <input v-model="item.stance" type="radio" :name="`cap-l-${index}`" :value="stanceValue">{{ label }}
+                    </label>
+                  </div>
+                  <p v-if="item.evidence" class="cap-evidence">素材依据：{{ item.evidence }}</p>
+                  <p v-if="item.note" class="hint" style="margin:2px 0 0">{{ item.note }}</p>
+                </div>
+              </template>
+            </template>
             <h4>口径卡（全稿统一措辞）</h4>
             <div class="gen-row">
               <span class="gen-label">统一称谓</span>
@@ -4337,6 +4435,16 @@ onUnmounted(() => {
 .cap-evidence.warn{color:#d46b08}
 .cap-input{flex:1;min-width:200px;border:1px solid #e5e5e5;border-radius:6px;padding:5px 8px;font-size:12px}
 .cap-input:focus{outline:none;border-color:#d7041a}
+/* 口径确认项（2026-11-19）：置信度/风险徽章 + 确认问题与风险行 + 低风险折叠区弱化 */
+.cap-badge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:9px;font-size:10.5px;font-weight:600;vertical-align:1px}
+.cap-badge.conf-high{background:#f6ffed;color:#389e0d}
+.cap-badge.conf-medium{background:#fffbe6;color:#d48806}
+.cap-badge.conf-low{background:#fff1f0;color:#cf1322}
+.cap-badge.risk{background:#fff1f0;color:#a8071a}
+.cap-confirm{margin:5px 0 0;color:#0958d9;font-size:12px;line-height:1.6}
+.cap-risk{margin:5px 0 0;color:#a8071a;font-size:12px;line-height:1.6}
+.cap-item-dim{background:#fafafa}
+.cap-zone-head{margin-top:12px}
 .analysis-suggest{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:4px 0 8px;font-size:12px}
 .suggest-chip{padding:2px 10px;border:1px solid #ffd6d0;border-radius:999px;background:#fff5f4;color:#b80015;cursor:default}
 .material-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}

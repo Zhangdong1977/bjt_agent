@@ -231,12 +231,18 @@ class StyleCard(BaseModel):
 
 
 class CapabilityItem(BaseModel):
-    """能力口径条目（O3）：三态 stance + 素材依据；保存时整批置 confirmed=True。"""
+    """能力口径条目（O3 + 口径确认项）：三态 stance + 素材依据 + 决策包
+    （置信度/确认问题/确认人/补证指引/风险注记）；保存时整批置 confirmed=True。"""
 
     title: str = Field(min_length=1, max_length=200)
     requirement: str = Field(default="", max_length=500)
     stance: CapabilityStance
     evidence: str = Field(default="", max_length=200)
+    confidence: Literal["high", "medium", "low"] = "medium"
+    confirm_question: str = Field(default="", max_length=200)
+    confirm_owner: str = Field(default="", max_length=50)
+    evidence_needed: str = Field(default="", max_length=200)
+    risk_note: str = Field(default="", max_length=300)
     note: str = Field(default="", max_length=500)
 
 
