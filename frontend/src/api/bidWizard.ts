@@ -458,8 +458,12 @@ export async function saveRequirements(
   );
 }
 
-export async function generateSpec(wizardId: string) {
-  return request<Wizard>("post", `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/spec`);
+export async function generateSpec(wizardId: string, outlineDepth?: number) {
+  return request<Wizard>(
+    "post",
+    `/bid-wizard/wizards/${encodeURIComponent(wizardId)}/spec`,
+    outlineDepth != null ? { outline_depth: outlineDepth } : undefined,
+  );
 }
 
 export async function saveSpec(wizardId: string, spec: WizardSpecNode[]) {

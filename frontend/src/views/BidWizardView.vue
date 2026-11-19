@@ -1945,8 +1945,10 @@ function onGenerateSpec() {
     return;
   }
   void withBusy("spec", async () => {
-    wizard.value = await generateSpec(wizard.value!.id);
+    // 目录层数随生成就地提交（2026-11-19）：步骤三 chip 选择合并落库进生成要求，本轮即生效
+    wizard.value = await generateSpec(wizard.value!.id, genOptions.outline_depth);
     loadSpecFromWizard();
+    loadGenerationOptionsFromWizard();
   });
 }
 
@@ -3941,6 +3943,22 @@ onUnmounted(() => {
         <div v-if="wizard.spec_stale" class="stale-tip">
           需求/素材已变化，当前大纲基于旧输入。
           <button type="button" class="link-btn" :disabled="Boolean(busy)" @click="onGenerateSpec">重新生成大纲</button>
+          <!-- 目录层数（2026-11-19）：过期重生成前也可就地改层级 -->
+          <div class="gen-row" style="margin:6px 0 0">
+            <span class="gen-label">目录层数</span>
+            <div class="gen-field gen-inline">
+              <button
+                v-for="depth in GENERATION_OUTLINE_DEPTH_CHOICES"
+                :key="depth"
+                type="button"
+                class="chip"
+                :class="{ active: genOptions.outline_depth === depth }"
+                :disabled="Boolean(busy)"
+                @click="genOptions.outline_depth = depth"
+              >{{ depth }} 级</button>
+              <span class="hint" style="margin:0 0 0 8px">重新生成时生效</span>
+            </div>
+          </div>
         </div>
         <!-- 23 号 O7：历史模板素材的目录结构将作为层级/覆盖面参照注入大纲生成 -->
         <p v-if="historyTemplateCount" class="hint" style="margin:0;color:#389e0d">
@@ -3949,6 +3967,23 @@ onUnmounted(() => {
         <div class="card">
           <template v-if="!specNodes.length">
             <p class="hint">AI 将根据编写需求、招标要素与素材索引生成大纲：目录结构＋每章摘要＋图表规划。</p>
+            <!-- 目录层数（2026-11-19 用户反馈：编写大纲处要能选层级）——生成前就地选择，默认 4 级；
+                 与步骤二生成要求同一数据源（genOptions），此处改动随生成落库 -->
+            <div class="gen-row" style="margin-bottom:10px">
+              <span class="gen-label">目录层数</span>
+              <div class="gen-field gen-inline">
+                <button
+                  v-for="depth in GENERATION_OUTLINE_DEPTH_CHOICES"
+                  :key="depth"
+                  type="button"
+                  class="chip"
+                  :class="{ active: genOptions.outline_depth === depth }"
+                  :disabled="Boolean(busy)"
+                  @click="genOptions.outline_depth = depth"
+                >{{ depth }} 级</button>
+                <span class="hint" style="margin:0 0 0 8px">生成大纲的最深层级，默认 4 级（章-节-条-目）；生成后可在步骤二改并重新生成</span>
+              </div>
+            </div>
             <button type="button" class="primary" :disabled="Boolean(busy)" @click="onGenerateSpec">生成编写大纲</button>
             <div v-if="busy === 'spec'" class="status-row">
               <StatusDot tone="running">正在检索素材并编排章节结构…</StatusDot>

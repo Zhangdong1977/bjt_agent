@@ -43,6 +43,7 @@ from backend.schemas.bid_wizard import (
     ReviewEstimateResponse,
     SectionWrittenResponse,
     SectionsResetWrittenResponse,
+    SpecGenerateRequest,
     SpecRevise,
     SpecUpdate,
     WizardAccessResponse,
@@ -1521,13 +1522,31 @@ async def save_capability(
 
 
 @router.post("/wizards/{wizard_id}/spec", response_model=WizardResponse)
-async def generate_spec(wizard_id: str, db: DBSession, current_user: CurrentUser) -> BidWizard:
-    """同步微任务：编写需求 + 招标要素 + 素材索引 → Spec（目录/摘要/图表规划）。"""
+async def generate_spec(
+    wizard_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+    body: SpecGenerateRequest | None = None,
+) -> BidWizard:
+    """同步微任务：编写需求 + 招标要素 + 素材索引 → Spec（目录/摘要/图表规划）。
+
+    body.outline_depth（2026-11-19 目录层数）：步骤三生成前就地选层级，合并落库进
+    生成要求后再生成本轮大纲；不带 = 沿用已保存值（老客户端零变化）。
+    """
     wizard = await _owned_wizard(wizard_id, current_user, db)
     await _require_access(db, current_user)
     if wizard.requirements is None:
         raise HTTPException(status_code=400, detail="请先完成需求确认（保存问卷答案）")
     await _guard_writing_idle(db, wizard)
+    if body is not None and body.outline_depth is not None:
+        from backend.agent.bid_wizard_agent import normalize_generation_options
+
+        merged = dict(wizard.requirements) if isinstance(wizard.requirements, dict) else {}
+        options = dict(merged.get("generation_options") or {})
+        options["outline_depth"] = body.outline_depth
+        # 全新 dict 赋值（反馈⑱铁律：JSONB 原地改不落库）；runner 读 requirements 时即生效
+        merged["generation_options"] = normalize_generation_options(options)
+        wizard.requirements = merged
 
     wizard_ref = wizard
 

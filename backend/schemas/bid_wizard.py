@@ -305,6 +305,16 @@ class SpecUpdate(BaseModel):
     spec: list[SpecNode] = Field(min_length=1, max_length=OUTLINE_MAX_NODES)
 
 
+class SpecGenerateRequest(BaseModel):
+    """「生成编写大纲」请求体（2026-11-19 目录层数）：步骤三就地选层级。
+
+    不带/为空 = 沿用已保存的生成要求（老客户端零变化）；带则合并落库进
+    requirements.generation_options，本轮与后续生成均生效。
+    """
+
+    outline_depth: int | None = Field(default=None, ge=2, le=6)
+
+
 class SpecRevise(BaseModel):
     instruction: str = Field(min_length=1, max_length=SPEC_INSTRUCTION_MAX_CHARS)
 
