@@ -1243,6 +1243,14 @@ const STANCE_LABELS: Record<CapabilityStance, string> = {
   build: "本项目建设",
   confirm: "待确认",
 };
+/** 三态口径悬停短解（2026-11-19 用户反馈：选项含义与选中后果要让用户知道）；完整说明见卡片内展开块。 */
+const STANCE_HINTS: Record<CapabilityStance, string> = {
+  existing: "正文写「本系统已实现」并须引用素材真实依据；没有依据硬选有虚假应标风险（废标/履约纠纷），机检会持续提示",
+  build: "正文写「本项目建设内容」并给出实施与交付安排；中标后即合同义务，需评估实施成本与工期",
+  confirm: "正文不写具体能力参数，交稿安全不虚构；带风险的条目开标前必须回来拍板，机检会提示",
+};
+/** 口径说明展开块（默认收起，一行入口不占屏）。 */
+const capHelpExpanded = ref(false);
 const CONFIDENCE_LABELS: Record<CapabilityConfidence, string> = {
   high: "高置信",
   medium: "中置信",
@@ -3757,6 +3765,30 @@ onUnmounted(() => {
              2026-10-24 用户反馈：卡片常驻（未生成问卷时也占位），避免①②④跳号 -->
         <div class="card">
           <h3>③ 应答口径</h3>
+          <!-- 2026-11-19 用户反馈：三态口径的含义与选中后果要让用户知道——默认收起，点开看完整说明；
+               radio 悬停另有短解（STANCE_HINTS） -->
+          <div class="cap-stance-help">
+            <button type="button" class="link-btn" @click="capHelpExpanded = !capHelpExpanded">
+              {{ capHelpExpanded ? "收起口径说明 ▴" : "三种口径的含义与选中后果 ▾" }}
+            </button>
+            <div v-if="capHelpExpanded" class="cap-help-rows">
+              <div class="cap-help-row">
+                <span class="cap-help-tag existing">现有已实现</span>
+                <p>含义：我方系统<b>当前已具备</b>该能力。正文将写「本系统已实现…」，并<b>必须引用素材池中的真实依据</b>（项目案例/检测报告/截图）。</p>
+                <p class="cap-help-effect">选中的后果：响应最强、最利于得分；但这是事实承诺——<b>没有素材依据硬选＝虚假应标风险</b>（废标/中标后履约纠纷），机检会持续提示「须补素材依据或改判」。</p>
+              </div>
+              <div class="cap-help-row">
+                <span class="cap-help-tag build">本项目建设</span>
+                <p>含义：该能力作为<b>本项目的建设内容</b>交付。正文将写「本项目建设内容…」，并给出实施步骤与交付阶段安排。</p>
+                <p class="cap-help-effect">选中的后果：保持「全部满足」的正响应、不丢分；但中标后即成为合同义务——需评估实施成本与工期，承诺要能兑现。</p>
+              </div>
+              <div class="cap-help-row">
+                <span class="cap-help-tag confirm">待确认</span>
+                <p>含义：素材不足或事实暂不明确，先不写死。正文<b>不写具体能力参数与指标</b>，按「本项目建设内容（具体规则需求确认阶段固化）」兜底。</p>
+                <p class="cap-help-effect">选中的后果：交稿安全、绝不虚构；但带风险的条目（★条款/高分项）若拖到开标仍没拍板会失分甚至废标——机检会提示「开标前必须拍板」，请用「复制去确认」线下问清后回来改判。</p>
+              </div>
+            </div>
+          </div>
           <template v-if="!capabilityItems.length">
             <p class="hint">AI 对照招标要求与素材索引，逐条建议应答口径：「现有已实现」（须有素材依据）、「本项目建设」（交付内容）或「待确认」；对把握不足或标注风险的条目会给出确认问题，可复制发给研发/售前线下确认后再拍板。确认保存后口径将注入大纲与章节撰写，杜绝虚构能力。</p>
             <p v-if="!questionnaire.length" class="hint">先完成上方「② 素材检查和需求确认」，AI 检查完成后即可在这里生成口径建议。</p>
@@ -3783,7 +3815,7 @@ onUnmounted(() => {
                 </div>
                 <p v-if="item.requirement" class="cap-req">{{ item.requirement }}</p>
                 <div class="q-actions cap-actions">
-                  <label v-for="(label, stanceValue) in STANCE_LABELS" :key="stanceValue" class="radio">
+                  <label v-for="(label, stanceValue) in STANCE_LABELS" :key="stanceValue" class="radio" :title="STANCE_HINTS[stanceValue]">
                     <input v-model="item.stance" type="radio" :name="`cap-d-${index}`" :value="stanceValue">{{ label }}
                   </label>
                 </div>
@@ -3812,7 +3844,7 @@ onUnmounted(() => {
                   </div>
                   <p v-if="item.requirement" class="cap-req">{{ item.requirement }}</p>
                   <div class="q-actions cap-actions">
-                    <label v-for="(label, stanceValue) in STANCE_LABELS" :key="stanceValue" class="radio">
+                    <label v-for="(label, stanceValue) in STANCE_LABELS" :key="stanceValue" class="radio" :title="STANCE_HINTS[stanceValue]">
                       <input v-model="item.stance" type="radio" :name="`cap-l-${index}`" :value="stanceValue">{{ label }}
                     </label>
                   </div>
@@ -4473,6 +4505,18 @@ onUnmounted(() => {
 .cap-risk{margin:5px 0 0;color:#a8071a;font-size:12px;line-height:1.6}
 .cap-item-dim{background:#fafafa}
 .cap-zone-head{margin-top:12px}
+/* 三态口径说明展开块（2026-11-19）：含义+选中后果，默认收起只留一行入口 */
+.cap-stance-help{margin:2px 0 8px}
+.cap-stance-help .link-btn{padding-left:0}
+.cap-help-rows{margin-top:6px;display:flex;flex-direction:column;gap:7px}
+.cap-help-row{padding:8px 10px;border:1px solid #f0f0f0;border-radius:8px;background:#fafafa}
+.cap-help-row p{margin:3px 0 0;font-size:12px;line-height:1.7;color:#555}
+.cap-help-row p:first-of-type{margin-top:6px}
+.cap-help-effect{color:#873800}
+.cap-help-tag{display:inline-block;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600}
+.cap-help-tag.existing{background:#f6ffed;color:#389e0d}
+.cap-help-tag.build{background:#e6f4ff;color:#0958d9}
+.cap-help-tag.confirm{background:#fffbe6;color:#d46b08}
 .analysis-suggest{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:4px 0 8px;font-size:12px}
 .suggest-chip{padding:2px 10px;border:1px solid #ffd6d0;border-radius:999px;background:#fff5f4;color:#b80015;cursor:default}
 .material-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
